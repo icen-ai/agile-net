@@ -329,9 +329,10 @@ impl RelayConnector {
         let channel = mux.accept_channel(req.channel_id);
 
         // 多级串联：目标属于更下游节点的通告网段 → 继续向下游转发
-        if let Some(listener) = &peer_router {
-            if let Some(next_peer) = listener.resolve_peer(&open_req.target_addr) {
-                match listener
+        if let Some(listener) = &peer_router
+            && let Some(next_peer) = listener.resolve_peer(&open_req.target_addr)
+        {
+            match listener
                     .open_channel(&next_peer, &open_req.target_addr, open_req.target_port)
                     .await
                 {
@@ -350,7 +351,6 @@ impl RelayConnector {
                         mux.close_channel(req.channel_id);
                         return Err(e);
                     }
-                }
             }
         }
 

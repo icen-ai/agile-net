@@ -259,14 +259,14 @@ pub async fn batch_import(
     // error 模式：预检全部
     if req.on_conflict == "error" {
         for r in &req.rules {
-            if let Ok(normalized) = validate_rule_input(r) {
-                if state.db.rule_exists(&r.rule_type, &normalized).unwrap_or(false) {
-                    return err(
-                        StatusCode::CONFLICT,
-                        codes::DUPLICATE,
-                        format!("duplicate rule: {} {}", r.rule_type, normalized),
-                    );
-                }
+            if let Ok(normalized) = validate_rule_input(r)
+                && state.db.rule_exists(&r.rule_type, &normalized).unwrap_or(false)
+            {
+                return err(
+                    StatusCode::CONFLICT,
+                    codes::DUPLICATE,
+                    format!("duplicate rule: {} {}", r.rule_type, normalized),
+                );
             }
         }
     }

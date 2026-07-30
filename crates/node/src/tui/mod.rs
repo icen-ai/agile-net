@@ -183,8 +183,9 @@ impl TuiApp {
         if self.current_tab != Tab::Accounts {
             return;
         }
-        if let Some(idx) = self.selected_index() {
-            if let Some(account) = self.accounts.get(idx) {
+        if let Some(idx) = self.selected_index()
+            && let Some(account) = self.accounts.get(idx)
+        {
                 let new_enabled = !account.enabled;
                 let id = account.id.clone();
                 let username = account.username.clone();
@@ -200,7 +201,6 @@ impl TuiApp {
                     }
                     Err(e) => self.status_msg = format!("操作失败: {e}"),
                 }
-            }
         }
     }
 
@@ -513,12 +513,11 @@ pub fn run_tui(db: Database) -> Result<()> {
     loop {
         app.draw(&mut terminal)?;
 
-        if event::poll(std::time::Duration::from_millis(200)).map_err(|e| Error::Other(e.to_string()))? {
-            if let Ok(Event::Key(key)) = event::read() {
-                if key.kind == KeyEventKind::Press {
-                    app.handle_key(key.code);
-                }
-            }
+        if event::poll(std::time::Duration::from_millis(200)).map_err(|e| Error::Other(e.to_string()))?
+            && let Ok(Event::Key(key)) = event::read()
+            && key.kind == KeyEventKind::Press
+        {
+            app.handle_key(key.code);
         }
 
         if app.should_quit {

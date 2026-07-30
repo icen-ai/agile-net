@@ -537,11 +537,11 @@ fn spawn_heartbeat(
                 .await;
             match resp {
                 Ok(r) if r.status().is_success() => {
-                    if let Ok(json) = r.json::<serde_json::Value>().await {
-                        if json["data"]["force_disconnect"].as_bool() == Some(true) {
-                            info!(node = %node_id, "force disconnected by server");
-                            break;
-                        }
+                    if let Ok(json) = r.json::<serde_json::Value>().await
+                        && json["data"]["force_disconnect"].as_bool() == Some(true)
+                    {
+                        info!(node = %node_id, "force disconnected by server");
+                        break;
                     }
                 }
                 Ok(r) if r.status() == reqwest::StatusCode::UNAUTHORIZED => {

@@ -10,6 +10,9 @@ use axum::{
 use std::net::{IpAddr, SocketAddr};
 
 /// 从请求头解析并验证 Bearer JWT，返回 Claims。
+///
+/// Err 直接携带 axum Response 是该框架提取器的惯用模式（体积换少一次封装）。
+#[allow(clippy::result_large_err)]
 fn extract_claims(parts: &Parts) -> Result<Claims, Response> {
     let auth_header = parts
         .headers

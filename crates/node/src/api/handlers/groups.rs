@@ -153,14 +153,14 @@ pub async fn update_group(
         if let Err(msg) = validate_group_input(name, "") {
             return err(StatusCode::BAD_REQUEST, codes::VALIDATION_FAILED, msg);
         }
-        if let Ok(Some(existing)) = state.db.get_group_by_name(name) {
-            if existing.id != id {
-                return err(
-                    StatusCode::CONFLICT,
-                    codes::DUPLICATE,
-                    "group name already exists",
-                );
-            }
+        if let Ok(Some(existing)) = state.db.get_group_by_name(name)
+            && existing.id != id
+        {
+            return err(
+                StatusCode::CONFLICT,
+                codes::DUPLICATE,
+                "group name already exists",
+            );
         }
     }
     if let Err(e) = state

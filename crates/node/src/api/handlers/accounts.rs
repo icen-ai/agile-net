@@ -164,10 +164,10 @@ pub async fn update_account(
         Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, codes::INTERNAL, e.to_string()),
     };
 
-    if let Some(gid) = &req.group_id {
-        if state.db.get_group(gid).unwrap_or(None).is_none() {
-            return err(StatusCode::NOT_FOUND, codes::NOT_FOUND, "group not found");
-        }
+    if let Some(gid) = &req.group_id
+        && state.db.get_group(gid).unwrap_or(None).is_none()
+    {
+        return err(StatusCode::NOT_FOUND, codes::NOT_FOUND, "group not found");
     }
 
     if let Err(e) = state.db.update_account(
