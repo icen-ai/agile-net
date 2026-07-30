@@ -18,13 +18,14 @@ pub struct SetConfigRequest {
     pub description: Option<String>,
 }
 
-pub async fn get_configs(_claims: AuthClaims, State(_state): State<ApiState>) -> impl IntoResponse {
-    // 暂返回基础系统版本等
+pub async fn get_configs(_claims: AuthClaims, State(state): State<ApiState>) -> impl IntoResponse {
+    let audit_logs = state.db.list_audit_logs().unwrap_or_default();
     (
         StatusCode::OK,
         Json(json!({
             "version": env!("CARGO_PKG_VERSION"),
-            "status": "running"
+            "status": "running",
+            "audit_logs": audit_logs
         })),
     )
         .into_response()

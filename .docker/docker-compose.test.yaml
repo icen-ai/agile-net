@@ -1,4 +1,51 @@
 name: agile-net-test
 
 services:
-  
+  # 内部目标网络 HTTP 服务
+  internal-target:
+    image: nginx:alpine
+    container_name: internal-target
+    networks:
+      internal-net:
+        ipv4_address: 10.120.0.100
+
+  # 出口节点 Node-B (部署在内网, 可访问 internal-target)
+  node-b:
+    image: alpine:latest
+    container_name: agile-net-node-b
+    command: sh -c "echo 'Node B Running' && tail -f /dev/null"
+    networks:
+      relay-net:
+        ipv4_address: 172.28.0.20
+      internal-net:
+        ipv4_address: 10.120.0.20
+
+  # 中继节点 Node-A (中继穿透)
+  node-a:
+    image: alpine:latest
+    container_name: agile-net-node-a
+    command: sh -c "echo 'Node A Running' && tail -f /dev/null"
+    networks:
+      relay-net:
+        ipv4_address: 172.28.0.10
+
+  # 客户端 Client
+  client:
+    image: alpine:latest
+    container_name: agile-net-client
+    command: sh -c "echo 'Client Running' && tail -f /dev/null"
+    networks:
+      relay-net:
+        ipv4_address: 172.28.0.5
+
+networks:
+  relay-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
+  internal-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.120.0.0/16

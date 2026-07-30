@@ -94,6 +94,15 @@ impl Database {
                 description TEXT,
                 updated_at TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS audit_logs (
+                id TEXT PRIMARY KEY,
+                operator TEXT NOT NULL,
+                action TEXT NOT NULL,
+                target TEXT NOT NULL,
+                ip TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
             ",
         )
         .map_err(|e| Error::Other(e.to_string()))?;
@@ -366,6 +375,47 @@ impl Database {
         )
         .map_err(|e| Error::Other(e.to_string()))?;
         Ok(())
+    }
+
+    // --- 审计日志 ---
+
+    pub fn record_audit_log(&self, operator: &str, action: &str, target: &str, ip: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let id = uuid::Uuid::new_v4().to_string();
+        let now = chrono::Utc::now().to_rfc3339();
+
+        conn.execute(
+            "INSERT INTO audit_logs (id, operator, action, target, ip, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![id, operator, action, target, ip, now],
+        )
+        .map_err(|e| Error::Other(e.to_string()))?;
+        Ok(())
+    }
+
+    pub fn list_audit_logs(&self) -> Result<Vec<serde_json::Value>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT id, operator, action, target, ip, created_at FROM audit_logs ORDER BY created_at DESC LIMIT 100")
+            .map_err(|e| Error::Other(e.to_string()))?;
+
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(serde_json::json!({
+                    "id": row.get::<_, String>(0)?,
+                    "operator": row.get::<_, String>(1)?,
+                    "action": row.get::<_, String>(2)?,
+                    "target": row.get::<_, String>(3)?,
+                    "ip": row.get::<_, String>(4)?,
+                    "created_at": row.get::<_, String>(5)?,
+                }))
+            })
+            .map_err(|e| Error::Other(e.to_string()))?;
+
+        let mut result = Vec::new();
+        for r in rows {
+            result.push(r.map_err(|e| Error::Other(e.to_string()))?);
+        }
+        Ok(result)
     }
 }
 
