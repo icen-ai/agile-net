@@ -5,20 +5,22 @@
 //! - HTTP 动词 (G/P/C/H/O/D): HTTP CONNECT 代理
 
 use crate::error::{Error, Result};
-use crate::proxy::outbound::DirectOutbound;
+use crate::proxy::outbound::{DirectOutbound, TunnelOutbound};
 use crate::proxy::router::{Outbound, ProxyRouter};
+use crate::relay::listener::RelayListener;
 use arc_swap::ArcSwap;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 /// 代理入站监听器
 pub struct ProxyInbound {
     listen_addr: SocketAddr,
     router: Arc<ArcSwap<ProxyRouter>>,
+    relay_listener: Option<Arc<RelayListener>>,
 }
 
 impl ProxyInbound {
@@ -26,7 +28,13 @@ impl ProxyInbound {
         Self {
             listen_addr,
             router,
+            relay_listener: None,
         }
+    }
+
+    pub fn with_relay_listener(mut self, relay_listener: Arc<RelayListener>) -> Self {
+        self.relay_listener = Some(relay_listener);
+        self
     }
 
     pub fn listen_addr(&self) -> SocketAddr {
@@ -41,9 +49,12 @@ impl ProxyInbound {
         loop {
             let (stream, client_addr) = listener.accept().await?;
             let router = self.router.clone();
+            let relay_listener = self.relay_listener.clone();
 
             tokio::spawn(async move {
-                if let Err(e) = Self::handle_connection(stream, client_addr, router).await {
+                if let Err(e) =
+                    Self::handle_connection(stream, client_addr, router, relay_listener).await
+                {
                     debug!(client = %client_addr, error = %e, "proxy connection handled with error");
                 }
             });
@@ -54,15 +65,16 @@ impl ProxyInbound {
         mut stream: TcpStream,
         client_addr: SocketAddr,
         router: Arc<ArcSwap<ProxyRouter>>,
+        relay_listener: Option<Arc<RelayListener>>,
     ) -> Result<()> {
         // 读取首字节判断协议
         let mut first_byte = [0u8; 1];
         stream.read_exact(&mut first_byte).await?;
 
         match first_byte[0] {
-            0x05 => Self::handle_socks5(stream, client_addr, router).await,
+            0x05 => Self::handle_socks5(stream, client_addr, router, relay_listener).await,
             b'G' | b'P' | b'C' | b'H' | b'O' | b'D' => {
-                Self::handle_http(stream, client_addr, first_byte[0], router).await
+                Self::handle_http(stream, client_addr, first_byte[0], router, relay_listener).await
             }
             other => Err(Error::Protocol(format!(
                 "unsupported proxy protocol first byte: {other:#x}"
@@ -75,8 +87,9 @@ impl ProxyInbound {
         mut stream: TcpStream,
         client_addr: SocketAddr,
         router: Arc<ArcSwap<ProxyRouter>>,
+        relay_listener: Option<Arc<RelayListener>>,
     ) -> Result<()> {
-        // 1. 协商认证方式: NMETHODS, METHODS...
+        // 1. 协商认证方式
         let mut nmethods = [0u8; 1];
         stream.read_exact(&mut nmethods).await?;
         let mut methods = vec![0u8; nmethods[0] as usize];
@@ -90,14 +103,13 @@ impl ProxyInbound {
         stream.read_exact(&mut req_header).await?;
 
         if req_header[1] != 0x01 {
-            // 只支持 CONNECT 命令
             stream
                 .write_all(&[0x05, 0x07, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
                 .await?;
             return Err(Error::Protocol("only SOCKS5 CONNECT is supported".into()));
         }
 
-        let target_host = match req_header[3] {
+        let (target_host, target_port) = match req_header[3] {
             0x01 => {
                 // IPv4
                 let mut ip = [0u8; 4];
@@ -105,7 +117,7 @@ impl ProxyInbound {
                 let mut port = [0u8; 2];
                 stream.read_exact(&mut port).await?;
                 let port_num = u16::from_be_bytes(port);
-                format!("{}.{}.{}.{}:{}", ip[0], ip[1], ip[2], ip[3], port_num)
+                (format!("{}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3]), port_num)
             }
             0x03 => {
                 // Domain name
@@ -116,8 +128,7 @@ impl ProxyInbound {
                 let mut port = [0u8; 2];
                 stream.read_exact(&mut port).await?;
                 let port_num = u16::from_be_bytes(port);
-                let domain_str = String::from_utf8_lossy(&domain);
-                format!("{domain_str}:{port_num}")
+                (String::from_utf8_lossy(&domain).to_string(), port_num)
             }
             0x06 => {
                 // IPv6
@@ -127,35 +138,31 @@ impl ProxyInbound {
                 stream.read_exact(&mut port).await?;
                 let port_num = u16::from_be_bytes(port);
                 let ip_addr = std::net::Ipv6Addr::from(ip);
-                format!("[{ip_addr}]:{port_num}")
+                (ip_addr.to_string(), port_num)
             }
             atyp => {
                 return Err(Error::Protocol(format!("unsupported SOCKS5 ATYP: {atyp}")));
             }
         };
 
-        debug!(client = %client_addr, target = %target_host, "SOCKS5 request received");
+        let target_str = format!("{target_host}:{target_port}");
+        debug!(client = %client_addr, target = %target_str, "SOCKS5 request received");
 
-        // 路由计算与转接
         let router_ref = router.load();
-        let outbound = router_ref.route_target(&target_host);
+        let outbound = router_ref.route_target(&target_str);
 
         match outbound {
             Outbound::Direct => {
-                let target_addr: SocketAddr = match target_host.parse() {
+                let target_addr: SocketAddr = match target_str.parse() {
                     Ok(a) => a,
-                    Err(_) => {
-                        // 域名解析
-                        tokio::net::lookup_host(&target_host)
-                            .await?
-                            .next()
-                            .ok_or_else(|| Error::Other("dns resolution failed".into()))?
-                    }
+                    Err(_) => tokio::net::lookup_host(&target_str)
+                        .await?
+                        .next()
+                        .ok_or_else(|| Error::Other("dns resolution failed".into()))?,
                 };
 
                 match DirectOutbound::connect(target_addr).await {
                     Ok(mut target_stream) => {
-                        // SOCKS5 成功响应: VER=0x05, REP=0x00(SUCCESS), RSV=0x00, ATYP=0x01, BND.ADDR=0, BND.PORT=0
                         stream
                             .write_all(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
                             .await?;
@@ -165,7 +172,6 @@ impl ProxyInbound {
                         Ok(())
                     }
                     Err(e) => {
-                        // 响应 Host Unreachable
                         let _ = stream
                             .write_all(&[0x05, 0x04, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
                             .await;
@@ -174,11 +180,24 @@ impl ProxyInbound {
                 }
             }
             Outbound::Tunnel { node_id } => {
-                warn!(target = %target_host, node_id = %node_id, "tunnel outbound to be bridged by M4 E2E Tunnel Engine");
-                let _ = stream
-                    .write_all(&[0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
-                    .await;
-                Err(Error::Other("tunnel routing pending M4".into()))
+                if let Some(relay_listener) = relay_listener {
+                    stream
+                        .write_all(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+                        .await?;
+
+                    let tunnel_outbound = TunnelOutbound::new(relay_listener);
+                    tunnel_outbound
+                        .proxy_stream(node_id, &target_host, target_port, stream)
+                        .await?;
+                    Ok(())
+                } else {
+                    let _ = stream
+                        .write_all(&[0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+                        .await;
+                    Err(Error::Other(
+                        "no relay listener configured for tunnel routing".into(),
+                    ))
+                }
             }
         }
     }
@@ -189,11 +208,11 @@ impl ProxyInbound {
         client_addr: SocketAddr,
         first_byte: u8,
         router: Arc<ArcSwap<ProxyRouter>>,
+        relay_listener: Option<Arc<RelayListener>>,
     ) -> Result<()> {
         let mut req_buf = vec![first_byte];
         let mut line_buf = [0u8; 1024];
 
-        // 简易 HTTP Header 读取
         let n = stream.read(&mut line_buf).await?;
         req_buf.extend_from_slice(&line_buf[..n]);
 
@@ -208,10 +227,12 @@ impl ProxyInbound {
         let method = parts[0];
         let uri = parts[1];
 
-        let target_host = if method == "CONNECT" {
-            uri.to_string()
+        let (target_host, target_port) = if method == "CONNECT" {
+            let mut parts = uri.split(':');
+            let host = parts.next().unwrap_or_default().to_string();
+            let port = parts.next().and_then(|p| p.parse().ok()).unwrap_or(443);
+            (host, port)
         } else {
-            // 普通 HTTP 代理解析 Host header
             let mut host = "";
             for line in req_str.lines() {
                 if line.to_lowercase().starts_with("host:") {
@@ -224,23 +245,24 @@ impl ProxyInbound {
                     "missing Host header in HTTP request".into(),
                 ));
             }
-            if !host.contains(':') {
-                format!("{host}:80")
+            if let Some((h, p)) = host.split_once(':') {
+                (h.to_string(), p.parse().unwrap_or(80))
             } else {
-                host.to_string()
+                (host.to_string(), 80)
             }
         };
 
-        debug!(client = %client_addr, target = %target_host, "HTTP Proxy request received");
+        let target_str = format!("{target_host}:{target_port}");
+        debug!(client = %client_addr, target = %target_str, "HTTP Proxy request received");
 
         let router_ref = router.load();
-        let outbound = router_ref.route_target(&target_host);
+        let outbound = router_ref.route_target(&target_str);
 
         match outbound {
             Outbound::Direct => {
-                let target_addr: SocketAddr = match target_host.parse() {
+                let target_addr: SocketAddr = match target_str.parse() {
                     Ok(a) => a,
-                    Err(_) => tokio::net::lookup_host(&target_host)
+                    Err(_) => tokio::net::lookup_host(&target_str)
                         .await?
                         .next()
                         .ok_or_else(|| Error::Other("dns resolution failed".into()))?,
@@ -249,12 +271,10 @@ impl ProxyInbound {
                 match DirectOutbound::connect(target_addr).await {
                     Ok(mut target_stream) => {
                         if method == "CONNECT" {
-                            // 响应 200 Connection Established
                             stream
                                 .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
                                 .await?;
                         } else {
-                            // 将已读取的 HTTP 请求头写入目标服务器
                             target_stream.write_all(&req_buf).await?;
                         }
 
@@ -269,11 +289,26 @@ impl ProxyInbound {
                 }
             }
             Outbound::Tunnel { node_id } => {
-                warn!(target = %target_host, node_id = %node_id, "tunnel outbound pending M4");
-                let _ = stream
-                    .write_all(b"HTTP/1.1 503 Service Unavailable\r\n\r\n")
-                    .await;
-                Err(Error::Other("tunnel routing pending M4".into()))
+                if let Some(relay_listener) = relay_listener {
+                    if method == "CONNECT" {
+                        stream
+                            .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                            .await?;
+                    }
+
+                    let tunnel_outbound = TunnelOutbound::new(relay_listener);
+                    tunnel_outbound
+                        .proxy_stream(node_id, &target_host, target_port, stream)
+                        .await?;
+                    Ok(())
+                } else {
+                    let _ = stream
+                        .write_all(b"HTTP/1.1 503 Service Unavailable\r\n\r\n")
+                        .await;
+                    Err(Error::Other(
+                        "no relay listener configured for tunnel routing".into(),
+                    ))
+                }
             }
         }
     }
