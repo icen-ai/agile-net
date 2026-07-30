@@ -103,6 +103,26 @@ impl Database {
                 ip TEXT NOT NULL,
                 created_at TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS groups (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE,
+                remark TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS accounts (
+                id TEXT PRIMARY KEY,
+                username TEXT NOT NULL UNIQUE,
+                password_hash TEXT NOT NULL,
+                group_id TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                remark TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(group_id) REFERENCES groups(id) ON DELETE CASCADE
+            );
             ",
         )
         .map_err(|e| Error::Other(e.to_string()))?;
@@ -126,6 +146,121 @@ impl Database {
             info!("default admin user created (admin / admin123)");
         }
 
+        Ok(())
+    }
+
+    // --- 权限组 (Groups) CRUD ---
+
+    pub fn list_groups(&self) -> Result<Vec<GroupRecord>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT id, name, remark, created_at, updated_at FROM groups ORDER BY created_at DESC")
+            .map_err(|e| Error::Other(e.to_string()))?;
+
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(GroupRecord {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    remark: row.get(2)?,
+                    created_at: row.get(3)?,
+                    updated_at: row.get(4)?,
+                })
+            })
+            .map_err(|e| Error::Other(e.to_string()))?;
+
+        let mut result = Vec::new();
+        for r in rows {
+            result.push(r.map_err(|e| Error::Other(e.to_string()))?);
+        }
+        Ok(result)
+    }
+
+    pub fn create_group(&self, name: &str, remark: &str) -> Result<GroupRecord> {
+        let conn = self.conn.lock().unwrap();
+        let id = uuid::Uuid::new_v4().to_string();
+        let now = chrono::Utc::now().to_rfc3339();
+
+        conn.execute(
+            "INSERT INTO groups (id, name, remark, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![id, name, remark, now, now],
+        )
+        .map_err(|e| Error::Other(e.to_string()))?;
+
+        Ok(GroupRecord {
+            id,
+            name: name.to_string(),
+            remark: remark.to_string(),
+            created_at: now.clone(),
+            updated_at: now,
+        })
+    }
+
+    pub fn delete_group(&self, id: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM groups WHERE id = ?1", params![id])
+            .map_err(|e| Error::Other(e.to_string()))?;
+        Ok(())
+    }
+
+    // --- 客户端账号 (Accounts) CRUD ---
+
+    pub fn list_accounts(&self) -> Result<Vec<AccountRecord>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT a.id, a.username, a.group_id, g.name, a.enabled, a.remark, a.created_at, a.updated_at FROM accounts a LEFT JOIN groups g ON a.group_id = g.id ORDER BY a.created_at DESC")
+            .map_err(|e| Error::Other(e.to_string()))?;
+
+        let rows = stmt
+            .query_map([], |row| {
+                let enabled_int: i32 = row.get(4)?;
+                Ok(AccountRecord {
+                    id: row.get(0)?,
+                    username: row.get(1)?,
+                    group_id: row.get(2)?,
+                    group_name: row.get(3)?,
+                    enabled: enabled_int != 0,
+                    remark: row.get(5)?,
+                    created_at: row.get(6)?,
+                    updated_at: row.get(7)?,
+                })
+            })
+            .map_err(|e| Error::Other(e.to_string()))?;
+
+        let mut result = Vec::new();
+        for r in rows {
+            result.push(r.map_err(|e| Error::Other(e.to_string()))?);
+        }
+        Ok(result)
+    }
+
+    pub fn create_account(&self, username: &str, password_hash: &str, group_id: &str, remark: &str) -> Result<AccountRecord> {
+        let conn = self.conn.lock().unwrap();
+        let id = uuid::Uuid::new_v4().to_string();
+        let now = chrono::Utc::now().to_rfc3339();
+
+        conn.execute(
+            "INSERT INTO accounts (id, username, password_hash, group_id, enabled, remark, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, 1, ?5, ?6, ?7)",
+            params![id, username, password_hash, group_id, remark, now, now],
+        )
+        .map_err(|e| Error::Other(e.to_string()))?;
+
+        Ok(AccountRecord {
+            id,
+            username: username.to_string(),
+            group_id: group_id.to_string(),
+            group_name: None,
+            enabled: true,
+            remark: remark.to_string(),
+            created_at: now.clone(),
+            updated_at: now,
+        })
+    }
+
+    pub fn delete_account(&self, id: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM accounts WHERE id = ?1", params![id])
+            .map_err(|e| Error::Other(e.to_string()))?;
         Ok(())
     }
 

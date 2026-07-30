@@ -122,3 +122,27 @@ pub struct SystemConfigItem {
     pub description: Option<String>,
     pub updated_at: String,
 }
+
+/// 权限组记录
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GroupRecord {
+    pub id: String,
+    pub name: String,
+    pub remark: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// 客户端账号记录
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccountRecord {
+    pub id: String,
+    pub username: String,
+    pub group_id: String,
+    pub group_name: Option<String>,
+    pub enabled: bool,
+    pub remark: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+

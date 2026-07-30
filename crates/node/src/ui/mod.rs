@@ -89,7 +89,7 @@ const ADMIN_HTML: &str = r#"<!DOCTYPE html>
             </div>
         </div>
 
-        <!-- 路由规则管理 -->
+        <!-- 代理路由规则管理 -->
         <div class="card">
             <div class="card-title">🔀 代理路由规则 (Proxy Routing Rules)</div>
             <table>
@@ -114,6 +114,57 @@ const ADMIN_HTML: &str = r#"<!DOCTYPE html>
                 <input type="text" id="new-route-node" placeholder="目标节点名称 (选填)">
                 <button onclick="createRoute()">添加规则</button>
             </div>
+        </div>
+
+        <!-- 权限组管理 -->
+        <div class="card">
+            <div class="card-title">🛡️ 权限组管理 (Permission Groups)</div>
+            <table>
+                <thead>
+                    <tr><th>ID</th><th>组名称</th><th>备注说明</th><th>操作</th></tr>
+                </thead>
+                <tbody id="groups-table-body">
+                    <tr><td colspan="4" style="text-align:center; color:var(--text-dim);">加载中...</td></tr>
+                </tbody>
+            </table>
+            <div class="form-group">
+                <input type="text" id="new-group-name" placeholder="权限组名称 (e.g. 开发组)">
+                <input type="text" id="new-group-remark" placeholder="备注说明">
+                <button onclick="createGroup()">添加权限组</button>
+            </div>
+        </div>
+
+        <!-- 客户端账号管理 -->
+        <div class="card">
+            <div class="card-title">👥 客户端账号管理 (Client Accounts)</div>
+            <table>
+                <thead>
+                    <tr><th>账号名称</th><th>所属权限组</th><th>状态</th><th>备注</th><th>操作</th></tr>
+                </thead>
+                <tbody id="accounts-table-body">
+                    <tr><td colspan="5" style="text-align:center; color:var(--text-dim);">加载中...</td></tr>
+                </tbody>
+            </table>
+            <div class="form-group">
+                <input type="text" id="new-account-name" placeholder="客户端账号名 (e.g. zhangsan)">
+                <input type="password" id="new-account-pass" placeholder="密码">
+                <select id="new-account-group"></select>
+                <input type="text" id="new-account-remark" placeholder="备注">
+                <button onclick="createAccount()">添加账号</button>
+            </div>
+        </div>
+
+        <!-- 审计日志 -->
+        <div class="card">
+            <div class="card-title">📜 系统审计日志 (Audit Logs)</div>
+            <table>
+                <thead>
+                    <tr><th>操作人</th><th>动作 (Action)</th><th>操作目标</th><th>来源 IP</th><th>时间</th></tr>
+                </thead>
+                <tbody id="audit-table-body">
+                    <tr><td colspan="5" style="text-align:center; color:var(--text-dim);">加载中...</td></tr>
+                </tbody>
+            </table>
         </div>
     </div>
 
@@ -176,6 +227,9 @@ const ADMIN_HTML: &str = r#"<!DOCTYPE html>
             loadMe();
             loadNodes();
             loadRoutes();
+            loadGroups();
+            loadAccounts();
+            loadAuditLogs();
         }
 
         async function loadMe() {
@@ -248,6 +302,90 @@ const ADMIN_HTML: &str = r#"<!DOCTYPE html>
             if (!confirm('确定删除该路由？')) return;
             await fnFetch('/routes/' + id, { method: 'DELETE' });
             loadRoutes();
+        }
+
+        async function loadGroups() {
+            const res = await fnFetch('/groups');
+            const data = await res.json();
+            const groups = data.groups || [];
+            const tbody = document.getElementById('groups-table-body');
+            tbody.innerHTML = groups.map(g => `
+                <tr>
+                    <td><code>${g.id.substring(0,8)}...</code></td>
+                    <td><b>${g.name}</b></td>
+                    <td>${g.remark || '-'}</td>
+                    <td><button onclick="deleteGroup('${g.id}')" class="btn-danger">删除</button></td>
+                </tr>
+            `).join('') || '<tr><td colspan="4" style="text-align:center;">暂无权限组</td></tr>';
+
+            const select = document.getElementById('new-account-group');
+            select.innerHTML = groups.map(g => `<option value="${g.id}">${g.name}</option>`).join('');
+        }
+
+        async function createGroup() {
+            const name = document.getElementById('new-group-name').value;
+            const remark = document.getElementById('new-group-remark').value;
+            if (!name) return alert('请填写权限组名称');
+            await fnFetch('/groups', { method: 'POST', body: { name, remark } });
+            document.getElementById('new-group-name').value = '';
+            document.getElementById('new-group-remark').value = '';
+            loadGroups();
+        }
+
+        async function deleteGroup(id) {
+            if (!confirm('确定删除该权限组？')) return;
+            await fnFetch('/groups/' + id, { method: 'DELETE' });
+            loadGroups();
+        }
+
+        async function loadAccounts() {
+            const res = await fnFetch('/accounts');
+            const data = await res.json();
+            const tbody = document.getElementById('accounts-table-body');
+            tbody.innerHTML = (data.accounts || []).map(a => `
+                <tr>
+                    <td><b>${a.username}</b></td>
+                    <td>${a.group_name || a.group_id}</td>
+                    <td><span class="status-badge ${a.enabled ? 'status-online' : 'status-offline'}">${a.enabled ? '启用' : '禁用'}</span></td>
+                    <td>${a.remark || '-'}</td>
+                    <td><button onclick="deleteAccount('${a.id}')" class="btn-danger">删除</button></td>
+                </tr>
+            `).join('') || '<tr><td colspan="5" style="text-align:center;">暂无账号</td></tr>';
+        }
+
+        async function createAccount() {
+            const username = document.getElementById('new-account-name').value;
+            const password = document.getElementById('new-account-pass').value;
+            const group_id = document.getElementById('new-account-group').value;
+            const remark = document.getElementById('new-account-remark').value;
+            if (!username || !password || !group_id) return alert('请填写完整账号、密码与选择权限组');
+            await fnFetch('/accounts', { method: 'POST', body: { username, password, group_id, remark } });
+            document.getElementById('new-account-name').value = '';
+            document.getElementById('new-account-pass').value = '';
+            document.getElementById('new-account-remark').value = '';
+            loadAccounts();
+        }
+
+        async function deleteAccount(id) {
+            if (!confirm('确定删除该账号？')) return;
+            await fnFetch('/accounts/' + id, { method: 'DELETE' });
+            loadAccounts();
+        }
+
+        async function loadAuditLogs() {
+            const res = await fnFetch('/system/configs');
+            const data = await res.json();
+            const logs = data.audit_logs || [];
+            const tbody = document.getElementById('audit-table-body');
+            tbody.innerHTML = logs.map(l => `
+                <tr>
+                    <td><b>${l.operator}</b></td>
+                    <td><code>${l.action}</code></td>
+                    <td>${l.target}</td>
+                    <td>${l.ip}</td>
+                    <td>${l.created_at}</td>
+                </tr>
+            `).join('') || '<tr><td colspan="5" style="text-align:center;">暂无审计日志</td></tr>';
         }
 
         window.onload = initApp;
