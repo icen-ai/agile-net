@@ -66,6 +66,7 @@ impl TlsConfigBuilder {
     pub fn build_server(
         &self,
     ) -> Result<(Arc<rustls::ServerConfig>, Vec<CertificateDer<'static>>)> {
+        let _ = rustls::crypto::ring::default_provider().install_default();
         let (certs, key) =
             if let (Some(cert_path), Some(key_path)) = (&self.cert_path, &self.key_path) {
                 load_certs_from_file(cert_path, key_path)?
@@ -83,6 +84,7 @@ impl TlsConfigBuilder {
 
     /// 构建 rustls ClientConfig（connector 用）。
     pub fn build_client(&self) -> Result<Arc<rustls::ClientConfig>> {
+        let _ = rustls::crypto::ring::default_provider().install_default();
         let config = if self.allow_self_signed {
             // 开发模式：信任所有证书
             let verifier = danger::NoCertificateVerification::new();
@@ -247,6 +249,7 @@ mod tests {
 
     #[test]
     fn build_server_config_self_signed() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
         let builder = TlsConfigBuilder::new().sni_hostname("test.example.com");
         let (config, certs) = builder.build_server().unwrap();
         assert!(!certs.is_empty());
@@ -256,6 +259,7 @@ mod tests {
 
     #[test]
     fn build_client_config_self_signed() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
         let builder = TlsConfigBuilder::new()
             .allow_self_signed(true)
             .sni_hostname("test.example.com");

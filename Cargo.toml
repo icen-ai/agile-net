@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/core",
     "crates/node",
+    "crates/cli",
 ]
 
 [workspace.package]
@@ -15,7 +16,7 @@ repository = "https://github.com/user/agile-net"
 # Async
 tokio = { version = "1", features = ["full"] }
 # Network
-rustls = "0.23"
+rustls = { version = "0.23", features = ["ring"] }
 tokio-rustls = "0.26"
 # Routing
 ip_network = "0.4"
@@ -27,6 +28,8 @@ tower-http = { version = "0.6", features = ["cors", "fs"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 # Database
 rusqlite = { version = "0.32", features = ["bundled"] }
+# CLI
+clap = { version = "4.5", features = ["derive", "env"] }
 # TUI
 ratatui = "0.29"
 crossterm = "0.28"
