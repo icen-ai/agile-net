@@ -50,6 +50,9 @@ async fn main() -> Result<()> {
         .with(LogBufferLayer::new(log_buffer.clone()))
         .init();
 
+    // rustls 过程级 CryptoProvider（ring）——任何 ServerConfig/ClientConfig 构建前必须安装
+    agile_net_core::init_crypto_provider();
+
     tracing::info!("agile-net-node v{VERSION} starting");
 
     // 1. 加载配置文件
@@ -100,10 +103,12 @@ async fn main() -> Result<()> {
         let fingerprint = agile_net_core::tunnel::tls::cert_fingerprint_sha256(&certs[0]);
         tracing::info!(sha256 = %fingerprint, "relay TLS certificate ready (可用于客户端证书固定)");
 
-        let server_config = rustls::ServerConfig::builder()
-            .with_no_client_auth()
-            .with_single_cert(certs, key)
-            .map_err(|e| anyhow::anyhow!("tls server config: {e}"))?;
+        let server_config = rustls::ServerConfig::builder_with_protocol_versions(&[
+            &rustls::version::TLS13,
+        ])
+        .with_no_client_auth()
+        .with_single_cert(certs, key)
+        .map_err(|e| anyhow::anyhow!("tls server config: {e}"))?;
         let tls_acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server_config));
 
         let validator = Arc::new(DbTokenValidator::new(db.clone()));
@@ -317,14 +322,16 @@ fn load_pem_certs(path: &str) -> Result<Vec<rustls::pki_types::CertificateDer<'s
     Ok(certs)
 }
 
-/// 解析上游地址（支持域名）。
+/// 解析上游地址（支持域名；IPv4 优先，规避双栈网络中 IPv6 不可达问题）。
 async fn resolve_upstream(addr: &str) -> Result<SocketAddr> {
     if let Ok(a) = addr.parse::<SocketAddr>() {
         return Ok(a);
     }
     let resolved: Vec<SocketAddr> = tokio::net::lookup_host(addr).await?.collect();
     resolved
-        .into_iter()
-        .next()
+        .iter()
+        .find(|a| a.is_ipv4())
+        .or_else(|| resolved.first())
+        .copied()
         .ok_or_else(|| anyhow::anyhow!("cannot resolve upstream: {addr}"))
 }

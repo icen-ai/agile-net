@@ -24,7 +24,7 @@ services:
   node-root:
     image: anet:dev
     container_name: anet-node-root
-    command: agile-net-node /etc/agile-net/node.toml
+    command: ["agile-net-node", "/etc/agile-net/node.toml"]
     environment:
       AGILE_ADMIN_PASSWORD: "ChainTest123!"
       AGILE_RELAY_TOKENS: "psk_midtoken_000000000000000000000000000000000000"
@@ -44,7 +44,7 @@ services:
   node-mid:
     image: anet:dev
     container_name: anet-node-mid
-    command: agile-net-node /etc/agile-net/node.toml
+    command: ["agile-net-node", "/etc/agile-net/node.toml"]
     environment:
       AGILE_ADMIN_PASSWORD: "ChainTest123!"
       AGILE_RELAY_TOKENS: "psk_leaftoken_00000000000000000000000000000000000"
@@ -64,7 +64,7 @@ services:
   node-leaf:
     image: anet:dev
     container_name: anet-node-leaf
-    command: agile-net-node /etc/agile-net/node.toml
+    command: ["agile-net-node", "/etc/agile-net/node.toml"]
     environment:
       AGILE_RELAY_TOKENS: "psk_deeptoken_00000000000000000000000000000000000"
     volumes:
@@ -82,7 +82,7 @@ services:
   node-deep:
     image: anet:dev
     container_name: anet-node-deep
-    command: agile-net-node /etc/agile-net/node.toml
+    command: ["agile-net-node", "/etc/agile-net/node.toml"]
     volumes:
       - ./configs/node-deep.toml:/etc/agile-net/node.toml:ro
     networks:
@@ -98,7 +98,7 @@ services:
   tester:
     image: anet:dev
     container_name: anet-tester
-    command: sh /tests/run-chain-test.sh
+    command: ["sh", "/tests/run-chain-test.sh"]
     volumes:
       - ./tests:/tests:ro
     networks:

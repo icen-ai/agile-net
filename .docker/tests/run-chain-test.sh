@@ -28,25 +28,25 @@ wait_api() {
   return 1
 }
 
-# $1=api $2=group_name → echoes group_id
+# $1=token $2=api $3=group_name → echoes group_id
 create_group() {
-  curl -sf -X POST "$1/api/v1/admin/groups" \
-    -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
-    -d "{\"name\":\"$2\"}" | jq -r '.data.id'
+  curl -sf -X POST "$2/api/v1/admin/groups" \
+    -H "Authorization: Bearer $1" -H 'Content-Type: application/json' \
+    -d "{\"name\":\"$3\"}" | jq -r '.data.id'
 }
 
-# $1=api $2=value → echoes rule_id
+# $1=token $2=api $3=value → echoes rule_id
 create_rule() {
-  curl -sf -X POST "$1/api/v1/admin/rules" \
-    -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
-    -d "{\"type\":\"ip-cidr\",\"value\":\"$2\"}" | jq -r '.data.id'
+  curl -sf -X POST "$2/api/v1/admin/rules" \
+    -H "Authorization: Bearer $1" -H 'Content-Type: application/json' \
+    -d "{\"type\":\"ip-cidr\",\"value\":\"$3\"}" | jq -r '.data.id'
 }
 
-# $1=api $2=group_id $3=username → echoes password
+# $1=token $2=api $3=group_id $4=username → echoes password
 create_account() {
-  curl -sf -X POST "$1/api/v1/admin/accounts" \
-    -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
-    -d "{\"username\":\"$3\",\"group_id\":\"$2\"}" | jq -r '.data.password'
+  curl -sf -X POST "$2/api/v1/admin/accounts" \
+    -H "Authorization: Bearer $1" -H 'Content-Type: application/json' \
+    -d "{\"username\":\"$4\",\"group_id\":\"$3\"}" | jq -r '.data.password'
 }
 
 admin_login() {
@@ -68,23 +68,23 @@ log "root: 创建组/规则/账号"
 ADMIN_TOKEN=$(admin_login "$ROOT_API")
 [ -n "$ADMIN_TOKEN" ] && [ "$ADMIN_TOKEN" != "null" ] || { bad "root 管理员登录失败"; exit 1; }
 
-GID=$(create_group "$ROOT_API" "chain组")
-RID=$(create_rule "$ROOT_API" "10.140.0.0/16")
+GID=$(create_group "$ADMIN_TOKEN" "$ROOT_API" "chain组")
+RID=$(create_rule "$ADMIN_TOKEN" "$ROOT_API" "10.140.0.0/16")
 curl -sf -X PUT "$ROOT_API/api/v1/admin/groups/$GID/rules" \
   -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
   -d "{\"rule_ids\":[\"$RID\"]}" > /dev/null
-ACC_PASS=$(create_account "$ROOT_API" "$GID" "chainuser")
+ACC_PASS=$(create_account "$ADMIN_TOKEN" "$ROOT_API" "$GID" "chainuser")
 [ -n "$ACC_PASS" ] && [ "$ACC_PASS" != "null" ] && ok "root 账号已创建（sk- 强密码）" || { bad "root 账号创建失败"; exit 1; }
 
 # ---------- 在 mid 上准备账号（T4 用） ----------
 log "mid: 创建组/规则/账号"
 MID_TOKEN=$(admin_login "$MID_API")
-GID2=$(create_group "$MID_API" "chain组")
-RID2=$(create_rule "$MID_API" "10.140.0.0/16")
+GID2=$(create_group "$MID_TOKEN" "$MID_API" "chain组")
+RID2=$(create_rule "$MID_TOKEN" "$MID_API" "10.140.0.0/16")
 curl -sf -X PUT "$MID_API/api/v1/admin/groups/$GID2/rules" \
   -H "Authorization: Bearer $MID_TOKEN" -H 'Content-Type: application/json' \
   -d "{\"rule_ids\":[\"$RID2\"]}" > /dev/null
-ACC_PASS2=$(create_account "$MID_API" "$GID2" "chainuser2")
+ACC_PASS2=$(create_account "$MID_TOKEN" "$MID_API" "$GID2" "chainuser2")
 [ -n "$ACC_PASS2" ] && [ "$ACC_PASS2" != "null" ] && ok "mid 账号已创建" || bad "mid 账号创建失败"
 
 # ---------- 启动客户端（连接 root） ----------
@@ -158,7 +158,7 @@ fi
 
 # ---------- T5: 配置热更新（长轮询） ----------
 log "T5: root 新增规则（10.120.0.0/16），客户端不重连即生效"
-RID3=$(create_rule "$ROOT_API" "10.120.0.0/16")
+RID3=$(create_rule "$ADMIN_TOKEN" "$ROOT_API" "10.120.0.0/16")
 curl -sf -X PUT "$ROOT_API/api/v1/admin/groups/$GID/rules" \
   -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
   -d "{\"rule_ids\":[\"$RID\",\"$RID3\"]}" > /dev/null

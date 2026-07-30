@@ -87,10 +87,12 @@ impl TlsConfigBuilder {
                 generate_self_signed(&self.sni_hostname)?
             };
 
-        let server_config = rustls::ServerConfig::builder()
-            .with_no_client_auth()
-            .with_single_cert(certs.clone(), key)
-            .map_err(|e| Error::Tls(e.to_string()))?;
+        let server_config = rustls::ServerConfig::builder_with_protocol_versions(&[
+            &rustls::version::TLS13,
+        ])
+        .with_no_client_auth()
+        .with_single_cert(certs.clone(), key)
+        .map_err(|e| Error::Tls(e.to_string()))?;
 
         Ok((Arc::new(server_config), certs))
     }
@@ -108,7 +110,7 @@ impl TlsConfigBuilder {
                     .add(cert.clone())
                     .map_err(|e| Error::Tls(format!("failed to pin cert: {e}")))?;
             }
-            rustls::ClientConfig::builder()
+            rustls::ClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
                 .with_root_certificates(root_store)
                 .with_no_client_auth()
         } else if let Some(ca_certs) = &self.ca_cert {
@@ -119,13 +121,13 @@ impl TlsConfigBuilder {
                     .add(cert.clone())
                     .map_err(|e| Error::Tls(format!("failed to add CA cert: {e}")))?;
             }
-            rustls::ClientConfig::builder()
+            rustls::ClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
                 .with_root_certificates(root_store)
                 .with_no_client_auth()
         } else if self.allow_self_signed {
             // 开发模式：信任所有证书（仅调试用，生产禁用）
             let verifier = danger::NoCertificateVerification::new();
-            rustls::ClientConfig::builder()
+            rustls::ClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
                 .dangerous()
                 .with_custom_certificate_verifier(Arc::new(verifier))
                 .with_no_client_auth()
@@ -133,7 +135,7 @@ impl TlsConfigBuilder {
             // 默认：使用 webpki-roots 内嵌的 CA 列表
             let mut root_store = rustls::RootCertStore::empty();
             root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-            rustls::ClientConfig::builder()
+            rustls::ClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
                 .with_root_certificates(root_store)
                 .with_no_client_auth()
         };
@@ -188,6 +190,8 @@ pub fn generate_self_signed(
     params
         .distinguished_name
         .push(rcgen::DnType::CommonName, hostname);
+    // 显式有效期 10 年（私有化部署长期固定证书）
+    params.not_after = rcgen::date_time_ymd(2036, 1, 1);
 
     let key_pair = KeyPair::generate().map_err(|e| Error::Tls(format!("keygen: {e}")))?;
     let cert = params

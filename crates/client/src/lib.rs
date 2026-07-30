@@ -681,9 +681,13 @@ async fn resolve_addr(host: &str, port: u16) -> Result<SocketAddr> {
     if let Ok(a) = direct.parse::<SocketAddr>() {
         return Ok(a);
     }
-    tokio::net::lookup_host(&direct)
-        .await?
-        .next()
+    let resolved: Vec<SocketAddr> = tokio::net::lookup_host(&direct).await?.collect();
+    // IPv4 优先（规避双栈环境中 IPv6 不可达的连接失败）
+    resolved
+        .iter()
+        .find(|a| a.is_ipv4())
+        .or_else(|| resolved.first())
+        .copied()
         .ok_or_else(|| anyhow!("cannot resolve tunnel server: {direct}"))
 }
 

@@ -34,7 +34,7 @@ RUN apt-get update \
 
 COPY --from=builder /src/target/release/agile-net-node /usr/local/bin/
 COPY --from=builder /src/target/release/agile-net-client /usr/local/bin/
+RUN mkdir -p /data/certs && chmod 700 /data
 
 ENV RUST_LOG=info
-ENTRYPOINT ["/bin/sh", "-c"]
 CMD ["agile-net-node"]

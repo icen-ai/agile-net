@@ -42,3 +42,6 @@ qrcode = { workspace = true }
 sysinfo = { workspace = true }
 dashmap = { workspace = true }
 ip_network = { workspace = true }
+
+[dev-dependencies]
+reqwest = { workspace = true }

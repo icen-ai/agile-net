@@ -454,6 +454,74 @@ async fn socks5_auth_enforced() -> Result<()> {
     Ok(())
 }
 
+/// A14: TLS 版本强制 —— TLS 1.2 客户端必须握手失败（仅允许 TLS 1.3）
+#[tokio::test]
+async fn tls12_rejected() -> Result<()> {
+    let addr = get_free_addr();
+    let listener = Arc::new(RelayListener::new(addr, "tok")?);
+    let l = listener.clone();
+    tokio::spawn(async move {
+        let _ = l.start().await;
+    });
+    tokio::time::sleep(Duration::from_millis(60)).await;
+
+    // 仅支持 TLS 1.2 的客户端配置
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let client_config = rustls::ClientConfig::builder_with_protocol_versions(&[
+        &rustls::version::TLS12,
+    ])
+    .dangerous()
+    .with_custom_certificate_verifier(Arc::new(NoVerify))
+    .with_no_client_auth();
+    let connector = tokio_rustls::TlsConnector::from(Arc::new(client_config));
+    let tcp = TcpStream::connect(addr).await?;
+    let server_name = rustls::pki_types::ServerName::try_from("cdn.cloudflare.com".to_string()).unwrap();
+    let res = connector.connect(server_name, tcp).await;
+    assert!(res.is_err(), "TLS 1.2 必须被拒绝（仅允许 TLS 1.3）");
+
+    // TLS 1.3 客户端正常
+    let good = RelayConnector::new(addr, "node-b", "tok")?;
+    good.connect().await?;
+    assert!(good.is_connected());
+    Ok(())
+}
+
+/// 测试用无校验验证器
+#[derive(Debug)]
+struct NoVerify;
+
+impl rustls::client::danger::ServerCertVerifier for NoVerify {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &rustls::pki_types::CertificateDer<'_>,
+        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
+        _server_name: &rustls::pki_types::ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: rustls::pki_types::UnixTime,
+    ) -> std::result::Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        Ok(rustls::client::danger::ServerCertVerified::assertion())
+    }
+    fn verify_tls12_signature(
+        &self,
+        _message: &[u8],
+        _cert: &rustls::pki_types::CertificateDer<'_>,
+        _dss: &rustls::DigitallySignedStruct,
+    ) -> std::result::Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+    fn verify_tls13_signature(
+        &self,
+        _message: &[u8],
+        _cert: &rustls::pki_types::CertificateDer<'_>,
+        _dss: &rustls::DigitallySignedStruct,
+    ) -> std::result::Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        vec![rustls::SignatureScheme::ECDSA_NISTP256_SHA256]
+    }
+}
+
 /// A13: SOCKS5 畸形数据后监听器仍可用
 #[tokio::test]
 async fn socks5_malformed_survives() -> Result<()> {
