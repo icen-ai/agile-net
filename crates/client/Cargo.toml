@@ -1,0 +1,31 @@
+[package]
+name = "agile-net-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "agile_net_client"
+path = "src/lib.rs"
+
+[[bin]]
+name = "agile-net-client"
+path = "src/main.rs"
+
+[dependencies]
+agile-net-core = { path = "../core" }
+uuid = { workspace = true }
+tokio = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+arc-swap = { workspace = true }
+dashmap = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+agile-net-node = { path = "../node" }
+axum = { workspace = true }
