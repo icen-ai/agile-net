@@ -23,7 +23,11 @@ serde_json = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+rpassword = "7"
 
 [dev-dependencies]
 assert_cmd = "2.0"
 predicates = "3.1"
+uuid = { workspace = true }
+agile-net-node = { path = "../node" }
+axum = { workspace = true }

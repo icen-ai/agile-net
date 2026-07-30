@@ -225,12 +225,33 @@ pub async fn update_settings(
 }
 
 /// WebSocket 实时事件流（节点/客户端上下线 + 30s 统计快照）。
+///
+/// 浏览器 WebSocket 无法设置请求头，故支持 `?token=<access_token>` 查询参数认证。
 pub async fn events_ws(
-    AdminAuth(_): AdminAuth,
     State(state): State<ApiState>,
     ws: WebSocketUpgrade,
+    Query(q): Query<EventsQuery>,
 ) -> Response {
+    // 手动验证 token（Admin 角色）
+    let authed = state
+        .jwt
+        .verify(&q.token)
+        .map(|c| c.typ == "access" && c.role == "admin")
+        .unwrap_or(false);
+    if !authed {
+        return err(
+            StatusCode::UNAUTHORIZED,
+            codes::INVALID_CREDENTIALS,
+            "invalid or expired token",
+        );
+    }
     ws.on_upgrade(move |socket| handle_ws(socket, state))
+}
+
+#[derive(Deserialize)]
+pub struct EventsQuery {
+    #[serde(default)]
+    pub token: String,
 }
 
 async fn handle_ws(mut socket: WebSocket, state: ApiState) {
