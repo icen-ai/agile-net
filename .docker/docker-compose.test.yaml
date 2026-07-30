@@ -1,4 +1,4 @@
-name: agile-net-test
+name: anet-test
 
 services:
   # 内部目标网络 HTTP 服务

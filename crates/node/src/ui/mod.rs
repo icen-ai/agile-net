@@ -124,7 +124,7 @@ const ADMIN_HTML: &str = r#"<!DOCTYPE html>
         function setToken(t) { localStorage.setItem('agile_token', t); }
         function removeToken() { localStorage.removeItem('agile_token'); }
 
-        async fnFetch(url, options = {}) {
+        async function fnFetch(url, options = {}) {
             options.headers = options.headers || {};
             const token = getToken();
             if (token) options.headers['Authorization'] = 'Bearer ' + token;
