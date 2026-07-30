@@ -27,6 +27,9 @@ tower-http = { version = "0.6", features = ["cors", "fs"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 # Database
 rusqlite = { version = "0.32", features = ["bundled"] }
+# TUI
+ratatui = "0.29"
+crossterm = "0.28"
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

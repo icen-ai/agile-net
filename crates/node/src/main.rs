@@ -3,6 +3,7 @@ use agile_net_core::proxy::router::ProxyRouter;
 use agile_net_core::relay::RelayListener;
 use agile_net_node::api::create_app;
 use agile_net_node::db::Database;
+use agile_net_node::tui::run_tui;
 use agile_net_node::ui::create_ui_router;
 
 use anyhow::Result;
@@ -15,11 +16,18 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // 检查 --version 参数
+    // 检查子命令与参数
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|a| a == "--version" || a == "-V") {
         println!("agile-net-node {VERSION}");
         return Ok(());
+    }
+
+    // 判断是否以 TUI 模式启动
+    if args.get(1).map(|s| s.as_str()) == Some("tui") {
+        let db_path = std::env::var("DATABASE_PATH").unwrap_or_else(|_| "agile-net.db".to_string());
+        let db = Database::open(&db_path)?;
+        return run_tui(db).map_err(Into::into);
     }
 
     // 初始化日志
