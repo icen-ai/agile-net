@@ -5,7 +5,7 @@
 use ip_network::IpNetwork;
 use ip_network_table::IpNetworkTable;
 use std::collections::HashMap;
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 
 /// 出站策略。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -109,9 +109,19 @@ impl ProxyRouter {
 
     /// 结合域名与 IP 进行全能解析
     pub fn route_target(&self, host_or_ip: &str) -> &Outbound {
-        if let Ok(ip) = host_or_ip.parse::<IpAddr>() {
+        let host_only = if let Ok(addr) = host_or_ip.parse::<SocketAddr>() {
+            addr.ip().to_string()
+        } else if let Ok(ip) = host_or_ip.parse::<IpAddr>() {
+            ip.to_string()
+        } else if let Some((h, _)) = host_or_ip.rsplit_once(':') {
+            h.to_string()
+        } else {
+            host_or_ip.to_string()
+        };
+
+        if let Ok(ip) = host_only.parse::<IpAddr>() {
             self.route_ip(ip)
-        } else if let Some(out) = self.resolve_host(host_or_ip) {
+        } else if let Some(out) = self.resolve_host(&host_only) {
             out
         } else {
             &self.default

@@ -4,6 +4,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[lib]
+name = "agile_net_node"
+path = "src/lib.rs"
+
 [[bin]]
 name = "agile-net-node"
 path = "src/main.rs"
@@ -27,3 +31,4 @@ tracing-subscriber = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
 rand = { workspace = true }
+arc-swap = { workspace = true }
