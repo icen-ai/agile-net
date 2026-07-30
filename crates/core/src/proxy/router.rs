@@ -68,7 +68,11 @@ impl ProxyRouter {
 
     /// 插入 域名后缀 规则 (如 "*.dev.internal" 或 ".dev.internal")
     pub fn add_host_suffix(&mut self, pattern: &str, outbound: Outbound) {
-        let suffix = pattern.trim_start_matches('*').to_lowercase();
+        let mut suffix = pattern.trim_start_matches('*').to_lowercase();
+        // 统一补点前缀，避免 "internal" 误匹配 "evilinternal"
+        if !suffix.starts_with('.') {
+            suffix = format!(".{suffix}");
+        }
         self.host_suffixes.push((suffix, outbound));
         // 按后缀长度从长到短排序，优先最长匹配
         self.host_suffixes.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
@@ -125,6 +129,25 @@ impl ProxyRouter {
             out
         } else {
             &self.default
+        }
+    }
+
+    /// 判断目标是否命中任意规则（ACL 判定用，忽略默认出站）。
+    pub fn matches_target(&self, host_or_ip: &str) -> bool {
+        let host_only = if let Ok(addr) = host_or_ip.parse::<SocketAddr>() {
+            addr.ip().to_string()
+        } else if let Ok(ip) = host_or_ip.parse::<IpAddr>() {
+            ip.to_string()
+        } else if let Some((h, _)) = host_or_ip.rsplit_once(':') {
+            h.to_string()
+        } else {
+            host_or_ip.to_string()
+        };
+
+        if let Ok(ip) = host_only.parse::<IpAddr>() {
+            self.cidr_table.longest_match(ip).is_some()
+        } else {
+            self.resolve_host(&host_only).is_some()
         }
     }
 

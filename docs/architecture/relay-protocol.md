@@ -1,24 +1,27 @@
-# Relay 协议设计
+# Relay 协议设计（v1，与实现一致）
 
-节点间穿透通信的核心协议，替代 frp。
+节点间穿透通信与客户端数据面的核心协议，替代 frp。
+单条 TLS 1.3 连接上多路复用多个逻辑通道。
 
 ## 连接模型
 
 ```
-Connector (下游节点)                    Listener (上游节点)
+Connector (下游节点/客户端)              Listener (上游节点)
       │                                       │
       ├── TCP connect ──────────────────────> │
-      ├── TLS 1.3 handshake ────────────────> │
-      ├── AuthFrame { token } ──────────────> │
-      │ <──────────────── AuthResult { ok } ──┤
+      ├── TLS 1.3 handshake ────────────────> │  ← 全程 10s 超时
+      ├── AuthFrame { kind, token, ... } ───> │
+      │ <──────────────── AuthOk / AuthFail ──┤  ← 失败随机延迟 150~400ms
       │                                       │
-      │   ══ Control Channel Established ══   │
+      │   ══ Mux Session Established ══       │
       │                                       │
-      │ <──── NewConnection { conn_id } ──────┤  ← 有客户端访问时
-      ├── DataChannel { conn_id } ──────────> │
-      │ <════════ 双向数据转发 ════════════════│
+      │ <──── Open { channel_id, target } ────┤  ← 节点会话：上游发起（奇数 id）
+      ├──── OpenOk / OpenFail ──────────────> │
+      ├──── Open { channel_id, target } ─────> │  ← 客户端会话：客户端发起（偶数 id）
+      │ <──────────────── OpenOk / OpenFail ──┤
+      │ <═══════ Data 帧双向转发 ════════════> │
       │                                       │
-      ├── Ping ─────────────────────────────> │  ← 每 30s ± 5s
+      ├── Ping ─────────────────────────────> │  ← 25s + 0~10s 随机抖动
       │ <──────────────────────────── Pong ───┤
 ```
 
@@ -27,83 +30,118 @@ Connector (下游节点)                    Listener (上游节点)
 所有帧在 TLS 内部传输，外部只看到 TLS 密文。
 
 ```
-┌──────────┬──────────┬──────────────┐
-│ type: u8 │ len: u32 │ payload: [u8]│
-└──────────┴──────────┴──────────────┘
+┌──────────────┬──────────────┬──────────────┬──────────┐
+│ Length (u32) │ Type (u8)    │ Channel (u32)│ Payload  │
+│ 4 bytes      │ 1 byte       │ 4 bytes      │ N bytes  │
+└──────────────┴──────────────┴──────────────┴──────────┘
 ```
 
-| type | 名称 | 方向 | payload |
+Length = 1 (type) + 4 (channel) + N (payload)，不含自身 4 字节。
+
+### 帧类型
+
+| Type | 名称 | 方向 | payload |
 |------|------|------|---------|
-| 0x01 | Auth | C→L | `{ "token": "xxx" }` |
-| 0x02 | AuthResult | L→C | `{ "ok": true }` 或 `{ "ok": false, "reason": "..." }` |
-| 0x03 | NewConnection | L→C | `{ "conn_id": "uuid" }` |
-| 0x04 | DataChannel | C→L | `{ "conn_id": "uuid" }` — 然后帧结束，后续此 TCP 流变为透明数据 |
-| 0x05 | Ping | C→L | 空 |
-| 0x06 | Pong | L→C | 空 |
-| 0x07 | Shutdown | 双向 | `{ "reason": "..." }` |
+| 0x01 | Auth | C→L | AuthRequest JSON |
+| 0x02 | AuthOk | L→C | 空 |
+| 0x03 | AuthFail | L→C | 空 |
+| 0x10 | Open | 双向 | `{ "target_addr": "...", "target_port": 8080 }` |
+| 0x11 | OpenOk | 双向 | 空 |
+| 0x12 | OpenFail | 双向 | 空 |
+| 0x20 | Data | 双向 | 原始数据（≤16KB 分片） |
+| 0x21 | DataFin | 双向 | 空（半关闭） |
+| 0x30 | Ping | 双向 | 空 |
+| 0x31 | Pong | 双向 | 空 |
+| 0x40 | Close | 双向 | 空 |
 
-payload 使用 JSON 编码，简单、可调试、长度可忽略（控制帧很少）。
+### 帧大小安全限制
 
-## 数据通道建立流程
+| 类别 | 上限 | 说明 |
+|------|------|------|
+| 控制帧 payload | 64 KB | Auth/Open 等，超限断开 |
+| 数据帧 payload | 256 KB | 正常路径由 MuxChannel 按 16 KB 分片 |
 
+对端声明超大长度不会导致内存预分配耗尽——读端按类型校验后再分配。
+
+## AuthRequest
+
+```json
+{
+  "node_id": "node-b 或 account-id",
+  "token": "psk_... 或 tun_...",
+  "kind": "node | client",
+  "advertise": ["10.12.0.0/16", "*.corp.internal"],
+  "version": 1
+}
 ```
-1. Client 连到 Listener:443，请求访问 10.12.186.133:8080
-2. Listener 查路由表，目标属于 Connector-B 注册的网段
-3. Listener 通过 Control Channel 发 NewConnection { conn_id: "abc" }
-4. Connector-B 收到通知，新建 TCP 连接到 Listener:443
-5. Connector-B 发 TLS 握手 → DataChannel { conn_id: "abc" }
-6. Listener 确认 conn_id，将 Client 连接和 DataChannel 连接桥接
-7. 双向数据透明转发：Client ←→ Listener ←→ Connector-B ←→ 内网目标
-```
+
+| 字段 | 说明 |
+|------|------|
+| `kind` | `node`（PSK 认证，relay_token 表 SHA-256 比对）/ `client`（tunnel_token 认证） |
+| `advertise` | 仅 node：向上游通告本节点可服务的网段/域名，用于多级路由 |
+| `version` | 协议版本，当前恒为 1 |
+
+- token 比较使用**常数时间比较**，防时序侧信道。
+- 同一 IP 60s 内认证尝试超过 20 次直接丢弃连接。
+- 节点 ID 长度限制 1~128 字符。
+
+## 多路复用
+
+- channel_id 奇偶分配：Listener 侧会话从 1 开始（奇），Connector/Client 侧从 2 开始（偶），互不冲突。
+- 单会话最大并发通道数 1024（防 Open 洪泛）。
+- Data 帧写入按 16 KB 分片；会话写缓冲满时发送方挂起（正确背压）。
+- 单通道读缓冲 128 帧。
+
+## 客户端会话与 ACL
+
+`kind=client` 的会话由 Listener 处理 Open 请求：
+
+1. 按账号权限组规则做目标 ACL 校验（CIDR / 精确域名 / 通配后缀），拒绝 → OpenFail。
+2. 命中下游节点通告路由 → 向下游继续 Open（链式转发，桥接两个 MuxChannel）。
+3. 否则本机直连（TcpStream::connect）→ 桥接。
 
 ## 多级串联
 
 ```
 Node-C (叶子)  →  Node-B (中间)  →  Node-A (根/公网)  ←  Client
 
-Node-C 注册网段 172.16.0.0/12 到 Node-B
-Node-B 注册网段 10.12.0.0/16 + 172.16.0.0/12 到 Node-A
-Node-A 路由表：
-  10.12.0.0/16   → Node-B
-  172.16.0.0/12  → Node-B (Node-B 再路由到 Node-C)
+Node-C 向 Node-B 通告 172.16.0.0/12
+Node-B 向 Node-A 通告 172.16.0.0/12（自身路由表 = 本机 + C 的通告）
 ```
 
-上游节点不需要知道下游有多少级，每级只负责转发到下一跳。
-
-## 重连策略
-
-```rust
-// 指数退避 + 抖动
-let base_delay = Duration::from_secs(1);
-let max_delay = Duration::from_secs(60);
-let delay = min(base_delay * 2^attempt, max_delay) + random(0..3s);
-```
-
-重连时复用同一 token，Listener 端通过 token 识别是同一个 Connector 重连，更新会话。
+Open 请求在每一级做同样的解析：命中通告路由 → 向对应下游 Open；否则直连。
+上游无需知道下游有多少级。
 
 ## 心跳与超时
 
 | 参数 | 值 | 说明 |
 |------|-----|------|
-| 心跳间隔 | 30s ± 5s 随机 | 模拟自然 HTTPS 行为 |
-| 心跳超时 | 90s | 连续 3 次无响应断开 |
-| 数据通道空闲超时 | 300s | 5 分钟无数据关闭 |
-| 握手超时 | 10s | 认证必须在 10s 内完成 |
+| 心跳间隔 | 25s + 0~10s 随机 | 模拟自然 HTTPS 行为 |
+| 空闲超时 | 90s | 未收到对端任何帧判定断线 |
+| 握手+认证超时 | 10s | 防 Slowloris 半开连接 |
+| Open 等待超时 | 10s | OpenOk/OpenFail 等待 |
+
+## 连接与速率限制（Listener）
+
+| 限制 | 值 |
+|------|-----|
+| 最大并发连接 | 1024 |
+| 最大待认证连接 | 256 |
+| 认证尝试 | 20 次/分钟/IP |
+
+## 重连策略
+
+```rust
+// 指数退避 + 抖动（Connector 与 ClientTunnel 一致）
+let backoff = min(1s * 2^attempt, 60s);
+let delay = backoff + random(0..3s);
+```
+
+重连后重新认证；客户端 tunnel_token 轮换后使用最新值。
 
 ## TLS 配置
 
-```rust
-// rustls 配置要点
-ServerConfig::builder()
-    .with_no_client_auth()           // 应用层 token 认证，不用 mTLS
-    .with_single_cert(cert, key)?;
-
-// 客户端
-ClientConfig::builder()
-    .with_root_certificates(roots)   // 支持自签证书（开发）和 CA 证书
-    .with_no_client_auth();
-
-// 强制 TLS 1.3
-config.max_early_data_size = 0;      // 禁用 0-RTT
-// rustls 默认只启用 TLS 1.3 cipher suites
-```
+- 仅 TLS 1.3（rustls + ring），禁用 0-RTT。
+- Listener 证书：优先外部 PEM；缺省时生成自签证书并**持久化**到 `certs/`（重启不变，便于固定）。
+- Connector/Client 信任策略优先级：**证书固定 (pinning)** > 自定义 CA > 跳过验证（仅开发）> webpki 系统根。
+- 证书指纹（SHA-256 hex）在节点启动日志中输出，用于带外分发固定配置。

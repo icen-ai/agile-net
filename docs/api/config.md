@@ -107,6 +107,12 @@ Authorization: Bearer <access_token>
 }
 ```
 
+| 字段 | 说明 |
+|------|------|
+| `uptime` | 客户端运行秒数 |
+| `bytes_tx` / `bytes_rx` | **自上次心跳以来的增量字节数**（服务端按小时聚合入库；单次上报上限 1 TiB） |
+| `active_connections` | 当前活跃连接数 |
+
 ### 响应 200
 
 ```json

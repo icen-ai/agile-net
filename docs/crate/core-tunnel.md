@@ -41,80 +41,71 @@ impl TlsConfigBuilder {
 - 端口使用 443，与 HTTPS 流量完全一致
 - 只启用 TLS 1.3（rustls 默认），无降级
 
-## 连接池
+## 通道获取（TunnelPool，已修正设计）
+
+> 设计修正：MuxChannel 与目标地址一一绑定，**复用通道会把流量发往错误目标**。
+> 因此 `TunnelPool` 不再缓存通道——每次 `acquire` 都在既有 MuxSession 上新建通道。
+> 复用发生在会话层：单条 TLS 连接的多路复用天然承载全部通道，新建通道代价极低。
 
 ```rust
 pub struct TunnelPool {
-    /// 上游地址
-    upstream: SocketAddr,
-    /// TLS 配置
-    tls_config: Arc<ClientConfig>,
-    /// 认证信息
-    auth: AuthCredential,
-    /// 连接池大小
-    pool_size: usize,
-    /// 可用连接
-    connections: Mutex<VecDeque<PooledConnection>>,
-    /// 空闲超时
-    idle_timeout: Duration,
-}
-
-struct PooledConnection {
-    stream: TlsStream<TcpStream>,
-    created_at: Instant,
-    last_used: Instant,
+    listener: Arc<RelayListener>,
+    node_id: String,
 }
 
 impl TunnelPool {
-    /// 创建连接池并预建连接
-    pub async fn new(config: TunnelConfig, pool_size: usize) -> Result<Self>;
-
-    /// 获取一条连接（优先复用，不够则新建）
-    pub async fn acquire(&self) -> Result<TlsStream<TcpStream>>;
-
-    /// 归还连接（用完后自动归还）
-    pub fn release(&self, conn: TlsStream<TcpStream>);
-
-    /// 在连接上打开一个逻辑通道（发送 Open 帧）
-    pub async fn open_channel(&self, target: SocketAddr) -> Result<Channel>;
-
-    /// 当前可用连接数
-    pub fn available(&self) -> usize;
-
-    /// 关闭所有连接
-    pub async fn shutdown(&self);
+    pub fn new(listener: Arc<RelayListener>, node_id: impl Into<String>, config: TunnelPoolConfig) -> Self;
+    /// 向目标打开一条新通道
+    pub async fn acquire(&self, target_host: &str, target_port: u16) -> Result<MuxChannel>;
+    /// 通道绑定目标不可复用，release 即丢弃
+    pub async fn release(&self, channel: MuxChannel);
+    pub async fn available(&self) -> usize; // 恒 0（无缓存）
+    pub async fn evict_expired(&self);      // 空操作（保留 API 兼容）
 }
 ```
 
-### 连接池策略
+## 客户端隧道（ClientTunnel）
 
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `pool_size` | 5 | 预建连接数 |
-| `idle_timeout` | 5min | 空闲超时后断开 |
-| `max_lifetime` | 30min | 连接最大存活时间 |
-| `acquire_timeout` | 10s | 获取连接超时 |
-
-### 后台维护
-
-连接池启动后台 task：
+客户端到节点的数据面连接：
 
 ```rust
-async fn maintenance_loop(&self) {
-    loop {
-        tokio::time::sleep(Duration::from_secs(30)).await;
+pub struct ClientTunnel { ... }
 
-        // 1. 清理空闲超时连接
-        self.evict_idle().await;
+impl ClientTunnel {
+    /// 生产推荐：TlsConfigBuilder::pinned_certs(...)
+    pub fn with_tls_builder(addr: SocketAddr, account_id: impl Into<String>,
+                            tunnel_token: impl Into<String>, builder: TlsConfigBuilder) -> Result<Self>;
+    /// 开发模式（不校验证书）
+    pub fn new_insecure(addr: SocketAddr, account_id: impl Into<String>,
+                        tunnel_token: impl Into<String>) -> Result<Self>;
 
-        // 2. 清理超过 max_lifetime 的连接
-        self.evict_expired().await;
-
-        // 3. 补充到 pool_size
-        self.refill().await;
-    }
+    pub async fn connect(&self) -> Result<()>;                       // TLS + Auth(kind=client)
+    pub async fn open_channel(&self, host: &str, port: u16) -> Result<MuxChannel>;
+    pub async fn run(&self);                                          // 自动重连（指数退避+抖动）
+    pub async fn disconnect(&self);
+    pub fn is_connected(&self) -> bool;
 }
 ```
+
+- 心跳 25s + 0~10s 抖动，90s 无帧判定断线
+- 断线指数退避重连（1s → 60s + 0~3s 抖动）
+
+## ChannelOpener（通道开启抽象）
+
+Proxy 入站把 `Outbound::Tunnel { node_id }` 解析到具体通道来源：
+
+```rust
+pub trait ChannelOpener: Send + Sync {
+    fn open<'a>(&'a self, node_id: &'a str, host: &'a str, port: u16)
+        -> Pin<Box<dyn Future<Output = Result<MuxChannel>> + Send + 'a>>;
+}
+```
+
+| 实现 | 场景 |
+|------|------|
+| `RelayListener` | 节点上向指定下游 peer 开通道 |
+| `PeerAutoOpener` | 节点本地代理：按通告路由自动选 peer |
+| `ClientTunnel` | 客户端到节点的隧道（忽略 node_id） |
 
 ## Channel（逻辑通道）
 

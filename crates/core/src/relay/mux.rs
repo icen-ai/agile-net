@@ -4,17 +4,40 @@
 //! `MuxChannel` 实现了 `AsyncRead` 和 `AsyncWrite`，可以直接用 `bridge` 双向转发数据。
 
 use crate::error::{Error, Result};
-use crate::proto::frame::{Frame, FrameType};
+use crate::proto::frame::{DATA_CHUNK_SIZE, Frame, FrameType};
 
 use bytes::{Buf, Bytes};
 use dashmap::DashMap;
 use std::io;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::sync::{mpsc, oneshot};
+
+/// 单个会话允许的最大并发通道数，防止对端 Open 洪泛导致资源耗尽。
+pub const MAX_CHANNELS_PER_SESSION: usize = 1024;
+
+/// 当前时间（UNIX epoch 毫秒）。
+fn now_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// 等待会话写通道容量的挂起 Future（OwnedPermit 为 'static，可存入结构体）。
+type PermitFuture = std::pin::Pin<
+    Box<
+        dyn std::future::Future<
+                Output = std::result::Result<
+                    mpsc::OwnedPermit<Frame>,
+                    mpsc::error::SendError<()>,
+                >,
+            > + Send,
+    >,
+>;
 
 /// 多路复用通道，实现 `AsyncRead` + `AsyncWrite`
 pub struct MuxChannel {
@@ -22,6 +45,8 @@ pub struct MuxChannel {
     tx_frames: mpsc::Sender<Frame>,
     rx_data: mpsc::Receiver<Bytes>,
     read_buf: Option<Bytes>,
+    /// 背压挂起时缓存的容量预留 Future
+    pending_permit: Option<PermitFuture>,
     closed: bool,
 }
 
@@ -36,6 +61,7 @@ impl MuxChannel {
             tx_frames,
             rx_data,
             read_buf: None,
+            pending_permit: None,
             closed: false,
         }
     }
@@ -81,8 +107,8 @@ impl AsyncRead for MuxChannel {
 
 impl AsyncWrite for MuxChannel {
     fn poll_write(
-        self: Pin<&mut Self>,
-        _cx: &mut Context<'_>,
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
         if self.closed {
@@ -92,22 +118,35 @@ impl AsyncWrite for MuxChannel {
             )));
         }
 
+        // 大数据按 DATA_CHUNK_SIZE 分片，避免产生超大 Data 帧（允许部分写）
+        let chunk_len = buf.len().min(DATA_CHUNK_SIZE);
         let frame = Frame::new(
             FrameType::Data,
             self.channel_id,
-            Bytes::copy_from_slice(buf),
+            Bytes::copy_from_slice(&buf[..chunk_len]),
         );
 
-        match self.tx_frames.try_send(frame) {
-            Ok(()) => Poll::Ready(Ok(buf.len())),
-            Err(mpsc::error::TrySendError::Full(_)) => {
-                // 如果 buffer 满了，通知当前 task 稍后重试
-                Poll::Pending
+        // 背压：无可用容量时挂起 reserve_owned Future（waker 被正确注册），
+        // 修复此前 try_send 失败后直接 Pending 导致的永久挂死问题。
+        if self.pending_permit.is_none() {
+            self.pending_permit = Some(Box::pin(self.tx_frames.clone().reserve_owned()));
+        }
+
+        let permit_fut = self.pending_permit.as_mut().expect("permit future just set");
+        match permit_fut.as_mut().poll(cx) {
+            Poll::Ready(Ok(permit)) => {
+                self.pending_permit = None;
+                permit.send(frame);
+                Poll::Ready(Ok(chunk_len))
             }
-            Err(mpsc::error::TrySendError::Closed(_)) => Poll::Ready(Err(io::Error::new(
-                io::ErrorKind::BrokenPipe,
-                "session write closed",
-            ))),
+            Poll::Ready(Err(_)) => {
+                self.pending_permit = None;
+                Poll::Ready(Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "session write closed",
+                )))
+            }
+            Poll::Pending => Poll::Pending,
         }
     }
 
@@ -137,6 +176,8 @@ pub struct MuxSession {
     channels: Arc<DashMap<u32, mpsc::Sender<Bytes>>>,
     open_waiters: Arc<DashMap<u32, oneshot::Sender<Result<()>>>>,
     next_channel_id: AtomicU32,
+    /// 最后一次收到任何帧的时间（epoch 毫秒），用于心跳超时检测
+    last_activity: Arc<AtomicU64>,
 }
 
 impl MuxSession {
@@ -169,12 +210,15 @@ impl MuxSession {
             channels: channels.clone(),
             open_waiters: open_waiters.clone(),
             next_channel_id: AtomicU32::new(starting_id),
+            last_activity: Arc::new(AtomicU64::new(now_millis())),
         });
 
         let session_clone = session.clone();
+        let last_activity = session.last_activity.clone();
         // 启动后台读任务
         let reader_handle = tokio::spawn(async move {
             while let Ok(frame) = Frame::read_from(&mut reader).await {
+                last_activity.store(now_millis(), Ordering::Relaxed);
                 match frame.frame_type {
                     FrameType::Data | FrameType::DataFin => {
                         if let Some(tx) = channels.get(&frame.channel_id) {
@@ -227,6 +271,9 @@ impl MuxSession {
 
     /// 打开新通道并等待对端 OpenOk
     pub async fn open_channel(&self, payload: Bytes) -> Result<MuxChannel> {
+        if self.channels.len() >= MAX_CHANNELS_PER_SESSION {
+            return Err(Error::PoolExhausted);
+        }
         let channel_id = self.next_channel_id.fetch_add(2, Ordering::Relaxed);
 
         let (tx_data, rx_data) = mpsc::channel(128);
@@ -270,5 +317,17 @@ impl MuxSession {
 
     pub fn channel_count(&self) -> usize {
         self.channels.len()
+    }
+
+    /// 最后一次收到对端任何帧的时间（epoch 毫秒）。
+    pub fn last_activity_millis(&self) -> u64 {
+        self.last_activity.load(Ordering::Relaxed)
+    }
+
+    /// 距上次收到对端帧是否已超过 `timeout`（用于心跳超时判定）。
+    pub fn is_idle_beyond(&self, timeout: std::time::Duration) -> bool {
+        let last = self.last_activity_millis();
+        let now = now_millis();
+        now.saturating_sub(last) > timeout.as_millis() as u64
     }
 }

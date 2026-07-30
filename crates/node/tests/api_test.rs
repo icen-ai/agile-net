@@ -1,249 +1,491 @@
-//! M5 里程碑 Database & HTTP API 集成测试
-//!
-//! 包含 AT-M5-01 ~ AT-M5-06 测试套件
+//! Admin & Client API 集成测试（对应 docs/api/*.md 规格）
 
-use agile_net_core::proxy::router::{Outbound, ProxyRouter};
-use agile_net_node::api::create_app;
-use agile_net_node::db::Database;
-use arc_swap::ArcSwap;
+use agile_net_node::api::{ApiState, NodeRuntime, create_app};
+use agile_net_node::auth::jwt::JwtService;
+use agile_net_node::db::{Database, hash_password};
+use agile_net_node::logs::LogBuffer;
 use axum::{
+    Router,
     body::Body,
-    http::{header, Request, StatusCode},
+    http::{Request, StatusCode, header},
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::Arc;
-use tower::ServiceExt; // for oneshot
+use std::time::Instant;
+use tower::ServiceExt;
 
-fn setup_test_app() -> (axum::Router, Arc<ArcSwap<ProxyRouter>>) {
+/// 构建测试用 App（内存数据库 + 空运行时）。
+async fn test_app() -> (Router, Database) {
     let db = Database::in_memory().unwrap();
-    let router = Arc::new(ArcSwap::from_pointee(ProxyRouter::new()));
-    let app = create_app(db, router.clone());
-    (app, router)
+    let jwt = Arc::new(JwtService::load_or_create(db.clone()).unwrap());
+    let runtime = Arc::new(NodeRuntime {
+        started_at: Instant::now(),
+        listener: None,
+        connector: None,
+        proxy_stats: None,
+        proxy_listen: None,
+        log_buffer: LogBuffer::new(),
+    });
+    let state = ApiState::new(db.clone(), jwt, runtime, "127.0.0.1".into(), 4430);
+    (create_app(state), db)
 }
 
-/// AT-M5-01：管理员登录并获取 JWT Token
-#[tokio::test]
-async fn admin_login_success() {
-    let (app, _) = setup_test_app();
-
-    let req = Request::builder()
-        .method("POST")
-        .uri("/api/v1/auth/login")
-        .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(
-            json!({
-                "username": "admin",
-                "password": "admin123"
-            })
-            .to_string(),
-        ))
-        .unwrap();
-
-    let response = app.oneshot(req).await.unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-
-    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let json: Value = serde_json::from_slice(&body_bytes).unwrap();
-
-    assert!(json["token"].is_string());
-    assert_eq!(json["username"], "admin");
-    assert_eq!(json["role"], "admin");
-}
-
-/// AT-M5-02：错误密码拒绝登录
-#[tokio::test]
-async fn login_invalid_password() {
-    let (app, _) = setup_test_app();
-
-    let req = Request::builder()
-        .method("POST")
-        .uri("/api/v1/auth/login")
-        .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(
-            json!({
-                "username": "admin",
-                "password": "wrong_password"
-            })
-            .to_string(),
-        ))
-        .unwrap();
-
-    let response = app.oneshot(req).await.unwrap();
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-}
-
-/// AT-M5-03：未授权访问受保护 API 返回 401
-#[tokio::test]
-async fn protected_api_unauthorized() {
-    let (app, _) = setup_test_app();
-
-    let req = Request::builder()
-        .method("GET")
-        .uri("/api/v1/nodes")
-        .body(Body::empty())
-        .unwrap();
-
-    let response = app.oneshot(req).await.unwrap();
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-}
-
-/// AT-M5-04：节点 CRUD API 测试
-#[tokio::test]
-async fn node_crud_api() {
-    let (app, _) = setup_test_app();
-
-    // 1. Login
-    let login_req = Request::builder()
-        .method("POST")
-        .uri("/api/v1/auth/login")
-        .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(
-            json!({ "username": "admin", "password": "admin123" }).to_string(),
-        ))
-        .unwrap();
-
-    let login_resp = app.clone().oneshot(login_req).await.unwrap();
-    let body = axum::body::to_bytes(login_resp.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let login_json: Value = serde_json::from_slice(&body).unwrap();
-    let token = login_json["token"].as_str().unwrap();
-
-    // 2. Create Node
-    let create_req = Request::builder()
-        .method("POST")
-        .uri("/api/v1/nodes")
-        .header(header::AUTHORIZATION, format!("Bearer {token}"))
-        .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(
-            json!({
-                "name": "node-hk-01",
-                "token": "secret_hk_token"
-            })
-            .to_string(),
-        ))
-        .unwrap();
-
-    let create_resp = app.clone().oneshot(create_req).await.unwrap();
-    assert_eq!(create_resp.status(), StatusCode::CREATED);
-
-    let create_body = axum::body::to_bytes(create_resp.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let node_json: Value = serde_json::from_slice(&create_body).unwrap();
-    let node_id = node_json["id"].as_str().unwrap();
-    assert_eq!(node_json["name"], "node-hk-01");
-
-    // 3. List Nodes
-    let list_req = Request::builder()
-        .method("GET")
-        .uri("/api/v1/nodes")
-        .header(header::AUTHORIZATION, format!("Bearer {token}"))
-        .body(Body::empty())
-        .unwrap();
-
-    let list_resp = app.clone().oneshot(list_req).await.unwrap();
-    assert_eq!(list_resp.status(), StatusCode::OK);
-
-    let list_body = axum::body::to_bytes(list_resp.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let list_json: Value = serde_json::from_slice(&list_body).unwrap();
-    assert_eq!(list_json["nodes"].as_array().unwrap().len(), 1);
-
-    // 4. Delete Node
-    let delete_req = Request::builder()
-        .method("DELETE")
-        .uri(format!("/api/v1/nodes/{node_id}"))
-        .header(header::AUTHORIZATION, format!("Bearer {token}"))
-        .body(Body::empty())
-        .unwrap();
-
-    let delete_resp = app.oneshot(delete_req).await.unwrap();
-    assert_eq!(delete_resp.status(), StatusCode::NO_CONTENT);
-}
-
-/// AT-M5-05：路由规则 CRUD API 及 ProxyRouter 热重载
-#[tokio::test]
-async fn route_crud_and_router_hot_reload() {
-    let (app, router) = setup_test_app();
-
-    // 1. Login
-    let login_req = Request::builder()
-        .method("POST")
-        .uri("/api/v1/auth/login")
-        .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(
-            json!({ "username": "admin", "password": "admin123" }).to_string(),
-        ))
-        .unwrap();
-
-    let login_resp = app.clone().oneshot(login_req).await.unwrap();
-    let body = axum::body::to_bytes(login_resp.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let login_json: Value = serde_json::from_slice(&body).unwrap();
-    let token = login_json["token"].as_str().unwrap();
-
-    // 2. 先创建 Node (满足外键约束)
-    let create_node_req = Request::builder()
-        .method("POST")
-        .uri("/api/v1/nodes")
-        .header(header::AUTHORIZATION, format!("Bearer {token}"))
-        .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(
-            json!({
-                "name": "node-a-test",
-                "token": "token_a"
-            })
-            .to_string(),
-        ))
-        .unwrap();
-
-    let node_resp = app.clone().oneshot(create_node_req).await.unwrap();
-    assert_eq!(node_resp.status(), StatusCode::CREATED);
-    let node_body = axum::body::to_bytes(node_resp.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let node_json: Value = serde_json::from_slice(&node_body).unwrap();
-    let node_id = node_json["id"].as_str().unwrap();
-
-    // 初始路由未命中任何规则
-    {
-        let r = router.load();
-        assert_eq!(*r.route_target("10.0.0.1:80"), Outbound::Direct);
+async fn req(app: &Router, method: &str, uri: &str, token: Option<&str>, body: Option<Value>) -> (StatusCode, Value) {
+    let mut builder = Request::builder().method(method).uri(uri);
+    if let Some(t) = token {
+        builder = builder.header(header::AUTHORIZATION, format!("Bearer {t}"));
     }
+    let body_str = match &body {
+        Some(b) => {
+            builder = builder.header(header::CONTENT_TYPE, "application/json");
+            b.to_string()
+        }
+        None => String::new(),
+    };
+    let request = builder.body(Body::from(body_str)).unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&bytes).unwrap_or(json!({}));
+    (status, json)
+}
 
-    // 3. 添加路由规则: 10.0.0.0/8 -> Tunnel(node_id)
-    let create_route_req = Request::builder()
-        .method("POST")
-        .uri("/api/v1/routes")
-        .header(header::AUTHORIZATION, format!("Bearer {token}"))
-        .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(
-            json!({
-                "pattern": "10.0.0.0/8",
-                "pattern_type": "cidr",
-                "outbound_type": "tunnel",
-                "node_id": node_id
-            })
-            .to_string(),
-        ))
-        .unwrap();
+/// 初始化 admin 并登录，返回 access_token。
+async fn init_and_login(app: &Router) -> String {
+    let (status, _) = req(app, "POST", "/api/v1/auth/init", None, Some(json!({
+        "username": "admin",
+        "password": "AdminPass123",
+    }))).await;
+    assert_eq!(status, StatusCode::OK);
 
-    let route_resp = app.clone().oneshot(create_route_req).await.unwrap();
-    assert_eq!(route_resp.status(), StatusCode::CREATED);
+    let (status, body) = req(app, "POST", "/api/v1/auth/login", None, Some(json!({
+        "username": "admin",
+        "password": "AdminPass123",
+    }))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["code"], 0);
+    body["data"]["access_token"].as_str().unwrap().to_string()
+}
 
-    // 验证 Router 热更新生效
-    {
-        let r = router.load();
-        assert_eq!(
-            *r.route_target("10.0.0.1:80"),
-            Outbound::Tunnel {
-                node_id: node_id.to_string()
-            }
-        );
+// ==================== 认证 ====================
+
+#[tokio::test]
+async fn auth_init_login_refresh_logout() {
+    let (app, _db) = test_app().await;
+    let token = init_and_login(&app).await;
+    assert!(!token.is_empty());
+
+    // 重复 init 应被拒绝
+    let (status, body) = req(&app, "POST", "/api/v1/auth/init", None, Some(json!({
+        "username": "admin2",
+        "password": "AdminPass456",
+    }))).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body["code"], 40300);
+
+    // 错误密码
+    let (status, body) = req(&app, "POST", "/api/v1/auth/login", None, Some(json!({
+        "username": "admin",
+        "password": "WrongPass123",
+    }))).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(body["code"], 40100);
+
+    // me
+    let (status, body) = req(&app, "GET", "/api/v1/auth/me", Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"]["role"], "admin");
+
+    // 刷新
+    let (_, login_body) = req(&app, "POST", "/api/v1/auth/login", None, Some(json!({
+        "username": "admin",
+        "password": "AdminPass123",
+    }))).await;
+    let refresh_token = login_body["data"]["refresh_token"].as_str().unwrap().to_string();
+    let (status, body) = req(&app, "POST", "/api/v1/auth/refresh", None, Some(json!({
+        "refresh_token": refresh_token,
+    }))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body["data"]["access_token"].is_string());
+
+    // 旧 refresh_token 已被轮换吊销，再次使用应失败
+    let (status, _) = req(&app, "POST", "/api/v1/auth/refresh", None, Some(json!({
+        "refresh_token": refresh_token,
+    }))).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    // 登出吊销
+    let new_refresh = body["data"]["refresh_token"].as_str().unwrap().to_string();
+    let new_access = body["data"]["access_token"].as_str().unwrap().to_string();
+    let (status, _) = req(&app, "POST", "/api/v1/auth/logout", Some(&new_access), Some(json!({
+        "refresh_token": new_refresh,
+    }))).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = req(&app, "POST", "/api/v1/auth/refresh", None, Some(json!({
+        "refresh_token": new_refresh,
+    }))).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn login_rate_limited() {
+    let (app, _db) = test_app().await;
+    init_and_login(&app).await;
+
+    // 连续 6 次错误登录（限制 5 次/分钟）
+    let mut last_status = StatusCode::OK;
+    for _ in 0..6 {
+        let (status, _) = req(&app, "POST", "/api/v1/auth/login", None, Some(json!({
+            "username": "admin",
+            "password": "WrongPass999",
+        }))).await;
+        last_status = status;
     }
+    assert_eq!(last_status, StatusCode::TOO_MANY_REQUESTS);
+}
+
+#[tokio::test]
+async fn unauthenticated_and_role_enforcement() {
+    let (app, _db) = test_app().await;
+    // 无 token
+    let (status, body) = req(&app, "GET", "/api/v1/admin/rules", None, None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(body["code"], 40100);
+
+    // client 角色访问 admin API → 403
+    let admin_token = init_and_login(&app).await;
+    let account_token = create_account_and_login(&app, &admin_token).await;
+    let (status, body) = req(&app, "GET", "/api/v1/admin/rules", Some(&account_token), None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body["code"], 40301);
+}
+
+// ==================== 规则 ====================
+
+#[tokio::test]
+async fn rules_crud_flow() {
+    let (app, _db) = test_app().await;
+    let token = init_and_login(&app).await;
+
+    // 创建
+    let (status, body) = req(&app, "POST", "/api/v1/admin/rules", Some(&token), Some(json!({
+        "type": "ip-cidr",
+        "value": "10.12.0.0/16",
+        "remark": "办公网",
+    }))).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let rule_id = body["data"]["id"].as_str().unwrap().to_string();
+
+    // 重复创建 → 409
+    let (status, body) = req(&app, "POST", "/api/v1/admin/rules", Some(&token), Some(json!({
+        "type": "ip-cidr",
+        "value": "10.12.0.0/16",
+    }))).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(body["code"], 40900);
+
+    // 非法 CIDR → 400
+    let (status, _) = req(&app, "POST", "/api/v1/admin/rules", Some(&token), Some(json!({
+        "type": "ip-cidr",
+        "value": "999.999.0.0/16",
+    }))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // 列表 + 分页
+    let (status, body) = req(&app, "GET", "/api/v1/admin/rules?page=1&page_size=10", Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"]["total"], 1);
+
+    // 更新
+    let (status, body) = req(&app, "PUT", &format!("/api/v1/admin/rules/{rule_id}"), Some(&token), Some(json!({
+        "remark": "扩大到办公全网",
+    }))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"]["remark"], "扩大到办公全网");
+
+    // 批量导入
+    let (status, body) = req(&app, "POST", "/api/v1/admin/rules/batch", Some(&token), Some(json!({
+        "rules": [
+            { "type": "ip-cidr", "value": "10.12.0.0/16" },
+            { "type": "host", "value": "git.internal", "resolve": true },
+            { "type": "host", "value": "wiki.internal" }
+        ],
+        "on_conflict": "skip"
+    }))).await;
+    assert_eq!(status, StatusCode::OK, "batch body: {body}");
+    assert_eq!(body["data"]["created"], 2);
+    assert_eq!(body["data"]["skipped"], 1);
+
+    // 删除
+    let (status, _) = req(&app, "DELETE", &format!("/api/v1/admin/rules/{rule_id}"), Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+// ==================== 权限组 ====================
+
+#[tokio::test]
+async fn groups_flow() {
+    let (app, _db) = test_app().await;
+    let token = init_and_login(&app).await;
+
+    // 创建规则
+    let (_, body) = req(&app, "POST", "/api/v1/admin/rules", Some(&token), Some(json!({
+        "type": "ip-cidr", "value": "172.16.0.0/12",
+    }))).await;
+    let rule_id = body["data"]["id"].as_str().unwrap().to_string();
+
+    // 创建权限组（含 rule_ids）
+    let (status, body) = req(&app, "POST", "/api/v1/admin/groups", Some(&token), Some(json!({
+        "name": "开发组",
+        "remark": "前后端",
+        "rule_ids": [rule_id],
+    }))).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let group_id = body["data"]["id"].as_str().unwrap().to_string();
+
+    // 详情
+    let (status, body) = req(&app, "GET", &format!("/api/v1/admin/groups/{group_id}"), Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"]["rules"].as_array().unwrap().len(), 1);
+
+    // 全量设置规则（清空）
+    let (status, body) = req(&app, "PUT", &format!("/api/v1/admin/groups/{group_id}/rules"), Some(&token), Some(json!({
+        "rule_ids": [],
+    }))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"]["rule_count"], 0);
+
+    // 重新绑定
+    req(&app, "PUT", &format!("/api/v1/admin/groups/{group_id}/rules"), Some(&token), Some(json!({
+        "rule_ids": [rule_id],
+    }))).await;
+
+    // 删除被引用的规则 → 409 + groups 列表
+    let (status, body) = req(&app, "DELETE", &format!("/api/v1/admin/rules/{rule_id}"), Some(&token), None).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(body["data"]["groups"].as_array().unwrap().contains(&json!("开发组")));
+
+    // 强制删除
+    let (status, _) = req(&app, "DELETE", &format!("/api/v1/admin/rules/{rule_id}?force=true"), Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+// ==================== 账号 ====================
+
+/// 创建权限组 + 账号，返回 client 登录 token。
+async fn create_account_and_login(app: &Router, admin_token: &str) -> String {
+    let (_, body) = req(app, "POST", "/api/v1/admin/groups", Some(admin_token), Some(json!({
+        "name": "默认组",
+    }))).await;
+    let group_id = body["data"]["id"].as_str().unwrap().to_string();
+
+    let (status, body) = req(app, "POST", "/api/v1/admin/accounts", Some(admin_token), Some(json!({
+        "username": "zhangsan",
+        "group_id": group_id,
+        "remark": "张三",
+    }))).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let password = body["data"]["password"].as_str().unwrap().to_string();
+
+    let (status, body) = req(app, "POST", "/api/v1/auth/login", None, Some(json!({
+        "username": "zhangsan",
+        "password": password,
+    }))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"]["role"], "client");
+    assert!(body["data"]["tunnel_token"].is_string());
+    body["data"]["access_token"].as_str().unwrap().to_string()
+}
+
+#[tokio::test]
+async fn accounts_strong_password_and_lifecycle() {
+    let (app, _db) = test_app().await;
+    let token = init_and_login(&app).await;
+
+    let (_, body) = req(&app, "POST", "/api/v1/admin/groups", Some(&token), Some(json!({
+        "name": "运维组",
+    }))).await;
+    let group_id = body["data"]["id"].as_str().unwrap().to_string();
+
+    // 创建账号：服务端生成强密码
+    let (status, body) = req(&app, "POST", "/api/v1/admin/accounts", Some(&token), Some(json!({
+        "username": "lisi",
+        "group_id": group_id,
+    }))).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let password = body["data"]["password"].as_str().unwrap();
+    // sk- 前缀 + 48 位 = 51 字符，混合大小写与数字
+    assert!(password.starts_with("sk-"));
+    assert_eq!(password.len(), 51);
+    assert!(body["data"]["connect_url"].as_str().unwrap().starts_with("agilenet://connect?"));
+    let account_id = body["data"]["id"].as_str().unwrap().to_string();
+
+    // 弱用户名校验
+    let (status, _) = req(&app, "POST", "/api/v1/admin/accounts", Some(&token), Some(json!({
+        "username": "a",
+        "group_id": group_id,
+    }))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // 重置密码
+    let (status, body) = req(&app, "POST", &format!("/api/v1/admin/accounts/{account_id}/reset-password"), Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let new_password = body["data"]["password"].as_str().unwrap();
+    assert!(new_password.starts_with("sk-"));
+    assert_ne!(new_password, password);
+
+    // 旧密码失效，新密码可登录
+    let (status, _) = req(&app, "POST", "/api/v1/auth/login", None, Some(json!({
+        "username": "lisi", "password": password,
+    }))).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _) = req(&app, "POST", "/api/v1/auth/login", None, Some(json!({
+        "username": "lisi", "password": new_password,
+    }))).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // 禁用 → 登录被拒
+    let (status, _) = req(&app, "PUT", &format!("/api/v1/admin/accounts/{account_id}"), Some(&token), Some(json!({
+        "enabled": false,
+    }))).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = req(&app, "POST", "/api/v1/auth/login", None, Some(json!({
+        "username": "lisi", "password": new_password,
+    }))).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    // 组下存在账号时删组 → 409
+    let (status, _) = req(&app, "DELETE", &format!("/api/v1/admin/groups/{group_id}"), Some(&token), None).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+
+    // 删除账号
+    let (status, _) = req(&app, "DELETE", &format!("/api/v1/admin/accounts/{account_id}"), Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+// ==================== 客户端配置 ====================
+
+#[tokio::test]
+async fn client_config_scoped_by_group() {
+    let (app, db) = test_app().await;
+    let admin_token = init_and_login(&app).await;
+
+    // 两条规则，仅一条绑定到账号所在组
+    let (_, b1) = req(&app, "POST", "/api/v1/admin/rules", Some(&admin_token), Some(json!({
+        "type": "ip-cidr", "value": "10.12.0.0/16",
+    }))).await;
+    let rule_a = b1["data"]["id"].as_str().unwrap().to_string();
+    req(&app, "POST", "/api/v1/admin/rules", Some(&admin_token), Some(json!({
+        "type": "ip-cidr", "value": "192.168.0.0/16",
+    }))).await;
+
+    let (_, body) = req(&app, "POST", "/api/v1/admin/groups", Some(&admin_token), Some(json!({
+        "name": "一组", "rule_ids": [rule_a],
+    }))).await;
+    let group_id = body["data"]["id"].as_str().unwrap().to_string();
+
+    let (_, body) = req(&app, "POST", "/api/v1/admin/accounts", Some(&admin_token), Some(json!({
+        "username": "wangwu", "group_id": group_id,
+    }))).await;
+    let password = body["data"]["password"].as_str().unwrap().to_string();
+
+    let (_, body) = req(&app, "POST", "/api/v1/auth/login", None, Some(json!({
+        "username": "wangwu", "password": password,
+    }))).await;
+    let client_token = body["data"]["access_token"].as_str().unwrap().to_string();
+
+    // 拉取配置：只应看到绑定规则
+    let (status, body) = req(&app, "GET", "/api/v1/client/config", Some(&client_token), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let rules = body["data"]["rules"].as_array().unwrap();
+    assert_eq!(rules.len(), 1);
+    assert_eq!(rules[0]["value"], "10.12.0.0/16");
+    assert!(body["data"]["tunnel"]["port"].is_number());
+    let version = body["data"]["version"].as_u64().unwrap();
+
+    // 心跳
+    let (status, body) = req(&app, "POST", "/api/v1/client/heartbeat", Some(&client_token), Some(json!({
+        "uptime": 10, "bytes_tx": 100, "bytes_rx": 200, "active_connections": 1,
+    }))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"]["force_disconnect"], false);
+
+    // 变更规则 → 配置版本递增
+    req(&app, "POST", "/api/v1/admin/rules", Some(&admin_token), Some(json!({
+        "type": "host", "value": "git.internal",
+    }))).await;
+    let new_version = db.config_version().unwrap();
+    assert!(new_version > version);
+
+    // 心跳流量计入统计
+    let (rows, tx, rx) = db.traffic_by_account(1).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(tx, 100);
+    assert_eq!(rx, 200);
+}
+
+// ==================== Relay Token ====================
+
+#[tokio::test]
+async fn relay_tokens_lifecycle() {
+    let (app, _db) = test_app().await;
+    let token = init_and_login(&app).await;
+
+    let (status, body) = req(&app, "POST", "/api/v1/admin/node/relay-tokens", Some(&token), Some(json!({
+        "remark": "分公司跳板",
+    }))).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let full_token = body["data"]["token"].as_str().unwrap().to_string();
+    assert!(full_token.starts_with("psk_"));
+    let token_id = body["data"]["id"].as_str().unwrap().to_string();
+
+    // 列表只显示前缀
+    let (status, body) = req(&app, "GET", "/api/v1/admin/node/relay-tokens", Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let items = body["data"]["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert!(items[0]["token_prefix"].as_str().unwrap().ends_with("****"));
+    assert!(items[0].get("token").is_none());
+
+    let (status, _) = req(&app, "DELETE", &format!("/api/v1/admin/node/relay-tokens/{token_id}"), Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+// ==================== 审计与状态 ====================
+
+#[tokio::test]
+async fn audit_logs_and_node_status() {
+    let (app, _db) = test_app().await;
+    let token = init_and_login(&app).await;
+
+    req(&app, "POST", "/api/v1/admin/groups", Some(&token), Some(json!({ "name": "审计组" }))).await;
+
+    let (status, body) = req(&app, "GET", "/api/v1/admin/audit-logs", Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let items = body["data"]["items"].as_array().unwrap();
+    assert!(items.iter().any(|i| i["action"] == "group.create"));
+    assert!(items.iter().any(|i| i["action"] == "admin.login"));
+
+    let (status, body) = req(&app, "GET", "/api/v1/admin/node/status", Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"]["version"], env!("CARGO_PKG_VERSION"));
+    assert!(body["data"]["uptime"].is_number());
+
+    // 更新节点名
+    let (status, body) = req(&app, "PUT", "/api/v1/admin/node/settings", Some(&token), Some(json!({
+        "node_name": "办公网跳板",
+    }))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body["data"]["applied"].as_array().unwrap().contains(&json!("node_name")));
+
+    let (_, body) = req(&app, "GET", "/api/v1/admin/node/status", Some(&token), None).await;
+    assert_eq!(body["data"]["node_name"], "办公网跳板");
+}
+
+/// 密码哈希使用 Argon2id 且可验证
+#[test]
+fn password_hash_uses_argon2id() {
+    let hash = hash_password("TestPassword123").unwrap();
+    assert!(hash.starts_with("$argon2id$"));
+    assert!(agile_net_node::db::verify_password("TestPassword123", &hash).unwrap());
 }

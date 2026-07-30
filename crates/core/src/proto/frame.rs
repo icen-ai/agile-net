@@ -14,8 +14,16 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 /// 帧头长度：4 (len) + 1 (type) + 4 (channel) = 9 字节
 pub const HEADER_LEN: usize = 9;
 
-/// 最大帧负载：16 MB
-const MAX_PAYLOAD: u32 = 16 * 1024 * 1024;
+/// 控制帧（Auth/Open/Ping/Close 等）最大负载：64 KB。
+/// 控制帧很小，超限即视为恶意或实现错误。
+const MAX_CONTROL_PAYLOAD: u32 = 64 * 1024;
+
+/// 数据帧（Data/DataFin）最大负载：256 KB。
+/// 正常路径下由 `MuxChannel` 按 16 KB 分片，远大于此的帧视为异常。
+const MAX_DATA_PAYLOAD: u32 = 256 * 1024;
+
+/// 数据帧分片大小（写路径）。
+pub const DATA_CHUNK_SIZE: usize = 16 * 1024;
 
 /// 帧类型
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -100,12 +108,6 @@ impl Frame {
             ));
         }
         let payload_len = len - 5;
-        if payload_len > MAX_PAYLOAD {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "frame too large",
-            ));
-        }
 
         // 读 type
         let type_byte = reader.read_u8().await?;
@@ -115,6 +117,18 @@ impl Frame {
                 format!("unknown frame type: {type_byte:#x}"),
             )
         })?;
+
+        // 按帧类型限制负载大小，防止对端声明超大长度导致内存耗尽 (DoS)
+        let max_payload = match frame_type {
+            FrameType::Data | FrameType::DataFin => MAX_DATA_PAYLOAD,
+            _ => MAX_CONTROL_PAYLOAD,
+        };
+        if payload_len > max_payload {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("frame too large: {payload_len} > {max_payload}"),
+            ));
+        }
 
         // 读 channel
         let channel_id = reader.read_u32().await?;
@@ -175,5 +189,57 @@ mod tests {
         assert_eq!(decoded.frame_type, FrameType::Ping);
         assert_eq!(decoded.channel_id, 0);
         assert!(decoded.payload.is_empty());
+    }
+
+    fn decode_blocking(bytes: Vec<u8>) -> io::Result<Frame> {
+        let mut cursor = io::Cursor::new(bytes);
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(Frame::read_from(&mut cursor))
+    }
+
+    #[test]
+    fn reject_oversized_control_frame() {
+        // 声明 64KB+1 的 Auth 帧必须被拒绝
+        let frame = Frame::new(FrameType::Auth, 0, vec![0u8; 65 * 1024]);
+        let err = decode_blocking(frame.encode().to_vec()).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn reject_oversized_data_frame() {
+        // 声明 256KB+1 的 Data 帧必须被拒绝
+        let frame = Frame::new(FrameType::Data, 1, vec![0u8; 257 * 1024]);
+        let err = decode_blocking(frame.encode().to_vec()).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn reject_truncated_len() {
+        // len < 5 直接拒绝
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&4u32.to_be_bytes());
+        buf.extend_from_slice(&[0x01, 0, 0, 0, 0]);
+        let err = decode_blocking(buf).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn reject_unknown_type() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&5u32.to_be_bytes());
+        buf.push(0x7f); // 未知类型
+        buf.extend_from_slice(&0u32.to_be_bytes());
+        let err = decode_blocking(buf).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn accept_max_control_frame() {
+        let frame = Frame::new(FrameType::Open, 7, vec![1u8; 64 * 1024]);
+        let decoded = decode_blocking(frame.encode().to_vec()).unwrap();
+        assert_eq!(decoded.payload.len(), 64 * 1024);
     }
 }

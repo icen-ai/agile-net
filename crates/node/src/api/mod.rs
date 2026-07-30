@@ -1,67 +1,320 @@
-//! HTTP API 路由与 Handler 接口
+//! HTTP API 路由与共享设施
+//!
+//! 统一响应体：成功 `{"code":0,"data":...}`，错误 `{"code":xxxxx,"message":"..."}`。
+//! 错误码段遵循 docs/api/overview.md。
 
+pub mod extractors;
 pub mod handlers;
 
+use crate::auth::jwt::JwtService;
 use crate::db::Database;
-use agile_net_core::proxy::router::ProxyRouter;
-use arc_swap::ArcSwap;
+use crate::logs::LogBuffer;
+use agile_net_core::proxy::inbound::ProxyStats;
+use agile_net_core::relay::connector::ConnectionState;
+use agile_net_core::relay::listener::RelayListener;
+use agile_net_core::relay::RelayConnector;
 use axum::{
-    routing::{delete, get, post},
     Router,
+    routing::{any, delete, get, post, put},
 };
+use dashmap::DashMap;
+use serde::Serialize;
+use std::net::IpAddr;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+/// 运行时共享状态（数据面句柄，供状态 API 读取）。
+pub struct NodeRuntime {
+    pub started_at: Instant,
+    pub listener: Option<Arc<RelayListener>>,
+    pub connector: Option<Arc<RelayConnector>>,
+    pub proxy_stats: Option<Arc<ProxyStats>>,
+    pub proxy_listen: Option<String>,
+    pub log_buffer: LogBuffer,
+}
+
+impl NodeRuntime {
+    pub fn connector_status(&self) -> &'static str {
+        match &self.connector {
+            Some(c) => match c.state() {
+                ConnectionState::Connected => "connected",
+                ConnectionState::Connecting => "connecting",
+                ConnectionState::Reconnecting => "reconnecting",
+                ConnectionState::Disconnected => "disconnected",
+            },
+            None => "disabled",
+        }
+    }
+
+    pub fn uptime_secs(&self) -> u64 {
+        self.started_at.elapsed().as_secs()
+    }
+}
 
 #[derive(Clone)]
 pub struct ApiState {
     pub db: Database,
-    pub router: Arc<ArcSwap<ProxyRouter>>,
+    pub jwt: Arc<JwtService>,
+    pub runtime: Arc<NodeRuntime>,
+    pub login_limiter: LoginRateLimiter,
+    /// 创建/重置账号后的 connect_url 短期缓存（10 分钟，供二维码取用）
+    connect_url_cache: Arc<DashMap<String, (String, Instant)>>,
+    /// 节点公网接入地址（connect_url 用）
+    public_host: String,
+    relay_port: u16,
 }
 
-pub fn create_app(db: Database, router: Arc<ArcSwap<ProxyRouter>>) -> Router {
-    let state = ApiState { db, router };
+impl ApiState {
+    pub fn new(
+        db: Database,
+        jwt: Arc<JwtService>,
+        runtime: Arc<NodeRuntime>,
+        public_host: String,
+        relay_port: u16,
+    ) -> Self {
+        Self {
+            db,
+            jwt,
+            runtime,
+            login_limiter: LoginRateLimiter::new(),
+            connect_url_cache: Arc::new(DashMap::new()),
+            public_host,
+            relay_port,
+        }
+    }
 
+    /// 客户端接入的公网端点（host, port）。
+    pub fn public_endpoint(&self) -> (String, u16) {
+        (self.public_host.clone(), self.relay_port)
+    }
+
+    pub fn remember_connect_url(&self, account_id: &str, url: &str) {
+        // 顺带清理过期项
+        self.connect_url_cache
+            .retain(|_, (_, ts)| ts.elapsed() < Duration::from_secs(600));
+        self.connect_url_cache
+            .insert(account_id.to_string(), (url.to_string(), Instant::now()));
+    }
+
+    pub fn take_connect_url(&self, account_id: &str) -> Option<String> {
+        self.connect_url_cache.get(account_id).and_then(|e| {
+            let (url, ts) = e.value();
+            if ts.elapsed() < Duration::from_secs(600) {
+                Some(url.clone())
+            } else {
+                None
+            }
+        })
+    }
+}
+
+/// 登录频率限制器：5 次/分钟/IP，连续失败 5 次锁定 15 分钟。
+#[derive(Clone)]
+pub struct LoginRateLimiter {
+    inner: Arc<DashMap<IpAddr, LoginAttempts>>,
+}
+
+struct LoginAttempts {
+    window_start: Instant,
+    attempts: u32,
+    failures: u32,
+    locked_until: Option<Instant>,
+}
+
+impl LoginRateLimiter {
+    const MAX_PER_MINUTE: u32 = 5;
+    const LOCK_THRESHOLD: u32 = 5;
+    const LOCK_DURATION: Duration = Duration::from_secs(15 * 60);
+
+    pub fn new() -> Self {
+        Self {
+            inner: Arc::new(DashMap::new()),
+        }
+    }
+
+    /// 检查是否允许尝试登录（限流 + 锁定判定）。
+    pub fn check(&self, ip: IpAddr) -> Result<(), LoginBlockReason> {
+        let mut entry = self.inner.entry(ip).or_insert(LoginAttempts {
+            window_start: Instant::now(),
+            attempts: 0,
+            failures: 0,
+            locked_until: None,
+        });
+        let e = entry.value_mut();
+
+        if let Some(until) = e.locked_until {
+            if until > Instant::now() {
+                return Err(LoginBlockReason::Locked(until - Instant::now()));
+            }
+            e.locked_until = None;
+            e.failures = 0;
+        }
+
+        if e.window_start.elapsed() > Duration::from_secs(60) {
+            e.window_start = Instant::now();
+            e.attempts = 0;
+        }
+        e.attempts += 1;
+        if e.attempts > Self::MAX_PER_MINUTE {
+            return Err(LoginBlockReason::RateLimited);
+        }
+        Ok(())
+    }
+
+    /// 记录一次登录失败（连续失败达阈值则锁定）。
+    pub fn record_failure(&self, ip: IpAddr) {
+        let mut entry = self.inner.entry(ip).or_insert(LoginAttempts {
+            window_start: Instant::now(),
+            attempts: 0,
+            failures: 0,
+            locked_until: None,
+        });
+        let e = entry.value_mut();
+        e.failures += 1;
+        if e.failures >= Self::LOCK_THRESHOLD {
+            e.locked_until = Some(Instant::now() + Self::LOCK_DURATION);
+        }
+    }
+
+    /// 登录成功，清零失败计数。
+    pub fn record_success(&self, ip: IpAddr) {
+        self.inner.remove(&ip);
+    }
+}
+
+impl Default for LoginRateLimiter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+pub enum LoginBlockReason {
+    RateLimited,
+    Locked(Duration),
+}
+
+// ==================== 统一响应体 ====================
+
+pub fn ok<T: Serialize>(data: T) -> axum::response::Response {
+    axum::Json(serde_json::json!({ "code": 0, "data": data })).into_response()
+}
+
+/// 201 Created（资源创建成功）
+pub fn ok_created<T: Serialize>(data: T) -> axum::response::Response {
+    (
+        axum::http::StatusCode::CREATED,
+        axum::Json(serde_json::json!({ "code": 0, "data": data })),
+    )
+        .into_response()
+}
+
+pub fn err(status: axum::http::StatusCode, code: u32, message: impl Into<String>) -> axum::response::Response {
+    (
+        status,
+        axum::Json(serde_json::json!({ "code": code, "message": message.into() })),
+    )
+        .into_response()
+}
+
+pub mod codes {
+    pub const BAD_REQUEST: u32 = 40000;
+    pub const VALIDATION_FAILED: u32 = 40001;
+    pub const INVALID_CREDENTIALS: u32 = 40100;
+    pub const TOKEN_EXPIRED: u32 = 40101;
+    pub const TOKEN_REVOKED: u32 = 40102;
+    pub const FORBIDDEN: u32 = 40300;
+    pub const ADMIN_ONLY: u32 = 40301;
+    pub const NOT_FOUND: u32 = 40400;
+    pub const DUPLICATE: u32 = 40900;
+    pub const RATE_LIMITED: u32 = 42900;
+    pub const INTERNAL: u32 = 50000;
+}
+
+/// 分页参数规范化（page >= 1，page_size 1..=100）。
+///
+/// 注意：serde_urlencoded 不支持 #[serde(flatten)]，
+/// 查询结构体请直接内联 page/page_size 字段并调用本函数。
+pub fn normalize_page(page: u32, page_size: u32) -> (u32, u32) {
+    (page.max(1), page_size.clamp(1, 100))
+}
+
+pub(crate) fn default_page() -> u32 {
+    1
+}
+pub(crate) fn default_page_size() -> u32 {
+    20
+}
+
+use axum::response::IntoResponse;
+
+pub fn create_app(state: ApiState) -> Router {
     Router::new()
-        // Auth API (Public)
+        // ---- Auth (Public) ----
         .route("/api/v1/auth/login", post(handlers::auth::login))
-        // Protected Admin / Management API
+        .route("/api/v1/auth/refresh", post(handlers::auth::refresh))
+        .route("/api/v1/auth/init", post(handlers::auth::init))
+        .route("/api/v1/auth/logout", post(handlers::auth::logout))
         .route("/api/v1/auth/me", get(handlers::auth::me))
-        // Node API
+        // ---- Client API ----
+        .route("/api/v1/client/config", get(handlers::client::get_config))
+        .route("/api/v1/client/heartbeat", post(handlers::client::heartbeat))
+        // ---- Admin: Rules ----
         .route(
-            "/api/v1/nodes",
-            get(handlers::nodes::list_nodes).post(handlers::nodes::create_node),
+            "/api/v1/admin/rules",
+            get(handlers::rules::list_rules).post(handlers::rules::create_rule),
         )
-        .route("/api/v1/nodes/{id}", delete(handlers::nodes::delete_node))
-        // Route Rules API
+        .route("/api/v1/admin/rules/batch", post(handlers::rules::batch_import))
         .route(
-            "/api/v1/routes",
-            get(handlers::routes::list_routes).post(handlers::routes::create_route),
+            "/api/v1/admin/rules/{id}",
+            put(handlers::rules::update_rule).delete(handlers::rules::delete_rule),
         )
+        // ---- Admin: Groups ----
         .route(
-            "/api/v1/routes/{id}",
-            delete(handlers::routes::delete_route),
-        )
-        // Groups API
-        .route(
-            "/api/v1/groups",
+            "/api/v1/admin/groups",
             get(handlers::groups::list_groups).post(handlers::groups::create_group),
         )
         .route(
-            "/api/v1/groups/{id}",
-            delete(handlers::groups::delete_group),
+            "/api/v1/admin/groups/{id}",
+            get(handlers::groups::get_group)
+                .put(handlers::groups::update_group)
+                .delete(handlers::groups::delete_group),
         )
-        // Accounts API
         .route(
-            "/api/v1/accounts",
+            "/api/v1/admin/groups/{id}/rules",
+            put(handlers::groups::set_group_rules),
+        )
+        // ---- Admin: Accounts ----
+        .route(
+            "/api/v1/admin/accounts",
             get(handlers::accounts::list_accounts).post(handlers::accounts::create_account),
         )
         .route(
-            "/api/v1/accounts/{id}",
-            delete(handlers::accounts::delete_account),
+            "/api/v1/admin/accounts/{id}",
+            put(handlers::accounts::update_account).delete(handlers::accounts::delete_account),
         )
-        // System Config API
         .route(
-            "/api/v1/system/configs",
-            get(handlers::system::get_configs).put(handlers::system::set_config),
+            "/api/v1/admin/accounts/{id}/reset-password",
+            post(handlers::accounts::reset_password),
         )
+        .route(
+            "/api/v1/admin/accounts/{id}/qrcode",
+            get(handlers::accounts::qrcode),
+        )
+        // ---- Admin: Node ----
+        .route("/api/v1/admin/node/status", get(handlers::node::status))
+        .route("/api/v1/admin/node/stats", get(handlers::node::stats))
+        .route("/api/v1/admin/node/logs", get(handlers::node::logs))
+        .route("/api/v1/admin/node/settings", put(handlers::node::update_settings))
+        .route(
+            "/api/v1/admin/node/relay-tokens",
+            get(handlers::relay_tokens::list_tokens).post(handlers::relay_tokens::create_token),
+        )
+        .route(
+            "/api/v1/admin/node/relay-tokens/{id}",
+            delete(handlers::relay_tokens::delete_token),
+        )
+        .route("/api/v1/admin/node/events", any(handlers::node::events_ws))
+        // ---- Admin: Audit ----
+        .route("/api/v1/admin/audit-logs", get(handlers::audit::list_audit_logs))
         .with_state(state)
 }

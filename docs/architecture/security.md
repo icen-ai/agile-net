@@ -112,21 +112,29 @@ PSK 由 Admin 在上游节点管理面生成，手动配置到下游节点。
 
 ## 账号密码生成
 
-Admin 创建客户端账号时，系统自动生成强密码：
+Admin 创建客户端账号时，**服务端自动生成 sk 风格强密码**（类似 API Secret Key 的长度与复杂度）：
 
-```rust
-use rand::Rng;
-
-const CHARSET: &[u8] = b"abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-// 去掉易混淆字符: l, o, O, 0, 1, I
-
-fn generate_password(len: usize) -> String {
-    let mut rng = rand::thread_rng();
-    (0..len).map(|_| CHARSET[rng.gen_range(0..CHARSET.len())] as char).collect()
-}
-
-// 默认 16 位，足够安全，可读性好
 ```
+sk- + 48 位 [a-zA-Z0-9] 随机字符（CSPRNG），约 286 bits 熵
+```
+
+- 密码与 `connect_url` 仅在创建/重置时返回一次，不落日志、不可再查
+- 数据库只存 argon2id 哈希（64MB / t=3 / p=4，OWASP 推荐参数）
+- 重置密码后旧凭据（密码、JWT、refresh_token、tunnel_token）立即全部失效
+
+## 令牌体系（与实现一致）
+
+| 令牌 | 格式 | 有效期 | 存储 |
+|------|------|--------|------|
+| admin access_token | JWT HS256 | 15 min | 内存 |
+| admin refresh_token | JWT HS256 | 7 天 | jti 哈希落库，可吊销/轮换 |
+| client access_token | JWT HS256 | 1 小时 | 内存 |
+| client refresh_token | JWT HS256 | 30 天 | jti 哈希落库，可吊销/轮换 |
+| client tunnel_token | `tun_` + 48 位 | 随登录/刷新轮换 | SHA-256 哈希落库 |
+| relay psk | `psk_` + 48 位 | 不过期，手动轮换 | SHA-256 哈希落库，列表仅显示前缀 |
+| 账号密码 | `sk-` + 48 位 | 不过期，重置轮换 | argon2id 哈希落库 |
+
+JWT 密钥在节点首次启动时生成（64 位 hex 随机）并持久化到 `node_config.jwt_secret`，**绝不硬编码**。
 
 ## 接入信息二维码
 
@@ -162,6 +170,8 @@ VALUES (?, 'create_account', 'acc_xxx', '{"group":"dev"}', '1.2.3.4', datetime('
 
 ### TLS 证书
 
-- 生产：使用 Let's Encrypt 自动续签（acme-lib）或手动放置证书
-- 开发：节点首次启动自动生成自签证书，Client 配置 `allow_self_signed: true`
-- 证书路径可配置，默认 `./certs/`
+- 生产：手动放置证书（`listener.cert_path` / `key_path`），客户端使用**证书固定 (pinning)** 或私有 CA 校验
+- 证书固定：节点启动日志输出证书 SHA-256 指纹，带外分发；客户端 `pinned_cert_path` 钉入后仅信任该证书，抗 MITM
+- 开发：证书缺失时自动生成自签证书并**持久化**到 `./certs/`（重启不变，pinning 保持稳定）
+- `insecure = true`（跳过校验）仅限开发调试，启动时打印醒目警告
+- 信任策略优先级：pinning > 自定义 CA > insecure > webpki 系统根

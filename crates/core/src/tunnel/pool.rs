@@ -1,23 +1,17 @@
-//! 隧道连接池 (TunnelPool)
+//! 隧道通道获取 (TunnelPool)
 //!
-//! 管理 Client / Node 到上游 Relay Node 的 TLS 长连接与通道池。
-//! 支持连接复用、空闲回收与自动重连补满。
+//! 管理到下游 Relay Node 的通道获取。
+//!
+//! 设计说明：通道 (MuxChannel) 与目标地址一一绑定，复用已建立的通道
+//! 会把流量发往错误目标，因此本实现**每次 acquire 都新建通道**。
+//! 会话级复用由 MuxSession 的多路复用天然提供（单条 TLS 连接承载全部通道）。
 
 use crate::error::Result;
 use crate::relay::listener::RelayListener;
 use crate::relay::mux::MuxChannel;
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
-use tokio::sync::Mutex;
-use tracing::debug;
-
-/// 池化的通道条目
-struct PooledItem {
-    channel: MuxChannel,
-    created_at: Instant,
-    last_used: Instant,
-}
+use std::time::Duration;
 
 /// 隧道连接池配置
 #[derive(Debug, Clone)]
@@ -37,12 +31,10 @@ impl Default for TunnelPoolConfig {
     }
 }
 
-/// 隧道连接池
+/// 隧道通道获取器（薄封装，保留向后兼容 API）。
 pub struct TunnelPool {
     listener: Arc<RelayListener>,
     node_id: String,
-    config: TunnelPoolConfig,
-    pool: Mutex<Vec<PooledItem>>,
 }
 
 impl TunnelPool {
@@ -50,66 +42,31 @@ impl TunnelPool {
     pub fn new(
         listener: Arc<RelayListener>,
         node_id: impl Into<String>,
-        config: TunnelPoolConfig,
+        _config: TunnelPoolConfig,
     ) -> Self {
         Self {
             listener,
             node_id: node_id.into(),
-            config,
-            pool: Mutex::new(Vec::new()),
         }
     }
 
-    /// 当前可用预建通道数
+    /// 当前可用预建通道数（不做通道缓存，恒为 0）
     pub async fn available(&self) -> usize {
-        let pool = self.pool.lock().await;
-        pool.len()
+        0
     }
 
-    /// 从池中获取或在 RelayListener 上直接打开新通道
+    /// 向目标打开一条新通道。
     pub async fn acquire(&self, target_host: &str, target_port: u16) -> Result<MuxChannel> {
-        let mut pool = self.pool.lock().await;
-
-        // 1. 寻找未过期的空闲通道
-        let now = Instant::now();
-        while let Some(item) = pool.pop() {
-            if now.duration_since(item.created_at) < self.config.max_lifetime
-                && now.duration_since(item.last_used) < self.config.idle_timeout
-            {
-                debug!("reusing pooled mux channel");
-                return Ok(item.channel);
-            }
-        }
-        drop(pool);
-
-        // 2. 如果无可用缓存，向 Listener 打开新通道
         self.listener
             .open_channel(&self.node_id, target_host, target_port)
             .await
     }
 
-    /// 归还未关闭的通道回池中
+    /// 归还通道：通道绑定具体目标不可复用，直接丢弃（drop 即关闭）。
     pub async fn release(&self, channel: MuxChannel) {
-        let mut pool = self.pool.lock().await;
-        if pool.len() < self.config.pool_size {
-            pool.push(PooledItem {
-                channel,
-                created_at: Instant::now(),
-                last_used: Instant::now(),
-            });
-        }
+        drop(channel);
     }
 
-    /// 定理空闲与超时的通道
-    pub async fn evict_expired(&self) {
-        let mut pool = self.pool.lock().await;
-        let now = Instant::now();
-        let idle_timeout = self.config.idle_timeout;
-        let max_lifetime = self.config.max_lifetime;
-
-        pool.retain(|item| {
-            now.duration_since(item.created_at) < max_lifetime
-                && now.duration_since(item.last_used) < idle_timeout
-        });
-    }
+    /// 空闲清理：无缓存，空操作（保留 API 兼容）。
+    pub async fn evict_expired(&self) {}
 }

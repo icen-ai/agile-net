@@ -1,112 +1,180 @@
-//! JWT 认证与授权中间件
+//! JWT 认证（Access + Refresh 双 Token）
+//!
+//! 安全要点：
+//! - HS256 密钥在节点首次启动时生成并持久化到 node_config（绝不硬编码）
+//! - access_token：admin 15min / client 1h
+//! - refresh_token：admin 7d / client 30d，jti 哈希落库，支持吊销与轮换
+//! - tunnel_token：仅 client，数据面认证用，随登录/刷新轮换
 
-use crate::db::models::UserRole;
+use crate::db::{Database, generate_secret_hex, generate_tunnel_token, sha256_hex};
 use agile_net_core::error::{Error, Result};
-use axum::{
-    extract::FromRequestParts,
-    http::{header, request::Parts, StatusCode},
-    response::{IntoResponse, Response},
-    Json,
-};
-use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
+use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
-use std::sync::LazyLock;
 
-static JWT_SECRET: LazyLock<String> = LazyLock::new(|| {
-    std::env::var("JWT_SECRET").unwrap_or_else(|_| "agile_net_jwt_secret_key_2026".to_string())
-});
+/// admin access token 有效期（秒）
+pub const ADMIN_ACCESS_TTL: i64 = 15 * 60;
+/// client access token 有效期（秒）
+pub const CLIENT_ACCESS_TTL: i64 = 60 * 60;
+/// admin refresh token 有效期（秒）
+pub const ADMIN_REFRESH_TTL: i64 = 7 * 24 * 3600;
+/// client refresh token 有效期（秒）
+pub const CLIENT_REFRESH_TTL: i64 = 30 * 24 * 3600;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Claims {
-    pub sub: String, // user_id
+    pub sub: String,
     pub username: String,
     pub role: String,
     pub exp: usize,
+    pub iat: usize,
+    pub jti: String,
+    /// "access" | "refresh"
+    pub typ: String,
 }
 
-/// 生成 JWT Token
-pub fn generate_token(user_id: &str, username: &str, role: UserRole) -> Result<String> {
-    let expiration = chrono::Utc::now()
-        .checked_add_signed(chrono::Duration::hours(24))
-        .expect("valid timestamp")
-        .timestamp() as usize;
-
-    let claims = Claims {
-        sub: user_id.to_string(),
-        username: username.to_string(),
-        role: role.as_str().to_string(),
-        exp: expiration,
-    };
-
-    encode(
-        &Header::default(),
-        &claims,
-        &EncodingKey::from_secret(JWT_SECRET.as_bytes()),
-    )
-    .map_err(|e| Error::Auth(e.to_string()))
+/// 登录/刷新签发的令牌集合
+pub struct IssuedTokens {
+    pub access_token: String,
+    pub refresh_token: String,
+    /// 仅 client 角色
+    pub tunnel_token: Option<String>,
+    pub expires_in: i64,
 }
 
-/// 验证 JWT Token
-pub fn verify_token(token: &str) -> Result<Claims> {
-    let token_data = decode::<Claims>(
-        token,
-        &DecodingKey::from_secret(JWT_SECRET.as_bytes()),
-        &Validation::default(),
-    )
-    .map_err(|e| Error::Auth(e.to_string()))?;
-
-    Ok(token_data.claims)
+/// JWT 服务：密钥从数据库装载（不存在则生成）。
+pub struct JwtService {
+    secret: String,
+    db: Database,
 }
 
-/// Axum 提取器：提取已认证的用户 Claim
-pub struct AuthClaims(pub Claims);
-
-impl<S> FromRequestParts<S> for AuthClaims
-where
-    S: Send + Sync,
-{
-    type Rejection = AuthError;
-
-    async fn from_request_parts(parts: &mut Parts, _state: &S) -> std::result::Result<Self, Self::Rejection> {
-        let auth_header = parts
-            .headers
-            .get(header::AUTHORIZATION)
-            .and_then(|value| value.to_str().ok());
-
-        let auth_header = match auth_header {
-            Some(header) => header,
-            None => return Err(AuthError::MissingCredentials),
+impl JwtService {
+    /// 从数据库装载或生成密钥
+    pub fn load_or_create(db: Database) -> Result<Self> {
+        let secret = match db.get_config("jwt_secret")? {
+            Some(s) if !s.is_empty() => s,
+            _ => {
+                let s = generate_secret_hex();
+                db.set_config("jwt_secret", &s)?;
+                s
+            }
         };
-
-        if !auth_header.starts_with("Bearer ") {
-            return Err(AuthError::InvalidToken);
-        }
-
-        let token = &auth_header[7..];
-        let claims = verify_token(token).map_err(|_| AuthError::InvalidToken)?;
-
-        Ok(AuthClaims(claims))
+        Ok(Self { secret, db })
     }
-}
 
-pub enum AuthError {
-    MissingCredentials,
-    InvalidToken,
-}
-
-impl IntoResponse for AuthError {
-    fn into_response(self) -> Response {
-        let (status, message) = match self {
-            AuthError::MissingCredentials => (StatusCode::UNAUTHORIZED, "Missing authorization header"),
-            AuthError::InvalidToken => (StatusCode::UNAUTHORIZED, "Invalid or expired token"),
+    /// 签发 access + refresh（client 同时轮换 tunnel_token）。
+    pub fn issue(&self, subject: &str, username: &str, role: &str) -> Result<IssuedTokens> {
+        let (access_ttl, refresh_ttl) = match role {
+            "admin" => (ADMIN_ACCESS_TTL, ADMIN_REFRESH_TTL),
+            _ => (CLIENT_ACCESS_TTL, CLIENT_REFRESH_TTL),
         };
 
-        let body = Json(json!({
-            "code": status.as_u16(),
-            "error": message,
-        }));
+        let access_token = self.sign(subject, username, role, "access", access_ttl)?;
+        let (refresh_token, jti) = self.sign_refresh(subject, username, role, refresh_ttl)?;
 
-        (status, body).into_response()
+        // refresh jti 哈希落库（可吊销）
+        let expires_at = (chrono::Utc::now() + chrono::Duration::seconds(refresh_ttl))
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        self.db
+            .store_refresh_token(&sha256_hex(jti.as_bytes()), subject, role, &expires_at)?;
+
+        // client 角色：轮换 tunnel_token
+        let tunnel_token = if role == "client" {
+            let t = generate_tunnel_token();
+            self.db
+                .set_account_tunnel_token(subject, Some(&sha256_hex(t.as_bytes())))?;
+            Some(t)
+        } else {
+            None
+        };
+
+        Ok(IssuedTokens {
+            access_token,
+            refresh_token,
+            tunnel_token,
+            expires_in: access_ttl,
+        })
+    }
+
+    /// 用 refresh_token 换新 access_token（并轮换 refresh_token 本身）。
+    pub fn refresh(&self, refresh_token: &str) -> Result<(Claims, IssuedTokens)> {
+        let claims = self.verify(refresh_token)?;
+        if claims.typ != "refresh" {
+            return Err(Error::Auth("not a refresh token".into()));
+        }
+        let jti_hash = sha256_hex(claims.jti.as_bytes());
+        if !self.db.is_refresh_token_valid(&jti_hash)? {
+            return Err(Error::Auth("refresh token revoked or expired".into()));
+        }
+        // 轮换：吊销旧 jti
+        self.db.revoke_refresh_token(&jti_hash)?;
+        let issued = self.issue(&claims.sub, &claims.username, &claims.role)?;
+        Ok((claims, issued))
+    }
+
+    /// 吊销 refresh_token（登出）。
+    pub fn revoke(&self, refresh_token: &str) -> Result<()> {
+        if let Ok(claims) = self.verify(refresh_token) {
+            self.db
+                .revoke_refresh_token(&sha256_hex(claims.jti.as_bytes()))?;
+        }
+        Ok(())
+    }
+
+    /// 吊销某主体全部 refresh token。
+    pub fn revoke_all(&self, subject: &str) -> Result<()> {
+        self.db.revoke_all_refresh_tokens(subject)
+    }
+
+    /// 验证 token 并返回 Claims。
+    pub fn verify(&self, token: &str) -> Result<Claims> {
+        let mut validation = Validation::default();
+        validation.validate_exp = true;
+        let data = decode::<Claims>(
+            token,
+            &DecodingKey::from_secret(self.secret.as_bytes()),
+            &validation,
+        )
+        .map_err(|e| Error::Auth(e.to_string()))?;
+        Ok(data.claims)
+    }
+
+    fn sign(&self, subject: &str, username: &str, role: &str, typ: &str, ttl: i64) -> Result<String> {
+        let now = chrono::Utc::now();
+        let claims = Claims {
+            sub: subject.to_string(),
+            username: username.to_string(),
+            role: role.to_string(),
+            exp: (now.timestamp() + ttl) as usize,
+            iat: now.timestamp() as usize,
+            jti: uuid::Uuid::new_v4().to_string(),
+            typ: typ.to_string(),
+        };
+        encode(
+            &Header::default(),
+            &claims,
+            &EncodingKey::from_secret(self.secret.as_bytes()),
+        )
+        .map_err(|e| Error::Auth(e.to_string()))
+    }
+
+    fn sign_refresh(&self, subject: &str, username: &str, role: &str, ttl: i64) -> Result<(String, String)> {
+        let now = chrono::Utc::now();
+        let jti = uuid::Uuid::new_v4().to_string();
+        let claims = Claims {
+            sub: subject.to_string(),
+            username: username.to_string(),
+            role: role.to_string(),
+            exp: (now.timestamp() + ttl) as usize,
+            iat: now.timestamp() as usize,
+            jti: jti.clone(),
+            typ: "refresh".to_string(),
+        };
+        let token = encode(
+            &Header::default(),
+            &claims,
+            &EncodingKey::from_secret(self.secret.as_bytes()),
+        )
+        .map_err(|e| Error::Auth(e.to_string()))?;
+        Ok((token, jti))
     }
 }

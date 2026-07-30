@@ -18,6 +18,8 @@ pub struct TlsConfigBuilder {
     key_path: Option<PathBuf>,
     /// 客户端自定义 CA 根证书（connector 模式）
     ca_cert: Option<Vec<CertificateDer<'static>>>,
+    /// 服务端证书固定（pinning）：仅信任列出的证书（connector 模式）
+    pinned_certs: Option<Vec<CertificateDer<'static>>>,
     /// SNI 域名（connector 模式，伪装用）
     pub sni_hostname: String,
     /// 是否允许自签证书（开发模式）
@@ -30,6 +32,7 @@ impl TlsConfigBuilder {
             cert_path: None,
             key_path: None,
             ca_cert: None,
+            pinned_certs: None,
             sni_hostname: "cdn.cloudflare.com".into(),
             allow_self_signed: false,
         }
@@ -47,6 +50,16 @@ impl TlsConfigBuilder {
 
     pub fn ca_certs(mut self, certs: Vec<CertificateDer<'static>>) -> Self {
         self.ca_cert = Some(certs);
+        self
+    }
+
+    /// 证书固定：仅信任指定的服务端证书（等效于把对端证书钉入根存储）。
+    ///
+    /// 这是私有化部署下抗 MITM 的推荐方式——节点证书指纹通过带外渠道分发。
+    pub fn pinned_certs(mut self, certs: Vec<CertificateDer<'static>>) -> Self {
+        if !certs.is_empty() {
+            self.pinned_certs = Some(certs);
+        }
         self
     }
 
@@ -83,14 +96,20 @@ impl TlsConfigBuilder {
     }
 
     /// 构建 rustls ClientConfig（connector 用）。
+    ///
+    /// 信任策略优先级：证书固定 (pinning) > 自定义 CA > 跳过验证（开发） > 系统 CA。
     pub fn build_client(&self) -> Result<Arc<rustls::ClientConfig>> {
         let _ = rustls::crypto::ring::default_provider().install_default();
-        let config = if self.allow_self_signed {
-            // 开发模式：信任所有证书
-            let verifier = danger::NoCertificateVerification::new();
+        let config = if let Some(pinned) = &self.pinned_certs {
+            // 证书固定：钉入的证书作为唯一信任根，抗 MITM
+            let mut root_store = rustls::RootCertStore::empty();
+            for cert in pinned {
+                root_store
+                    .add(cert.clone())
+                    .map_err(|e| Error::Tls(format!("failed to pin cert: {e}")))?;
+            }
             rustls::ClientConfig::builder()
-                .dangerous()
-                .with_custom_certificate_verifier(Arc::new(verifier))
+                .with_root_certificates(root_store)
                 .with_no_client_auth()
         } else if let Some(ca_certs) = &self.ca_cert {
             // 使用自定义 CA
@@ -103,10 +122,16 @@ impl TlsConfigBuilder {
             rustls::ClientConfig::builder()
                 .with_root_certificates(root_store)
                 .with_no_client_auth()
+        } else if self.allow_self_signed {
+            // 开发模式：信任所有证书（仅调试用，生产禁用）
+            let verifier = danger::NoCertificateVerification::new();
+            rustls::ClientConfig::builder()
+                .dangerous()
+                .with_custom_certificate_verifier(Arc::new(verifier))
+                .with_no_client_auth()
         } else {
-            // 默认：使用系统 CA + webpki-roots 不可用时退到空 store
+            // 默认：使用 webpki-roots 内嵌的 CA 列表
             let mut root_store = rustls::RootCertStore::empty();
-            // 使用 webpki-roots 内嵌的 CA 列表
             root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
             rustls::ClientConfig::builder()
                 .with_root_certificates(root_store)
@@ -173,6 +198,93 @@ pub fn generate_self_signed(
     let key_der = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key_pair.serialize_der()));
 
     Ok((vec![cert_der], key_der))
+}
+
+/// 加载已有证书，不存在时生成自签证书并持久化到磁盘（PEM 格式）。
+///
+/// 持久化保证节点重启后证书不变，客户端可以稳定地做证书固定 (pinning)。
+pub fn load_or_generate_self_signed(
+    cert_path: &std::path::Path,
+    key_path: &std::path::Path,
+    hostname: &str,
+) -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)> {
+    if cert_path.exists() && key_path.exists() {
+        return load_certs_from_file(&cert_path.to_path_buf(), &key_path.to_path_buf());
+    }
+
+    let (certs, key) = generate_self_signed(hostname)?;
+
+    if let Some(parent) = cert_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| Error::Tls(format!("create cert dir: {e}")))?;
+    }
+
+    // 写 PEM
+    let cert_pem = certs
+        .iter()
+        .map(|c| {
+            let b64 = base64_encode(c.as_ref());
+            format!("-----BEGIN CERTIFICATE-----\n{}\n-----END CERTIFICATE-----\n", wrap64(&b64))
+        })
+        .collect::<String>();
+    std::fs::write(cert_path, cert_pem).map_err(|e| Error::Tls(format!("write cert: {e}")))?;
+
+    let key_b64 = base64_encode(key.secret_der());
+    let key_pem = format!(
+        "-----BEGIN PRIVATE KEY-----\n{}\n-----END PRIVATE KEY-----\n",
+        wrap64(&key_b64)
+    );
+    std::fs::write(key_path, key_pem).map_err(|e| Error::Tls(format!("write key: {e}")))?;
+
+    // 私钥文件权限收紧（Unix 0600）
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(key_path, std::fs::Permissions::from_mode(0o600));
+    }
+
+    Ok((certs, key))
+}
+
+/// 计算证书的 SHA-256 指纹（hex，用于证书固定配置分发）。
+pub fn cert_fingerprint_sha256(cert: &CertificateDer<'_>) -> String {
+    use sha2::Digest;
+    let digest = sha2::Sha256::digest(cert.as_ref());
+    digest.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// 最小化 base64 编码（避免引入额外依赖）。
+fn base64_encode(data: &[u8]) -> String {
+    const TABLE: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len() * 4 / 3 + 4);
+    for chunk in data.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = *chunk.get(1).unwrap_or(&0) as u32;
+        let b2 = *chunk.get(2).unwrap_or(&0) as u32;
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(TABLE[(n >> 18) as usize & 63] as char);
+        out.push(TABLE[(n >> 12) as usize & 63] as char);
+        if chunk.len() > 1 {
+            out.push(TABLE[(n >> 6) as usize & 63] as char);
+        } else {
+            out.push('=');
+        }
+        if chunk.len() > 2 {
+            out.push(TABLE[n as usize & 63] as char);
+        } else {
+            out.push('=');
+        }
+    }
+    out
+}
+
+/// PEM 按 64 列折行。
+fn wrap64(b64: &str) -> String {
+    b64.as_bytes()
+        .chunks(64)
+        .map(|c| std::str::from_utf8(c).unwrap_or_default())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// 危险的证书验证器——开发模式使用，跳过所有验证。

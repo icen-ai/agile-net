@@ -108,14 +108,16 @@ CREATE INDEX idx_group_rule_rule ON group_rule(rule_id);
 
 ```sql
 CREATE TABLE account (
-    id         TEXT    PRIMARY KEY,          -- UUIDv4
-    username   TEXT    NOT NULL UNIQUE,
-    password   TEXT    NOT NULL,             -- argon2id hash
-    group_id   TEXT    NOT NULL REFERENCES "group"(id),
-    enabled    INTEGER NOT NULL DEFAULT 1,   -- 0=disabled, 1=enabled
-    remark     TEXT    NOT NULL DEFAULT '',
-    created_at TEXT    NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT    NOT NULL DEFAULT (datetime('now'))
+    id                TEXT PRIMARY KEY,          -- UUIDv4
+    username          TEXT NOT NULL UNIQUE,
+    password          TEXT NOT NULL,             -- argon2id hash
+    group_id          TEXT NOT NULL REFERENCES "group"(id),
+    enabled           INTEGER NOT NULL DEFAULT 1,   -- 0=disabled, 1=enabled
+    remark            TEXT NOT NULL DEFAULT '',
+    tunnel_token_hash TEXT,                      -- sha256(tunnel_token)，数据面认证，登录/刷新时轮换
+    last_seen_at      TEXT,                      -- 最近认证/心跳时间
+    created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE UNIQUE INDEX idx_account_username ON account(username);
@@ -127,13 +129,29 @@ CREATE INDEX idx_account_enabled ON account(enabled);
 
 ```sql
 CREATE TABLE relay_token (
-    id         TEXT PRIMARY KEY,            -- UUIDv4
-    token_hash TEXT NOT NULL,               -- sha256(token)，不存明文
-    remark     TEXT NOT NULL DEFAULT '',
+    id           TEXT PRIMARY KEY,            -- UUIDv4
+    token_hash   TEXT NOT NULL UNIQUE,        -- sha256(token)，不存明文
+    token_prefix TEXT NOT NULL,               -- 展示用前缀 "psk_xxxx****"
+    remark       TEXT NOT NULL DEFAULT '',
     last_used_at TEXT,
+    created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+```
+
+### refresh_token — 刷新令牌吊销表
+
+```sql
+CREATE TABLE refresh_token (
+    jti_hash   TEXT PRIMARY KEY,            -- sha256(jti)
+    subject    TEXT NOT NULL,               -- admin/account id
+    role       TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    revoked    INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 ```
+
+refresh 时轮换（旧 jti 立即吊销）；禁用账号/重置密码/登出时批量吊销。
 
 ### node_config — 节点配置（KV 存储）
 

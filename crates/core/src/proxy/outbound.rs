@@ -4,7 +4,7 @@
 
 use crate::error::Result;
 use crate::relay::bridge::bridge;
-use crate::relay::listener::RelayListener;
+use crate::tunnel::opener::ChannelOpener;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -24,15 +24,15 @@ impl DirectOutbound {
 
 /// Tunnel 隧道出站。
 pub struct TunnelOutbound {
-    listener: Arc<RelayListener>,
+    opener: Arc<dyn ChannelOpener>,
 }
 
 impl TunnelOutbound {
-    pub fn new(listener: Arc<RelayListener>) -> Self {
-        Self { listener }
+    pub fn new(opener: Arc<dyn ChannelOpener>) -> Self {
+        Self { opener }
     }
 
-    /// 通过指定 Relay 节点的隧道发起端到端转发
+    /// 通过指定节点的隧道发起端到端转发
     pub async fn proxy_stream<S>(
         &self,
         node_id: &str,
@@ -47,10 +47,7 @@ impl TunnelOutbound {
             node_id,
             target_host, target_port, "initiating tunnel outbound"
         );
-        let mux_channel = self
-            .listener
-            .open_channel(node_id, target_host, target_port)
-            .await?;
+        let mux_channel = self.opener.open(node_id, target_host, target_port).await?;
 
         let (bytes_sent, bytes_recv) = bridge(client_stream, mux_channel).await?;
         Ok((bytes_sent, bytes_recv))

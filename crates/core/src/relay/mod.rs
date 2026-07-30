@@ -9,5 +9,8 @@ pub mod mux;
 
 pub use bridge::bridge;
 pub use connector::{ConnectionState, RelayConnector};
-pub use listener::RelayListener;
+pub use listener::{
+    AuthIdentity, PeerEvent, RelayListener, StaticTokenValidator, TokenValidator, build_acl_router,
+    constant_time_eq,
+};
 pub use mux::{MuxChannel, MuxSession};

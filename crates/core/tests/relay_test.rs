@@ -59,7 +59,7 @@ async fn tls_tunnel_established() -> Result<()> {
     let addr = get_free_addr();
     let token = "secret_token_123";
 
-    let listener = RelayListener::new(addr, token)?;
+    let listener = std::sync::Arc::new(RelayListener::new(addr, token)?);
     tokio::spawn(async move {
         let _ = listener.start().await;
     });
@@ -83,7 +83,7 @@ async fn tls_tunnel_established() -> Result<()> {
 #[tokio::test]
 async fn auth_rejected_with_wrong_token() -> Result<()> {
     let addr = get_free_addr();
-    let listener = RelayListener::new(addr, "correct_token")?;
+    let listener = std::sync::Arc::new(RelayListener::new(addr, "correct_token")?);
     tokio::spawn(async move {
         let _ = listener.start().await;
     });
