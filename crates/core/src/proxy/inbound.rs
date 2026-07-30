@@ -145,6 +145,7 @@ impl ProxyInbound {
             self.stats.total_connections.fetch_add(1, Ordering::Relaxed);
 
             let this = InboundCtx {
+                listen_addr: self.listen_addr,
                 router: self.router.clone(),
                 openers: self.openers.clone(),
                 default_opener: self.default_opener.clone(),
@@ -165,11 +166,17 @@ impl ProxyInbound {
 /// 每连接上下文（避免过多参数传递）。
 #[derive(Clone)]
 struct InboundCtx {
+    listen_addr: SocketAddr,
     router: Arc<ArcSwap<ProxyRouter>>,
     openers: Arc<DashMap<String, Arc<dyn ChannelOpener>>>,
     default_opener: Option<Arc<dyn ChannelOpener>>,
     auth: Option<(String, String)>,
     stats: Arc<ProxyStats>,
+}
+
+/// 自连环防护：目标是代理自身监听地址时拒绝（否则 CONNECT 自身会无限递归新建连接）。
+fn is_self_connect(ctx: &InboundCtx, addr: &SocketAddr) -> bool {
+    *addr == ctx.listen_addr
 }
 
 struct ActiveGuard(Arc<ProxyStats>);
@@ -249,7 +256,8 @@ async fn handle_socks5(
         let ok = crate::relay::listener::constant_time_eq(&uname, expect_user.as_bytes())
             && crate::relay::listener::constant_time_eq(&passwd, expect_pass.as_bytes());
         if !ok {
-            stream.write_all(&[0x01, 0x01]).await?;
+            let _ = stream.write_all(&[0x01, 0x01]).await;
+            let _ = stream.shutdown().await;
             return Err(Error::Auth("invalid socks5 credentials".into()));
         }
         stream.write_all(&[0x01, 0x00]).await?;
@@ -332,6 +340,15 @@ async fn handle_socks5(
                     .ok_or_else(|| Error::Other("dns resolution failed".into()))?,
             };
 
+            // 自连环防护
+            if is_self_connect(&ctx, &target_addr) {
+                let _ = stream
+                    .write_all(&[0x05, 0x02, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+                    .await;
+                let _ = stream.shutdown().await;
+                return Err(Error::Protocol("refused: target is the proxy itself".into()));
+            }
+
             match DirectOutbound::connect(target_addr).await {
                 Ok(mut target_stream) => {
                     stream
@@ -400,8 +417,10 @@ async fn handle_http(
         }
         if req_buf.len() > MAX_HTTP_HEADER {
             let _ = stream
-                .write_all(b"HTTP/1.1 431 Request Header Fields Too Large\r\n\r\n")
+                .write_all(b"HTTP/1.1 431 Request Header Fields Too Large\r\nContent-Length: 0\r\n\r\n")
                 .await;
+            // 优雅关闭写端，确保客户端读到 431 而非 RST
+            let _ = stream.shutdown().await;
             return Err(Error::Protocol("http header too large".into()));
         }
     };
@@ -482,6 +501,12 @@ async fn handle_http(
                     .next()
                     .ok_or_else(|| Error::Other("dns resolution failed".into()))?,
             };
+
+            // 自连环防护
+            if is_self_connect(&ctx, &target_addr) {
+                let _ = stream.write_all(b"HTTP/1.1 403 Forbidden\r\n\r\n").await;
+                return Err(Error::Protocol("refused: target is the proxy itself".into()));
+            }
 
             match DirectOutbound::connect(target_addr).await {
                 Ok(mut target_stream) => {

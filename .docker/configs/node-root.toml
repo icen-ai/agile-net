@@ -1,0 +1,13 @@
+# 根节点（公网）：仅 Listener + API，等待下游与客户端连入
+name = "node-root"
+db_path = "/data/root.db"
+public_host = "node-root"
+
+[api]
+addr = "0.0.0.0:9090"
+
+[listener]
+addr = "0.0.0.0:4430"
+cert_path = "/data/certs/root-cert.pem"
+key_path = "/data/certs/root-key.pem"
+sni_hostname = "cdn.cloudflare.com"

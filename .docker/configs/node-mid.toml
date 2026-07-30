@@ -1,0 +1,20 @@
+# 中间节点：对上是 connector，对下是 listener
+name = "node-mid"
+db_path = "/data/mid.db"
+public_host = "node-mid"
+
+[api]
+addr = "0.0.0.0:9090"
+
+[listener]
+addr = "0.0.0.0:4430"
+cert_path = "/data/certs/mid-cert.pem"
+key_path = "/data/certs/mid-key.pem"
+sni_hostname = "cdn.cloudflare.com"
+
+[connector]
+upstream_addr = "node-root:4430"
+token = "psk_midtoken_000000000000000000000000000000000000"
+sni_hostname = "cdn.cloudflare.com"
+advertise = ["10.140.0.0/16"]
+insecure = true

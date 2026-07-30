@@ -1,0 +1,20 @@
+# 叶子节点（三级）：对上是 connector，对下是 listener
+name = "node-leaf"
+db_path = "/data/leaf.db"
+public_host = "node-leaf"
+
+[api]
+addr = "0.0.0.0:9090"
+
+[listener]
+addr = "0.0.0.0:4430"
+cert_path = "/data/certs/leaf-cert.pem"
+key_path = "/data/certs/leaf-key.pem"
+sni_hostname = "cdn.cloudflare.com"
+
+[connector]
+upstream_addr = "node-mid:4430"
+token = "psk_leaftoken_00000000000000000000000000000000000"
+sni_hostname = "cdn.cloudflare.com"
+advertise = ["10.140.0.0/16"]
+insecure = true

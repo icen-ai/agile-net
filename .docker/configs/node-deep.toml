@@ -1,0 +1,14 @@
+# 深度节点（四级，纯 connector）：直连 deep-net 内网目标
+name = "node-deep"
+db_path = "/data/deep.db"
+public_host = "node-deep"
+
+[api]
+addr = "0.0.0.0:9090"
+
+[connector]
+upstream_addr = "node-leaf:4430"
+token = "psk_deeptoken_00000000000000000000000000000000000"
+sni_hostname = "cdn.cloudflare.com"
+advertise = ["10.140.0.0/16"]
+insecure = true

@@ -34,8 +34,8 @@ pub const AUTH_TIMEOUT: Duration = Duration::from_secs(10);
 pub const MAX_CONNECTIONS: usize = 1024;
 /// 最大待认证连接数。
 pub const MAX_PENDING_AUTH: usize = 256;
-/// 同一 IP 在 60s 窗口内允许的最大认证尝试次数。
-pub const MAX_AUTH_ATTEMPTS_PER_MINUTE: u32 = 20;
+/// 同一 IP 在 60s 窗口内允许的最大认证失败次数（超限直接丢弃连接）。
+pub const MAX_AUTH_FAILURES_PER_MINUTE: u32 = 20;
 
 /// 认证通过后的主体身份。
 #[derive(Debug, Clone)]
@@ -253,10 +253,10 @@ impl RelayListener {
                 continue;
             }
 
-            // 认证频率限制：窗口内尝试次数超限直接丢弃
-            if self.is_auth_rate_limited(&peer_addr.ip()) {
+            // 认证失败频率限制：窗口内失败次数超限直接丢弃（不影响正常节点重连）
+            if self.is_auth_failure_limited(&peer_addr.ip()) {
                 self.active_connections.fetch_sub(1, Ordering::Relaxed);
-                warn!(peer = %peer_addr, "auth rate limit exceeded, dropping");
+                warn!(peer = %peer_addr, "auth failure rate limit exceeded, dropping");
                 drop(stream);
                 continue;
             }
@@ -272,8 +272,17 @@ impl RelayListener {
         }
     }
 
-    /// 检查并记录一次认证尝试；超限返回 true。
-    fn is_auth_rate_limited(&self, ip: &IpAddr) -> bool {
+    /// 该 IP 是否因认证失败超限被限流。
+    fn is_auth_failure_limited(&self, ip: &IpAddr) -> bool {
+        let Some(entry) = self.auth_attempts.get(ip) else {
+            return false;
+        };
+        let (count, window_start) = *entry.value();
+        window_start.elapsed() <= Duration::from_secs(60) && count > MAX_AUTH_FAILURES_PER_MINUTE
+    }
+
+    /// 记录一次认证失败。
+    fn record_auth_failure(&self, ip: &IpAddr) {
         let mut entry = self.auth_attempts.entry(*ip).or_insert((0, Instant::now()));
         let (count, window_start) = entry.value_mut();
         if window_start.elapsed() > Duration::from_secs(60) {
@@ -281,7 +290,11 @@ impl RelayListener {
             *window_start = Instant::now();
         }
         *count += 1;
-        *count > MAX_AUTH_ATTEMPTS_PER_MINUTE
+    }
+
+    /// 认证成功：清零该 IP 的失败计数。
+    fn clear_auth_failures(&self, ip: &IpAddr) {
+        self.auth_attempts.remove(ip);
     }
 
     /// 处理单个 TCP 连接（TLS 握手 + 认证 + 控制循环）
@@ -345,6 +358,7 @@ impl RelayListener {
 
         match self.validator.validate(&auth_req) {
             Some(identity) => {
+                self.clear_auth_failures(&peer_addr.ip());
                 Frame::empty(FrameType::AuthOk, 0)
                     .write_to(&mut tls_stream)
                     .await?;
@@ -352,6 +366,7 @@ impl RelayListener {
             }
             None => {
                 warn!(peer = %peer_addr, node_id = %auth_req.node_id, "auth failed: bad token");
+                self.record_auth_failure(&peer_addr.ip());
                 // 随机延迟 150~400ms，拖慢在线爆破
                 let delay_ms = 150 + rand::random::<u64>() % 250;
                 tokio::time::sleep(Duration::from_millis(delay_ms)).await;

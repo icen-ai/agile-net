@@ -618,7 +618,7 @@ fn spawn_config_watcher(
                 let new_version = data["version"].as_u64().unwrap_or(version);
                 let rules = parse_rules(data);
                 version = new_version;
-                debug!(node = %node_id, version, "config updated");
+                info!(node = %node_id, version, "config updated");
 
                 if let Some(mut h) = inner.nodes.get_mut(&node_id) {
                     h.state.rules = rules;

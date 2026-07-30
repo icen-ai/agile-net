@@ -1,51 +1,137 @@
-name: anet-test
+# AgileNet 深度链路部署测试
+#
+# 拓扑（四层嵌套网络，四级节点链）：
+#   tester ──public──► node-root ──public──► node-mid ──mid──► node-leaf ──leaf──► node-deep ──deep──► target
+#
+# tester 只能到达 node-root/node-mid；target (10.140.0.100) 仅 node-deep 可达。
+# 数据路径：client(tester) → root → mid → leaf → deep → target
+#
+# 用法：
+#   docker compose -f .docker/docker-compose.test.yaml build
+#   docker compose -f .docker/docker-compose.test.yaml up --abort-on-container-exit --exit-code-from tester
+name: anet-chain-test
 
 services:
-  # 内部目标网络 HTTP 服务
-  internal-target:
+  # ---------- 内网目标（仅 deep-net 可达） ----------
+  target:
     image: nginx:alpine
-    container_name: internal-target
+    container_name: anet-target
     networks:
-      internal-net:
-        ipv4_address: 10.120.0.100
+      deep-net:
+        ipv4_address: 10.140.0.100
 
-  # 出口节点 Node-B (部署在内网, 可访问 internal-target)
-  node-b:
-    image: alpine:latest
-    container_name: agile-net-node-b
-    command: sh -c "echo 'Node B Running' && tail -f /dev/null"
+  # ---------- L1 根节点（公网） ----------
+  node-root:
+    image: anet:dev
+    container_name: anet-node-root
+    command: agile-net-node /etc/agile-net/node.toml
+    environment:
+      AGILE_ADMIN_PASSWORD: "ChainTest123!"
+      AGILE_RELAY_TOKENS: "psk_midtoken_000000000000000000000000000000000000"
+      AGILE_PUBLIC_HOST: "node-root"
+    volumes:
+      - ./configs/node-root.toml:/etc/agile-net/node.toml:ro
     networks:
-      relay-net:
-        ipv4_address: 172.28.0.20
-      internal-net:
-        ipv4_address: 10.120.0.20
-
-  # 中继节点 Node-A (中继穿透)
-  node-a:
-    image: alpine:latest
-    container_name: agile-net-node-a
-    command: sh -c "echo 'Node A Running' && tail -f /dev/null"
-    networks:
-      relay-net:
+      public-net:
         ipv4_address: 172.28.0.10
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:9090/"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
 
-  # 客户端 Client
-  client:
-    image: alpine:latest
-    container_name: agile-net-client
-    command: sh -c "echo 'Client Running' && tail -f /dev/null"
+  # ---------- L2 中间节点 ----------
+  node-mid:
+    image: anet:dev
+    container_name: anet-node-mid
+    command: agile-net-node /etc/agile-net/node.toml
+    environment:
+      AGILE_ADMIN_PASSWORD: "ChainTest123!"
+      AGILE_RELAY_TOKENS: "psk_leaftoken_00000000000000000000000000000000000"
+      AGILE_PUBLIC_HOST: "node-mid"
+    volumes:
+      - ./configs/node-mid.toml:/etc/agile-net/node.toml:ro
     networks:
-      relay-net:
+      public-net:
+        ipv4_address: 172.28.0.20
+      mid-net:
+        ipv4_address: 10.100.0.20
+    depends_on:
+      node-root:
+        condition: service_healthy
+
+  # ---------- L3 叶子节点 ----------
+  node-leaf:
+    image: anet:dev
+    container_name: anet-node-leaf
+    command: agile-net-node /etc/agile-net/node.toml
+    environment:
+      AGILE_RELAY_TOKENS: "psk_deeptoken_00000000000000000000000000000000000"
+    volumes:
+      - ./configs/node-leaf.toml:/etc/agile-net/node.toml:ro
+    networks:
+      mid-net:
+        ipv4_address: 10.100.0.30
+      leaf-net:
+        ipv4_address: 10.120.0.30
+    depends_on:
+      node-root:
+        condition: service_healthy
+
+  # ---------- L4 深度节点（纯 connector） ----------
+  node-deep:
+    image: anet:dev
+    container_name: anet-node-deep
+    command: agile-net-node /etc/agile-net/node.toml
+    volumes:
+      - ./configs/node-deep.toml:/etc/agile-net/node.toml:ro
+    networks:
+      leaf-net:
+        ipv4_address: 10.120.0.40
+      deep-net:
+        ipv4_address: 10.140.0.40
+    depends_on:
+      node-leaf:
+        condition: service_started
+
+  # ---------- 测试执行器（客户端） ----------
+  tester:
+    image: anet:dev
+    container_name: anet-tester
+    command: sh /tests/run-chain-test.sh
+    volumes:
+      - ./tests:/tests:ro
+    networks:
+      public-net:
         ipv4_address: 172.28.0.5
+    depends_on:
+      node-root:
+        condition: service_healthy
+      node-mid:
+        condition: service_started
+      node-leaf:
+        condition: service_started
+      node-deep:
+        condition: service_started
 
 networks:
-  relay-net:
+  public-net:
     driver: bridge
     ipam:
       config:
         - subnet: 172.28.0.0/16
-  internal-net:
+  mid-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.100.0.0/16
+  leaf-net:
     driver: bridge
     ipam:
       config:
         - subnet: 10.120.0.0/16
+  deep-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.140.0.0/16
