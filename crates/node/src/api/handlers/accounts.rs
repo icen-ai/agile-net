@@ -291,9 +291,9 @@ pub async fn delete_account(
     }
 }
 
-/// 生成客户端接入 URL。
+/// 生成客户端接入 URL（指向管理 API 端点，数据面端点由 config 下发）。
 fn build_connect_url(state: &ApiState, username: &str, password: &str) -> String {
-    let (server, port) = state.public_endpoint();
+    let (server, port) = state.public_api_endpoint();
     format!(
         "agilenet://connect?server={server}&port={port}&account={username}&password={password}&tls=1"
     )

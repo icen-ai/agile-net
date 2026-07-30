@@ -87,7 +87,7 @@ async fn cli_full_workflow_against_live_api() {
         proxy_listen: None,
         log_buffer: LogBuffer::new(),
     });
-    let state = ApiState::new(db.clone(), jwt, runtime, "127.0.0.1".into(), 4430);
+    let state = ApiState::new(db.clone(), jwt, runtime, "127.0.0.1".into(), 9090, 4430);
     let app = create_app(state);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();

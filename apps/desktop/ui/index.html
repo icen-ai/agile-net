@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AgileNet 客户端</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <div class="brand">⚡ AgileNet</div>
+  <div class="proxy-pill" id="proxy-pill">
+    <span class="dot off" id="proxy-dot"></span><span id="proxy-text">代理未启动</span>
+  </div>
+</header>
+
+<main>
+  <!-- 快速接入 -->
+  <section class="card">
+    <h3>🚀 快速接入</h3>
+    <div class="row">
+      <input id="connect-url" class="grow mono" placeholder="粘贴接入链接 agilenet://connect?server=...&account=...&password=sk-...">
+      <button id="btn-import">导入并连接</button>
+    </div>
+    <div class="hint">接入链接由管理员在节点控制台创建账号时生成（sk- 强密码）</div>
+  </section>
+
+  <!-- 本地代理 -->
+  <section class="card">
+    <h3>🔌 本地代理</h3>
+    <div class="row">
+      <label>端口</label>
+      <input id="proxy-port" type="number" value="7890" style="width:100px">
+      <button id="btn-proxy-toggle" class="ghost">启动代理</button>
+      <span class="hint" id="proxy-hint">SOCKS5 / HTTP 自动识别，仅监听 127.0.0.1</span>
+    </div>
+  </section>
+
+  <!-- 节点列表 -->
+  <section class="card">
+    <h3>🌐 已连接节点 <button class="ghost small" id="btn-refresh">刷新</button></h3>
+    <div id="nodes-list"><div class="empty">尚未连接节点</div></div>
+  </section>
+
+  <!-- 手动添加 -->
+  <section class="card">
+    <h3 onclick="toggleManual()" style="cursor:pointer">➕ 手动添加节点 <span class="hint" id="manual-arrow">▸</span></h3>
+    <div id="manual-form" style="display:none">
+      <div class="grid2">
+        <div><label>节点 API 地址（host:port 或 https://…）</label><input id="m-addr" placeholder="cdn.example.com:9090"></div>
+        <div><label>账号</label><input id="m-user" placeholder="zhangsan"></div>
+        <div><label>密码</label><input id="m-pass" type="password" placeholder="sk-..."></div>
+        <div><label>证书固定 PEM 路径（可选，生产推荐）</label><input id="m-pin" placeholder="certs/node.pem"></div>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <label class="chk"><input type="checkbox" id="m-insecure"> 跳过证书校验（仅开发）</label>
+        <label class="chk"><input type="checkbox" id="m-hosts"> 管理系统 hosts</label>
+        <label class="chk"><input type="checkbox" id="m-save" checked> 保存凭据</label>
+        <button id="btn-connect">连接</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- 已保存节点 -->
+  <section class="card">
+    <h3>💾 已保存节点</h3>
+    <div id="creds-list"><div class="empty">无保存的凭据</div></div>
+  </section>
+
+  <!-- 合并路由 -->
+  <section class="card">
+    <h3>🔀 生效路由（合并视图）</h3>
+    <table><thead><tr><th>类型</th><th>匹配值</th><th>节点</th></tr></thead><tbody id="rules-body"></tbody></table>
+  </section>
+</main>
+
+<div id="toasts"></div>
+<script src="app.js"></script>
+</body>
+</html>

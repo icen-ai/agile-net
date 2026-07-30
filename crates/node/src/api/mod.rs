@@ -59,8 +59,11 @@ pub struct ApiState {
     pub login_limiter: LoginRateLimiter,
     /// 创建/重置账号后的 connect_url 短期缓存（10 分钟，供二维码取用）
     connect_url_cache: Arc<DashMap<String, (String, Instant)>>,
-    /// 节点公网接入地址（connect_url 用）
+    /// 节点公网接入地址
     public_host: String,
+    /// 管理 API 端口（connect_url 指向此端点登录）
+    api_port: u16,
+    /// Relay 数据面端口（config.tunnel 指向此端点建立隧道）
     relay_port: u16,
 }
 
@@ -70,6 +73,7 @@ impl ApiState {
         jwt: Arc<JwtService>,
         runtime: Arc<NodeRuntime>,
         public_host: String,
+        api_port: u16,
         relay_port: u16,
     ) -> Self {
         Self {
@@ -79,12 +83,18 @@ impl ApiState {
             login_limiter: LoginRateLimiter::new(),
             connect_url_cache: Arc::new(DashMap::new()),
             public_host,
+            api_port,
             relay_port,
         }
     }
 
-    /// 客户端接入的公网端点（host, port）。
-    pub fn public_endpoint(&self) -> (String, u16) {
+    /// 客户端 API 接入端点（connect_url 用）。
+    pub fn public_api_endpoint(&self) -> (String, u16) {
+        (self.public_host.clone(), self.api_port)
+    }
+
+    /// 数据面隧道端点（client config 用）。
+    pub fn public_tunnel_endpoint(&self) -> (String, u16) {
         (self.public_host.clone(), self.relay_port)
     }
 

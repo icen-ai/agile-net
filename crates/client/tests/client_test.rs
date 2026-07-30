@@ -44,7 +44,10 @@ async fn start_full_node() -> (String, SocketAddr, SocketAddr) {
         let _ = l.start().await;
     });
 
-    // API 面
+    // API 面（先绑定拿到端口，再构建状态）
+    let api_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let api_addr = api_listener.local_addr().unwrap();
+
     let jwt = Arc::new(JwtService::load_or_create(db.clone()).unwrap());
     let runtime = Arc::new(NodeRuntime {
         started_at: Instant::now(),
@@ -59,12 +62,11 @@ async fn start_full_node() -> (String, SocketAddr, SocketAddr) {
         jwt,
         runtime,
         "127.0.0.1".into(),
+        api_addr.port(),
         relay_addr.port(),
     );
     let app = create_app(state);
 
-    let api_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let api_addr = api_listener.local_addr().unwrap();
     tokio::spawn(async move {
         let _ = axum::serve(api_listener, app).await;
     });

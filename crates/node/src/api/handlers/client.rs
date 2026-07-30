@@ -76,7 +76,7 @@ fn build_config_response(state: &ApiState, account_id: &str) -> Response {
         })
         .collect::<Vec<_>>();
 
-    let (server, port) = state.public_endpoint();
+    let (server, port) = state.public_tunnel_endpoint();
 
     ok(json!({
         "version": version,

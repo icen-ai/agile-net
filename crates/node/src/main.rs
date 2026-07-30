@@ -79,6 +79,9 @@ async fn main() -> Result<()> {
         );
     }
 
+    // 环境变量预置 Relay Tokens（AGILE_RELAY_TOKENS，逗号分隔，容器编排用）
+    seed_relay_tokens_from_env(&db)?;
+
     // 3. JWT 服务（密钥从数据库装载或生成）
     let jwt = Arc::new(JwtService::load_or_create(db.clone())?);
 
@@ -195,8 +198,13 @@ async fn main() -> Result<()> {
         .ok()
         .or_else(|| config.public_host.clone())
         .unwrap_or_else(|| "127.0.0.1".to_string());
+    let api_port: u16 = std::env::var("API_LISTEN")
+        .ok()
+        .or_else(|| Some(config.api.addr.clone()))
+        .and_then(|a| a.rsplit(':').next()?.parse().ok())
+        .unwrap_or(9090);
 
-    let state = ApiState::new(db.clone(), jwt, runtime, public_host, relay_port);
+    let state = ApiState::new(db.clone(), jwt, runtime, public_host, api_port, relay_port);
     let app = create_app(state).merge(create_ui_router());
 
     let api_listen_addr = std::env::var("API_LISTEN").unwrap_or_else(|_| config.api.addr.clone());
@@ -249,6 +257,26 @@ fn seed_admin_from_env(db: &Database) -> Result<()> {
     let hash = hash_password(&password)?;
     db.create_admin(&username, &hash)?;
     tracing::info!(username = %username, "admin account seeded from environment");
+    Ok(())
+}
+
+/// 环境变量预置 Relay Tokens：AGILE_RELAY_TOKENS="psk_aaa,psk_bbb"（逗号分隔）。
+///
+/// 容器编排场景下，下游节点的 connector token 需要预先存在于上游数据库。
+/// 已存在（按哈希判重）的 token 会跳过，保证幂等。
+fn seed_relay_tokens_from_env(db: &Database) -> Result<()> {
+    let Ok(tokens) = std::env::var("AGILE_RELAY_TOKENS") else {
+        return Ok(());
+    };
+    for token in tokens.split(',').map(|t| t.trim()).filter(|t| !t.is_empty()) {
+        let hash = agile_net_node::db::sha256_hex(token.as_bytes());
+        if db.check_relay_token(&hash)? {
+            continue;
+        }
+        let prefix = format!("{}****", &token[..token.len().min(8)]);
+        db.create_relay_token(&hash, &prefix, "seeded from environment")?;
+        tracing::info!(prefix = %prefix, "relay token seeded from environment");
+    }
     Ok(())
 }
 
