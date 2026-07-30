@@ -1,0 +1,28 @@
+# IDE
+.idea/
+*.iml
+
+# Rust
+target/
+Cargo.lock
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
+desktop.ini
+
+# Node (web ui build)
+node_modules/
+dist/
+
+# Database
+*.db
+*.db-shm
+*.db-wal
+
+# Secrets
+*.pem
+*.key
+.env
