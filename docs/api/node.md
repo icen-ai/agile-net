@@ -32,7 +32,7 @@
       }
     },
     "proxy": {
-      "listen": "127.0.0.1:7890",
+      "listen": "127.0.0.1:57890",
       "active_connections": 15,
       "rule_count": 8
     },
@@ -161,7 +161,7 @@
   },
   "proxy": {
     "listen_addr": "127.0.0.1",
-    "listen_port": 7890
+    "listen_port": 57890
   }
 }
 ```

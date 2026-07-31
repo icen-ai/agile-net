@@ -177,7 +177,7 @@ fn parse_connect_url(url: String) -> Result<ConnectInput, String> {
     let addr = if server.contains(':') {
         server
     } else {
-        format!("{}:{}", server, port.unwrap_or(9090))
+        format!("{}:{}", server, port.unwrap_or(59090))
     };
     Ok(ConnectInput {
         addr,
@@ -260,7 +260,7 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                     if client.proxy_port() > 0 {
                         client.stop_proxy().await;
                     } else {
-                        let _ = client.start_proxy(7890).await;
+                        let _ = client.start_proxy(57890).await;
                     }
                 });
             }

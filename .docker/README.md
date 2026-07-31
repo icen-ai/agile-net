@@ -42,17 +42,17 @@ docker compose -f .docker/docker-compose.test.yaml up \
 
 同一四级链拓扑的常驻版本（无 tester 断言），供从**宿主机**真实访问最深层网络：
 
-- `node-root` 的 API(9090) 与 Relay(4430) 发布到宿主机（`127.0.0.1:19090` / `127.0.0.1:4430`），
+- `node-root` 的 API(59090) 与 Relay(54430) 发布到宿主机（`127.0.0.1:59290` / `127.0.0.1:54430`），
   且 `AGILE_PUBLIC_HOST=127.0.0.1` 保证客户端拉到的隧道端点在宿主机可解析
 - `target` 挂载 `tests/deep-index.html` 作为深层网络标识页
 
 ```bash
 docker compose -f .docker/docker-compose.chain.yaml up -d
-# 宿主机客户端连入（addr 指向发布的 API 端口，隧道端点自动下发 127.0.0.1:4430）
-# [[nodes]] addr = "http://127.0.0.1:19090" ...
+# 宿主机客户端连入（addr 指向发布的 API 端口，隧道端点自动下发 127.0.0.1:54430）
+# [[nodes]] addr = "http://127.0.0.1:59290" ...
 ```
 
 经客户端本地代理即可访问 `http://10.140.0.100/`；演示时可在宿主机再架一层
-HTTP→CONNECT 转发（如 target/tmp/chain-gateway.js），把 `http://127.0.0.1:18080/`
+HTTP→CONNECT 转发（如 target/tmp/chain-gateway.js），把 `http://127.0.0.1:58080/`
 映射到深层目标，浏览器直接打开即可。
 清理：`docker compose -f .docker/docker-compose.chain.yaml down -v`

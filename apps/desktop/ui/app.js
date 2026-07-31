@@ -2,7 +2,7 @@
 // Tauri IPC 桥（v2：window.__TAURI__.core.invoke）；纯浏览器预览时提供空数据桩
 const TAURI = window.__TAURI__ || null;
 const invoke = TAURI ? TAURI.core.invoke : (cmd) => {
-  const mock = { list_nodes: [], list_credentials: [], proxy_status: { running: false, port: 7890 }, get_autostart: false };
+  const mock = { list_nodes: [], list_credentials: [], proxy_status: { running: false, port: 57890 }, get_autostart: false };
   return cmd in mock ? Promise.resolve(mock[cmd]) : Promise.resolve(null);
 };
 const $ = (id) => document.getElementById(id);
@@ -151,7 +151,7 @@ async function connectWith(input, btn) {
       try {
         const ps = await invoke('proxy_status');
         if (!ps.running) {
-          const port = parseInt($('proxy-port').value || '7890', 10);
+          const port = parseInt($('proxy-port').value || '57890', 10);
           await invoke('start_proxy', { port });
         }
       } catch (e) { /* 代理自启失败不阻塞连接 */ }
@@ -225,7 +225,7 @@ async function toggleProxy() {
       await invoke('stop_proxy');
       toast('代理已停止', 'ok');
     } else {
-      const port = parseInt($('proxy-port').value || '7890', 10);
+      const port = parseInt($('proxy-port').value || '57890', 10);
       const actual = await invoke('start_proxy', { port });
       toast('代理已启动 127.0.0.1:' + actual, 'ok');
     }

@@ -217,7 +217,7 @@ fn default_db_path() -> String {
 }
 
 fn default_api_addr() -> String {
-    "0.0.0.0:9090".into()
+    "0.0.0.0:59090".into()
 }
 
 fn default_proxy_addr() -> String {

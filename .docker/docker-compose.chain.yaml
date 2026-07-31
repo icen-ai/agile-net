@@ -4,12 +4,12 @@
 #   宿主机 ──► node-root ──public──► node-mid ──mid──► node-leaf ──leaf──► node-deep ──deep──► target
 #
 # 与 docker-compose.test.yaml 的区别：常驻运行（无 tester 断言），并将 root 的
-# API(9090) 与 Relay 监听(4430) 发布到宿主机 127.0.0.1，供宿主机上的
+# API(59090) 与 Relay 监听(54430) 发布到宿主机 127.0.0.1，供宿主机上的
 # agile-net-client 连入；AGILE_PUBLIC_HOST=127.0.0.1 保证客户端拿到的隧道端点可解析。
 #
 # 用法：
 #   docker compose -f .docker/docker-compose.chain.yaml up -d
-#   宿主机客户端: addr = "http://127.0.0.1:19090"（隧道端点自动下发为 127.0.0.1:4430）
+#   宿主机客户端: addr = "http://127.0.0.1:59290"（隧道端点自动下发为 127.0.0.1:54430）
 name: anet-chain
 
 services:
@@ -35,13 +35,13 @@ services:
     volumes:
       - ./configs/node-root.toml:/etc/agile-net/node.toml:ro
     ports:
-      - "127.0.0.1:19090:9090"
-      - "127.0.0.1:4430:4430"
+      - "127.0.0.1:59290:59090"
+      - "127.0.0.1:54430:54430"
     networks:
       public-net:
         ipv4_address: 172.28.0.10
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:9090/"]
+      test: ["CMD", "curl", "-sf", "http://localhost:59090/"]
       interval: 2s
       timeout: 3s
       retries: 30

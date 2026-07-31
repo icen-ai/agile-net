@@ -16,11 +16,11 @@ public_host = "cdn.example.com"
 
 # API + Web UI 监听（HTTP，生产建议前置 HTTPS 反代）
 [api]
-addr = "0.0.0.0:9090"
+addr = "0.0.0.0:59090"
 
 # 上游角色：接受下游节点与客户端连入
 [listener]
-addr = "0.0.0.0:4430"
+addr = "0.0.0.0:54430"
 # 证书不存在时自动生成自签证书并持久化（重启不变，支持客户端固定）
 cert_path = "certs/relay-cert.pem"
 key_path = "certs/relay-key.pem"
@@ -29,7 +29,7 @@ sni_hostname = "cdn.cloudflare.com"
 
 # 下游角色：主动连接上游节点（可省略）
 [connector]
-upstream_addr = "cdn.example.com:4430"
+upstream_addr = "cdn.example.com:54430"
 token = "psk_xxxxxxxxxxxxxxxx"
 sni_hostname = "cdn.cloudflare.com"
 # 向上游通告本节点可服务的网段/域名（多级路由）
@@ -57,7 +57,7 @@ addr = "127.0.0.1:1080"
 
 # 管理 API HTTPS（可省略；配置后 API 以 HTTPS 提供，可复用 ACME 证书）
 # [api]
-# addr = "0.0.0.0:9090"
+# addr = "0.0.0.0:59090"
 # tls_cert_path = "certs/acme-cert.pem"
 # tls_key_path = "certs/acme-key.pem"
 
@@ -89,7 +89,7 @@ addr = "127.0.0.1:1080"
 ## Client 配置 `agile-net-client.toml`
 
 ```toml
-proxy_port = 7890
+proxy_port = 57890
 manage_hosts = true        # resolve 规则自动写系统 hosts
 
 # 本地代理认证（可选）
@@ -98,7 +98,7 @@ manage_hosts = true        # resolve 规则自动写系统 hosts
 # password = "pass"
 
 [[nodes]]
-addr = "https://cdn.example.com:9090"   # 节点 API 地址
+addr = "https://cdn.example.com:59090"   # 节点 API 地址
 username = "zhangsan"
 password = "sk-xxxxxxxx"                 # 创建账号时下发，仅存本机
 insecure = false

@@ -4,10 +4,10 @@ db_path = "/data/deep.db"
 public_host = "node-deep"
 
 [api]
-addr = "0.0.0.0:9090"
+addr = "0.0.0.0:59090"
 
 [connector]
-upstream_addr = "node-leaf:4430"
+upstream_addr = "node-leaf:54430"
 token = "psk_deeptoken_00000000000000000000000000000000000"
 sni_hostname = "cdn.cloudflare.com"
 advertise = ["10.140.0.0/16"]

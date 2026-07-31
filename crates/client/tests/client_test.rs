@@ -265,7 +265,7 @@ fn config_cache_roundtrip() {
     let dir = std::env::temp_dir().join(format!("agile-cache-test-{}", uuid::Uuid::new_v4()));
     let cache = agile_net_client::ConfigCache::with_dir(dir.clone());
     let cfg = agile_net_client::CachedNodeConfig {
-        addr: "node-a:9090".into(),
+        addr: "node-a:59090".into(),
         username: "user1".into(),
         node_name: "节点A".into(),
         rules: vec![agile_net_client::ClientRule {
@@ -276,7 +276,7 @@ fn config_cache_roundtrip() {
         }],
         config_version: 7,
         tunnel_server: "node-a".into(),
-        tunnel_port: 4430,
+        tunnel_port: 54430,
         tunnel_token: "tun_x".into(),
         refresh_token: "rt_y".into(),
         insecure: true,
@@ -284,12 +284,12 @@ fn config_cache_roundtrip() {
         updated_at: "now".into(),
     };
     cache.save(&cfg);
-    let loaded = cache.load("node-a:9090", "user1").unwrap();
+    let loaded = cache.load("node-a:59090", "user1").unwrap();
     assert_eq!(loaded.config_version, 7);
     assert_eq!(loaded.rules.len(), 1);
     assert_eq!(loaded.node_name, "节点A");
-    cache.remove("node-a:9090", "user1");
-    assert!(cache.load("node-a:9090", "user1").is_none());
+    cache.remove("node-a:59090", "user1");
+    assert!(cache.load("node-a:59090", "user1").is_none());
     let _ = std::fs::remove_dir_all(&dir);
 }
 

@@ -34,7 +34,7 @@ agile-net-core (Rust lib crate)
 
 ```
 用户机 (Client)
-│  本地 SOCKS5/HTTP 127.0.0.1:7890
+│  本地 SOCKS5/HTTP 127.0.0.1:57890
 │  路由表：IP-CIDR 10.12.0.0/16 → Node-B
 │          HOST  git.internal  → Node-B
 │          *                   → DIRECT
@@ -84,7 +84,7 @@ agile-net-client (Tauri)
 │   ├── Commands (IPC)
 │   └── System Tray
 ├── Core Runtime (tokio)
-│   ├── Proxy Inbound (127.0.0.1:7890)
+│   ├── Proxy Inbound (127.0.0.1:57890)
 │   ├── Router (多节点合并路由表)
 │   ├── Tunnel Pool (N 条到不同节点的 TLS 连接)
 │   └── Hosts Manager (写 /etc/hosts 或 Windows hosts)

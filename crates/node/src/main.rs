@@ -326,7 +326,7 @@ async fn main() -> Result<()> {
         .ok()
         .or_else(|| Some(config.api.addr.clone()))
         .and_then(|a| a.rsplit(':').next()?.parse().ok())
-        .unwrap_or(9090);
+        .unwrap_or(59090);
 
     let state = {
         let mut st = ApiState::new(db.clone(), jwt, runtime, public_host, api_port, relay_port);

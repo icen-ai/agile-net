@@ -27,7 +27,7 @@ async fn test_app() -> (Router, Database) {
         log_buffer: LogBuffer::new(),
         cert_fingerprint: None,
     });
-    let state = ApiState::new(db.clone(), jwt, runtime, "127.0.0.1".into(), 9090, 4430);
+    let state = ApiState::new(db.clone(), jwt, runtime, "127.0.0.1".into(), 59090, 54430);
     (create_app(state), db)
 }
 

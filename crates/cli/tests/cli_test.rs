@@ -32,8 +32,8 @@ fn cli_status_parsing() {
 
 #[test]
 fn cli_global_flags() {
-    let cli = Cli::parse_from(["anet", "--api", "http://1.2.3.4:9090", "--json", "status"]);
-    assert_eq!(cli.api.as_deref(), Some("http://1.2.3.4:9090"));
+    let cli = Cli::parse_from(["anet", "--api", "http://1.2.3.4:59090", "--json", "status"]);
+    assert_eq!(cli.api.as_deref(), Some("http://1.2.3.4:59090"));
     assert!(cli.json);
 }
 
@@ -88,7 +88,7 @@ async fn cli_full_workflow_against_live_api() {
         log_buffer: LogBuffer::new(),
         cert_fingerprint: None,
     });
-    let state = ApiState::new(db.clone(), jwt, runtime, "127.0.0.1".into(), 9090, 4430);
+    let state = ApiState::new(db.clone(), jwt, runtime, "127.0.0.1".into(), 59090, 54430);
     let app = create_app(state);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();

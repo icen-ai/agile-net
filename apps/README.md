@@ -20,6 +20,43 @@
 - 合并路由视图：全部已连接节点规则的实时汇总
 - 错误翻译：底层网络错误自动转为用户友好的中文提示
 
+## 与 Clash / FlClash 等代理工具共存
+
+AgileNet 本地代理默认监听 `127.0.0.1:57890`（5 万段端口，刻意避开 Clash 系常用的 7890/7897/9090），
+两种工具可以同时运行，互不影响。推荐组合方式：
+
+### 方案 A（推荐）：FlClash 为主入口，AgileNet 作为其代理节点
+
+系统代理保持 FlClash 不变，把 AgileNet 加为 Clash 的一个代理节点，只把内网网段分流进来。
+在 FlClash 的「覆写 / Mixin」配置中加入：
+
+```yaml
+proxies:
+  - name: AgileNet
+    type: socks5
+    server: 127.0.0.1
+    port: 57890
+rules:
+  # 把管理员分配给你的内网网段指向 AgileNet，注意放在 rules 最前面
+  - IP-CIDR,10.140.0.0/16,AgileNet,no-resolve
+```
+
+效果：访问内网网段 → AgileNet 隧道；其余流量 → 原 Clash 节点，互不影响。
+
+### 方案 B：AgileNet 在前，Clash 兜底（限 FlClash TUN 模式）
+
+系统代理指向 AgileNet `127.0.0.1:57890`：命中规则的流量进入隧道，未命中流量 DIRECT 直连。
+此时若 FlClash 开着 TUN（虚拟网卡），直连流量仍会被 Clash 接管出口，两者自动叠加；
+若 FlClash 仅是系统代理模式，未命中流量不会经过 Clash（Clash 被旁路），该场景请用方案 A。
+
+### TUN 模式补充
+
+FlClash 开 TUN 时，10.140.0.0/16 这类内网地址也会被虚拟网卡接管——按方案 A 配置规则即可
+（TUN 同样按 Clash 规则分流）。AgileNet 的隧道端点是 127.0.0.1（loopback 默认不进 TUN），不受影响。
+
+> 注意：如果浏览器访问内网目标时返回代理错误，先确认请求进的是 AgileNet 的端口（57890）
+> 而不是 Clash 的 7890——Clash 没有内网路由时会直接失败，表现为截断的空响应。
+
 ## Windows 安装包
 
 ```bash

@@ -18,7 +18,7 @@ pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
 
-    /// 节点 API 地址（默认读取会话或 http://127.0.0.1:9090）
+    /// 节点 API 地址（默认读取会话或 http://127.0.0.1:59090）
     #[arg(global = true, long)]
     pub api: Option<String>,
 
@@ -565,7 +565,7 @@ pub async fn run_cli(cli: Cli) -> Result<()> {
 async fn cmd_login(api: Option<String>, args: LoginArgs) -> Result<()> {
     let base = api
         .or_else(|| Session::load().map(|s| s.api))
-        .unwrap_or_else(|| "http://127.0.0.1:9090".to_string());
+        .unwrap_or_else(|| "http://127.0.0.1:59090".to_string());
     let base = base.trim_end_matches('/').to_string();
 
     let username = match args.username {

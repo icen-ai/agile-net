@@ -3,11 +3,11 @@
 //! 用法：agile-net-client [config.toml]
 //! 配置文件缺省为 ./agile-net-client.toml，示例：
 //! ```toml
-//! proxy_port = 7890
+//! proxy_port = 57890
 //! manage_hosts = true
 //!
 //! [[nodes]]
-//! addr = "https://node-a.example.com:9090"
+//! addr = "https://node-a.example.com:59090"
 //! username = "zhangsan"
 //! password = "sk-..."
 //! insecure = false
@@ -51,7 +51,7 @@ struct NodeEntry {
 }
 
 fn default_proxy_port() -> u16 {
-    7890
+    57890
 }
 
 #[tokio::main]

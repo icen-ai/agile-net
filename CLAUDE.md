@@ -70,7 +70,7 @@ rtk cargo test --workspace
 # 代码规范检查
 rtk cargo clippy --workspace
 
-# 启动 Node 服务 (默认 9090 端口)
+# 启动 Node 服务 (默认 59090 端口)
 rtk cargo run -p agile-net-node
 
 # 使用 CLI 工具 anet

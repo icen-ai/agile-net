@@ -8,8 +8,8 @@
 #   T5  长轮询配置热更新：新增规则后客户端无需重连即生效
 set -u
 
-ROOT_API="http://node-root:9090"
-MID_API="http://node-mid:9090"
+ROOT_API="http://node-root:59090"
+MID_API="http://node-mid:59090"
 ADMIN_PASS="ChainTest123!"
 PASS=0
 FAIL=0
@@ -90,7 +90,7 @@ ACC_PASS2=$(create_account "$MID_TOKEN" "$MID_API" "$GID2" "chainuser2")
 # ---------- 启动客户端（连接 root） ----------
 log "启动 agile-net-client（连接 root）..."
 cat > /tmp/client.toml <<EOF
-proxy_port = 7890
+proxy_port = 57890
 
 [[nodes]]
 addr = "$ROOT_API"
@@ -104,7 +104,7 @@ sleep 4
 
 # ---------- T1: SOCKS5 四级链 ----------
 log "T1: SOCKS5 经 root→mid→leaf→deep 访问 10.140.0.100"
-if curl -sf --max-time 20 --socks5-hostname 127.0.0.1:7890 http://10.140.0.100/ | grep -q "Welcome to nginx"; then
+if curl -sf --max-time 20 --socks5-hostname 127.0.0.1:57890 http://10.140.0.100/ | grep -q "Welcome to nginx"; then
   ok "T1 四级链路 SOCKS5 穿透成功"
 else
   bad "T1 四级链路 SOCKS5 穿透失败"
@@ -113,7 +113,7 @@ fi
 
 # ---------- T2: HTTP CONNECT 四级链 ----------
 log "T2: HTTP CONNECT 经同一链路访问"
-if curl -sf --max-time 20 -x http://127.0.0.1:7890 http://10.140.0.100/ | grep -q "Welcome to nginx"; then
+if curl -sf --max-time 20 -x http://127.0.0.1:57890 http://10.140.0.100/ | grep -q "Welcome to nginx"; then
   ok "T2 四级链路 HTTP CONNECT 穿透成功"
 else
   bad "T2 四级链路 HTTP CONNECT 穿透失败"
@@ -121,7 +121,7 @@ fi
 
 # ---------- T3: ACL 拒绝 ----------
 log "T3: 访问规则外目标必须失败（ACL）"
-if curl -sf --max-time 8 --socks5-hostname 127.0.0.1:7890 http://10.200.0.1/ > /dev/null 2>&1; then
+if curl -sf --max-time 8 --socks5-hostname 127.0.0.1:57890 http://10.200.0.1/ > /dev/null 2>&1; then
   bad "T3 ACL 失效：规则外目标竟然可达"
 else
   ok "T3 ACL 正确拒绝规则外目标"
@@ -130,7 +130,7 @@ fi
 # ---------- T6: 断链自愈（kick mid → 链路中断 → 自动重连恢复） ----------
 log "T6: 断链自愈 — kick node-mid 后链路中断再自动恢复"
 # 6a. 先确认链路可用
-if curl -sf --max-time 15 --socks5-hostname 127.0.0.1:7890 http://10.140.0.100/ | grep -q "Welcome to nginx"; then
+if curl -sf --max-time 15 --socks5-hostname 127.0.0.1:57890 http://10.140.0.100/ | grep -q "Welcome to nginx"; then
   ok "T6a kick 前链路可用"
 else
   bad "T6a kick 前链路已不可用（前置失败）"
@@ -140,7 +140,7 @@ curl -sf -X POST "$ROOT_API/api/v1/admin/node/kick" \
   -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
   -d '{"node_id":"node-mid"}' > /dev/null || bad "T6 kick 接口调用失败"
 sleep 3
-if curl -sf --max-time 8 --socks5-hostname 127.0.0.1:7890 http://10.140.0.100/ > /dev/null 2>&1; then
+if curl -sf --max-time 8 --socks5-hostname 127.0.0.1:57890 http://10.140.0.100/ > /dev/null 2>&1; then
   bad "T6b kick 后链路仍然可用（断开未生效）"
 else
   ok "T6b kick 后链路按预期中断"
@@ -150,7 +150,7 @@ RECOVERED=0
 i=0
 while [ $i -lt 10 ]; do
   sleep 3
-  if curl -sf --max-time 8 --socks5-hostname 127.0.0.1:7890 http://10.140.0.100/ | grep -q "Welcome to nginx"; then
+  if curl -sf --max-time 8 --socks5-hostname 127.0.0.1:57890 http://10.140.0.100/ | grep -q "Welcome to nginx"; then
     RECOVERED=1
     break
   fi
@@ -165,7 +165,7 @@ fi
 # ---------- T4: 多节点同时接入 ----------
 log "T4: 客户端同时接入 root 与 mid（合并路由）"
 cat > /tmp/client.toml <<EOF
-proxy_port = 7891
+proxy_port = 57891
 
 [[nodes]]
 addr = "$ROOT_API"
@@ -184,7 +184,7 @@ sleep 1
 agile-net-client /tmp/client.toml > /tmp/client2.log 2>&1 &
 CLIENT_PID=$!
 sleep 5
-if curl -sf --max-time 20 --socks5-hostname 127.0.0.1:7891 http://10.140.0.100/ | grep -q "Welcome to nginx"; then
+if curl -sf --max-time 20 --socks5-hostname 127.0.0.1:57891 http://10.140.0.100/ | grep -q "Welcome to nginx"; then
   ok "T4 多节点合并路由下目标可达"
 else
   bad "T4 多节点合并路由失败"
