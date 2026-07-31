@@ -1,6 +1,10 @@
 'use strict';
-// Tauri IPC 桥（v2：window.__TAURI__.core.invoke）
-const invoke = window.__TAURI__.core.invoke;
+// Tauri IPC 桥（v2：window.__TAURI__.core.invoke）；纯浏览器预览时提供空数据桩
+const TAURI = window.__TAURI__ || null;
+const invoke = TAURI ? TAURI.core.invoke : (cmd) => {
+  const mock = { list_nodes: [], list_credentials: [], proxy_status: { running: false, port: 7890 }, get_autostart: false };
+  return cmd in mock ? Promise.resolve(mock[cmd]) : Promise.resolve(null);
+};
 const $ = (id) => document.getElementById(id);
 
 const PREFS = {
@@ -80,7 +84,6 @@ function updateOnboarding(nodes) {
   $('onboarding').style.display = empty ? 'block' : 'none';
   $('quick-card').style.display = empty ? 'none' : 'block';
   $('creds-card').style.display = (window._creds && Object.keys(window._creds).length) ? 'block' : 'none';
-  $('rules-card').style.display = empty ? 'none' : 'block';
 }
 
 /* ================= 节点管理 ================= */
@@ -280,6 +283,21 @@ async function loadSettings() {
   };
 }
 
+/* ================= 视图导航 & 窗口控制 ================= */
+function switchView(v) {
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.view === v));
+  document.querySelectorAll('.view').forEach(s => { s.hidden = s.id !== 'view-' + v; });
+  if (v === 'nodes' || v === 'routes') refreshNodes();
+  if (v === 'connect') refreshCreds();
+}
+function initTitlebar() {
+  if (!TAURI || !TAURI.window) return;
+  const win = TAURI.window.getCurrentWindow();
+  $('tb-min').onclick = () => win.minimize();
+  $('tb-max').onclick = () => win.toggleMaximize();
+  $('tb-close').onclick = () => win.close();
+}
+
 /* ================= 启动 ================= */
 function toggleManual(open) {
   const f = $('manual-form');
@@ -289,6 +307,9 @@ function toggleManual(open) {
 }
 
 window.addEventListener('DOMContentLoaded', async () => {
+  document.querySelectorAll('.nav-item').forEach(n => n.onclick = () => switchView(n.dataset.view));
+  initTitlebar();
+  if (TAURI && TAURI.app) { TAURI.app.getVersion().then(v => { const el = $('ver'); if (el) el.textContent = v; }).catch(() => {}); }
   $('btn-import').onclick = (e) => importUrl($('connect-url').value, e.target);
   $('btn-import-hero').onclick = (e) => importUrl($('connect-url-hero').value, e.target);
   $('btn-paste').onclick = pasteFromClipboard;

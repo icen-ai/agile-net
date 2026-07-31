@@ -7,110 +7,153 @@
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<header>
-  <div class="brand"><span class="logo"><i data-ic="zap" data-sz="15"></i></span>AgileNet</div>
-  <div class="proxy-pill" id="proxy-pill">
-    <span class="dot off" id="proxy-dot"></span><span id="proxy-text">代理未启动</span>
+<!-- 一体化标题栏（无边框窗口，左侧拖拽区 + 右侧窗口控制） -->
+<header class="titlebar">
+  <div class="tb-drag" data-tauri-drag-region>
+    <span class="logo"><i data-ic="zap" data-sz="13"></i></span>
+    <span class="tb-title">AgileNet</span>
+    <span class="tb-spacer"></span>
+    <div class="proxy-pill" id="proxy-pill">
+      <span class="dot off" id="proxy-dot"></span><span id="proxy-text">代理未启动</span>
+    </div>
+  </div>
+  <div class="tb-controls">
+    <button id="tb-min" title="最小化"><i data-ic="minus" data-sz="15"></i></button>
+    <button id="tb-max" title="最大化 / 还原"><i data-ic="square" data-sz="12"></i></button>
+    <button id="tb-close" class="close" title="关闭（最小化到托盘）"><i data-ic="x" data-sz="16"></i></button>
   </div>
 </header>
 
-<main>
-  <div id="net-banner" class="net-banner" style="display:none"></div>
-  <!-- 空状态引导（未连接任何节点时显示） -->
-  <section id="onboarding" class="hero" style="display:none">
-    <div class="hero-logo"><i data-ic="zap" data-sz="30"></i></div>
-    <h1>欢迎使用 AgileNet</h1>
-    <p class="hero-sub">企业级网络穿透与代理链路由 · 三步接入您的内网</p>
-    <div class="hero-steps">
-      <div class="hero-step"><span class="num">1</span>向管理员索取<b>接入链接</b><br><span class="dim">(agilenet://connect?...)</span></div>
-      <div class="hero-step"><span class="num">2</span>粘贴到下方<b>一键连接</b></div>
-      <div class="hero-step"><span class="num">3</span>启动<b>本地代理</b>即可访问内网</div>
-    </div>
-    <div class="hero-input">
-      <input id="connect-url-hero" class="mono" placeholder="粘贴接入链接 agilenet://connect?...">
-      <button id="btn-import-hero" class="big"><i data-ic="rocket" data-sz="17"></i>一键接入</button>
-    </div>
-    <div class="hero-alt">或 <a href="javascript:void(0)" onclick="pasteFromClipboard()">从剪贴板导入</a> · <a href="javascript:void(0)" onclick="toggleManual(true)">手动填写</a></div>
-  </section>
+<div class="shell">
+  <aside class="sidebar">
+    <div class="nav-item active" data-view="connect"><i data-ic="link"></i><span class="nav-label">连接</span></div>
+    <div class="nav-item" data-view="nodes"><i data-ic="globe"></i><span class="nav-label">节点</span></div>
+    <div class="nav-item" data-view="routes"><i data-ic="route"></i><span class="nav-label">路由</span></div>
+    <div class="nav-item" data-view="settings"><i data-ic="settings"></i><span class="nav-label">设置</span></div>
+  </aside>
 
-  <!-- 快速接入（有节点后的紧凑条） -->
-  <section class="card" id="quick-card">
-    <div class="row">
-      <input id="connect-url" class="grow mono" placeholder="粘贴接入链接添加另一个节点 agilenet://connect?...">
-      <button id="btn-import">导入并连接</button>
-      <button id="btn-paste" class="ghost icon-btn" title="从剪贴板导入"><i data-ic="clipboard" data-sz="15"></i></button>
-    </div>
-  </section>
+  <main class="content">
+    <!-- 连接：快速接入 / 本地代理 / 手动添加 / 已保存节点 -->
+    <section class="view" id="view-connect">
+      <div class="page-title"><i data-ic="link" data-sz="19"></i>连接</div>
+      <div class="page-desc">粘贴接入链接一键接入内网，启动本地代理即可使用</div>
 
-  <!-- 本地代理 -->
-  <section class="card">
-    <h3><i data-ic="power"></i>本地代理 <span class="hint inline">SOCKS5 / HTTP 自动识别，仅监听 127.0.0.1</span></h3>
-    <div class="row">
-      <label>端口</label>
-      <input id="proxy-port" type="number" value="7890" style="width:100px">
-      <button id="btn-proxy-toggle" class="ghost">启动代理</button>
-      <span class="hint" id="proxy-hint"></span>
-    </div>
-  </section>
-
-  <!-- 节点列表 -->
-  <section class="card">
-    <h3><i data-ic="globe"></i>节点 <button class="ghost small icon-btn" id="btn-refresh" title="刷新"><i data-ic="refresh-cw" data-sz="13"></i></button></h3>
-    <div id="nodes-list"><div class="empty">尚未连接节点</div></div>
-  </section>
-
-  <!-- 手动添加 -->
-  <section class="card">
-    <h3 onclick="toggleManual()" style="cursor:pointer"><i data-ic="plus"></i>手动添加节点 <span class="hint" id="manual-arrow"><i data-ic="chevron-right" data-sz="13"></i></span></h3>
-    <div id="manual-form" style="display:none">
-      <div class="grid2">
-        <div><label>节点 API 地址（host:port 或 https://…）</label><input id="m-addr" placeholder="cdn.example.com:9090"></div>
-        <div><label>账号</label><input id="m-user" placeholder="zhangsan"></div>
-        <div><label>密码</label><input id="m-pass" type="password" placeholder="sk-..."></div>
-        <div><label>证书固定 PEM 路径（可选，生产推荐）</label><input id="m-pin" placeholder="certs/node.pem"></div>
+      <!-- 空状态引导（未连接任何节点时显示） -->
+      <div id="onboarding" class="hero" style="display:none">
+        <div class="hero-logo"><i data-ic="zap" data-sz="30"></i></div>
+        <h1>欢迎使用 AgileNet</h1>
+        <p class="hero-sub">企业级网络穿透与代理链路由 · 三步接入您的内网</p>
+        <div class="hero-steps">
+          <div class="hero-step"><span class="num">1</span>向管理员索取<b>接入链接</b><br><span class="dim">(agilenet://connect?...)</span></div>
+          <div class="hero-step"><span class="num">2</span>粘贴到下方<b>一键连接</b></div>
+          <div class="hero-step"><span class="num">3</span>启动<b>本地代理</b>即可访问内网</div>
+        </div>
+        <div class="hero-input">
+          <input id="connect-url-hero" class="mono" placeholder="粘贴接入链接 agilenet://connect?...">
+          <button id="btn-import-hero" class="big"><i data-ic="rocket" data-sz="17"></i>一键接入</button>
+        </div>
+        <div class="hero-alt">或 <a href="javascript:void(0)" onclick="pasteFromClipboard()">从剪贴板导入</a> · <a href="javascript:void(0)" onclick="toggleManual(true)">手动填写</a></div>
       </div>
-      <div class="row" style="margin-top:10px">
-        <label class="chk"><input type="checkbox" id="m-insecure"> 跳过证书校验（仅开发）</label>
-        <label class="chk"><input type="checkbox" id="m-hosts"> 管理系统 hosts</label>
-        <label class="chk"><input type="checkbox" id="m-save" checked> 保存凭据</label>
-        <button id="btn-connect">连接</button>
+
+      <!-- 快速接入（有节点后的紧凑条） -->
+      <div class="card" id="quick-card">
+        <div class="row">
+          <input id="connect-url" class="grow mono" placeholder="粘贴接入链接添加另一个节点 agilenet://connect?...">
+          <button id="btn-import">导入并连接</button>
+          <button id="btn-paste" class="ghost icon-btn" title="从剪贴板导入"><i data-ic="clipboard" data-sz="15"></i></button>
+        </div>
       </div>
-    </div>
-  </section>
 
-  <!-- 已保存节点 -->
-  <section class="card" id="creds-card" style="display:none">
-    <h3><i data-ic="hard-drive"></i>已保存节点</h3>
-    <div id="creds-list"></div>
-  </section>
-
-  <!-- 合并路由 -->
-  <section class="card" id="rules-card" style="display:none">
-    <h3><i data-ic="route"></i>生效路由（合并视图）</h3>
-    <table><thead><tr><th>类型</th><th>匹配值</th><th>节点</th></tr></thead><tbody id="rules-body"></tbody></table>
-  </section>
-
-  <!-- 设置 -->
-  <section class="card">
-    <h3><i data-ic="settings"></i>设置</h3>
-    <div class="row col">
-      <label class="chk"><input type="checkbox" id="s-autostart"> 开机自动启动 AgileNet</label>
-      <label class="chk"><input type="checkbox" id="s-autoproxy" checked> 连接节点后自动启动本地代理</label>
-      <label class="chk"><input type="checkbox" id="s-autoreconnect" checked> 启动应用时自动重连已保存节点</label>
-      <div class="lang-theme">
-        <select id="s-lang">
-          <option value="zh">中文</option>
-          <option value="en">English</option>
-        </select>
-        <select id="s-theme">
-          <option value="light">浅色</option>
-          <option value="dark">深色</option>
-        </select>
+      <!-- 本地代理 -->
+      <div class="card">
+        <h3><i data-ic="power"></i>本地代理 <span class="hint inline">SOCKS5 / HTTP 自动识别，仅监听 127.0.0.1</span></h3>
+        <div class="row">
+          <label>端口</label>
+          <input id="proxy-port" type="number" value="7890" style="width:100px">
+          <button id="btn-proxy-toggle" class="ghost">启动代理</button>
+          <span class="hint" id="proxy-hint"></span>
+        </div>
       </div>
-      <div class="hint" data-i18n="hint-tray">关闭主窗口将最小化到系统托盘，右键托盘图标可退出</div>
-    </div>
-  </section>
-</main>
+
+      <!-- 手动添加 -->
+      <div class="card">
+        <h3 onclick="toggleManual()" style="cursor:pointer"><i data-ic="plus"></i>手动添加节点 <span class="hint" id="manual-arrow"><i data-ic="chevron-right" data-sz="13"></i></span></h3>
+        <div id="manual-form" style="display:none">
+          <div class="grid2">
+            <div><label>节点 API 地址（host:port 或 https://…）</label><input id="m-addr" placeholder="cdn.example.com:9090"></div>
+            <div><label>账号</label><input id="m-user" placeholder="zhangsan"></div>
+            <div><label>密码</label><input id="m-pass" type="password" placeholder="sk-..."></div>
+            <div><label>证书固定 PEM 路径（可选，生产推荐）</label><input id="m-pin" placeholder="certs/node.pem"></div>
+          </div>
+          <div class="row" style="margin-top:10px">
+            <label class="chk"><input type="checkbox" id="m-insecure"> 跳过证书校验（仅开发）</label>
+            <label class="chk"><input type="checkbox" id="m-hosts"> 管理系统 hosts</label>
+            <label class="chk"><input type="checkbox" id="m-save" checked> 保存凭据</label>
+            <button id="btn-connect">连接</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 已保存节点 -->
+      <div class="card" id="creds-card" style="display:none">
+        <h3><i data-ic="hard-drive"></i>已保存节点</h3>
+        <div id="creds-list"></div>
+      </div>
+    </section>
+
+    <!-- 节点：连接状态一览 -->
+    <section class="view" id="view-nodes" hidden>
+      <div class="page-title"><i data-ic="globe" data-sz="19"></i>节点</div>
+      <div class="page-desc">已连接节点与实时状态；离线节点整卡降饱和标识</div>
+      <div id="net-banner" class="net-banner" style="display:none"></div>
+      <div class="card">
+        <h3><i data-ic="globe"></i>节点列表 <button class="ghost small icon-btn" id="btn-refresh" title="刷新"><i data-ic="refresh-cw" data-sz="13"></i></button></h3>
+        <div id="nodes-list"><div class="empty">尚未连接节点</div></div>
+      </div>
+    </section>
+
+    <!-- 路由：合并视图（长表粘性表头 + 内部滚动） -->
+    <section class="view" id="view-routes" hidden>
+      <div class="page-title"><i data-ic="route" data-sz="19"></i>路由</div>
+      <div class="page-desc">全部节点下发规则的合并视图，状态点标识所属节点在线情况</div>
+      <div class="card" id="rules-card">
+        <h3><i data-ic="route"></i>生效路由（合并视图）</h3>
+        <div class="table-scroll">
+          <table><thead><tr><th>类型</th><th>匹配值</th><th>节点</th></tr></thead><tbody id="rules-body"></tbody></table>
+        </div>
+      </div>
+    </section>
+
+    <!-- 设置 -->
+    <section class="view" id="view-settings" hidden>
+      <div class="page-title"><i data-ic="settings" data-sz="19"></i>设置</div>
+      <div class="page-desc">启动行为、语言与主题</div>
+      <div class="card">
+        <h3><i data-ic="settings"></i>偏好</h3>
+        <div class="row col">
+          <label class="chk"><input type="checkbox" id="s-autostart"> 开机自动启动 AgileNet</label>
+          <label class="chk"><input type="checkbox" id="s-autoproxy" checked> 连接节点后自动启动本地代理</label>
+          <label class="chk"><input type="checkbox" id="s-autoreconnect" checked> 启动应用时自动重连已保存节点</label>
+          <div class="lang-theme">
+            <select id="s-lang">
+              <option value="zh">中文</option>
+              <option value="en">English</option>
+            </select>
+            <select id="s-theme">
+              <option value="light">浅色</option>
+              <option value="dark">深色</option>
+            </select>
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <h3><i data-ic="zap"></i>关于</h3>
+        <div class="kv"><span class="k">版本</span><span>v<span id="ver">-</span></span></div>
+        <div class="hint">关闭主窗口将最小化到系统托盘，右键托盘图标可退出</div>
+      </div>
+    </section>
+  </main>
+</div>
 
 <div id="toasts"></div>
 <script src="icons.js"></script>

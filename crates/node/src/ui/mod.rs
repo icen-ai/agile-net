@@ -66,6 +66,12 @@ label { display: block; color: var(--dim); font-size: 12px; margin: 12px 0 4px; 
 code, .mono { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: 12.5px; }
 a { color: var(--link); text-decoration: none; }
 .ic { vertical-align: -2px; flex-shrink: 0; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: rgba(0,0,0,.16); border: 3px solid transparent; border-radius: 999px; background-clip: content-box; }
+::-webkit-scrollbar-thumb:hover { background: rgba(0,0,0,.30); border: 3px solid transparent; background-clip: content-box; }
+::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
+html[data-theme="dark"] ::-webkit-scrollbar-thumb { background: rgba(255,255,255,.16); border: 3px solid transparent; background-clip: content-box; }
+html[data-theme="dark"] ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,.30); border: 3px solid transparent; background-clip: content-box; }
 
 #app { display: none; height: 100vh; }
 .shell { display: flex; height: 100vh; }
@@ -90,7 +96,7 @@ a { color: var(--link); text-decoration: none; }
 .stat .sub { color: var(--dim2); font-size: 11.5px; margin-top: 3px; }
 
 table { width: 100%; border-collapse: collapse; }
-th { text-align: left; color: var(--dim2); font-weight: 500; font-size: 12px; padding: 8px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+th { text-align: left; color: var(--dim2); font-weight: 500; font-size: 12px; padding: 8px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; position: sticky; top: 0; background: var(--panel); z-index: 1; }
 td { padding: 10px; border-bottom: 1px solid var(--row-border); vertical-align: middle; }
 tr:last-child td { border-bottom: none; }
 tr:hover td { background: var(--row-hover); }
