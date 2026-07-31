@@ -21,6 +21,7 @@ const I18N = {
     'reconnecting-nodes': '正在自动重连 {n} 个已保存节点…',
     'connected-toast': '已连接 {name}（下发规则 {n} 条）',
     'proxy-on': '代理已启动', 'proxy-off': '代理已停止',
+    'btn-start-proxy': '启动代理', 'btn-stop-proxy': '停止代理',
     'err-need-url': '请粘贴接入链接', 'err-bad-url': '链接格式不正确，应以 agilenet://connect? 开头',
     'clip-ok': '已识别剪贴板中的接入链接', 'clip-none': '剪贴板中没有接入链接', 'clip-fail': '无法读取剪贴板',
     'disconnected': '已断开', 'no-nodes': '尚未连接节点', 'no-rules': '无生效规则', 'no-creds': '无保存的凭据',
@@ -34,6 +35,7 @@ const I18N = {
     'reconnecting-nodes': 'Reconnecting {n} saved nodes…',
     'connected-toast': 'Connected {name} ({n} rules)',
     'proxy-on': 'Proxy started', 'proxy-off': 'Proxy stopped',
+    'btn-start-proxy': 'Start Proxy', 'btn-stop-proxy': 'Stop Proxy',
     'err-need-url': 'Please paste a connect URL', 'err-bad-url': 'Invalid URL: must start with agilenet://connect?',
     'clip-ok': 'Connect URL detected in clipboard', 'clip-none': 'No connect URL in clipboard', 'clip-fail': 'Cannot read clipboard',
     'disconnected': 'Disconnected', 'no-nodes': 'No nodes connected', 'no-rules': 'No active rules', 'no-creds': 'No saved credentials',
@@ -199,7 +201,7 @@ async function refreshProxy() {
     const st = await invoke('proxy_status');
     $('proxy-dot').className = 'dot ' + (st.running ? 'on' : 'off');
     $('proxy-text').textContent = st.running ? (T('proxy-running') + ' 127.0.0.1:' + st.port) : T('proxy-stopped');
-    $('btn-proxy-toggle').textContent = st.running ? T('proxy-off') : '启动代理';
+    $('btn-proxy-toggle').textContent = st.running ? T('btn-stop-proxy') : T('btn-start-proxy');
     $('proxy-hint').textContent = st.running ? '系统/应用代理指向 127.0.0.1:' + st.port + ' 即可' : '';
     // 顶栏徽章：有节点降级时黄色提示
     const nodes = await invoke('list_nodes').catch(() => []);
