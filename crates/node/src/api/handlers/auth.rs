@@ -3,7 +3,12 @@
 use crate::api::extractors::{AnyAuth, ClientIp};
 use crate::api::{ApiState, LoginBlockReason, codes, err, ok};
 use crate::db::{hash_password, verify_password};
-use axum::{Json, extract::State, http::StatusCode, response::{IntoResponse, Response}};
+use axum::{
+    Json,
+    extract::State,
+    http::StatusCode,
+    response::{IntoResponse, Response},
+};
 use serde::Deserialize;
 use serde_json::json;
 
@@ -31,7 +36,11 @@ pub async fn login(
 
     // 输入约束
     if req.username.len() > 64 || req.password.len() > 256 {
-        return err(StatusCode::BAD_REQUEST, codes::BAD_REQUEST, "invalid input length");
+        return err(
+            StatusCode::BAD_REQUEST,
+            codes::BAD_REQUEST,
+            "invalid input length",
+        );
     }
 
     // 1. 尝试 admin 登录
@@ -45,7 +54,7 @@ pub async fn login(
                         StatusCode::INTERNAL_SERVER_ERROR,
                         codes::INTERNAL,
                         e.to_string(),
-                    )
+                    );
                 }
             };
             let _ = state.db.record_audit_log(
@@ -77,11 +86,7 @@ pub async fn login(
         Ok(Some((account, password_hash))) => {
             if !account.enabled {
                 state.login_limiter.record_failure(ip);
-                return err(
-                    StatusCode::FORBIDDEN,
-                    codes::FORBIDDEN,
-                    "account disabled",
-                );
+                return err(StatusCode::FORBIDDEN, codes::FORBIDDEN, "account disabled");
             }
             if verify_password(&req.password, &password_hash).unwrap_or(false) {
                 state.login_limiter.record_success(ip);
@@ -92,7 +97,7 @@ pub async fn login(
                             StatusCode::INTERNAL_SERVER_ERROR,
                             codes::INTERNAL,
                             e.to_string(),
-                        )
+                        );
                     }
                 };
                 let _ = state.db.touch_account_seen(&account.id);
@@ -128,10 +133,7 @@ pub struct RefreshRequest {
     pub refresh_token: String,
 }
 
-pub async fn refresh(
-    State(state): State<ApiState>,
-    Json(req): Json<RefreshRequest>,
-) -> Response {
+pub async fn refresh(State(state): State<ApiState>, Json(req): Json<RefreshRequest>) -> Response {
     match state.jwt.refresh(&req.refresh_token) {
         Ok((claims, tokens)) => ok(json!({
             "access_token": tokens.access_token,
@@ -204,7 +206,7 @@ pub async fn init(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 codes::INTERNAL,
                 e.to_string(),
-            )
+            );
         }
     };
 
@@ -258,7 +260,11 @@ pub async fn admin_bootstrap(
     Json(req): Json<BootstrapRequest>,
 ) -> Response {
     if req.ticket.len() > 128 {
-        return err(StatusCode::BAD_REQUEST, codes::BAD_REQUEST, "invalid ticket");
+        return err(
+            StatusCode::BAD_REQUEST,
+            codes::BAD_REQUEST,
+            "invalid ticket",
+        );
     }
     let Some(t) = state.db.redeem_admin_ticket(&req.ticket).unwrap_or(None) else {
         return err(
@@ -273,27 +279,35 @@ pub async fn admin_bootstrap(
             let account = match state.db.get_account(&t.subject) {
                 Ok(Some(a)) if a.enabled && a.admin_console => a,
                 _ => {
-                    return err(
-                        StatusCode::FORBIDDEN,
-                        codes::FORBIDDEN,
-                        "管理权限已被收回",
-                    );
+                    return err(StatusCode::FORBIDDEN, codes::FORBIDDEN, "管理权限已被收回");
                 }
             };
-            let tokens = match state
-                .jwt
-                .issue_with_scope(&account.id, &account.username, "admin", &t.scope)
-            {
-                Ok(t) => t,
-                Err(e) => {
-                    return err(StatusCode::INTERNAL_SERVER_ERROR, codes::INTERNAL, e.to_string())
-                }
-            };
+            let tokens =
+                match state
+                    .jwt
+                    .issue_with_scope(&account.id, &account.username, "admin", &t.scope)
+                {
+                    Ok(t) => t,
+                    Err(e) => {
+                        return err(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            codes::INTERNAL,
+                            e.to_string(),
+                        );
+                    }
+                };
             let _ = state.db.record_audit_log(
                 None,
                 &format!("link:{}", account.username),
                 "admin.console_access",
-                Some(&state.db.get_config("node_name").ok().flatten().unwrap_or_default()),
+                Some(
+                    &state
+                        .db
+                        .get_config("node_name")
+                        .ok()
+                        .flatten()
+                        .unwrap_or_default(),
+                ),
                 Some(&format!("经管理链接换取管理会话（scope={}）", t.scope)),
                 Some(&ip.to_string()),
             );
@@ -314,15 +328,29 @@ pub async fn admin_bootstrap(
             {
                 Ok(t) => t,
                 Err(e) => {
-                    return err(StatusCode::INTERNAL_SERVER_ERROR, codes::INTERNAL, e.to_string())
+                    return err(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        codes::INTERNAL,
+                        e.to_string(),
+                    );
                 }
             };
             let _ = state.db.record_audit_log(
                 None,
                 &format!("relay:{}", t.subject),
                 "admin.session_via_relay",
-                Some(&state.db.get_config("node_name").ok().flatten().unwrap_or_default()),
-                Some(&format!("凭中继会话换取管理会话（scope={}，来源=隧道）", t.scope)),
+                Some(
+                    &state
+                        .db
+                        .get_config("node_name")
+                        .ok()
+                        .flatten()
+                        .unwrap_or_default(),
+                ),
+                Some(&format!(
+                    "凭中继会话换取管理会话（scope={}，来源=隧道）",
+                    t.scope
+                )),
                 Some(&ip.to_string()),
             );
             ok(json!({
@@ -334,7 +362,11 @@ pub async fn admin_bootstrap(
             }))
             .into_response()
         }
-        _ => err(StatusCode::BAD_REQUEST, codes::BAD_REQUEST, "unknown ticket kind"),
+        _ => err(
+            StatusCode::BAD_REQUEST,
+            codes::BAD_REQUEST,
+            "unknown ticket kind",
+        ),
     }
 }
 

@@ -76,10 +76,13 @@ async fn slow_reader_does_not_block_other_channels() {
     // 通道 2 必须仍然畅通
     ch2_a.write_all(b"independent").await.unwrap();
     let mut buf = [0u8; 11];
-    tokio::time::timeout(std::time::Duration::from_secs(5), ch2_b.read_exact(&mut buf))
-        .await
-        .expect("通道 2 被通道 1 的慢读者阻塞（队头阻塞！）")
-        .unwrap();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        ch2_b.read_exact(&mut buf),
+    )
+    .await
+    .expect("通道 2 被通道 1 的慢读者阻塞（队头阻塞！）")
+    .unwrap();
     assert_eq!(&buf, b"independent");
 
     writer.abort();

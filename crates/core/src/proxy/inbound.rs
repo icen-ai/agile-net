@@ -90,7 +90,10 @@ impl ProxyInbound {
     }
 
     /// 使用外部共享的开启器注册表（客户端引擎与入站共用一张表）。
-    pub fn with_openers_map(mut self, openers: Arc<DashMap<String, Arc<dyn ChannelOpener>>>) -> Self {
+    pub fn with_openers_map(
+        mut self,
+        openers: Arc<DashMap<String, Arc<dyn ChannelOpener>>>,
+    ) -> Self {
         self.openers = openers;
         self
     }
@@ -135,9 +138,15 @@ impl ProxyInbound {
         loop {
             let (stream, client_addr) = listener.accept().await?;
 
-            let active = self.stats.active_connections.fetch_add(1, Ordering::Relaxed) + 1;
+            let active = self
+                .stats
+                .active_connections
+                .fetch_add(1, Ordering::Relaxed)
+                + 1;
             if active > MAX_INBOUND_CONNECTIONS as u64 {
-                self.stats.active_connections.fetch_sub(1, Ordering::Relaxed);
+                self.stats
+                    .active_connections
+                    .fetch_sub(1, Ordering::Relaxed);
                 warn!(client = %client_addr, "inbound connection limit reached, dropping");
                 drop(stream);
                 continue;
@@ -237,7 +246,9 @@ async fn handle_socks5(
         // 要求 RFC 1929 用户名密码认证 (0x02)
         if !methods.contains(&0x02) {
             stream.write_all(&[0x05, 0xFF]).await?;
-            return Err(Error::Auth("client does not support username/password auth".into()));
+            return Err(Error::Auth(
+                "client does not support username/password auth".into(),
+            ));
         }
         stream.write_all(&[0x05, 0x02]).await?;
 
@@ -346,7 +357,9 @@ async fn handle_socks5(
                     .write_all(&[0x05, 0x02, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
                     .await;
                 let _ = stream.shutdown().await;
-                return Err(Error::Protocol("refused: target is the proxy itself".into()));
+                return Err(Error::Protocol(
+                    "refused: target is the proxy itself".into(),
+                ));
             }
 
             match DirectOutbound::connect(target_addr).await {
@@ -409,7 +422,9 @@ async fn handle_http(
             .await
             .map_err(|_| Error::Timeout)??;
         if n == 0 {
-            return Err(Error::Protocol("connection closed during http header".into()));
+            return Err(Error::Protocol(
+                "connection closed during http header".into(),
+            ));
         }
         req_buf.extend_from_slice(&chunk[..n]);
         if let Some(pos) = find_subsequence(&req_buf, b"\r\n\r\n") {
@@ -417,7 +432,9 @@ async fn handle_http(
         }
         if req_buf.len() > MAX_HTTP_HEADER {
             let _ = stream
-                .write_all(b"HTTP/1.1 431 Request Header Fields Too Large\r\nContent-Length: 0\r\n\r\n")
+                .write_all(
+                    b"HTTP/1.1 431 Request Header Fields Too Large\r\nContent-Length: 0\r\n\r\n",
+                )
                 .await;
             // 优雅关闭写端，确保客户端读到 431 而非 RST
             let _ = stream.shutdown().await;
@@ -505,7 +522,9 @@ async fn handle_http(
             // 自连环防护
             if is_self_connect(&ctx, &target_addr) {
                 let _ = stream.write_all(b"HTTP/1.1 403 Forbidden\r\n\r\n").await;
-                return Err(Error::Protocol("refused: target is the proxy itself".into()));
+                return Err(Error::Protocol(
+                    "refused: target is the proxy itself".into(),
+                ));
             }
 
             match DirectOutbound::connect(target_addr).await {
@@ -587,7 +606,10 @@ fn parse_host_port(s: &str, default_port: u16) -> Result<(String, u16)> {
             Ok((h.to_string(), port))
         }
         // 无端口或多冒号未加括号（裸 IPv6）
-        _ => Ok((s.trim_matches(|c| c == '[' || c == ']').to_string(), default_port)),
+        _ => Ok((
+            s.trim_matches(|c| c == '[' || c == ']').to_string(),
+            default_port,
+        )),
     }
 }
 

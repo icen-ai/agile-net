@@ -1,15 +1,20 @@
 //! CLI 命令解析与集成测试
 
-use agile_net_cli::{Cli, Commands, RuleSub, TokenSub};
+use agile_net_node::cli::{Cli, Commands, RuleSub, TokenSub};
 use clap::Parser;
 
 #[test]
 fn cli_rule_add_parsing() {
     let cli = Cli::parse_from([
-        "anet", "rule", "add",
-        "--type", "ip-cidr",
-        "--value", "10.0.0.0/8",
-        "--remark", "办公网",
+        "anet",
+        "rule",
+        "add",
+        "--type",
+        "ip-cidr",
+        "--value",
+        "10.0.0.0/8",
+        "--remark",
+        "办公网",
     ]);
     match cli.command {
         Commands::Rule(args) => match args.command {
@@ -104,25 +109,44 @@ async fn cli_full_workflow_against_live_api() {
     unsafe { std::env::set_var("HOME", &tmp) };
 
     let api_url = format!("http://127.0.0.1:{port}");
-    agile_net_cli::run_cli(Cli::parse_from([
-        "anet", "--api", &api_url, "login", "-u", "admin", "-p", "AdminPass123",
+    agile_net_node::cli::run_cli(Cli::parse_from([
+        "anet",
+        "--api",
+        &api_url,
+        "login",
+        "-u",
+        "admin",
+        "-p",
+        "AdminPass123",
     ]))
     .await
     .unwrap();
 
     // 新建规则
-    agile_net_cli::run_cli(Cli::parse_from([
-        "anet", "rule", "add", "--type", "ip-cidr", "--value", "10.99.0.0/16",
+    agile_net_node::cli::run_cli(Cli::parse_from([
+        "anet",
+        "rule",
+        "add",
+        "--type",
+        "ip-cidr",
+        "--value",
+        "10.99.0.0/16",
     ]))
     .await
     .unwrap();
 
     // 新建组 + 账号
-    agile_net_cli::run_cli(Cli::parse_from(["anet", "group", "add", "--name", "cli组"]))
+    agile_net_node::cli::run_cli(Cli::parse_from(["anet", "group", "add", "--name", "cli组"]))
         .await
         .unwrap();
-    agile_net_cli::run_cli(Cli::parse_from([
-        "anet", "account", "add", "--username", "cliuser", "--group", "cli组",
+    agile_net_node::cli::run_cli(Cli::parse_from([
+        "anet",
+        "account",
+        "add",
+        "--username",
+        "cliuser",
+        "--group",
+        "cli组",
     ]))
     .await
     .unwrap();
@@ -134,9 +158,11 @@ async fn cli_full_workflow_against_live_api() {
     assert!(db.get_account_by_username("cliuser").unwrap().is_some());
 
     // relay token
-    agile_net_cli::run_cli(Cli::parse_from(["anet", "token", "add", "--remark", "测试"]))
-        .await
-        .unwrap();
+    agile_net_node::cli::run_cli(Cli::parse_from([
+        "anet", "token", "add", "--remark", "测试",
+    ]))
+    .await
+    .unwrap();
     assert_eq!(db.list_relay_tokens().unwrap().len(), 1);
 
     let _ = std::fs::remove_dir_all(&tmp);

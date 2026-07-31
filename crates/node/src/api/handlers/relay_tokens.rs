@@ -61,10 +61,13 @@ pub async fn create_token(
     let token_hash = sha256_hex(token.as_bytes());
     let prefix = format!("{}****", &token[..8]);
 
-    match state
-        .db
-        .create_relay_token_full(&token_hash, &prefix, &req.remark, req.expose_control, &req.control_scope)
-    {
+    match state.db.create_relay_token_full(
+        &token_hash,
+        &prefix,
+        &req.remark,
+        req.expose_control,
+        &req.control_scope,
+    ) {
         Ok(record) => {
             audit(
                 &state,
@@ -94,7 +97,11 @@ pub async fn create_token(
                 "created_at": record.created_at,
             }))
         }
-        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, codes::INTERNAL, e.to_string()),
+        Err(e) => err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            codes::INTERNAL,
+            e.to_string(),
+        ),
     }
 }
 
@@ -126,15 +133,24 @@ pub async fn update_token(
         .ok()
         .and_then(|items| items.into_iter().find(|t| t.id == id))
     else {
-        return err(StatusCode::NOT_FOUND, codes::NOT_FOUND, "relay token not found");
+        return err(
+            StatusCode::NOT_FOUND,
+            codes::NOT_FOUND,
+            "relay token not found",
+        );
     };
     if let Err(e) = state
         .db
         .update_relay_token_control(&id, req.expose_control, &req.control_scope)
     {
-        return err(StatusCode::INTERNAL_SERVER_ERROR, codes::INTERNAL, e.to_string());
+        return err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            codes::INTERNAL,
+            e.to_string(),
+        );
     }
-    if existing.expose_control != req.expose_control || existing.control_scope != req.control_scope {
+    if existing.expose_control != req.expose_control || existing.control_scope != req.control_scope
+    {
         audit(
             &state,
             &claims,
@@ -155,13 +171,14 @@ pub async fn update_token(
     }))
 }
 
-pub async fn list_tokens(
-    AdminAuth(_): AdminAuth,
-    State(state): State<ApiState>,
-) -> Response {
+pub async fn list_tokens(AdminAuth(_): AdminAuth, State(state): State<ApiState>) -> Response {
     match state.db.list_relay_tokens() {
         Ok(items) => ok(json!({ "items": items })),
-        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, codes::INTERNAL, e.to_string()),
+        Err(e) => err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            codes::INTERNAL,
+            e.to_string(),
+        ),
     }
 }
 
@@ -183,6 +200,10 @@ pub async fn delete_token(
             audit(&state, &claims, &ip, "relay_token.delete", Some(&id), "");
             ok(json!(null))
         }
-        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, codes::INTERNAL, e.to_string()),
+        Err(e) => err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            codes::INTERNAL,
+            e.to_string(),
+        ),
     }
 }

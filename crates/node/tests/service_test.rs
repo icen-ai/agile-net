@@ -33,7 +33,11 @@ async fn node_server_start_serve_stop() {
 
     // Web 后台 SPA 可访问
     let resp = http.get(format!("{base}/")).send().await.unwrap();
-    assert!(resp.status().is_success(), "SPA 应可访问: {}", resp.status());
+    assert!(
+        resp.status().is_success(),
+        "SPA 应可访问: {}",
+        resp.status()
+    );
 
     // 首开初始化管理员 → 登录 → 管理接口可用
     let resp = http
@@ -62,7 +66,11 @@ async fn node_server_start_serve_stop() {
         .unwrap();
     assert!(resp.status().is_success(), "status: {}", resp.status());
     let body: serde_json::Value = resp.json().await.unwrap();
-    assert_eq!(body["code"].as_u64(), Some(0), "API 信封应保持 {{code,data}} 约定");
+    assert_eq!(
+        body["code"].as_u64(),
+        Some(0),
+        "API 信封应保持 {{code,data}} 约定"
+    );
 
     server.stop().await;
 

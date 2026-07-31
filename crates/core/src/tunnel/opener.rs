@@ -73,11 +73,11 @@ impl ChannelOpener for PeerAutoOpener {
             let peer = if !node_id.is_empty() {
                 node_id.to_string()
             } else {
-                self.listener
-                    .resolve_peer(target_host)
-                    .ok_or_else(|| crate::error::Error::NotFound(format!(
+                self.listener.resolve_peer(target_host).ok_or_else(|| {
+                    crate::error::Error::NotFound(format!(
                         "no downstream peer serves {target_host}"
-                    )))?
+                    ))
+                })?
             };
             self.listener
                 .open_channel(&peer, target_host, target_port)

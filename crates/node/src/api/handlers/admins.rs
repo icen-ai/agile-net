@@ -13,10 +13,7 @@ use axum::{
 use serde::Deserialize;
 use serde_json::json;
 
-pub async fn list_admins(
-    AdminAuth(_): AdminAuth,
-    State(state): State<ApiState>,
-) -> Response {
+pub async fn list_admins(AdminAuth(_): AdminAuth, State(state): State<ApiState>) -> Response {
     match state.db.list_admins() {
         Ok(admins) => {
             let items: Vec<_> = admins
@@ -32,7 +29,11 @@ pub async fn list_admins(
                 .collect();
             ok(json!({ "items": items }))
         }
-        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, codes::INTERNAL, e.to_string()),
+        Err(e) => err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            codes::INTERNAL,
+            e.to_string(),
+        ),
     }
 }
 
@@ -65,7 +66,13 @@ pub async fn create_admin(
     }
     let hash = match hash_password(&req.password) {
         Ok(h) => h,
-        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, codes::INTERNAL, e.to_string()),
+        Err(e) => {
+            return err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                codes::INTERNAL,
+                e.to_string(),
+            );
+        }
     };
     match state.db.create_admin(&req.username, &hash) {
         Ok(admin) => {
@@ -83,7 +90,11 @@ pub async fn create_admin(
                 "created_at": admin.created_at,
             }))
         }
-        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, codes::INTERNAL, e.to_string()),
+        Err(e) => err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            codes::INTERNAL,
+            e.to_string(),
+        ),
     }
 }
 
@@ -124,7 +135,11 @@ pub async fn delete_admin(
             );
             ok(json!(null))
         }
-        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, codes::INTERNAL, e.to_string()),
+        Err(e) => err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            codes::INTERNAL,
+            e.to_string(),
+        ),
     }
 }
 
@@ -156,13 +171,30 @@ pub async fn change_password(
     }
     let hash = match hash_password(&req.new_password) {
         Ok(h) => h,
-        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, codes::INTERNAL, e.to_string()),
+        Err(e) => {
+            return err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                codes::INTERNAL,
+                e.to_string(),
+            );
+        }
     };
     if let Err(e) = state.db.update_admin_password(&claims.sub, &hash) {
-        return err(StatusCode::INTERNAL_SERVER_ERROR, codes::INTERNAL, e.to_string());
+        return err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            codes::INTERNAL,
+            e.to_string(),
+        );
     }
     let _ = state.jwt.revoke_all(&claims.sub);
-    audit(&state, &claims, &ip, "admin.change_password", Some(&claims.sub), "");
+    audit(
+        &state,
+        &claims,
+        &ip,
+        "admin.change_password",
+        Some(&claims.sub),
+        "",
+    );
     ok(json!({ "changed": true, "message": "请使用新密码重新登录" }))
 }
 

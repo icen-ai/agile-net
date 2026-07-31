@@ -38,7 +38,11 @@ pub async fn list_rules(
             "page": page,
             "page_size": page_size,
         })),
-        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, codes::INTERNAL, e.to_string()),
+        Err(e) => err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            codes::INTERNAL,
+            e.to_string(),
+        ),
     }
 }
 
@@ -117,10 +121,21 @@ pub async fn create_rule(
     {
         Ok(rule) => {
             let _ = state.db.bump_config_version();
-            audit(&state, &claims, &ip, "rule.create", Some(&rule.id), &req.remark);
+            audit(
+                &state,
+                &claims,
+                &ip,
+                "rule.create",
+                Some(&rule.id),
+                &req.remark,
+            );
             ok_created(rule)
         }
-        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, codes::INTERNAL, e.to_string()),
+        Err(e) => err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            codes::INTERNAL,
+            e.to_string(),
+        ),
     }
 }
 
@@ -143,7 +158,13 @@ pub async fn update_rule(
         Ok(None) => {
             return err(StatusCode::NOT_FOUND, codes::NOT_FOUND, "rule not found");
         }
-        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, codes::INTERNAL, e.to_string()),
+        Err(e) => {
+            return err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                codes::INTERNAL,
+                e.to_string(),
+            );
+        }
     };
 
     if let Some(v) = &req.value {
@@ -177,14 +198,22 @@ pub async fn update_rule(
         req.resolve,
         req.remark.as_deref(),
     ) {
-        return err(StatusCode::INTERNAL_SERVER_ERROR, codes::INTERNAL, e.to_string());
+        return err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            codes::INTERNAL,
+            e.to_string(),
+        );
     }
     let _ = state.db.bump_config_version();
     audit(&state, &claims, &ip, "rule.update", Some(&id), "");
 
     match state.db.get_rule(&id) {
         Ok(Some(rule)) => ok(rule),
-        _ => err(StatusCode::INTERNAL_SERVER_ERROR, codes::INTERNAL, "reload failed"),
+        _ => err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            codes::INTERNAL,
+            "reload failed",
+        ),
     }
 }
 
@@ -220,7 +249,11 @@ pub async fn delete_rule(
             audit(&state, &claims, &ip, "rule.delete", Some(&id), "");
             ok(json!(null))
         }
-        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, codes::INTERNAL, e.to_string()),
+        Err(e) => err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            codes::INTERNAL,
+            e.to_string(),
+        ),
     }
 }
 
@@ -260,7 +293,10 @@ pub async fn batch_import(
     if req.on_conflict == "error" {
         for r in &req.rules {
             if let Ok(normalized) = validate_rule_input(r)
-                && state.db.rule_exists(&r.rule_type, &normalized).unwrap_or(false)
+                && state
+                    .db
+                    .rule_exists(&r.rule_type, &normalized)
+                    .unwrap_or(false)
             {
                 return err(
                     StatusCode::CONFLICT,
@@ -308,7 +344,10 @@ pub async fn batch_import(
             }
             continue;
         }
-        match state.db.create_rule(&r.rule_type, &value, r.resolve, &r.remark) {
+        match state
+            .db
+            .create_rule(&r.rule_type, &value, r.resolve, &r.remark)
+        {
             Ok(_) => created += 1,
             Err(e) => errors.push(format!("{value}: {e}")),
         }

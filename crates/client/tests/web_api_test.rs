@@ -42,7 +42,13 @@ impl ClientWebAuth for MockAuth {
 
 const PW: &str = "test123456";
 
-async fn boot(has_pw: bool) -> (String, Arc<MockAuth>, agile_net_client::api::ClientApiHandle) {
+async fn boot(
+    has_pw: bool,
+) -> (
+    String,
+    Arc<MockAuth>,
+    agile_net_client::api::ClientApiHandle,
+) {
     let auth = Arc::new(MockAuth::new(has_pw));
     let handle = start_client_api(
         AgileNetClient::new(),
@@ -201,7 +207,9 @@ async fn export_requires_confirm() {
 
     // 未二次确认 → 409 + 40001
     let r = http
-        .get(format!("{base}/api/v1/credentials/export?key=node@127.0.0.1:59090"))
+        .get(format!(
+            "{base}/api/v1/credentials/export?key=node@127.0.0.1:59090"
+        ))
         .bearer_auth(&token)
         .send()
         .await
@@ -222,10 +230,17 @@ async fn export_requires_confirm() {
     let j: serde_json::Value = r.json().await.unwrap();
     assert_eq!(j["code"].as_u64(), Some(0));
     let url = j["data"].as_str().unwrap();
-    assert!(url.starts_with("agilenet://connect?"), "导出应为接入链接: {url}");
+    assert!(
+        url.starts_with("agilenet://connect?"),
+        "导出应为接入链接: {url}"
+    );
     assert!(url.contains("account=u1"));
     assert!(
-        auth.audits.lock().unwrap().iter().any(|a| a == "web.credential_export"),
+        auth.audits
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|a| a == "web.credential_export"),
         "凭据导出应落审计"
     );
 
@@ -255,7 +270,10 @@ async fn paused_rules_and_parse_url() {
         .send()
         .await
         .unwrap();
-    assert_eq!(r.json::<serde_json::Value>().await.unwrap()["code"].as_u64(), Some(0));
+    assert_eq!(
+        r.json::<serde_json::Value>().await.unwrap()["code"].as_u64(),
+        Some(0)
+    );
     let r = http
         .get(format!("{base}/api/v1/nodes/paused-rules?node_id=n1@a:1"))
         .bearer_auth(&token)

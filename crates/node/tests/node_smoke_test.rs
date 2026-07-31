@@ -50,10 +50,13 @@ key_path = "{certs}/key.pem"
     let config_path = tmp.join("node.toml");
     std::fs::write(&config_path, &config).unwrap();
 
-    let child = Command::new(env!("CARGO_BIN_EXE_agile-net-node"))
+    let child = Command::new(env!("CARGO_BIN_EXE_anet-svc"))
         .arg(&config_path)
         .env("AGILE_ADMIN_PASSWORD", "SmokeTest123!")
-        .env("AGILE_RELAY_TOKENS", "psk_smoketoken_00000000000000000000000000000000")
+        .env(
+            "AGILE_RELAY_TOKENS",
+            "psk_smoketoken_00000000000000000000000000000000",
+        )
         .env("RUST_LOG", "info")
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -66,7 +69,9 @@ key_path = "{certs}/key.pem"
     let mut api_up = false;
     for _ in 0..60 {
         if let Ok(r) = client
-            .get(format!("http://127.0.0.1:{api_port}/api/v1/admin/node/status"))
+            .get(format!(
+                "http://127.0.0.1:{api_port}/api/v1/admin/node/status"
+            ))
             .send()
             .await
         {
@@ -122,7 +127,8 @@ async fn node_binary_https_api() {
     let (certs, key) = agile_net_core::tunnel::tls::generate_self_signed("localhost").unwrap();
     let cert_path = tmp.join("certs/api-cert.pem");
     let key_path = tmp.join("certs/api-key.pem");
-    agile_net_core::tunnel::tls::load_or_generate_self_signed(&cert_path, &key_path, "localhost").unwrap();
+    agile_net_core::tunnel::tls::load_or_generate_self_signed(&cert_path, &key_path, "localhost")
+        .unwrap();
     drop((certs, key));
 
     let config = format!(
@@ -150,7 +156,7 @@ key_path = "{certs}/relay-key.pem"
     let config_path = tmp.join("node.toml");
     std::fs::write(&config_path, &config).unwrap();
 
-    let child = Command::new(env!("CARGO_BIN_EXE_agile-net-node"))
+    let child = Command::new(env!("CARGO_BIN_EXE_anet-svc"))
         .arg(&config_path)
         .env("AGILE_ADMIN_PASSWORD", "SmokeTest123!")
         .env("RUST_LOG", "info")

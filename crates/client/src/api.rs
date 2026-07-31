@@ -103,7 +103,10 @@ pub async fn start_client_api(
             "/api/v1/nodes/paused-rules",
             get(get_paused_rules).put(set_paused_rules),
         )
-        .route("/api/v1/nodes/paused-rules/toggle", post(toggle_rule_paused))
+        .route(
+            "/api/v1/nodes/paused-rules/toggle",
+            post(toggle_rule_paused),
+        )
         // ---- Credentials ----
         .route("/api/v1/credentials", get(list_credentials))
         .route("/api/v1/credentials", delete(delete_credential))
@@ -167,10 +170,22 @@ fn spa_router(spa: SpaAssets) -> Router {
     let style_css = spa.style_css;
     Router::new()
         .route("/", get(move || serve(index, "text/html; charset=utf-8")))
-        .route("/index.html", get(move || serve(index, "text/html; charset=utf-8")))
-        .route("/app.js", get(move || serve(app_js, "text/javascript; charset=utf-8")))
-        .route("/icons.js", get(move || serve(icons_js, "text/javascript; charset=utf-8")))
-        .route("/style.css", get(move || serve(style_css, "text/css; charset=utf-8")))
+        .route(
+            "/index.html",
+            get(move || serve(index, "text/html; charset=utf-8")),
+        )
+        .route(
+            "/app.js",
+            get(move || serve(app_js, "text/javascript; charset=utf-8")),
+        )
+        .route(
+            "/icons.js",
+            get(move || serve(icons_js, "text/javascript; charset=utf-8")),
+        )
+        .route(
+            "/style.css",
+            get(move || serve(style_css, "text/css; charset=utf-8")),
+        )
 }
 
 // ==================== 统一响应体 ====================
@@ -268,7 +283,11 @@ async fn auth_middleware(
     if verify_token(&state.auth.jwt_secret(), &token) {
         next.run(req).await
     } else {
-        err(StatusCode::UNAUTHORIZED, codes::TOKEN_EXPIRED, "未登录或会话已过期")
+        err(
+            StatusCode::UNAUTHORIZED,
+            codes::TOKEN_EXPIRED,
+            "未登录或会话已过期",
+        )
     }
 }
 
@@ -300,7 +319,11 @@ async fn login(
         Ok(()) => {}
     }
     if !state.auth.has_password() {
-        return err(StatusCode::BAD_REQUEST, codes::BAD_REQUEST, "尚未设置管理密码");
+        return err(
+            StatusCode::BAD_REQUEST,
+            codes::BAD_REQUEST,
+            "尚未设置管理密码",
+        );
     }
     if !state.auth.verify_password(&req.password) {
         state.limiter.record_failure(ip);
@@ -323,7 +346,11 @@ async fn login(
                 .audit("web.login_ok", serde_json::json!({"ip": ip.to_string()}));
             ok(serde_json::json!({ "access_token": token }))
         }
-        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, codes::INTERNAL, e.to_string()),
+        Err(e) => err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            codes::INTERNAL,
+            e.to_string(),
+        ),
     }
 }
 
@@ -334,7 +361,11 @@ async fn init_password(
     Json(req): Json<PasswordReq>,
 ) -> Response {
     if state.auth.has_password() {
-        return err(StatusCode::BAD_REQUEST, codes::BAD_REQUEST, "管理密码已设置");
+        return err(
+            StatusCode::BAD_REQUEST,
+            codes::BAD_REQUEST,
+            "管理密码已设置",
+        );
     }
     if req.password.len() < 10 {
         return err(
@@ -345,9 +376,10 @@ async fn init_password(
     }
     match state.auth.set_password(&req.password) {
         Ok(()) => {
-            state
-                .auth
-                .audit("web.exposure_change", serde_json::json!({"change": "password_init", "ip": ip.to_string()}));
+            state.auth.audit(
+                "web.exposure_change",
+                serde_json::json!({"change": "password_init", "ip": ip.to_string()}),
+            );
             ok(serde_json::json!({ "initialized": true }))
         }
         Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, codes::INTERNAL, e),
@@ -456,10 +488,7 @@ struct ConnectInput {
     save_credential: bool,
 }
 
-async fn connect_node(
-    State(state): State<ApiState>,
-    Json(input): Json<ConnectInput>,
-) -> Response {
+async fn connect_node(State(state): State<ApiState>, Json(input): Json<ConnectInput>) -> Response {
     let params = ConnectParams {
         addr: input.addr.clone(),
         username: input.username.clone(),
@@ -473,7 +502,9 @@ async fn connect_node(
         Ok(s) => s,
         Err(e) => return err(StatusCode::BAD_REQUEST, codes::BAD_REQUEST, e.to_string()),
     };
-    if input.save_credential && let Some(store) = &state.creds {
+    if input.save_credential
+        && let Some(store) = &state.creds
+    {
         store
             .save(
                 &node_state.node_id,
@@ -513,10 +544,7 @@ struct PausedQuery {
     node_id: String,
 }
 
-async fn get_paused_rules(
-    State(state): State<ApiState>,
-    Query(q): Query<PausedQuery>,
-) -> Response {
+async fn get_paused_rules(State(state): State<ApiState>, Query(q): Query<PausedQuery>) -> Response {
     ok(state.client.get_paused_rules(&q.node_id))
 }
 
@@ -599,10 +627,18 @@ async fn export_credential(
         );
     }
     let Some(store) = &state.creds else {
-        return err(StatusCode::BAD_REQUEST, codes::BAD_REQUEST, "凭据存储不可用");
+        return err(
+            StatusCode::BAD_REQUEST,
+            codes::BAD_REQUEST,
+            "凭据存储不可用",
+        );
     };
     let Some(c) = store.get(&q.key).await else {
-        return err(StatusCode::NOT_FOUND, codes::NOT_FOUND, "凭据不存在或已删除");
+        return err(
+            StatusCode::NOT_FOUND,
+            codes::NOT_FOUND,
+            "凭据不存在或已删除",
+        );
     };
     state.auth.audit(
         "web.credential_export",
@@ -616,10 +652,7 @@ struct StartProxyReq {
     port: u16,
 }
 
-async fn start_proxy(
-    State(state): State<ApiState>,
-    Json(req): Json<StartProxyReq>,
-) -> Response {
+async fn start_proxy(State(state): State<ApiState>, Json(req): Json<StartProxyReq>) -> Response {
     match state.client.start_proxy(req.port).await {
         Ok(()) => ok(state.client.proxy_port()),
         Err(e) => err(StatusCode::BAD_REQUEST, codes::BAD_REQUEST, e.to_string()),

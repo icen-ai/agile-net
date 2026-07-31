@@ -10,9 +10,9 @@ use crate::auth::jwt::JwtService;
 use crate::db::Database;
 use crate::logs::LogBuffer;
 use agile_net_core::proxy::inbound::ProxyStats;
+use agile_net_core::relay::RelayConnector;
 use agile_net_core::relay::connector::ConnectionState;
 use agile_net_core::relay::listener::RelayListener;
-use agile_net_core::relay::RelayConnector;
 use axum::{
     Router,
     routing::{any, delete, get, post, put},
@@ -168,7 +168,12 @@ impl LoginRateLimiter {
     }
 
     /// 覆盖默认限流参数（对应 agile-net.toml [limits]）。
-    pub fn with_config(mut self, max_per_minute: u32, lock_threshold: u32, lock_minutes: u32) -> Self {
+    pub fn with_config(
+        mut self,
+        max_per_minute: u32,
+        lock_threshold: u32,
+        lock_minutes: u32,
+    ) -> Self {
         self.max_per_minute = max_per_minute.max(1);
         self.lock_threshold = lock_threshold.max(1);
         self.lock_duration = Duration::from_secs(lock_minutes.max(1) as u64 * 60);
@@ -251,7 +256,11 @@ pub fn ok_created<T: Serialize>(data: T) -> axum::response::Response {
         .into_response()
 }
 
-pub fn err(status: axum::http::StatusCode, code: u32, message: impl Into<String>) -> axum::response::Response {
+pub fn err(
+    status: axum::http::StatusCode,
+    code: u32,
+    message: impl Into<String>,
+) -> axum::response::Response {
     (
         status,
         axum::Json(serde_json::json!({ "code": code, "message": message.into() })),
@@ -297,18 +306,30 @@ pub fn create_app(state: ApiState) -> Router {
         .route("/api/v1/auth/refresh", post(handlers::auth::refresh))
         .route("/api/v1/auth/init", post(handlers::auth::init))
         .route("/api/v1/auth/logout", post(handlers::auth::logout))
-        .route("/api/v1/auth/admin-bootstrap", post(handlers::auth::admin_bootstrap))
+        .route(
+            "/api/v1/auth/admin-bootstrap",
+            post(handlers::auth::admin_bootstrap),
+        )
         .route("/api/v1/auth/me", get(handlers::auth::me))
         // ---- Client API ----
         .route("/api/v1/client/config", get(handlers::client::get_config))
-        .route("/api/v1/client/heartbeat", post(handlers::client::heartbeat))
-        .route("/api/v1/client/console-ticket", post(handlers::client::console_ticket))
+        .route(
+            "/api/v1/client/heartbeat",
+            post(handlers::client::heartbeat),
+        )
+        .route(
+            "/api/v1/client/console-ticket",
+            post(handlers::client::console_ticket),
+        )
         // ---- Admin: Rules ----
         .route(
             "/api/v1/admin/rules",
             get(handlers::rules::list_rules).post(handlers::rules::create_rule),
         )
-        .route("/api/v1/admin/rules/batch", post(handlers::rules::batch_import))
+        .route(
+            "/api/v1/admin/rules/batch",
+            post(handlers::rules::batch_import),
+        )
         .route(
             "/api/v1/admin/rules/{id}",
             put(handlers::rules::update_rule).delete(handlers::rules::delete_rule),
@@ -362,7 +383,10 @@ pub fn create_app(state: ApiState) -> Router {
         .route("/api/v1/admin/node/status", get(handlers::node::status))
         .route("/api/v1/admin/node/stats", get(handlers::node::stats))
         .route("/api/v1/admin/node/logs", get(handlers::node::logs))
-        .route("/api/v1/admin/node/settings", put(handlers::node::update_settings))
+        .route(
+            "/api/v1/admin/node/settings",
+            put(handlers::node::update_settings),
+        )
         .route("/api/v1/admin/node/metrics", get(handlers::node::metrics))
         .route("/api/v1/admin/node/kick", post(handlers::node::kick_peer))
         .route(
@@ -375,6 +399,9 @@ pub fn create_app(state: ApiState) -> Router {
         )
         .route("/api/v1/admin/node/events", any(handlers::node::events_ws))
         // ---- Admin: Audit ----
-        .route("/api/v1/admin/audit-logs", get(handlers::audit::list_audit_logs))
+        .route(
+            "/api/v1/admin/audit-logs",
+            get(handlers::audit::list_audit_logs),
+        )
         .with_state(state)
 }

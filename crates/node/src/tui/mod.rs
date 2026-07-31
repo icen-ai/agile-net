@@ -9,11 +9,11 @@ use crate::db::{Database, generate_relay_token, sha256_hex};
 use agile_net_core::error::{Error, Result};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::{
+    Frame, Terminal,
     backend::Backend,
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState, Tabs},
-    Frame, Terminal,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -160,7 +160,9 @@ impl TuiApp {
             KeyCode::Char('e') => self.toggle_selected_account(),
             KeyCode::Char('n') => self.create_token_action(),
             KeyCode::Char('d') => {
-                if self.current_row_count() > 0 && !matches!(self.current_tab, Tab::Dashboard | Tab::Audit) {
+                if self.current_row_count() > 0
+                    && !matches!(self.current_tab, Tab::Dashboard | Tab::Audit)
+                {
                     self.pending_delete = true;
                     self.status_msg = "确认删除选中行？按 y 确认，其他键取消".into();
                 }
@@ -186,21 +188,21 @@ impl TuiApp {
         if let Some(idx) = self.selected_index()
             && let Some(account) = self.accounts.get(idx)
         {
-                let new_enabled = !account.enabled;
-                let id = account.id.clone();
-                let username = account.username.clone();
-                match self.db.update_account(&id, None, Some(new_enabled), None) {
-                    Ok(_) => {
-                        let _ = self.db.bump_config_version();
-                        self.status_msg = format!(
-                            "账号 {} 已{}",
-                            username,
-                            if new_enabled { "启用" } else { "禁用" }
-                        );
-                        self.refresh();
-                    }
-                    Err(e) => self.status_msg = format!("操作失败: {e}"),
+            let new_enabled = !account.enabled;
+            let id = account.id.clone();
+            let username = account.username.clone();
+            match self.db.update_account(&id, None, Some(new_enabled), None) {
+                Ok(_) => {
+                    let _ = self.db.bump_config_version();
+                    self.status_msg = format!(
+                        "账号 {} 已{}",
+                        username,
+                        if new_enabled { "启用" } else { "禁用" }
+                    );
+                    self.refresh();
                 }
+                Err(e) => self.status_msg = format!("操作失败: {e}"),
+            }
         }
     }
 
@@ -211,7 +213,10 @@ impl TuiApp {
         let token = generate_relay_token();
         let hash = sha256_hex(token.as_bytes());
         let prefix = format!("{}****", &token[..8]);
-        match self.db.create_relay_token(&hash, &prefix, "created via TUI") {
+        match self
+            .db
+            .create_relay_token(&hash, &prefix, "created via TUI")
+        {
             Ok(_) => {
                 // 明文令牌仅在此显示一次
                 self.status_msg = format!("新 Token（仅此一次显示）: {token}");
@@ -282,7 +287,11 @@ impl TuiApp {
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
             )
-            .block(Block::default().borders(Borders::ALL).title("AgileNet Node"));
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("AgileNet Node"),
+            );
         f.render_widget(tabs, chunks[0]);
 
         // 主内容
@@ -336,11 +345,8 @@ impl TuiApp {
             self.tokens.len(),
             self.audit_logs.len(),
         );
-        let p = Paragraph::new(text).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("节点概览"),
-        );
+        let p =
+            Paragraph::new(text).block(Block::default().borders(Borders::ALL).title("节点概览"));
         f.render_widget(p, area);
     }
 
@@ -399,7 +405,10 @@ impl TuiApp {
                 Constraint::Min(20),
             ],
         )
-        .header(Row::new(vec!["名称", "规则数", "账号数", "备注"]).style(Style::default().fg(Color::Yellow)))
+        .header(
+            Row::new(vec!["名称", "规则数", "账号数", "备注"])
+                .style(Style::default().fg(Color::Yellow)),
+        )
         .row_highlight_style(Style::default().bg(Color::DarkGray))
         .block(Block::default().borders(Borders::ALL).title("权限组"));
         f.render_stateful_widget(table, area, &mut self.table_state);
@@ -430,9 +439,16 @@ impl TuiApp {
                 Constraint::Min(14),
             ],
         )
-        .header(Row::new(vec!["账号", "权限组", "状态", "最后在线", "备注"]).style(Style::default().fg(Color::Yellow)))
+        .header(
+            Row::new(vec!["账号", "权限组", "状态", "最后在线", "备注"])
+                .style(Style::default().fg(Color::Yellow)),
+        )
         .row_highlight_style(Style::default().bg(Color::DarkGray))
-        .block(Block::default().borders(Borders::ALL).title("客户端账号（按 e 启停）"));
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("客户端账号（按 e 启停）"),
+        );
         f.render_stateful_widget(table, area, &mut self.table_state);
     }
 
@@ -458,7 +474,10 @@ impl TuiApp {
                 Constraint::Length(22),
             ],
         )
-        .header(Row::new(vec!["Token 前缀", "备注", "最近使用", "创建时间"]).style(Style::default().fg(Color::Yellow)))
+        .header(
+            Row::new(vec!["Token 前缀", "备注", "最近使用", "创建时间"])
+                .style(Style::default().fg(Color::Yellow)),
+        )
         .row_highlight_style(Style::default().bg(Color::DarkGray))
         .block(
             Block::default()
@@ -492,7 +511,10 @@ impl TuiApp {
                 Constraint::Length(14),
             ],
         )
-        .header(Row::new(vec!["时间", "操作人", "动作", "目标", "来源 IP"]).style(Style::default().fg(Color::Yellow)))
+        .header(
+            Row::new(vec!["时间", "操作人", "动作", "目标", "来源 IP"])
+                .style(Style::default().fg(Color::Yellow)),
+        )
         .row_highlight_style(Style::default().bg(Color::DarkGray))
         .block(Block::default().borders(Borders::ALL).title("审计日志"));
         f.render_stateful_widget(table, area, &mut self.table_state);
@@ -513,7 +535,8 @@ pub fn run_tui(db: Database) -> Result<()> {
     loop {
         app.draw(&mut terminal)?;
 
-        if event::poll(std::time::Duration::from_millis(200)).map_err(|e| Error::Other(e.to_string()))?
+        if event::poll(std::time::Duration::from_millis(200))
+            .map_err(|e| Error::Other(e.to_string()))?
             && let Ok(Event::Key(key)) = event::read()
             && key.kind == KeyEventKind::Press
         {
@@ -531,7 +554,9 @@ pub fn run_tui(db: Database) -> Result<()> {
         crossterm::terminal::LeaveAlternateScreen
     )
     .map_err(|e| Error::Other(e.to_string()))?;
-    terminal.show_cursor().map_err(|e| Error::Other(e.to_string()))?;
+    terminal
+        .show_cursor()
+        .map_err(|e| Error::Other(e.to_string()))?;
 
     Ok(())
 }

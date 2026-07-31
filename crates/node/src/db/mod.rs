@@ -210,7 +210,9 @@ impl Database {
         )
         .map_err(db_err)?;
 
-        let mut stmt = conn.prepare("SELECT version FROM _migration").map_err(db_err)?;
+        let mut stmt = conn
+            .prepare("SELECT version FROM _migration")
+            .map_err(db_err)?;
         let applied: std::collections::HashSet<u32> = stmt
             .query_map([], |r| r.get(0))
             .map_err(db_err)?
@@ -321,7 +323,9 @@ impl Database {
     pub fn get_admin_by_id(&self, id: &str) -> Result<Option<AdminRecord>> {
         let conn = self.conn();
         let mut stmt = conn
-            .prepare("SELECT id, username, password, created_at, updated_at FROM admin WHERE id = ?1")
+            .prepare(
+                "SELECT id, username, password, created_at, updated_at FROM admin WHERE id = ?1",
+            )
             .map_err(db_err)?;
         let mut rows = stmt.query(params![id]).map_err(db_err)?;
         Ok(match rows.next().map_err(db_err)? {
@@ -349,7 +353,10 @@ impl Database {
         let cutoff = (chrono::Utc::now() - chrono::Duration::days(days))
             .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
         let n = conn
-            .execute("DELETE FROM audit_log WHERE created_at < ?1", params![cutoff])
+            .execute(
+                "DELETE FROM audit_log WHERE created_at < ?1",
+                params![cutoff],
+            )
             .map_err(db_err)?;
         Ok(n)
     }
@@ -395,7 +402,8 @@ impl Database {
              FROM rule r {where_sql} ORDER BY r.created_at DESC LIMIT ? OFFSET ?"
         );
         let mut stmt = conn.prepare(&sql).map_err(db_err)?;
-        let mut bind_refs: Vec<&dyn rusqlite::types::ToSql> = bind.iter().map(|b| b.as_ref()).collect();
+        let mut bind_refs: Vec<&dyn rusqlite::types::ToSql> =
+            bind.iter().map(|b| b.as_ref()).collect();
         let limit = page_size as i64;
         let off = offset as i64;
         bind_refs.push(&limit);
@@ -727,8 +735,11 @@ impl Database {
     /// 全量设置权限组关联的规则
     pub fn set_group_rules(&self, group_id: &str, rule_ids: &[String]) -> Result<()> {
         let conn = self.conn();
-        conn.execute("DELETE FROM group_rule WHERE group_id = ?1", params![group_id])
-            .map_err(db_err)?;
+        conn.execute(
+            "DELETE FROM group_rule WHERE group_id = ?1",
+            params![group_id],
+        )
+        .map_err(db_err)?;
         for rid in rule_ids {
             conn.execute(
                 "INSERT OR IGNORE INTO group_rule (group_id, rule_id) VALUES (?1, ?2)",
@@ -798,8 +809,11 @@ impl Database {
         let total: i64 = {
             let sql = format!("SELECT COUNT(*) FROM account a {where_sql}");
             let mut stmt = conn.prepare(&sql).map_err(db_err)?;
-            stmt.query_row(rusqlite::params_from_iter(bind.iter().map(|b| b.as_ref())), |r| r.get(0))
-                .map_err(db_err)?
+            stmt.query_row(
+                rusqlite::params_from_iter(bind.iter().map(|b| b.as_ref())),
+                |r| r.get(0),
+            )
+            .map_err(db_err)?
         };
 
         let offset = (page.saturating_sub(1)) * page_size;
@@ -809,7 +823,8 @@ impl Database {
              {where_sql} ORDER BY a.created_at DESC LIMIT ? OFFSET ?"
         );
         let mut stmt = conn.prepare(&sql).map_err(db_err)?;
-        let mut bind_refs: Vec<&dyn rusqlite::types::ToSql> = bind.iter().map(|b| b.as_ref()).collect();
+        let mut bind_refs: Vec<&dyn rusqlite::types::ToSql> =
+            bind.iter().map(|b| b.as_ref()).collect();
         let limit = page_size as i64;
         let off = offset as i64;
         bind_refs.push(&limit);
@@ -839,7 +854,10 @@ impl Database {
         })
     }
 
-    pub fn get_account_by_username(&self, username: &str) -> Result<Option<(AccountRecord, String)>> {
+    pub fn get_account_by_username(
+        &self,
+        username: &str,
+    ) -> Result<Option<(AccountRecord, String)>> {
         let conn = self.conn();
         let mut stmt = conn
             .prepare(
@@ -1025,14 +1043,21 @@ impl Database {
             .query_row("SELECT COUNT(*) FROM account", [], |r| r.get(0))
             .map_err(db_err)?;
         let disabled: i64 = conn
-            .query_row("SELECT COUNT(*) FROM account WHERE enabled = 0", [], |r| r.get(0))
+            .query_row("SELECT COUNT(*) FROM account WHERE enabled = 0", [], |r| {
+                r.get(0)
+            })
             .map_err(db_err)?;
         Ok((total, disabled))
     }
 
     // ==================== Relay Token ====================
 
-    pub fn create_relay_token(&self, token_hash: &str, token_prefix: &str, remark: &str) -> Result<RelayTokenRecord> {
+    pub fn create_relay_token(
+        &self,
+        token_hash: &str,
+        token_prefix: &str,
+        remark: &str,
+    ) -> Result<RelayTokenRecord> {
         self.create_relay_token_full(token_hash, token_prefix, remark, false, "full")
     }
 
@@ -1082,14 +1107,21 @@ impl Database {
     }
 
     /// 按哈希查暴露标记与档位（握手 v2 下发判定）。
-    pub fn get_relay_token_control(&self, token_hash: &str) -> Result<Option<(String, bool, String)>> {
+    pub fn get_relay_token_control(
+        &self,
+        token_hash: &str,
+    ) -> Result<Option<(String, bool, String)>> {
         let conn = self.conn();
         let mut stmt = conn
             .prepare("SELECT token_prefix, expose_control, control_scope FROM relay_token WHERE token_hash = ?1")
             .map_err(db_err)?;
         let mut rows = stmt.query(params![token_hash]).map_err(db_err)?;
         Ok(match rows.next().map_err(db_err)? {
-            Some(r) => Some((r.get(0).map_err(db_err)?, r.get::<_, i32>(1).map_err(db_err)? != 0, r.get(2).map_err(db_err)?)),
+            Some(r) => Some((
+                r.get(0).map_err(db_err)?,
+                r.get::<_, i32>(1).map_err(db_err)? != 0,
+                r.get(2).map_err(db_err)?,
+            )),
             None => None,
         })
     }
@@ -1146,7 +1178,6 @@ impl Database {
         Ok(())
     }
 
-    /// 按 ID 取 relay token 哈希（删除联动踢会话用）。
     // ==================== Admin Ticket（管理引导票据） ====================
 
     /// 签发管理引导票据：明文返回一次，库中只存 SHA-256 哈希。
@@ -1200,7 +1231,9 @@ impl Database {
             return Ok(None);
         }
         let mut stmt = conn
-            .prepare("SELECT kind, subject, scope, expires_at FROM admin_ticket WHERE ticket_hash = ?1")
+            .prepare(
+                "SELECT kind, subject, scope, expires_at FROM admin_ticket WHERE ticket_hash = ?1",
+            )
             .map_err(db_err)?;
         let mut rows = stmt.query(params![hash]).map_err(db_err)?;
         Ok(match rows.next().map_err(db_err)? {
@@ -1226,6 +1259,7 @@ impl Database {
         Ok(n)
     }
 
+    /// 按 ID 取 relay token 哈希（删除联动踢会话用）。
     pub fn get_relay_token_hash(&self, id: &str) -> Result<Option<String>> {
         let conn = self.conn();
         let mut stmt = conn
@@ -1265,10 +1299,7 @@ impl Database {
     /// 配置版本号递增（规则/权限组/账号组变更时调用）
     pub fn bump_config_version(&self) -> Result<u64> {
         let current = self.get_config("config_version")?;
-        let next = current
-            .and_then(|v| v.parse::<u64>().ok())
-            .unwrap_or(0)
-            + 1;
+        let next = current.and_then(|v| v.parse::<u64>().ok()).unwrap_or(0) + 1;
         self.set_config("config_version", &next.to_string())?;
         Ok(next)
     }
@@ -1365,7 +1396,13 @@ impl Database {
     // ==================== Traffic Log ====================
 
     /// 按小时聚合 upsert 流量统计
-    pub fn add_traffic(&self, account_id: &str, bytes_tx: i64, bytes_rx: i64, connections: i64) -> Result<()> {
+    pub fn add_traffic(
+        &self,
+        account_id: &str,
+        bytes_tx: i64,
+        bytes_rx: i64,
+        connections: i64,
+    ) -> Result<()> {
         let conn = self.conn();
         let hour = current_hour_bucket();
         conn.execute(
@@ -1375,7 +1412,14 @@ impl Database {
                 bytes_tx = bytes_tx + ?4,
                 bytes_rx = bytes_rx + ?5,
                 connections = connections + ?6",
-            params![uuid::Uuid::new_v4().to_string(), account_id, hour, bytes_tx, bytes_rx, connections],
+            params![
+                uuid::Uuid::new_v4().to_string(),
+                account_id,
+                hour,
+                bytes_tx,
+                bytes_rx,
+                connections
+            ],
         )
         .map_err(db_err)?;
         Ok(())
@@ -1444,7 +1488,13 @@ impl Database {
 
     // ==================== Refresh Token ====================
 
-    pub fn store_refresh_token(&self, jti_hash: &str, subject: &str, role: &str, expires_at: &str) -> Result<()> {
+    pub fn store_refresh_token(
+        &self,
+        jti_hash: &str,
+        subject: &str,
+        role: &str,
+        expires_at: &str,
+    ) -> Result<()> {
         let conn = self.conn();
         conn.execute(
             "INSERT INTO refresh_token (jti_hash, subject, role, expires_at) VALUES (?1,?2,?3,?4)",

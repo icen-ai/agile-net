@@ -5,17 +5,17 @@ use crate::api::extractors::{AdminAuth, ClientIp};
 use crate::api::{ApiState, codes, err, ok};
 use axum::{
     Json,
-    extract::{Query, State, ws::{Message, WebSocket, WebSocketUpgrade}},
+    extract::{
+        Query, State,
+        ws::{Message, WebSocket, WebSocketUpgrade},
+    },
     http::StatusCode,
     response::{IntoResponse, Response},
 };
 use serde::Deserialize;
 use serde_json::json;
 
-pub async fn status(
-    AdminAuth(_): AdminAuth,
-    State(state): State<ApiState>,
-) -> Response {
+pub async fn status(AdminAuth(_): AdminAuth, State(state): State<ApiState>) -> Response {
     let db = &state.db;
     let node_name = db
         .get_config("node_name")
@@ -163,7 +163,11 @@ pub async fn stats(
                 "total_rx": total_rx,
                 "breakdown": breakdown,
             })),
-            Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, codes::INTERNAL, e.to_string()),
+            Err(e) => err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                codes::INTERNAL,
+                e.to_string(),
+            ),
         },
         "time" => match state.db.traffic_by_time(hours) {
             Ok(points) => ok(json!({
@@ -171,7 +175,11 @@ pub async fn stats(
                 "interval": "1h",
                 "points": points,
             })),
-            Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, codes::INTERNAL, e.to_string()),
+            Err(e) => err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                codes::INTERNAL,
+                e.to_string(),
+            ),
         },
         _ => err(
             StatusCode::BAD_REQUEST,
@@ -229,7 +237,11 @@ pub async fn update_settings(
             );
         }
         if let Err(e) = state.db.set_config("node_name", name) {
-            return err(StatusCode::INTERNAL_SERVER_ERROR, codes::INTERNAL, e.to_string());
+            return err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                codes::INTERNAL,
+                e.to_string(),
+            );
         }
         applied.push("node_name");
     }
@@ -243,7 +255,11 @@ pub async fn update_settings(
             );
         }
         if let Err(e) = state.db.set_config("public_host", host) {
-            return err(StatusCode::INTERNAL_SERVER_ERROR, codes::INTERNAL, e.to_string());
+            return err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                codes::INTERNAL,
+                e.to_string(),
+            );
         }
         applied.push("public_host");
     }
@@ -307,22 +323,39 @@ pub async fn metrics(AdminAuth(_): AdminAuth, State(state): State<ApiState>) -> 
     let rule_count = db.list_rules(1, 1, None, None).map(|(_, t)| t).unwrap_or(0);
     let (acc_total, acc_disabled) = db.account_stats().unwrap_or((0, 0));
 
-    out.push_str("# HELP agilenet_uptime_seconds Node uptime\n# TYPE agilenet_uptime_seconds gauge\n");
+    out.push_str(
+        "# HELP agilenet_uptime_seconds Node uptime\n# TYPE agilenet_uptime_seconds gauge\n",
+    );
     out.push_str(&format!("agilenet_uptime_seconds {uptime}\n"));
-    out.push_str("# HELP agilenet_rules_total Configured routing rules\n# TYPE agilenet_rules_total gauge\n");
+    out.push_str(
+        "# HELP agilenet_rules_total Configured routing rules\n# TYPE agilenet_rules_total gauge\n",
+    );
     out.push_str(&format!("agilenet_rules_total {rule_count}\n"));
-    out.push_str("# HELP agilenet_accounts_total Client accounts\n# TYPE agilenet_accounts_total gauge\n");
-    out.push_str(&format!("agilenet_accounts_total {acc_total}\nagilenet_accounts_disabled {acc_disabled}\n"));
+    out.push_str(
+        "# HELP agilenet_accounts_total Client accounts\n# TYPE agilenet_accounts_total gauge\n",
+    );
+    out.push_str(&format!(
+        "agilenet_accounts_total {acc_total}\nagilenet_accounts_disabled {acc_disabled}\n"
+    ));
 
     if let Some(l) = &state.runtime.listener {
-        out.push_str("# HELP agilenet_peers Connected downstream nodes\n# TYPE agilenet_peers gauge\n");
+        out.push_str(
+            "# HELP agilenet_peers Connected downstream nodes\n# TYPE agilenet_peers gauge\n",
+        );
         out.push_str(&format!("agilenet_peers {}\n", l.peer_count()));
         out.push_str("# HELP agilenet_online_clients Online client tunnels\n# TYPE agilenet_online_clients gauge\n");
-        out.push_str(&format!("agilenet_online_clients {}\n", l.online_client_count()));
+        out.push_str(&format!(
+            "agilenet_online_clients {}\n",
+            l.online_client_count()
+        ));
         out.push_str("# HELP agilenet_peer_bytes Peer data-plane traffic\n# TYPE agilenet_peer_bytes counter\n");
         for (id, up, down) in l.peer_traffic() {
-            out.push_str(&format!("agilenet_peer_bytes{{node_id=\"{id}\",direction=\"up\"}} {up}\n"));
-            out.push_str(&format!("agilenet_peer_bytes{{node_id=\"{id}\",direction=\"down\"}} {down}\n"));
+            out.push_str(&format!(
+                "agilenet_peer_bytes{{node_id=\"{id}\",direction=\"up\"}} {up}\n"
+            ));
+            out.push_str(&format!(
+                "agilenet_peer_bytes{{node_id=\"{id}\",direction=\"down\"}} {down}\n"
+            ));
         }
     }
     if let Some(stats) = &state.runtime.proxy_stats {
@@ -343,7 +376,10 @@ pub async fn metrics(AdminAuth(_): AdminAuth, State(state): State<ApiState>) -> 
 
     (
         StatusCode::OK,
-        [(axum::http::header::CONTENT_TYPE, "text/plain; version=0.0.4")],
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/plain; version=0.0.4",
+        )],
         out,
     )
         .into_response()

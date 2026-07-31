@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "AgileNet",
+  "productName": "anet-gui",
   "version": "0.1.0",
   "identifier": "ai.icen.agilenet",
   "build": {

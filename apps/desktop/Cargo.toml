@@ -1,16 +1,16 @@
 [package]
-name = "agilenet-desktop"
+name = "anet-gui"
 version = "0.1.0"
 edition = "2021"
-description = "AgileNet 桌面客户端（Windows/macOS/Linux/Android）"
+description = "anet-gui：AgileNet 全功能图形客户端（Windows/macOS/Linux/Android）"
 license = "MIT"
 
 [lib]
-name = "agilenet_desktop_lib"
+name = "anet_gui_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [[bin]]
-name = "agilenet-desktop"
+name = "anet-gui"
 path = "src/main.rs"
 
 # 独立于主 workspace 构建（Tauri 依赖体量大）

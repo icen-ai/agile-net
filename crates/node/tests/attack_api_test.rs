@@ -32,11 +32,24 @@ async fn test_app() -> (Router, Database, Arc<JwtService>) {
         cert_fingerprint: None,
         manageable: Default::default(),
     });
-    let state = ApiState::new(db.clone(), jwt.clone(), runtime, "127.0.0.1".into(), 59090, 54430);
+    let state = ApiState::new(
+        db.clone(),
+        jwt.clone(),
+        runtime,
+        "127.0.0.1".into(),
+        59090,
+        54430,
+    );
     (create_app(state), db, jwt)
 }
 
-async fn req_raw(app: &Router, method: &str, uri: &str, token: Option<&str>, body: Vec<u8>) -> (StatusCode, Value) {
+async fn req_raw(
+    app: &Router,
+    method: &str,
+    uri: &str,
+    token: Option<&str>,
+    body: Vec<u8>,
+) -> (StatusCode, Value) {
     let mut builder = Request::builder().method(method).uri(uri);
     if let Some(t) = token {
         builder = builder.header(header::AUTHORIZATION, format!("Bearer {t}"));
@@ -45,19 +58,38 @@ async fn req_raw(app: &Router, method: &str, uri: &str, token: Option<&str>, bod
     let request = builder.body(Body::from(body)).unwrap();
     let response = app.clone().oneshot(request).await.unwrap();
     let status = response.status();
-    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
-    (status, serde_json::from_slice(&bytes).unwrap_or(json!({"raw": String::from_utf8_lossy(&bytes).to_string()})))
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    (
+        status,
+        serde_json::from_slice(&bytes)
+            .unwrap_or(json!({"raw": String::from_utf8_lossy(&bytes).to_string()})),
+    )
 }
 
-async fn req(app: &Router, method: &str, uri: &str, token: Option<&str>, body: Option<Value>) -> (StatusCode, Value) {
+async fn req(
+    app: &Router,
+    method: &str,
+    uri: &str,
+    token: Option<&str>,
+    body: Option<Value>,
+) -> (StatusCode, Value) {
     let bytes = body.map(|b| b.to_string().into_bytes()).unwrap_or_default();
     req_raw(app, method, uri, token, bytes).await
 }
 
 async fn login(app: &Router) -> String {
-    let (_, body) = req(app, "POST", "/api/v1/auth/login", None, Some(json!({
-        "username": "admin", "password": "AdminPass123",
-    }))).await;
+    let (_, body) = req(
+        app,
+        "POST",
+        "/api/v1/auth/login",
+        None,
+        Some(json!({
+            "username": "admin", "password": "AdminPass123",
+        })),
+    )
+    .await;
     body["data"]["access_token"].as_str().unwrap().to_string()
 }
 
@@ -68,21 +100,42 @@ async fn login_bruteforce_lockout() {
 
     // 连续 5 次错误（达到锁定阈值）
     for _ in 0..5 {
-        req(&app, "POST", "/api/v1/auth/login", None, Some(json!({
-            "username": "admin", "password": "WrongPass999",
-        }))).await;
+        req(
+            &app,
+            "POST",
+            "/api/v1/auth/login",
+            None,
+            Some(json!({
+                "username": "admin", "password": "WrongPass999",
+            })),
+        )
+        .await;
     }
     // 第 6 次错误 → 429
-    let (status, body) = req(&app, "POST", "/api/v1/auth/login", None, Some(json!({
-        "username": "admin", "password": "WrongPass999",
-    }))).await;
+    let (status, body) = req(
+        &app,
+        "POST",
+        "/api/v1/auth/login",
+        None,
+        Some(json!({
+            "username": "admin", "password": "WrongPass999",
+        })),
+    )
+    .await;
     assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
     assert_eq!(body["code"], 42900);
 
     // 锁定期间正确密码也被拒（防爆破窗口）
-    let (status, _) = req(&app, "POST", "/api/v1/auth/login", None, Some(json!({
-        "username": "admin", "password": "AdminPass123",
-    }))).await;
+    let (status, _) = req(
+        &app,
+        "POST",
+        "/api/v1/auth/login",
+        None,
+        Some(json!({
+            "username": "admin", "password": "AdminPass123",
+        })),
+    )
+    .await;
     assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
 }
 
@@ -122,7 +175,14 @@ async fn jwt_forgery_rejected() {
 
     // 4) refresh token 冒充 access token
     let issued = _jwt.issue("admin-id", "admin", "admin").unwrap();
-    let (status, _) = req(&app, "GET", "/api/v1/admin/rules", Some(&issued.refresh_token), None).await;
+    let (status, _) = req(
+        &app,
+        "GET",
+        "/api/v1/admin/rules",
+        Some(&issued.refresh_token),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
@@ -157,18 +217,39 @@ async fn sql_injection_safe() {
     let token = login(&app).await;
 
     // 登录注入
-    let (status, _) = req(&app, "POST", "/api/v1/auth/login", None, Some(json!({
-        "username": "admin'--", "password": "x",
-    }))).await;
+    let (status, _) = req(
+        &app,
+        "POST",
+        "/api/v1/auth/login",
+        None,
+        Some(json!({
+            "username": "admin'--", "password": "x",
+        })),
+    )
+    .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 
     // 搜索注入
-    let (status, body) = req(&app, "GET", "/api/v1/admin/rules?q=%27%20OR%201%3D1%20--", Some(&token), None).await;
+    let (status, body) = req(
+        &app,
+        "GET",
+        "/api/v1/admin/rules?q=%27%20OR%201%3D1%20--",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["total"], 0);
 
     // ID 注入
-    let (status, _) = req(&app, "DELETE", "/api/v1/admin/rules/1'%20OR%20'1'%3D'1", Some(&token), None).await;
+    let (status, _) = req(
+        &app,
+        "DELETE",
+        "/api/v1/admin/rules/1'%20OR%20'1'%3D'1",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_ne!(status, StatusCode::INTERNAL_SERVER_ERROR);
 }
 
@@ -176,7 +257,10 @@ async fn sql_injection_safe() {
 #[tokio::test]
 async fn oversized_body_rejected() {
     let (app, _db, _jwt) = test_app().await;
-    let big = format!("{{\"username\":\"{}\",\"password\":\"x\"}}", "a".repeat(5 * 1024 * 1024));
+    let big = format!(
+        "{{\"username\":\"{}\",\"password\":\"x\"}}",
+        "a".repeat(5 * 1024 * 1024)
+    );
     let (status, _) = req_raw(&app, "POST", "/api/v1/auth/login", None, big.into_bytes()).await;
     assert!(
         status == StatusCode::PAYLOAD_TOO_LARGE
@@ -193,9 +277,16 @@ async fn xss_payload_stored_safely() {
     let token = login(&app).await;
     let xss = "<script>alert(document.cookie)</script>";
 
-    let (status, _) = req(&app, "POST", "/api/v1/admin/rules", Some(&token), Some(json!({
-        "type": "host", "value": "xss-test.internal", "remark": xss,
-    }))).await;
+    let (status, _) = req(
+        &app,
+        "POST",
+        "/api/v1/admin/rules",
+        Some(&token),
+        Some(json!({
+            "type": "host", "value": "xss-test.internal", "remark": xss,
+        })),
+    )
+    .await;
     assert_eq!(status, StatusCode::CREATED);
 
     // API 返回 JSON（不含可执行 HTML 上下文），UI 层 esc() 负责渲染转义（ui_test 覆盖）
@@ -211,31 +302,81 @@ async fn authorization_enforced() {
     let admin_token = login(&app).await;
 
     // 不存在的资源
-    let (status, _) = req(&app, "PUT", "/api/v1/admin/rules/nonexistent-id", Some(&admin_token), Some(json!({"remark":"x"}))).await;
+    let (status, _) = req(
+        &app,
+        "PUT",
+        "/api/v1/admin/rules/nonexistent-id",
+        Some(&admin_token),
+        Some(json!({"remark":"x"})),
+    )
+    .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
-    let (status, _) = req(&app, "DELETE", "/api/v1/admin/accounts/nonexistent-id", Some(&admin_token), None).await;
+    let (status, _) = req(
+        &app,
+        "DELETE",
+        "/api/v1/admin/accounts/nonexistent-id",
+        Some(&admin_token),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 
     // client 角色访问 admin API
     let gid = db.create_group("g", "").unwrap().id;
-    db.create_account("c1", &hash_password("x").unwrap(), &gid, "").unwrap();
-    let (_, g) = req(&app, "POST", "/api/v1/admin/groups", Some(&admin_token), Some(json!({"name":"g2"}))).await;
+    db.create_account("c1", &hash_password("x").unwrap(), &gid, "")
+        .unwrap();
+    let (_, g) = req(
+        &app,
+        "POST",
+        "/api/v1/admin/groups",
+        Some(&admin_token),
+        Some(json!({"name":"g2"})),
+    )
+    .await;
     let gid2 = g["data"]["id"].as_str().unwrap().to_string();
-    let (_, a) = req(&app, "POST", "/api/v1/admin/accounts", Some(&admin_token), Some(json!({
-        "username": "c2user", "group_id": gid2,
-    }))).await;
+    let (_, a) = req(
+        &app,
+        "POST",
+        "/api/v1/admin/accounts",
+        Some(&admin_token),
+        Some(json!({
+            "username": "c2user", "group_id": gid2,
+        })),
+    )
+    .await;
     let pwd = a["data"]["password"].as_str().unwrap().to_string();
-    let (_, l) = req(&app, "POST", "/api/v1/auth/login", None, Some(json!({
-        "username": "c2user", "password": pwd,
-    }))).await;
+    let (_, l) = req(
+        &app,
+        "POST",
+        "/api/v1/auth/login",
+        None,
+        Some(json!({
+            "username": "c2user", "password": pwd,
+        })),
+    )
+    .await;
     let client_token = l["data"]["access_token"].as_str().unwrap().to_string();
 
-    let (status, body) = req(&app, "GET", "/api/v1/admin/accounts", Some(&client_token), None).await;
+    let (status, body) = req(
+        &app,
+        "GET",
+        "/api/v1/admin/accounts",
+        Some(&client_token),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     assert_eq!(body["code"], 40301);
 
     // client 角色访问他人 config（只能访问自己的）
-    let (status, _) = req(&app, "GET", "/api/v1/client/config", Some(&client_token), None).await;
+    let (status, _) = req(
+        &app,
+        "GET",
+        "/api/v1/client/config",
+        Some(&client_token),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
 
     // WS 事件未授权（真实服务器 + 合法升级头 + 无效 token → 401）
@@ -244,7 +385,9 @@ async fn authorization_enforced() {
     tokio::spawn(async move {
         let _ = axum::serve(listener, app.clone()).await;
     });
-    let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .unwrap();
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let handshake = "GET /api/v1/admin/node/events?token=bad HTTP/1.1\r\n\
                      Host: 127.0.0.1\r\n\
@@ -256,7 +399,11 @@ async fn authorization_enforced() {
     let mut buf = vec![0u8; 1024];
     let n = stream.read(&mut buf).await.unwrap();
     let resp = String::from_utf8_lossy(&buf[..n]);
-    assert!(resp.contains("401"), "无效 token 的 WS 握手必须 401，实际: {}", &resp[..resp.len().min(120)]);
+    assert!(
+        resp.contains("401"),
+        "无效 token 的 WS 握手必须 401，实际: {}",
+        &resp[..resp.len().min(120)]
+    );
 }
 
 /// B7: 批量赋值攻击 —— 未知字段被忽略，不能提权
@@ -265,24 +412,52 @@ async fn mass_assignment_ignored() {
     let (app, _db, _jwt) = test_app().await;
     let admin_token = login(&app).await;
 
-    let (_, g) = req(&app, "POST", "/api/v1/admin/groups", Some(&admin_token), Some(json!({"name":"gm"}))).await;
+    let (_, g) = req(
+        &app,
+        "POST",
+        "/api/v1/admin/groups",
+        Some(&admin_token),
+        Some(json!({"name":"gm"})),
+    )
+    .await;
     let gid = g["data"]["id"].as_str().unwrap().to_string();
-    let (_, a) = req(&app, "POST", "/api/v1/admin/accounts", Some(&admin_token), Some(json!({
-        "username": "muser", "group_id": gid,
-    }))).await;
+    let (_, a) = req(
+        &app,
+        "POST",
+        "/api/v1/admin/accounts",
+        Some(&admin_token),
+        Some(json!({
+            "username": "muser", "group_id": gid,
+        })),
+    )
+    .await;
     let aid = a["data"]["id"].as_str().unwrap().to_string();
     let pwd = a["data"]["password"].as_str().unwrap().to_string();
 
     // 尝试注入 role/is_admin/password_hash 字段
-    let (status, _) = req(&app, "PUT", &format!("/api/v1/admin/accounts/{aid}"), Some(&admin_token), Some(json!({
-        "remark": "x", "role": "admin", "is_admin": true, "password_hash": "plaintext",
-    }))).await;
+    let (status, _) = req(
+        &app,
+        "PUT",
+        &format!("/api/v1/admin/accounts/{aid}"),
+        Some(&admin_token),
+        Some(json!({
+            "remark": "x", "role": "admin", "is_admin": true, "password_hash": "plaintext",
+        })),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
 
     // 登录仍是 client 角色
-    let (_, l) = req(&app, "POST", "/api/v1/auth/login", None, Some(json!({
-        "username": "muser", "password": pwd,
-    }))).await;
+    let (_, l) = req(
+        &app,
+        "POST",
+        "/api/v1/auth/login",
+        None,
+        Some(json!({
+            "username": "muser", "password": pwd,
+        })),
+    )
+    .await;
     assert_eq!(l["data"]["role"], "client", "批量赋值不能导致提权");
 }
 
@@ -292,21 +467,54 @@ async fn audit_log_no_credential_leak() {
     let (app, _db, _jwt) = test_app().await;
     let token = login(&app).await;
 
-    let (_, g) = req(&app, "POST", "/api/v1/admin/groups", Some(&token), Some(json!({"name":"审计组"}))).await;
+    let (_, g) = req(
+        &app,
+        "POST",
+        "/api/v1/admin/groups",
+        Some(&token),
+        Some(json!({"name":"审计组"})),
+    )
+    .await;
     let gid = g["data"]["id"].as_str().unwrap().to_string();
-    let (_, a) = req(&app, "POST", "/api/v1/admin/accounts", Some(&token), Some(json!({
-        "username": "audituser", "group_id": gid,
-    }))).await;
+    let (_, a) = req(
+        &app,
+        "POST",
+        "/api/v1/admin/accounts",
+        Some(&token),
+        Some(json!({
+            "username": "audituser", "group_id": gid,
+        })),
+    )
+    .await;
     let password = a["data"]["password"].as_str().unwrap().to_string();
 
-    req(&app, "POST", "/api/v1/admin/node/relay-tokens", Some(&token), Some(json!({"remark":"t"}))).await;
+    req(
+        &app,
+        "POST",
+        "/api/v1/admin/node/relay-tokens",
+        Some(&token),
+        Some(json!({"remark":"t"})),
+    )
+    .await;
 
-    let (_, logs) = req(&app, "GET", "/api/v1/admin/audit-logs?page_size=100", Some(&token), None).await;
+    let (_, logs) = req(
+        &app,
+        "GET",
+        "/api/v1/admin/audit-logs?page_size=100",
+        Some(&token),
+        None,
+    )
+    .await;
     let all = serde_json::to_string(&logs).unwrap();
     assert!(!all.contains(&password), "审计日志泄露了账号密码！");
     assert!(!all.contains("sk-"), "审计日志不应包含任何 sk- 密码");
     // relay token 明文也不应出现（只允许 psk_ 前缀掩码）
-    let leak = all.matches("psk_").any(|_| all.matches(|c: char| c.is_ascii_alphanumeric()).count() > 0 && all.contains("psk_") && !all.contains("****") && all.matches("psk_").count() > all.matches("psk_").count());
+    let leak = all.matches("psk_").any(|_| {
+        all.matches(|c: char| c.is_ascii_alphanumeric()).count() > 0
+            && all.contains("psk_")
+            && !all.contains("****")
+            && all.matches("psk_").count() > all.matches("psk_").count()
+    });
     let _ = leak; // psk_ 出现必须带掩码
     for item in logs["data"]["items"].as_array().unwrap() {
         let detail = item["detail"].as_str().unwrap_or("");
@@ -321,12 +529,26 @@ async fn audit_log_no_credential_leak() {
 async fn header_injection_rejected() {
     let (app, _db, _jwt) = test_app().await;
     let token = login(&app).await;
-    let (_, g) = req(&app, "POST", "/api/v1/admin/groups", Some(&token), Some(json!({"name":"inj"}))).await;
+    let (_, g) = req(
+        &app,
+        "POST",
+        "/api/v1/admin/groups",
+        Some(&token),
+        Some(json!({"name":"inj"})),
+    )
+    .await;
     let gid = g["data"]["id"].as_str().unwrap().to_string();
 
-    let (status, _) = req(&app, "POST", "/api/v1/admin/accounts", Some(&token), Some(json!({
-        "username": "evil\r\nX-Injected: 1", "group_id": gid,
-    }))).await;
+    let (status, _) = req(
+        &app,
+        "POST",
+        "/api/v1/admin/accounts",
+        Some(&token),
+        Some(json!({
+            "username": "evil\r\nX-Injected: 1", "group_id": gid,
+        })),
+    )
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
@@ -334,12 +556,26 @@ async fn header_injection_rejected() {
 #[tokio::test]
 async fn login_oracle_prevented() {
     let (app, _db, _jwt) = test_app().await;
-    let (_, wrong_user) = req(&app, "POST", "/api/v1/auth/login", None, Some(json!({
-        "username": "nonexistent", "password": "x",
-    }))).await;
-    let (_, wrong_pass) = req(&app, "POST", "/api/v1/auth/login", None, Some(json!({
-        "username": "admin", "password": "WrongPass999",
-    }))).await;
+    let (_, wrong_user) = req(
+        &app,
+        "POST",
+        "/api/v1/auth/login",
+        None,
+        Some(json!({
+            "username": "nonexistent", "password": "x",
+        })),
+    )
+    .await;
+    let (_, wrong_pass) = req(
+        &app,
+        "POST",
+        "/api/v1/auth/login",
+        None,
+        Some(json!({
+            "username": "admin", "password": "WrongPass999",
+        })),
+    )
+    .await;
     assert_eq!(wrong_user["message"], wrong_pass["message"]);
     assert_eq!(wrong_user["message"], "invalid username or password");
 }

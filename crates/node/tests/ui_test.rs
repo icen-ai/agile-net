@@ -9,14 +9,22 @@ use tower::ServiceExt;
 
 async fn get_html(uri: &str) -> (StatusCode, String, axum::http::HeaderMap) {
     let app = create_ui_router();
-    let req = Request::builder().method("GET").uri(uri).body(Body::empty()).unwrap();
+    let req = Request::builder()
+        .method("GET")
+        .uri(uri)
+        .body(Body::empty())
+        .unwrap();
     let response = app.oneshot(req).await.unwrap();
     let status = response.status();
     let headers = response.headers().clone();
     let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .unwrap();
-    (status, String::from_utf8(body_bytes.to_vec()).unwrap(), headers)
+    (
+        status,
+        String::from_utf8(body_bytes.to_vec()).unwrap(),
+        headers,
+    )
 }
 
 /// 根路径返回控制台 SPA

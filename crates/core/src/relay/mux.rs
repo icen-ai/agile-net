@@ -45,10 +45,7 @@ fn now_millis() -> u64 {
 type PermitFuture = std::pin::Pin<
     Box<
         dyn std::future::Future<
-                Output = std::result::Result<
-                    mpsc::OwnedPermit<Frame>,
-                    mpsc::error::SendError<()>,
-                >,
+                Output = std::result::Result<mpsc::OwnedPermit<Frame>, mpsc::error::SendError<()>>,
             > + Send,
     >,
 >;
@@ -174,19 +171,18 @@ impl AsyncWrite for MuxChannel {
         if self.credit.is_some() {
             let credit = self.credit.clone().expect("checked");
             // 快速路径：直接尝试按量获取
-            if let Ok(permit) = credit
-                .clone()
-                .try_acquire_many_owned(chunk_len as u32)
-            {
+            if let Ok(permit) = credit.clone().try_acquire_many_owned(chunk_len as u32) {
                 permit.forget(); // 额度由对端 WindowUpdate 补充，不归还
             } else {
                 // 慢速路径：挂起等待额度
                 if self.pending_credit.is_none() {
-                    self.pending_credit = Some(Box::pin(
-                        credit.acquire_many_owned(chunk_len as u32),
-                    ));
+                    self.pending_credit =
+                        Some(Box::pin(credit.acquire_many_owned(chunk_len as u32)));
                 }
-                let fut = self.pending_credit.as_mut().expect("credit future just set");
+                let fut = self
+                    .pending_credit
+                    .as_mut()
+                    .expect("credit future just set");
                 match fut.as_mut().poll(cx) {
                     Poll::Ready(Ok(permit)) => {
                         self.pending_credit = None;
@@ -217,7 +213,10 @@ impl AsyncWrite for MuxChannel {
             self.pending_permit = Some(Box::pin(self.tx_frames.clone().reserve_owned()));
         }
 
-        let permit_fut = self.pending_permit.as_mut().expect("permit future just set");
+        let permit_fut = self
+            .pending_permit
+            .as_mut()
+            .expect("permit future just set");
         match permit_fut.as_mut().poll(cx) {
             Poll::Ready(Ok(permit)) => {
                 self.pending_permit = None;
@@ -450,7 +449,12 @@ impl MuxSession {
 
         // 等待 OpenOk / OpenFail
         match tokio::time::timeout(std::time::Duration::from_secs(10), waiter_rx).await {
-            Ok(Ok(Ok(()))) => Ok(MuxChannel::new(channel_id, self.tx_frames.clone(), rx_data, credit)),
+            Ok(Ok(Ok(()))) => Ok(MuxChannel::new(
+                channel_id,
+                self.tx_frames.clone(),
+                rx_data,
+                credit,
+            )),
             Ok(Ok(Err(e))) => {
                 self.channels.remove(&channel_id);
                 Err(e)

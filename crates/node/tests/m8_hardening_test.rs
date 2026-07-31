@@ -1,7 +1,10 @@
 //! M8 安全加固测试：审计、密码哈希、密钥持久化、令牌生成
 
 use agile_net_node::auth::jwt::JwtService;
-use agile_net_node::db::{Database, generate_password, generate_relay_token, generate_secret_hex, hash_password, sha256_hex, verify_password};
+use agile_net_node::db::{
+    Database, generate_password, generate_relay_token, generate_secret_hex, hash_password,
+    sha256_hex, verify_password,
+};
 use std::sync::Arc;
 
 /// 审计日志写入与读取（含 detail 字段）

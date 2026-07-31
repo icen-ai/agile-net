@@ -35,8 +35,8 @@ pub async fn get_config(
 
     if q.wait {
         // 长轮询：等待配置版本超过客户端版本，超时返回 304
-        let deadline = std::time::Instant::now()
-            + std::time::Duration::from_secs(LONG_POLL_TIMEOUT_SECS);
+        let deadline =
+            std::time::Instant::now() + std::time::Duration::from_secs(LONG_POLL_TIMEOUT_SECS);
         loop {
             let current = state.db.config_version().unwrap_or(0);
             if current > client_version {
@@ -165,9 +165,12 @@ pub async fn heartbeat(
     let delta_tx = req.bytes_tx.clamp(0, MAX_HEARTBEAT_BYTES);
     let delta_rx = req.bytes_rx.clamp(0, MAX_HEARTBEAT_BYTES);
     if delta_tx > 0 || delta_rx > 0 {
-        let _ = state
-            .db
-            .add_traffic(account_id, delta_tx, delta_rx, req.active_connections.clamp(0, 1_000_000));
+        let _ = state.db.add_traffic(
+            account_id,
+            delta_tx,
+            delta_rx,
+            req.active_connections.clamp(0, 1_000_000),
+        );
     }
 
     ok(json!({
@@ -196,7 +199,13 @@ pub async fn console_ticket(
 ) -> Response {
     let account = match state.db.get_account(&claims.sub) {
         Ok(Some(a)) if a.enabled => a,
-        _ => return err(StatusCode::FORBIDDEN, codes::FORBIDDEN, "account unavailable"),
+        _ => {
+            return err(
+                StatusCode::FORBIDDEN,
+                codes::FORBIDDEN,
+                "account unavailable",
+            );
+        }
     };
     if !account.admin_console {
         return err(
@@ -234,6 +243,10 @@ pub async fn console_ticket(
             "expires_in": 600,
         }))
         .into_response(),
-        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, codes::INTERNAL, e.to_string()),
+        Err(e) => err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            codes::INTERNAL,
+            e.to_string(),
+        ),
     }
 }

@@ -274,7 +274,10 @@ impl RelayConnector {
 
         // 流控协商：双方都 >= v2 时启用 per-channel 窗口流控
         let flow_control = server_version >= PROTOCOL_VERSION_FLOW_CONTROL;
-        debug!(server_version, flow_control, "mux session flow control negotiated");
+        debug!(
+            server_version,
+            flow_control, "mux session flow control negotiated"
+        );
 
         let (open_tx, mut open_rx) = mpsc::channel::<OpenRequest>(64);
         let (mux, reader_handle) = MuxSession::start(tls_stream, 2, Some(open_tx), flow_control);
@@ -369,7 +372,9 @@ impl RelayConnector {
                                 None => true,
                             };
                             if changed {
-                                info!("client tunnel routes changed — reconnecting to re-advertise");
+                                info!(
+                                    "client tunnel routes changed — reconnecting to re-advertise"
+                                );
                                 self.shutdown_notify.notify_waiters();
                                 tokio::time::sleep(Duration::from_millis(300)).await;
                                 break;
@@ -432,24 +437,27 @@ impl RelayConnector {
             && let Some(next_peer) = listener.resolve_peer(&open_req.target_addr)
         {
             match listener
-                    .open_channel(&next_peer, &open_req.target_addr, open_req.target_port)
-                    .await
-                {
-                    Ok(peer_channel) => {
-                        mux.send_frame(Frame::empty(FrameType::OpenOk, req.channel_id))
-                            .await?;
-                        let (up, down) = bridge(channel, peer_channel).await?;
-                        debug!(channel_id = req.channel_id, up, down, "chained channel closed");
-                        mux.close_channel(req.channel_id);
-                        return Ok(());
-                    }
-                    Err(e) => {
-                        warn!(peer = %next_peer, error = %e, "chained open failed");
-                        mux.send_frame(Frame::empty(FrameType::OpenFail, req.channel_id))
-                            .await?;
-                        mux.close_channel(req.channel_id);
-                        return Err(e);
-                    }
+                .open_channel(&next_peer, &open_req.target_addr, open_req.target_port)
+                .await
+            {
+                Ok(peer_channel) => {
+                    mux.send_frame(Frame::empty(FrameType::OpenOk, req.channel_id))
+                        .await?;
+                    let (up, down) = bridge(channel, peer_channel).await?;
+                    debug!(
+                        channel_id = req.channel_id,
+                        up, down, "chained channel closed"
+                    );
+                    mux.close_channel(req.channel_id);
+                    return Ok(());
+                }
+                Err(e) => {
+                    warn!(peer = %next_peer, error = %e, "chained open failed");
+                    mux.send_frame(Frame::empty(FrameType::OpenFail, req.channel_id))
+                        .await?;
+                    mux.close_channel(req.channel_id);
+                    return Err(e);
+                }
             }
         }
 

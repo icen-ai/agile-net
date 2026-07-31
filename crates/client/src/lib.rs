@@ -23,6 +23,7 @@ use std::sync::Arc;
 use tracing::{debug, info, warn};
 
 pub mod api;
+pub mod daemon;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum NodeStatus {
@@ -146,7 +147,8 @@ impl CredentialStore {
     }
 
     pub fn open_temp() -> Result<Self> {
-        let temp = std::env::temp_dir().join(format!("agile-net-cred-{}.json", uuid::Uuid::new_v4()));
+        let temp =
+            std::env::temp_dir().join(format!("agile-net-cred-{}.json", uuid::Uuid::new_v4()));
         Self::open(temp)
     }
 
@@ -191,7 +193,8 @@ impl CredentialStore {
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                let _ = std::fs::set_permissions(&self.path, std::fs::Permissions::from_mode(0o600));
+                let _ =
+                    std::fs::set_permissions(&self.path, std::fs::Permissions::from_mode(0o600));
             }
         }
     }
@@ -306,12 +309,13 @@ fn url_decode(s: &str) -> String {
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
-                out.push(v);
-                i += 3;
-                continue;
-            }
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16)
+        {
+            out.push(v);
+            i += 3;
+            continue;
         }
         out.push(if bytes[i] == b'+' { b' ' } else { bytes[i] });
         i += 1;
@@ -359,12 +363,19 @@ impl ConfigCache {
     fn key_for(addr: &str, username: &str) -> String {
         let raw = format!("{addr}|{username}");
         raw.chars()
-            .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                    c
+                } else {
+                    '_'
+                }
+            })
             .collect()
     }
 
     fn path_for(&self, addr: &str, username: &str) -> PathBuf {
-        self.dir.join(format!("{}.json", Self::key_for(addr, username)))
+        self.dir
+            .join(format!("{}.json", Self::key_for(addr, username)))
     }
 
     pub fn save(&self, cfg: &CachedNodeConfig) {
@@ -426,7 +437,11 @@ impl ClientInner {
         let mut new_router = ProxyRouter::new();
         let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-        let order = self.node_order.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let order = self
+            .node_order
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
         for node_id in &order {
             let Some(item) = self.nodes.get(node_id) else {
                 continue;
@@ -462,7 +477,12 @@ impl ClientInner {
             // 管理面隐式路由：可管理上游 API 端点经该节点隧道可达
             // （ACL 统一：收回权限即失去管理通路；冲突位次与显式规则一致，先连优先）
             if state.admin_console {
-                add_manageable_routes(&mut new_router, &state.node_id, &state.manageable, &mut seen);
+                add_manageable_routes(
+                    &mut new_router,
+                    &state.node_id,
+                    &state.manageable,
+                    &mut seen,
+                );
             }
         }
         self.shared_router.store(Arc::new(new_router));
@@ -516,7 +536,10 @@ impl AgileNetClient {
                 openers: Arc::new(DashMap::new()),
                 hosts_manager: HostsManager::new(),
                 proxy_stats: Arc::new(arc_swap::ArcSwapOption::from_pointee(None)),
-                cache: Arc::new(ConfigCache::new().unwrap_or_else(|_| ConfigCache::with_dir(std::env::temp_dir()))),
+                cache: Arc::new(
+                    ConfigCache::new()
+                        .unwrap_or_else(|_| ConfigCache::with_dir(std::env::temp_dir())),
+                ),
                 paused_rules: DashMap::new(),
             }),
         }
@@ -587,7 +610,10 @@ impl AgileNetClient {
         // 2. 拉取配置
         let config = pull_config(&self.inner.http_client, &base_url, &access_token, 0).await?;
         let node_name = config["node_name"].as_str().unwrap_or("node").to_string();
-        let tunnel_server = config["tunnel"]["server"].as_str().unwrap_or("").to_string();
+        let tunnel_server = config["tunnel"]["server"]
+            .as_str()
+            .unwrap_or("")
+            .to_string();
         let tunnel_port = config["tunnel"]["port"].as_u64().unwrap_or(443) as u16;
         let version = config["version"].as_u64().unwrap_or(0);
         let admin_console = config["admin_console"].as_bool().unwrap_or(false);
@@ -687,7 +713,11 @@ impl AgileNetClient {
     }
 
     /// 离线降级：网络不可达时沿用缓存规则组网，后台周期重试登录。
-    async fn connect_offline(&self, params: ConnectParams, net_err: reqwest::Error) -> Result<NodeState> {
+    async fn connect_offline(
+        &self,
+        params: ConnectParams,
+        net_err: reqwest::Error,
+    ) -> Result<NodeState> {
         let cached = self
             .inner
             .cache
@@ -702,7 +732,8 @@ impl AgileNetClient {
         );
 
         let node_id = format!("{}@{}", cached.node_name, params.addr);
-        let tunnel_addr: SocketAddr = resolve_addr(&cached.tunnel_server, cached.tunnel_port).await?;
+        let tunnel_addr: SocketAddr =
+            resolve_addr(&cached.tunnel_server, cached.tunnel_port).await?;
         let tls_builder = build_tls(&params)?;
         let account_id = cached.username.clone();
         let tunnel = Arc::new(ClientTunnel::with_tls_builder(
@@ -737,7 +768,11 @@ impl AgileNetClient {
             }));
         }
         // 后台登录重试：恢复在线后无缝升级
-        tasks.push(spawn_offline_retry(self.inner.clone(), node_id.clone(), params.clone()));
+        tasks.push(spawn_offline_retry(
+            self.inner.clone(),
+            node_id.clone(),
+            params.clone(),
+        ));
 
         let handle = NodeHandle {
             state: state.clone(),
@@ -801,8 +836,12 @@ impl AgileNetClient {
                     NodeStatus::Connected
                 } else {
                     match r.tunnel.state() {
-                        agile_net_core::relay::ConnectionState::Reconnecting => NodeStatus::Reconnecting,
-                        agile_net_core::relay::ConnectionState::Connecting => NodeStatus::Connecting,
+                        agile_net_core::relay::ConnectionState::Reconnecting => {
+                            NodeStatus::Reconnecting
+                        }
+                        agile_net_core::relay::ConnectionState::Connecting => {
+                            NodeStatus::Connecting
+                        }
                         _ => NodeStatus::Disconnected,
                     }
                 }
@@ -937,15 +976,27 @@ impl AgileNetClient {
             .send()
             .await?;
         if !resp.status().is_success() {
-            return Err(anyhow!("上游 console-ticket 签发失败: HTTP {}", resp.status()));
+            return Err(anyhow!(
+                "上游 console-ticket 签发失败: HTTP {}",
+                resp.status()
+            ));
         }
         let json: serde_json::Value = resp.json().await?;
         let data = &json["data"];
-        let ticket = data["ticket"].as_str().ok_or_else(|| anyhow!("响应缺少 ticket"))?.to_string();
-        let api = data["api"].as_str().ok_or_else(|| anyhow!("响应缺少 api"))?.to_string();
+        let ticket = data["ticket"]
+            .as_str()
+            .ok_or_else(|| anyhow!("响应缺少 ticket"))?
+            .to_string();
+        let api = data["api"]
+            .as_str()
+            .ok_or_else(|| anyhow!("响应缺少 api"))?
+            .to_string();
         let scope = data["scope"].as_str().unwrap_or("full").to_string();
         let (host, port) = match api.rsplit_once(':') {
-            Some((h, p)) => (h.to_string(), p.parse().map_err(|_| anyhow!("api 端点端口非法: {api}"))?),
+            Some((h, p)) => (
+                h.to_string(),
+                p.parse().map_err(|_| anyhow!("api 端点端口非法: {api}"))?,
+            ),
             None => return Err(anyhow!("api 端点格式非法: {api}")),
         };
         Ok((ticket, host, port, scope))
@@ -1040,7 +1091,10 @@ fn spawn_offline_retry(
                 .unwrap_or_default()
                 .subsec_millis()
                 % 10000) as u64;
-            tokio::time::sleep(std::time::Duration::from_secs(30) + std::time::Duration::from_millis(jitter)).await;
+            tokio::time::sleep(
+                std::time::Duration::from_secs(30) + std::time::Duration::from_millis(jitter),
+            )
+            .await;
 
             match offline_relogin_once(&inner, &node_id, &params).await {
                 Ok(()) => {
@@ -1077,9 +1131,18 @@ async fn offline_relogin_once(
     }
     let login_json: serde_json::Value = resp.json().await?;
     let data = &login_json["data"];
-    let access_token = data["access_token"].as_str().ok_or_else(|| anyhow!("no access_token"))?.to_string();
-    let refresh_token = data["refresh_token"].as_str().unwrap_or_default().to_string();
-    let tunnel_token = data["tunnel_token"].as_str().ok_or_else(|| anyhow!("no tunnel_token"))?.to_string();
+    let access_token = data["access_token"]
+        .as_str()
+        .ok_or_else(|| anyhow!("no access_token"))?
+        .to_string();
+    let refresh_token = data["refresh_token"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    let tunnel_token = data["tunnel_token"]
+        .as_str()
+        .ok_or_else(|| anyhow!("no tunnel_token"))?
+        .to_string();
 
     let config = pull_config(http, &base_url, &access_token, 0).await?;
     let version = config["version"].as_u64().unwrap_or(0);
@@ -1097,7 +1160,10 @@ async fn offline_relogin_once(
     handle.access_token.store(Arc::new(access_token.clone()));
     let node_name = handle.state.node_name.clone();
     let (tunnel_server, tunnel_port) = (
-        config["tunnel"]["server"].as_str().unwrap_or("").to_string(),
+        config["tunnel"]["server"]
+            .as_str()
+            .unwrap_or("")
+            .to_string(),
         config["tunnel"]["port"].as_u64().unwrap_or(443) as u16,
     );
     drop(handle);
@@ -1141,7 +1207,9 @@ fn spawn_heartbeat(
                 Some(stats) => {
                     let tx = stats.bytes_up.load(std::sync::atomic::Ordering::Relaxed);
                     let rx = stats.bytes_down.load(std::sync::atomic::Ordering::Relaxed);
-                    let active = stats.active_connections.load(std::sync::atomic::Ordering::Relaxed);
+                    let active = stats
+                        .active_connections
+                        .load(std::sync::atomic::Ordering::Relaxed);
                     let d_tx = tx.saturating_sub(last_tx);
                     let d_rx = rx.saturating_sub(last_rx);
                     last_tx = tx;
@@ -1323,7 +1391,12 @@ fn add_manageable_routes(
     seen: &mut std::collections::HashSet<String>,
 ) {
     for m in manageable {
-        let Some(host) = m.api.rsplit_once(':').map(|(h, _)| h).filter(|h| !h.is_empty()) else {
+        let Some(host) = m
+            .api
+            .rsplit_once(':')
+            .map(|(h, _)| h)
+            .filter(|h| !h.is_empty())
+        else {
             continue;
         };
         let outbound = Outbound::tunnel(node_id.to_string());
@@ -1543,7 +1616,10 @@ mod tests {
     fn manageable_routes_ip_and_host() {
         let mut router = ProxyRouter::new();
         let mut seen = std::collections::HashSet::new();
-        let list = vec![m("root", "172.28.0.10:59090"), m("ops", "ops.internal:59090")];
+        let list = vec![
+            m("root", "172.28.0.10:59090"),
+            m("ops", "ops.internal:59090"),
+        ];
         add_manageable_routes(&mut router, "n1@x:1", &list, &mut seen);
 
         // IP 端点 → /32 CIDR 命中
@@ -1562,7 +1638,10 @@ mod tests {
             Outbound::Tunnel { .. }
         ));
         // 无关目标不受影响（默认直连）
-        assert!(matches!(router.route_target("other.net:80"), Outbound::Direct));
+        assert!(matches!(
+            router.route_target("other.net:80"),
+            Outbound::Direct
+        ));
     }
 
     #[test]

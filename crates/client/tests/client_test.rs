@@ -1,6 +1,8 @@
 //! Client 集成测试：登录 → 配置拉取 → 隧道数据面 → 代理转发全链路
 
-use agile_net_client::{AgileNetClient, ConnectParams, Credential, CredentialStore, HostsManager, NodeStatus};
+use agile_net_client::{
+    AgileNetClient, ConnectParams, Credential, CredentialStore, HostsManager, NodeStatus,
+};
 use agile_net_core::relay::RelayListener;
 use agile_net_core::tunnel::tls::TlsConfigBuilder;
 use agile_net_node::api::{ApiState, NodeRuntime, create_app};
@@ -26,19 +28,31 @@ async fn start_full_node() -> (String, SocketAddr, SocketAddr) {
     let db = Database::in_memory().unwrap();
 
     // 数据：规则 + 组 + 账号
-    let rule = db.create_rule("ip-cidr", "127.0.0.0/8", false, "loopback").unwrap();
+    let rule = db
+        .create_rule("ip-cidr", "127.0.0.0/8", false, "loopback")
+        .unwrap();
     let group = db.create_group("测试组", "").unwrap();
     db.set_group_rules(&group.id, &[rule.id]).unwrap();
-    db.create_account("user1", &hash_password("TestPass123").unwrap(), &group.id, "测试")
+    db.create_account(
+        "user1",
+        &hash_password("TestPass123").unwrap(),
+        &group.id,
+        "测试",
+    )
+    .unwrap();
+    db.create_admin("admin", &hash_password("AdminPass123").unwrap())
         .unwrap();
-    db.create_admin("admin", &hash_password("AdminPass123").unwrap()).unwrap();
 
     // Relay 数据面
     let relay_addr = get_free_addr();
     let (server_config, _) = TlsConfigBuilder::new().build_server().unwrap();
     let tls_acceptor = tokio_rustls::TlsAcceptor::from(server_config);
     let validator = Arc::new(DbTokenValidator::new(db.clone()));
-    let listener = Arc::new(RelayListener::with_validator(relay_addr, validator, tls_acceptor));
+    let listener = Arc::new(RelayListener::with_validator(
+        relay_addr,
+        validator,
+        tls_acceptor,
+    ));
     let l = listener.clone();
     tokio::spawn(async move {
         let _ = l.start().await;
@@ -73,7 +87,11 @@ async fn start_full_node() -> (String, SocketAddr, SocketAddr) {
         let _ = axum::serve(api_listener, app).await;
     });
 
-    (format!("127.0.0.1:{}", api_addr.port()), api_addr, relay_addr)
+    (
+        format!("127.0.0.1:{}", api_addr.port()),
+        api_addr,
+        relay_addr,
+    )
 }
 
 async fn start_echo_server(addr: SocketAddr) {
@@ -202,7 +220,10 @@ async fn disable_account_kicks_active_tunnel() {
         .await
         .unwrap();
     let login_json: serde_json::Value = login.json().await.unwrap();
-    let admin_token = login_json["data"]["access_token"].as_str().unwrap().to_string();
+    let admin_token = login_json["data"]["access_token"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     // 找到账号 ID（admin 列表）
     let list = http
@@ -212,11 +233,16 @@ async fn disable_account_kicks_active_tunnel() {
         .await
         .unwrap();
     let list_json: serde_json::Value = list.json().await.unwrap();
-    let account_id = list_json["data"]["items"][0]["id"].as_str().unwrap().to_string();
+    let account_id = list_json["data"]["items"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     // 禁用
     let resp = http
-        .put(format!("http://{api_addr}/api/v1/admin/accounts/{account_id}"))
+        .put(format!(
+            "http://{api_addr}/api/v1/admin/accounts/{account_id}"
+        ))
         .bearer_auth(&admin_token)
         .json(&serde_json::json!({"enabled": false}))
         .send()
@@ -320,7 +346,10 @@ async fn credentials_persist() {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(store.path()).unwrap().permissions().mode();
+        let mode = std::fs::metadata(store.path())
+            .unwrap()
+            .permissions()
+            .mode();
         assert_eq!(mode & 0o777, 0o600, "凭据文件必须为 0600");
     }
 }

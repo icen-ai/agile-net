@@ -26,14 +26,21 @@ fn extract_claims(parts: &Parts) -> Result<Claims, Response> {
             )
         })?;
 
-    let token = auth_header
-        .strip_prefix("Bearer ")
-        .ok_or_else(|| err(StatusCode::UNAUTHORIZED, codes::INVALID_CREDENTIALS, "invalid authorization scheme"))?;
+    let token = auth_header.strip_prefix("Bearer ").ok_or_else(|| {
+        err(
+            StatusCode::UNAUTHORIZED,
+            codes::INVALID_CREDENTIALS,
+            "invalid authorization scheme",
+        )
+    })?;
 
-    let state = parts
-        .extensions
-        .get::<ApiState>()
-        .ok_or_else(|| err(StatusCode::INTERNAL_SERVER_ERROR, codes::INTERNAL, "state unavailable"))?;
+    let state = parts.extensions.get::<ApiState>().ok_or_else(|| {
+        err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            codes::INTERNAL,
+            "state unavailable",
+        )
+    })?;
 
     let claims = state.jwt.verify(token).map_err(|_| {
         err(

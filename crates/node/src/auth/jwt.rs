@@ -74,14 +74,21 @@ impl JwtService {
     }
 
     /// 签发 access + refresh（指定管理面 scope 档位）。
-    pub fn issue_with_scope(&self, subject: &str, username: &str, role: &str, scope: &str) -> Result<IssuedTokens> {
+    pub fn issue_with_scope(
+        &self,
+        subject: &str,
+        username: &str,
+        role: &str,
+        scope: &str,
+    ) -> Result<IssuedTokens> {
         let (access_ttl, refresh_ttl) = match role {
             "admin" => (ADMIN_ACCESS_TTL, ADMIN_REFRESH_TTL),
             _ => (CLIENT_ACCESS_TTL, CLIENT_REFRESH_TTL),
         };
 
         let access_token = self.sign(subject, username, role, "access", access_ttl, scope)?;
-        let (refresh_token, jti) = self.sign_refresh(subject, username, role, refresh_ttl, scope)?;
+        let (refresh_token, jti) =
+            self.sign_refresh(subject, username, role, refresh_ttl, scope)?;
 
         // refresh jti 哈希落库（可吊销）
         let expires_at = (chrono::Utc::now() + chrono::Duration::seconds(refresh_ttl))
@@ -119,7 +126,8 @@ impl JwtService {
         }
         // 轮换：吊销旧 jti（scope 随会话保留）
         self.db.revoke_refresh_token(&jti_hash)?;
-        let issued = self.issue_with_scope(&claims.sub, &claims.username, &claims.role, &claims.scope)?;
+        let issued =
+            self.issue_with_scope(&claims.sub, &claims.username, &claims.role, &claims.scope)?;
         Ok((claims, issued))
     }
 
@@ -150,7 +158,15 @@ impl JwtService {
         Ok(data.claims)
     }
 
-    fn sign(&self, subject: &str, username: &str, role: &str, typ: &str, ttl: i64, scope: &str) -> Result<String> {
+    fn sign(
+        &self,
+        subject: &str,
+        username: &str,
+        role: &str,
+        typ: &str,
+        ttl: i64,
+        scope: &str,
+    ) -> Result<String> {
         let now = chrono::Utc::now();
         let claims = Claims {
             sub: subject.to_string(),
@@ -170,7 +186,14 @@ impl JwtService {
         .map_err(|e| Error::Auth(e.to_string()))
     }
 
-    fn sign_refresh(&self, subject: &str, username: &str, role: &str, ttl: i64, scope: &str) -> Result<(String, String)> {
+    fn sign_refresh(
+        &self,
+        subject: &str,
+        username: &str,
+        role: &str,
+        ttl: i64,
+        scope: &str,
+    ) -> Result<(String, String)> {
         let now = chrono::Utc::now();
         let jti = uuid::Uuid::new_v4().to_string();
         let claims = Claims {

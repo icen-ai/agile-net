@@ -5,7 +5,7 @@
 #
 # 与 docker-compose.test.yaml 的区别：常驻运行（无 tester 断言），并将 root 的
 # API(59090) 与 Relay 监听(54430) 发布到宿主机 127.0.0.1，供宿主机上的
-# agile-net-client 连入；AGILE_PUBLIC_HOST=127.0.0.1 保证客户端拿到的隧道端点可解析。
+# anet-svc client 连入；AGILE_PUBLIC_HOST=127.0.0.1 保证客户端拿到的隧道端点可解析。
 #
 # 用法：
 #   docker compose -f .docker/docker-compose.chain.yaml up -d
@@ -27,7 +27,7 @@ services:
   node-root:
     image: anet:dev
     container_name: anet-chain-root
-    command: ["agile-net-node", "/etc/agile-net/node.toml"]
+    command: ["anet-svc", "serve", "/etc/agile-net/node.toml"]
     environment:
       AGILE_ADMIN_PASSWORD: "ChainTest123!"
       AGILE_RELAY_TOKENS: "psk_midtoken_000000000000000000000000000000000000"
@@ -50,7 +50,7 @@ services:
   node-mid:
     image: anet:dev
     container_name: anet-chain-mid
-    command: ["agile-net-node", "/etc/agile-net/node.toml"]
+    command: ["anet-svc", "serve", "/etc/agile-net/node.toml"]
     environment:
       AGILE_ADMIN_PASSWORD: "ChainTest123!"
       AGILE_RELAY_TOKENS: "psk_leaftoken_00000000000000000000000000000000000"
@@ -70,7 +70,7 @@ services:
   node-leaf:
     image: anet:dev
     container_name: anet-chain-leaf
-    command: ["agile-net-node", "/etc/agile-net/node.toml"]
+    command: ["anet-svc", "serve", "/etc/agile-net/node.toml"]
     environment:
       AGILE_RELAY_TOKENS: "psk_deeptoken_00000000000000000000000000000000000"
     volumes:
@@ -88,7 +88,7 @@ services:
   node-deep:
     image: anet:dev
     container_name: anet-chain-deep
-    command: ["agile-net-node", "/etc/agile-net/node.toml"]
+    command: ["anet-svc", "serve", "/etc/agile-net/node.toml"]
     volumes:
       - ./configs/node-deep.toml:/etc/agile-net/node.toml:ro
     networks:

@@ -15,13 +15,12 @@
 
 统一与分布式管理面的完整设计（带内管理、relay 暴露控制面开关、管理可达自动发现、分期 P1→P3）见 **`docs/plan/merge-gui-svc.md`**，实施以其为准。
 
-**当前仓库结构**（改名收编进行中，见上述计划 P3）：
+**当前仓库结构**（双产物统一已完成，见上述计划）：
 
 - `crates/core`：核心网络协议（mux 帧/会话）、TLS 握手（证书固定 pinning）、Relay 穿透（listener/connector）、客户端隧道（`ClientTunnel`）、代理入站（SOCKS5/HTTP + 认证）与路由器（`ProxyRouter`）。
-- `crates/node`：服务端/节点（`agile-net-node`）：SQLite（版本化迁移）、Axum REST API、Web 管理后台（`ui`）、TUI、内存日志缓冲。
-- `crates/client`：客户端核心引擎（`agile-net-client`）：多节点连接（登录/配置/隧道/长轮询/心跳）、规则合并与暂停（`paused_rules`）、本地代理、hosts 管理、凭据存储。
-- `crates/cli`：CLI 工具 `anet`（包名 `agile-net-cli`，Clap Derive），会话持久化于 `~/.anet/session.json`。
-- `apps/desktop`：Tauri 2 桌面/Android（独立 workspace，前端无 Node 构建链）。
+- `crates/node`：服务端/节点库 + 二进制 **`anet-svc`**（`serve` 默认 / `tui` / `client` / `cli` 子命令）：装配根 `service::NodeServer`、SQLite（版本化迁移）、Axum REST API、Web 管理后台（`ui`）、TUI、CLI（原 `anet` 收编为 `cli` 模块）、内存日志缓冲。
+- `crates/client`：客户端核心引擎（库）：多节点连接（登录/配置/隧道/长轮询/心跳）、规则合并与暂停（`paused_rules`）、本地代理、hosts 管理、凭据存储、管理面 Web API（`api` 模块）、客户端角色守护（`daemon` 模块）。
+- `apps/desktop`：**anet-gui**（Tauri 2 桌面/Android，独立 workspace，前端无 Node 构建链）：三路独立开关（客户端/服务端/Web 远程面）+ 控制台窗口。
 - `.docker`：四级节点链编排测试（`docker-compose.test.yaml`）与常驻演示（`docker-compose.chain.yaml`）。
 - `docs/plan/merge-gui-svc.md`：双产物统一实施计划；`docs/todo/island.md`：移动端系统岛规划。
 
@@ -33,7 +32,7 @@
 2. **任务结束总结**：每次 Turn 或任务结束时，必须使用**中文**进行清晰、结构化的总结汇报。
 3. **Token 优化**：在 Bash 执行 CLI 命令时，必须优先使用 `rtk` 前缀（如 `rtk cargo test`、`rtk git status`）。
 4. **测试驱动与提交**：新增功能或修复 Bug 后，必须运行 `cargo test --workspace` 确保全部通过，通过后立即提交 Git。
-5. **Windows 构建注意**：编译/测试前确认没有正在运行的本项目 exe（`agile-net-node.exe` / `agilenet-desktop.exe` 等），否则链接期文件锁失败（os error 5）；演示进程在跑时可用 `CARGO_TARGET_DIR=target/ci` 换目录跑测试。
+5. **Windows 构建注意**：编译/测试前确认没有正在运行的本项目 exe（`anet-svc.exe` / `anet-gui.exe` 等），否则链接期文件锁失败（os error 5）；演示进程在跑时可用 `CARGO_TARGET_DIR=target/ci` 换目录跑测试。
 
 ---
 
@@ -81,11 +80,14 @@ rtk cargo test --workspace
 # 代码规范检查
 rtk cargo clippy --workspace
 
-# 启动 Node 服务（默认 59090 端口）
+# 启动 anet-svc（serve 默认子命令，API 59090 端口）
 rtk cargo run -p agile-net-node
 
-# CLI 工具 anet（包名 agile-net-cli）
-rtk cargo run -p agile-net-cli -- --help
+# CLI 管理工具（anet-svc cli 子命令，原 anet 收编）
+rtk cargo run -p agile-net-node -- cli --help
+
+# 客户端角色（anet-svc client，原 agile-net-client daemon）
+rtk cargo run -p agile-net-node -- client agile-net-client.toml
 
 # Docker 四级链断言测试 / 常驻演示
 docker build -f .docker/Dockerfile -t anet:dev .

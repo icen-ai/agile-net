@@ -34,7 +34,11 @@ pub async fn list_groups(
             "page": page,
             "page_size": page_size,
         })),
-        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, codes::INTERNAL, e.to_string()),
+        Err(e) => err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            codes::INTERNAL,
+            e.to_string(),
+        ),
     }
 }
 
@@ -46,7 +50,13 @@ pub async fn get_group(
     let group = match state.db.get_group(&id) {
         Ok(Some(g)) => g,
         Ok(None) => return err(StatusCode::NOT_FOUND, codes::NOT_FOUND, "group not found"),
-        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, codes::INTERNAL, e.to_string()),
+        Err(e) => {
+            return err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                codes::INTERNAL,
+                e.to_string(),
+            );
+        }
     };
     let rules = state.db.rules_of_group(&id).unwrap_or_default();
     let (accounts, _) = state
@@ -128,7 +138,11 @@ pub async fn create_group(
                 _ => ok_created(group),
             }
         }
-        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, codes::INTERNAL, e.to_string()),
+        Err(e) => err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            codes::INTERNAL,
+            e.to_string(),
+        ),
     }
 }
 
@@ -167,12 +181,20 @@ pub async fn update_group(
         .db
         .update_group(&id, req.name.as_deref(), req.remark.as_deref())
     {
-        return err(StatusCode::INTERNAL_SERVER_ERROR, codes::INTERNAL, e.to_string());
+        return err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            codes::INTERNAL,
+            e.to_string(),
+        );
     }
     audit(&state, &claims, &ip, "group.update", Some(&id), "");
     match state.db.get_group(&id) {
         Ok(Some(g)) => ok(g),
-        _ => err(StatusCode::INTERNAL_SERVER_ERROR, codes::INTERNAL, "reload failed"),
+        _ => err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            codes::INTERNAL,
+            "reload failed",
+        ),
     }
 }
 
@@ -210,7 +232,11 @@ pub async fn set_group_rules(
         }
     }
     if let Err(e) = state.db.set_group_rules(&id, &req.rule_ids) {
-        return err(StatusCode::INTERNAL_SERVER_ERROR, codes::INTERNAL, e.to_string());
+        return err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            codes::INTERNAL,
+            e.to_string(),
+        );
     }
     let _ = state.db.bump_config_version();
     audit(
@@ -261,6 +287,10 @@ pub async fn delete_group(
             );
             ok(json!(null))
         }
-        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, codes::INTERNAL, e.to_string()),
+        Err(e) => err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            codes::INTERNAL,
+            e.to_string(),
+        ),
     }
 }

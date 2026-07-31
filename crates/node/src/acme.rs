@@ -48,7 +48,10 @@ pub struct AlpnCertResolver {
 
 impl AlpnCertResolver {
     /// 以初始正式证书创建解析器。
-    pub fn new(certs: Vec<CertificateDer<'static>>, key: PrivateKeyDer<'static>) -> Result<Arc<Self>> {
+    pub fn new(
+        certs: Vec<CertificateDer<'static>>,
+        key: PrivateKeyDer<'static>,
+    ) -> Result<Arc<Self>> {
         let certified = make_certified_key(certs, key)?;
         Ok(Arc::new(Self {
             current: arc_swap::ArcSwap::from_pointee(certified),
@@ -57,7 +60,11 @@ impl AlpnCertResolver {
     }
 
     /// 热替换正式证书（续期后调用）。
-    pub fn swap_current(&self, certs: Vec<CertificateDer<'static>>, key: PrivateKeyDer<'static>) -> Result<()> {
+    pub fn swap_current(
+        &self,
+        certs: Vec<CertificateDer<'static>>,
+        key: PrivateKeyDer<'static>,
+    ) -> Result<()> {
         let certified = make_certified_key(certs, key)?;
         self.current.store(Arc::new(certified));
         Ok(())
@@ -91,9 +98,7 @@ impl ResolvesServerCert for AlpnCertResolver {
             .alpn()
             .map(|mut protos| protos.any(|p| p == b"acme-tls/1"))
             .unwrap_or(false);
-        if wants_acme
-            && let Some(challenge) = self.challenge.load_full()
-        {
+        if wants_acme && let Some(challenge) = self.challenge.load_full() {
             return Some(challenge);
         }
         Some(self.current.load_full())
@@ -265,7 +270,10 @@ impl AcmeManager {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&self.config.key_path, std::fs::Permissions::from_mode(0o600));
+            let _ = std::fs::set_permissions(
+                &self.config.key_path,
+                std::fs::Permissions::from_mode(0o600),
+            );
         }
 
         let certs = parse_pem_certs(cert_pem.as_bytes())?;
@@ -289,8 +297,8 @@ impl AcmeManager {
     async fn load_or_create_account(&self) -> Result<Account> {
         let directory = self.directory_url();
         if let Some(json) = self.db.get_config("acme.account")? {
-            let credentials: instant_acme::AccountCredentials =
-                serde_json::from_str(&json).map_err(|e| Error::Other(format!("acme account parse: {e}")))?;
+            let credentials: instant_acme::AccountCredentials = serde_json::from_str(&json)
+                .map_err(|e| Error::Other(format!("acme account parse: {e}")))?;
             if let Ok(account) = Account::builder()
                 .map_err(|e| Error::Other(format!("acme account builder: {e}")))?
                 .from_credentials(credentials)

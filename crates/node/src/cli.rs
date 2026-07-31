@@ -1,9 +1,9 @@
-//! AgileNet CLI (anet) — 企业级命令行管理工具
+//! AgileNet CLI（`anet-svc cli` 子命令）— 企业级命令行管理工具
 //!
 //! 特性：
 //! - 会话持久化（~/.anet/session.json，Unix 0600），access_token 过期自动刷新
 //! - 全量管理命令：status / rule / group / account / token / audit / tui
-//! - ID 前缀解析（输入前几位即可，如 `anet rule delete 3f2a`）
+//! - ID 前缀解析（输入前几位即可，如 `anet-svc cli rule delete 3f2a`）
 //! - --json 机器可读输出，默认表格输出
 
 use anyhow::{Context as _, Result, anyhow, bail};
@@ -13,7 +13,11 @@ use serde_json::{Value, json};
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
-#[command(name = "anet", version, about = "AgileNet CLI — 网络穿透与代理链路由管理工具")]
+#[command(
+    name = "anet-svc cli",
+    version,
+    about = "AgileNet CLI — 网络穿透与代理链路由管理工具"
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
@@ -372,9 +376,7 @@ pub struct AnetClient {
 
 impl AnetClient {
     pub fn from_session(api_override: Option<String>) -> Result<Self> {
-        let mut session = Session::load().ok_or_else(|| {
-            anyhow!("未登录，请先执行 anet login")
-        })?;
+        let mut session = Session::load().ok_or_else(|| anyhow!("未登录，请先执行 anet login"))?;
         if let Some(api) = api_override {
             session.api = api.trim_end_matches('/').to_string();
         }
@@ -384,7 +386,12 @@ impl AnetClient {
         })
     }
 
-    async fn raw(&self, method: &str, path: &str, body: Option<&Value>) -> Result<reqwest::Response> {
+    async fn raw(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<&Value>,
+    ) -> Result<reqwest::Response> {
         let url = format!("{}{}", self.session.api, path);
         let mut req = match method {
             "GET" => self.http.get(&url),
@@ -431,10 +438,16 @@ impl AnetClient {
             resp = self.raw(method, path, body.as_ref()).await?;
         }
         let status = resp.status();
-        let j: Value = resp.json().await.unwrap_or(json!({"code": -1, "message": "invalid response"}));
+        let j: Value = resp
+            .json()
+            .await
+            .unwrap_or(json!({"code": -1, "message": "invalid response"}));
         let code = j["code"].as_i64().unwrap_or(-1);
         if code != 0 {
-            bail!("API 错误 (HTTP {status}, code {code}): {}", j["message"].as_str().unwrap_or("unknown"));
+            bail!(
+                "API 错误 (HTTP {status}, code {code}): {}",
+                j["message"].as_str().unwrap_or("unknown")
+            );
         }
         Ok(j["data"].clone())
     }
@@ -461,7 +474,14 @@ fn print_table(headers: &[&str], rows: Vec<Vec<String>>) {
         .map(|(i, h)| pad(h, widths[i]))
         .collect();
     println!("{}", header_line.join("  "));
-    println!("{}", widths.iter().map(|w| "─".repeat(*w)).collect::<Vec<_>>().join("──"));
+    println!(
+        "{}",
+        widths
+            .iter()
+            .map(|w| "─".repeat(*w))
+            .collect::<Vec<_>>()
+            .join("──")
+    );
     for row in rows {
         let line: Vec<String> = row
             .iter()
@@ -473,7 +493,9 @@ fn print_table(headers: &[&str], rows: Vec<Vec<String>>) {
 }
 
 fn display_width(s: &str) -> usize {
-    s.chars().map(|c| if c as u32 > 0x2E7F { 2 } else { 1 }).sum()
+    s.chars()
+        .map(|c| if c as u32 > 0x2E7F { 2 } else { 1 })
+        .sum()
 }
 
 fn pad(s: &str, width: usize) -> String {
@@ -501,7 +523,10 @@ async fn resolve_id(client: &mut AnetClient, list_path: &str, prefix: &str) -> R
     match matches.len() {
         1 => Ok(matches[0]["id"].as_str().unwrap().to_string()),
         0 => bail!("未找到 ID 前缀/名称为 {prefix} 的资源"),
-        _ => bail!("前缀 {prefix} 匹配到 {} 个资源，请输入更长前缀", matches.len()),
+        _ => bail!(
+            "前缀 {prefix} 匹配到 {} 个资源，请输入更长前缀",
+            matches.len()
+        ),
     }
 }
 
@@ -515,7 +540,11 @@ pub async fn run_cli(cli: Cli) -> Result<()> {
         Commands::Logout => {
             if let Ok(mut client) = AnetClient::from_session(cli.api) {
                 let _ = client
-                    .api("POST", "/api/v1/auth/logout", Some(json!({ "refresh_token": client.session.refresh_token })))
+                    .api(
+                        "POST",
+                        "/api/v1/auth/logout",
+                        Some(json!({ "refresh_token": client.session.refresh_token })),
+                    )
                     .await;
             }
             Session::clear();
@@ -523,9 +552,10 @@ pub async fn run_cli(cli: Cli) -> Result<()> {
             Ok(())
         }
         Commands::Tui => {
-            let db_path = std::env::var("DATABASE_PATH").unwrap_or_else(|_| "agile-net.db".to_string());
-            let db = agile_net_node::db::Database::open(&db_path)?;
-            agile_net_node::tui::run_tui(db)?;
+            let db_path =
+                std::env::var("DATABASE_PATH").unwrap_or_else(|_| "agile-net.db".to_string());
+            let db = crate::db::Database::open(&db_path)?;
+            crate::tui::run_tui(db)?;
             Ok(())
         }
         Commands::Status => {
@@ -539,17 +569,36 @@ pub async fn run_cli(cli: Cli) -> Result<()> {
                 println!("  版本:     v{}", d["version"].as_str().unwrap_or("-"));
                 println!("  运行时长: {}s", d["uptime"].as_u64().unwrap_or(0));
                 let l = &d["roles"]["listener"];
-                println!("  Relay:    {} (下游 {} · 在线客户端 {})",
-                    if l["enabled"].as_bool().unwrap_or(false) { l["addr"].as_str().unwrap_or("启用") } else { "未启用" },
+                println!(
+                    "  Relay:    {} (下游 {} · 在线客户端 {})",
+                    if l["enabled"].as_bool().unwrap_or(false) {
+                        l["addr"].as_str().unwrap_or("启用")
+                    } else {
+                        "未启用"
+                    },
                     l["connected_connectors"].as_u64().unwrap_or(0),
-                    l["online_clients"].as_u64().unwrap_or(0));
+                    l["online_clients"].as_u64().unwrap_or(0)
+                );
                 let c = &d["roles"]["connector"];
-                println!("  上游:     {}", if c["enabled"].as_bool().unwrap_or(false) {
-                    format!("{} [{}]", c["upstream"].as_str().unwrap_or("-"), c["status"].as_str().unwrap_or("-"))
-                } else { "未启用".to_string() });
+                println!(
+                    "  上游:     {}",
+                    if c["enabled"].as_bool().unwrap_or(false) {
+                        format!(
+                            "{} [{}]",
+                            c["upstream"].as_str().unwrap_or("-"),
+                            c["status"].as_str().unwrap_or("-")
+                        )
+                    } else {
+                        "未启用".to_string()
+                    }
+                );
                 let a = &d["accounts"];
-                println!("  账号:     共 {} · 在线 {} · 禁用 {}",
-                    a["total"].as_i64().unwrap_or(0), a["online"].as_i64().unwrap_or(0), a["disabled"].as_i64().unwrap_or(0));
+                println!(
+                    "  账号:     共 {} · 在线 {} · 禁用 {}",
+                    a["total"].as_i64().unwrap_or(0),
+                    a["online"].as_i64().unwrap_or(0),
+                    a["disabled"].as_i64().unwrap_or(0)
+                );
             }
             Ok(())
         }
@@ -579,7 +628,9 @@ async fn cmd_login(api: Option<String>, args: LoginArgs) -> Result<()> {
     };
     let password = match args.password {
         Some(p) => {
-            eprintln!("提示：通过命令行参数传递密码会留在 shell 历史中，建议使用交互式输入（省略 -p）");
+            eprintln!(
+                "提示：通过命令行参数传递密码会留在 shell 历史中，建议使用交互式输入（省略 -p）"
+            );
             p
         }
         None => rpassword::prompt_password("密码: ").context("读取密码失败")?,
@@ -599,7 +650,10 @@ async fn cmd_login(api: Option<String>, args: LoginArgs) -> Result<()> {
     let session = Session {
         api: base.clone(),
         access_token: j["data"]["access_token"].as_str().unwrap().to_string(),
-        refresh_token: j["data"]["refresh_token"].as_str().unwrap_or_default().to_string(),
+        refresh_token: j["data"]["refresh_token"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string(),
     };
     session.save()?;
     println!("登录成功（{}），会话已保存", base);
@@ -623,37 +677,65 @@ async fn cmd_rule(api: Option<String>, args: RuleArgs, json_out: bool) -> Result
             if json_out {
                 print_json(&d);
             } else {
-                let rows = d["items"].as_array().unwrap_or(&vec![]).iter().map(|r| {
-                    vec![
-                        r["id"].as_str().unwrap_or("")[..8].to_string(),
-                        r["type"].as_str().unwrap_or("-").to_string(),
-                        r["value"].as_str().unwrap_or("-").to_string(),
-                        if r["resolve"].as_bool().unwrap_or(false) { "是" } else { "否" }.to_string(),
-                        r["group_count"].as_i64().unwrap_or(0).to_string(),
-                        r["remark"].as_str().unwrap_or("-").to_string(),
-                    ]
-                }).collect();
+                let rows = d["items"]
+                    .as_array()
+                    .unwrap_or(&vec![])
+                    .iter()
+                    .map(|r| {
+                        vec![
+                            r["id"].as_str().unwrap_or("")[..8].to_string(),
+                            r["type"].as_str().unwrap_or("-").to_string(),
+                            r["value"].as_str().unwrap_or("-").to_string(),
+                            if r["resolve"].as_bool().unwrap_or(false) {
+                                "是"
+                            } else {
+                                "否"
+                            }
+                            .to_string(),
+                            r["group_count"].as_i64().unwrap_or(0).to_string(),
+                            r["remark"].as_str().unwrap_or("-").to_string(),
+                        ]
+                    })
+                    .collect();
                 print_table(&["ID", "类型", "匹配值", "解析", "引用组", "备注"], rows);
                 println!("共 {} 条", d["total"].as_i64().unwrap_or(0));
             }
         }
         RuleSub::Add(a) => {
-            let d = client.api("POST", "/api/v1/admin/rules", Some(json!({
-                "type": a.rule_type, "value": a.value,
-                "resolve": a.resolve, "remark": a.remark.unwrap_or_default(),
-            }))).await?;
-            if json_out { print_json(&d); } else {
+            let d = client
+                .api(
+                    "POST",
+                    "/api/v1/admin/rules",
+                    Some(json!({
+                        "type": a.rule_type, "value": a.value,
+                        "resolve": a.resolve, "remark": a.remark.unwrap_or_default(),
+                    })),
+                )
+                .await?;
+            if json_out {
+                print_json(&d);
+            } else {
                 println!("规则已创建: {}", d["value"].as_str().unwrap_or("-"));
             }
         }
         RuleSub::Update(u) => {
             let id = resolve_id(&mut client, "/api/v1/admin/rules?page_size=100", &u.id).await?;
             let mut body = json!({});
-            if let Some(v) = u.value { body["value"] = json!(v); }
-            if let Some(r) = u.resolve { body["resolve"] = json!(r); }
-            if let Some(r) = u.remark { body["remark"] = json!(r); }
-            let d = client.api("PUT", &format!("/api/v1/admin/rules/{id}"), Some(body)).await?;
-            if json_out { print_json(&d); } else {
+            if let Some(v) = u.value {
+                body["value"] = json!(v);
+            }
+            if let Some(r) = u.resolve {
+                body["resolve"] = json!(r);
+            }
+            if let Some(r) = u.remark {
+                body["remark"] = json!(r);
+            }
+            let d = client
+                .api("PUT", &format!("/api/v1/admin/rules/{id}"), Some(body))
+                .await?;
+            if json_out {
+                print_json(&d);
+            } else {
                 println!("规则已更新: {}", d["value"].as_str().unwrap_or("-"));
             }
         }
@@ -671,12 +753,25 @@ async fn cmd_rule(api: Option<String>, args: RuleArgs, json_out: bool) -> Result
             let text = std::fs::read_to_string(&b.file)
                 .with_context(|| format!("读取文件失败: {}", b.file))?;
             let rules: Value = serde_json::from_str(&text).context("JSON 解析失败")?;
-            let d = client.api("POST", "/api/v1/admin/rules/batch", Some(json!({
-                "rules": rules, "on_conflict": b.on_conflict,
-            }))).await?;
-            if json_out { print_json(&d); } else {
-                println!("导入完成: 新建 {} · 跳过 {} · 更新 {} · 错误 {}",
-                    d["created"], d["skipped"], d["updated"], d["errors"].as_array().map(|e| e.len()).unwrap_or(0));
+            let d = client
+                .api(
+                    "POST",
+                    "/api/v1/admin/rules/batch",
+                    Some(json!({
+                        "rules": rules, "on_conflict": b.on_conflict,
+                    })),
+                )
+                .await?;
+            if json_out {
+                print_json(&d);
+            } else {
+                println!(
+                    "导入完成: 新建 {} · 跳过 {} · 更新 {} · 错误 {}",
+                    d["created"],
+                    d["skipped"],
+                    d["updated"],
+                    d["errors"].as_array().map(|e| e.len()).unwrap_or(0)
+                );
             }
         }
     }
@@ -694,23 +789,32 @@ async fn cmd_group(api: Option<String>, args: GroupArgs, json_out: bool) -> Resu
                 path += &format!("&q={q}");
             }
             let d = client.api("GET", &path, None).await?;
-            if json_out { print_json(&d); } else {
-                let rows = d["items"].as_array().unwrap_or(&vec![]).iter().map(|g| {
-                    vec![
-                        g["id"].as_str().unwrap_or("")[..8].to_string(),
-                        g["name"].as_str().unwrap_or("-").to_string(),
-                        g["rule_count"].as_i64().unwrap_or(0).to_string(),
-                        g["account_count"].as_i64().unwrap_or(0).to_string(),
-                        g["remark"].as_str().unwrap_or("-").to_string(),
-                    ]
-                }).collect();
+            if json_out {
+                print_json(&d);
+            } else {
+                let rows = d["items"]
+                    .as_array()
+                    .unwrap_or(&vec![])
+                    .iter()
+                    .map(|g| {
+                        vec![
+                            g["id"].as_str().unwrap_or("")[..8].to_string(),
+                            g["name"].as_str().unwrap_or("-").to_string(),
+                            g["rule_count"].as_i64().unwrap_or(0).to_string(),
+                            g["account_count"].as_i64().unwrap_or(0).to_string(),
+                            g["remark"].as_str().unwrap_or("-").to_string(),
+                        ]
+                    })
+                    .collect();
                 print_table(&["ID", "名称", "规则数", "账号数", "备注"], rows);
                 println!("共 {} 条", d["total"].as_i64().unwrap_or(0));
             }
         }
         GroupSub::Show(s) => {
             let id = resolve_id(&mut client, "/api/v1/admin/groups?page_size=100", &s.id).await?;
-            let d = client.api("GET", &format!("/api/v1/admin/groups/{id}"), None).await?;
+            let d = client
+                .api("GET", &format!("/api/v1/admin/groups/{id}"), None)
+                .await?;
             print_json(&d);
         }
         GroupSub::Add(a) => {
@@ -718,7 +822,10 @@ async fn cmd_group(api: Option<String>, args: GroupArgs, json_out: bool) -> Resu
                 Some(s) => {
                     let mut ids = Vec::new();
                     for part in s.split(',').map(|p| p.trim()).filter(|p| !p.is_empty()) {
-                        ids.push(resolve_id(&mut client, "/api/v1/admin/rules?page_size=100", part).await?);
+                        ids.push(
+                            resolve_id(&mut client, "/api/v1/admin/rules?page_size=100", part)
+                                .await?,
+                        );
                     }
                     ids
                 }
@@ -727,17 +834,27 @@ async fn cmd_group(api: Option<String>, args: GroupArgs, json_out: bool) -> Resu
             let d = client.api("POST", "/api/v1/admin/groups", Some(json!({
                 "name": a.name, "remark": a.remark.unwrap_or_default(), "rule_ids": rule_ids,
             }))).await?;
-            if json_out { print_json(&d); } else {
+            if json_out {
+                print_json(&d);
+            } else {
                 println!("权限组已创建: {}", d["name"].as_str().unwrap_or("-"));
             }
         }
         GroupSub::Update(u) => {
             let id = resolve_id(&mut client, "/api/v1/admin/groups?page_size=100", &u.id).await?;
             let mut body = json!({});
-            if let Some(n) = u.name { body["name"] = json!(n); }
-            if let Some(r) = u.remark { body["remark"] = json!(r); }
-            let d = client.api("PUT", &format!("/api/v1/admin/groups/{id}"), Some(body)).await?;
-            if json_out { print_json(&d); } else {
+            if let Some(n) = u.name {
+                body["name"] = json!(n);
+            }
+            if let Some(r) = u.remark {
+                body["remark"] = json!(r);
+            }
+            let d = client
+                .api("PUT", &format!("/api/v1/admin/groups/{id}"), Some(body))
+                .await?;
+            if json_out {
+                print_json(&d);
+            } else {
                 println!("权限组已更新: {}", d["name"].as_str().unwrap_or("-"));
             }
         }
@@ -755,12 +872,23 @@ async fn cmd_group(api: Option<String>, args: GroupArgs, json_out: bool) -> Resu
             let id = resolve_id(&mut client, "/api/v1/admin/groups?page_size=100", &s.id).await?;
             let mut ids = Vec::new();
             for prefix in &s.rule_ids {
-                ids.push(resolve_id(&mut client, "/api/v1/admin/rules?page_size=100", prefix).await?);
+                ids.push(
+                    resolve_id(&mut client, "/api/v1/admin/rules?page_size=100", prefix).await?,
+                );
             }
-            let d = client.api("PUT", &format!("/api/v1/admin/groups/{id}/rules"), Some(json!({
-                "rule_ids": ids,
-            }))).await?;
-            println!("规则绑定已更新（{} 条）", d["rule_count"].as_i64().unwrap_or(0));
+            let d = client
+                .api(
+                    "PUT",
+                    &format!("/api/v1/admin/groups/{id}/rules"),
+                    Some(json!({
+                        "rule_ids": ids,
+                    })),
+                )
+                .await?;
+            println!(
+                "规则绑定已更新（{} 条）",
+                d["rule_count"].as_i64().unwrap_or(0)
+            );
         }
     }
     Ok(())
@@ -772,7 +900,10 @@ async fn cmd_account(api: Option<String>, args: AccountArgs, json_out: bool) -> 
     let mut client = AnetClient::from_session(api)?;
     match args.command {
         AccountSub::List(l) => {
-            let mut path = format!("/api/v1/admin/accounts?page={}&page_size=20", l.page.unwrap_or(1));
+            let mut path = format!(
+                "/api/v1/admin/accounts?page={}&page_size=20",
+                l.page.unwrap_or(1)
+            );
             if let Some(q) = &l.q {
                 path += &format!("&q={q}");
             }
@@ -784,30 +915,56 @@ async fn cmd_account(api: Option<String>, args: AccountArgs, json_out: bool) -> 
                 path += &format!("&enabled={e}");
             }
             let d = client.api("GET", &path, None).await?;
-            if json_out { print_json(&d); } else {
-                let rows = d["items"].as_array().unwrap_or(&vec![]).iter().map(|a| {
-                    vec![
-                        a["username"].as_str().unwrap_or("-").to_string(),
-                        a["group_name"].as_str().unwrap_or("-").to_string(),
-                        if a["online"].as_bool().unwrap_or(false) { "在线" } else { "离线" }.to_string(),
-                        if a["enabled"].as_bool().unwrap_or(false) { "启用" } else { "禁用" }.to_string(),
-                        a["last_seen_at"].as_str().unwrap_or("从未").to_string(),
-                        a["remark"].as_str().unwrap_or("-").to_string(),
-                        a["id"].as_str().unwrap_or("")[..8].to_string(),
-                    ]
-                }).collect();
-                print_table(&["账号", "权限组", "在线", "状态", "最后在线", "备注", "ID"], rows);
+            if json_out {
+                print_json(&d);
+            } else {
+                let rows = d["items"]
+                    .as_array()
+                    .unwrap_or(&vec![])
+                    .iter()
+                    .map(|a| {
+                        vec![
+                            a["username"].as_str().unwrap_or("-").to_string(),
+                            a["group_name"].as_str().unwrap_or("-").to_string(),
+                            if a["online"].as_bool().unwrap_or(false) {
+                                "在线"
+                            } else {
+                                "离线"
+                            }
+                            .to_string(),
+                            if a["enabled"].as_bool().unwrap_or(false) {
+                                "启用"
+                            } else {
+                                "禁用"
+                            }
+                            .to_string(),
+                            a["last_seen_at"].as_str().unwrap_or("从未").to_string(),
+                            a["remark"].as_str().unwrap_or("-").to_string(),
+                            a["id"].as_str().unwrap_or("")[..8].to_string(),
+                        ]
+                    })
+                    .collect();
+                print_table(
+                    &["账号", "权限组", "在线", "状态", "最后在线", "备注", "ID"],
+                    rows,
+                );
                 println!("共 {} 条", d["total"].as_i64().unwrap_or(0));
             }
         }
         AccountSub::Add(a) => {
-            let gid = resolve_id(&mut client, "/api/v1/admin/groups?page_size=100", &a.group).await?;
+            let gid =
+                resolve_id(&mut client, "/api/v1/admin/groups?page_size=100", &a.group).await?;
             let d = client.api("POST", "/api/v1/admin/accounts", Some(json!({
                 "username": a.username, "group_id": gid, "remark": a.remark.unwrap_or_default(),
             }))).await?;
-            if json_out { print_json(&d); } else {
+            if json_out {
+                print_json(&d);
+            } else {
                 println!("账号已创建: {}", d["username"].as_str().unwrap_or("-"));
-                println!("   密码（仅此一次）: {}", d["password"].as_str().unwrap_or("-"));
+                println!(
+                    "   密码（仅此一次）: {}",
+                    d["password"].as_str().unwrap_or("-")
+                );
                 println!("   接入链接: {}", d["connect_url"].as_str().unwrap_or("-"));
                 println!("   请立即保存，密码不可找回");
             }
@@ -819,21 +976,40 @@ async fn cmd_account(api: Option<String>, args: AccountArgs, json_out: bool) -> 
                 let gid = resolve_id(&mut client, "/api/v1/admin/groups?page_size=100", g).await?;
                 body["group_id"] = json!(gid);
             }
-            if let Some(e) = u.enabled { body["enabled"] = json!(e); }
-            if let Some(r) = u.remark { body["remark"] = json!(r); }
-            client.api("PUT", &format!("/api/v1/admin/accounts/{id}"), Some(body)).await?;
+            if let Some(e) = u.enabled {
+                body["enabled"] = json!(e);
+            }
+            if let Some(r) = u.remark {
+                body["remark"] = json!(r);
+            }
+            client
+                .api("PUT", &format!("/api/v1/admin/accounts/{id}"), Some(body))
+                .await?;
             println!("账号已更新");
         }
         AccountSub::Delete(d) => {
             let id = resolve_id(&mut client, "/api/v1/admin/accounts?page_size=100", &d.id).await?;
-            client.api("DELETE", &format!("/api/v1/admin/accounts/{id}"), None).await?;
+            client
+                .api("DELETE", &format!("/api/v1/admin/accounts/{id}"), None)
+                .await?;
             println!("账号已删除");
         }
         AccountSub::ResetPassword(r) => {
             let id = resolve_id(&mut client, "/api/v1/admin/accounts?page_size=100", &r.id).await?;
-            let d = client.api("POST", &format!("/api/v1/admin/accounts/{id}/reset-password"), None).await?;
-            if json_out { print_json(&d); } else {
-                println!("密码已重置（仅此一次）: {}", d["password"].as_str().unwrap_or("-"));
+            let d = client
+                .api(
+                    "POST",
+                    &format!("/api/v1/admin/accounts/{id}/reset-password"),
+                    None,
+                )
+                .await?;
+            if json_out {
+                print_json(&d);
+            } else {
+                println!(
+                    "密码已重置（仅此一次）: {}",
+                    d["password"].as_str().unwrap_or("-")
+                );
                 println!("   接入链接: {}", d["connect_url"].as_str().unwrap_or("-"));
             }
         }
@@ -847,32 +1023,58 @@ async fn cmd_token(api: Option<String>, args: TokenArgs, json_out: bool) -> Resu
     let mut client = AnetClient::from_session(api)?;
     match args.command {
         TokenSub::List => {
-            let d = client.api("GET", "/api/v1/admin/node/relay-tokens", None).await?;
-            if json_out { print_json(&d); } else {
-                let rows = d["items"].as_array().unwrap_or(&vec![]).iter().map(|t| {
-                    vec![
-                        t["id"].as_str().unwrap_or("")[..8].to_string(),
-                        t["token_prefix"].as_str().unwrap_or("-").to_string(),
-                        t["remark"].as_str().unwrap_or("-").to_string(),
-                        t["last_used_at"].as_str().unwrap_or("未使用").to_string(),
-                        t["created_at"].as_str().unwrap_or("-").to_string(),
-                    ]
-                }).collect();
+            let d = client
+                .api("GET", "/api/v1/admin/node/relay-tokens", None)
+                .await?;
+            if json_out {
+                print_json(&d);
+            } else {
+                let rows = d["items"]
+                    .as_array()
+                    .unwrap_or(&vec![])
+                    .iter()
+                    .map(|t| {
+                        vec![
+                            t["id"].as_str().unwrap_or("")[..8].to_string(),
+                            t["token_prefix"].as_str().unwrap_or("-").to_string(),
+                            t["remark"].as_str().unwrap_or("-").to_string(),
+                            t["last_used_at"].as_str().unwrap_or("未使用").to_string(),
+                            t["created_at"].as_str().unwrap_or("-").to_string(),
+                        ]
+                    })
+                    .collect();
                 print_table(&["ID", "前缀", "备注", "最近使用", "创建时间"], rows);
             }
         }
         TokenSub::Add(a) => {
-            let d = client.api("POST", "/api/v1/admin/node/relay-tokens", Some(json!({
-                "remark": a.remark.unwrap_or_default(),
-            }))).await?;
-            if json_out { print_json(&d); } else {
-                println!("Relay 令牌已生成（仅此一次）: {}", d["token"].as_str().unwrap_or("-"));
+            let d = client
+                .api(
+                    "POST",
+                    "/api/v1/admin/node/relay-tokens",
+                    Some(json!({
+                        "remark": a.remark.unwrap_or_default(),
+                    })),
+                )
+                .await?;
+            if json_out {
+                print_json(&d);
+            } else {
+                println!(
+                    "Relay 令牌已生成（仅此一次）: {}",
+                    d["token"].as_str().unwrap_or("-")
+                );
                 println!("   服务端只存哈希，请立即保存");
             }
         }
         TokenSub::Delete(d) => {
             let id = resolve_id(&mut client, "/api/v1/admin/node/relay-tokens", &d.id).await?;
-            client.api("DELETE", &format!("/api/v1/admin/node/relay-tokens/{id}"), None).await?;
+            client
+                .api(
+                    "DELETE",
+                    &format!("/api/v1/admin/node/relay-tokens/{id}"),
+                    None,
+                )
+                .await?;
             println!("令牌已吊销");
         }
     }
@@ -886,14 +1088,21 @@ async fn cmd_admin(api: Option<String>, args: AdminArgs, json_out: bool) -> Resu
     match args.command {
         AdminSub::List => {
             let d = client.api("GET", "/api/v1/admin/admins", None).await?;
-            if json_out { print_json(&d); } else {
-                let rows = d["items"].as_array().unwrap_or(&vec![]).iter().map(|a| {
-                    vec![
-                        a["id"].as_str().unwrap_or("")[..8].to_string(),
-                        a["username"].as_str().unwrap_or("-").to_string(),
-                        a["created_at"].as_str().unwrap_or("-").to_string(),
-                    ]
-                }).collect();
+            if json_out {
+                print_json(&d);
+            } else {
+                let rows = d["items"]
+                    .as_array()
+                    .unwrap_or(&vec![])
+                    .iter()
+                    .map(|a| {
+                        vec![
+                            a["id"].as_str().unwrap_or("")[..8].to_string(),
+                            a["username"].as_str().unwrap_or("-").to_string(),
+                            a["created_at"].as_str().unwrap_or("-").to_string(),
+                        ]
+                    })
+                    .collect();
                 print_table(&["ID", "用户名", "创建时间"], rows);
             }
         }
@@ -902,16 +1111,26 @@ async fn cmd_admin(api: Option<String>, args: AdminArgs, json_out: bool) -> Resu
                 Some(p) => p,
                 None => rpassword::prompt_password("新管理员密码: ").context("读取密码失败")?,
             };
-            let d = client.api("POST", "/api/v1/admin/admins", Some(json!({
-                "username": a.username, "password": password,
-            }))).await?;
-            if json_out { print_json(&d); } else {
+            let d = client
+                .api(
+                    "POST",
+                    "/api/v1/admin/admins",
+                    Some(json!({
+                        "username": a.username, "password": password,
+                    })),
+                )
+                .await?;
+            if json_out {
+                print_json(&d);
+            } else {
                 println!("管理员已创建: {}", d["username"].as_str().unwrap_or("-"));
             }
         }
         AdminSub::Delete(d) => {
             let id = resolve_id(&mut client, "/api/v1/admin/admins", &d.id).await?;
-            client.api("DELETE", &format!("/api/v1/admin/admins/{id}"), None).await?;
+            client
+                .api("DELETE", &format!("/api/v1/admin/admins/{id}"), None)
+                .await?;
             println!("管理员已删除（其会话已吊销）");
         }
         AdminSub::Passwd(p) => {
@@ -921,11 +1140,18 @@ async fn cmd_admin(api: Option<String>, args: AdminArgs, json_out: bool) -> Resu
             };
             let new_password = match p.new_password {
                 Some(v) => v,
-                None => rpassword::prompt_password("新密码（≥10位含大小写数字）: ").context("读取密码失败")?,
+                None => rpassword::prompt_password("新密码（≥10位含大小写数字）: ")
+                    .context("读取密码失败")?,
             };
-            let d = client.api("PUT", "/api/v1/auth/password", Some(json!({
-                "old_password": old_password, "new_password": new_password,
-            }))).await?;
+            let d = client
+                .api(
+                    "PUT",
+                    "/api/v1/auth/password",
+                    Some(json!({
+                        "old_password": old_password, "new_password": new_password,
+                    })),
+                )
+                .await?;
             println!("{}", d["message"].as_str().unwrap_or("密码已修改"));
         }
     }
@@ -943,16 +1169,32 @@ async fn cmd_audit(api: Option<String>, args: AuditArgs, json_out: bool) -> Resu
                 path += &format!("&action={a}");
             }
             let d = client.api("GET", &path, None).await?;
-            if json_out { print_json(&d); } else {
-                let rows = d["items"].as_array().unwrap_or(&vec![]).iter().map(|l| {
-                    vec![
-                        l["created_at"].as_str().unwrap_or("-").replace('T', " ").replace('Z', ""),
-                        l["operator"].as_str().unwrap_or("-").to_string(),
-                        l["action"].as_str().unwrap_or("-").to_string(),
-                        l["target"].as_str().unwrap_or("-").chars().take(8).collect(),
-                        l["ip"].as_str().unwrap_or("-").to_string(),
-                    ]
-                }).collect();
+            if json_out {
+                print_json(&d);
+            } else {
+                let rows = d["items"]
+                    .as_array()
+                    .unwrap_or(&vec![])
+                    .iter()
+                    .map(|l| {
+                        vec![
+                            l["created_at"]
+                                .as_str()
+                                .unwrap_or("-")
+                                .replace('T', " ")
+                                .replace('Z', ""),
+                            l["operator"].as_str().unwrap_or("-").to_string(),
+                            l["action"].as_str().unwrap_or("-").to_string(),
+                            l["target"]
+                                .as_str()
+                                .unwrap_or("-")
+                                .chars()
+                                .take(8)
+                                .collect(),
+                            l["ip"].as_str().unwrap_or("-").to_string(),
+                        ]
+                    })
+                    .collect();
                 print_table(&["时间", "操作人", "动作", "目标", "来源 IP"], rows);
                 println!("共 {} 条", d["total"].as_i64().unwrap_or(0));
             }

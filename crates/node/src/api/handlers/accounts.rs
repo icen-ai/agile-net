@@ -65,7 +65,11 @@ pub async fn list_accounts(
                 "page_size": page_size,
             }))
         }
-        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, codes::INTERNAL, e.to_string()),
+        Err(e) => err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            codes::INTERNAL,
+            e.to_string(),
+        ),
     }
 }
 
@@ -131,22 +135,45 @@ pub async fn create_account(
     let password = generate_password();
     let password_hash = match hash_password(&password) {
         Ok(h) => h,
-        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, codes::INTERNAL, e.to_string()),
+        Err(e) => {
+            return err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                codes::INTERNAL,
+                e.to_string(),
+            );
+        }
     };
 
-    match state
-        .db
-        .create_account_with_admin(username, &password_hash, &req.group_id, &req.remark, req.admin_console)
-    {
+    match state.db.create_account_with_admin(
+        username,
+        &password_hash,
+        &req.group_id,
+        &req.remark,
+        req.admin_console,
+    ) {
         Ok(account) => {
             let mut connect_url = build_connect_url(&state, username, &password);
             if req.admin_console {
                 // 管理版接入链接变体：持链接者可管理本节点（强警示 + 签发审计）
                 connect_url.push_str("&admin=1");
-                audit(&state, &claims, &ip, "account.issue_admin_link", Some(&account.id), username);
+                audit(
+                    &state,
+                    &claims,
+                    &ip,
+                    "account.issue_admin_link",
+                    Some(&account.id),
+                    username,
+                );
             }
             state.remember_connect_url(&account.id, &connect_url);
-            audit(&state, &claims, &ip, "account.create", Some(&account.id), username);
+            audit(
+                &state,
+                &claims,
+                &ip,
+                "account.create",
+                Some(&account.id),
+                username,
+            );
             let group = state.db.get_group(&req.group_id).ok().flatten();
             ok_created(json!({
                 "id": account.id,
@@ -160,7 +187,11 @@ pub async fn create_account(
                 "connect_url": connect_url,
             }))
         }
-        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, codes::INTERNAL, e.to_string()),
+        Err(e) => err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            codes::INTERNAL,
+            e.to_string(),
+        ),
     }
 }
 
@@ -182,7 +213,13 @@ pub async fn update_account(
     let existing = match state.db.get_account(&id) {
         Ok(Some(a)) => a,
         Ok(None) => return err(StatusCode::NOT_FOUND, codes::NOT_FOUND, "account not found"),
-        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, codes::INTERNAL, e.to_string()),
+        Err(e) => {
+            return err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                codes::INTERNAL,
+                e.to_string(),
+            );
+        }
     };
 
     if let Some(gid) = &req.group_id
@@ -198,17 +235,35 @@ pub async fn update_account(
         req.remark.as_deref(),
         req.admin_console,
     ) {
-        return err(StatusCode::INTERNAL_SERVER_ERROR, codes::INTERNAL, e.to_string());
+        return err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            codes::INTERNAL,
+            e.to_string(),
+        );
     }
 
     // 管理权限变更：授予记签发审计；收回即断开隧道会话（管理通路立即失效）
     if req.admin_console == Some(true) && !existing.admin_console {
-        audit(&state, &claims, &ip, "account.issue_admin_link", Some(&id), &existing.username);
+        audit(
+            &state,
+            &claims,
+            &ip,
+            "account.issue_admin_link",
+            Some(&id),
+            &existing.username,
+        );
     } else if req.admin_console == Some(false) && existing.admin_console {
         if let Some(listener) = &state.runtime.listener {
             listener.disconnect_client(&id);
         }
-        audit(&state, &claims, &ip, "account.update", Some(&id), &existing.username);
+        audit(
+            &state,
+            &claims,
+            &ip,
+            "account.update",
+            Some(&id),
+            &existing.username,
+        );
     }
 
     // 禁用：吊销全部 token、清除 tunnel_token，并立即断开活跃隧道会话
@@ -221,20 +276,45 @@ pub async fn update_account(
                 tracing::info!(account = %id, sessions = kicked, "disabled account sessions kicked");
             }
         }
-        audit(&state, &claims, &ip, "account.disable", Some(&id), &existing.username);
+        audit(
+            &state,
+            &claims,
+            &ip,
+            "account.disable",
+            Some(&id),
+            &existing.username,
+        );
     } else if req.enabled == Some(true) && !existing.enabled {
-        audit(&state, &claims, &ip, "account.enable", Some(&id), &existing.username);
+        audit(
+            &state,
+            &claims,
+            &ip,
+            "account.enable",
+            Some(&id),
+            &existing.username,
+        );
     }
     if req.group_id.is_some() {
         let _ = state.db.bump_config_version();
     }
     if req.group_id.is_some() || req.remark.is_some() {
-        audit(&state, &claims, &ip, "account.update", Some(&id), &existing.username);
+        audit(
+            &state,
+            &claims,
+            &ip,
+            "account.update",
+            Some(&id),
+            &existing.username,
+        );
     }
 
     match state.db.get_account(&id) {
         Ok(Some(a)) => ok(a),
-        _ => err(StatusCode::INTERNAL_SERVER_ERROR, codes::INTERNAL, "reload failed"),
+        _ => err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            codes::INTERNAL,
+            "reload failed",
+        ),
     }
 }
 
@@ -247,16 +327,32 @@ pub async fn reset_password(
     let account = match state.db.get_account(&id) {
         Ok(Some(a)) => a,
         Ok(None) => return err(StatusCode::NOT_FOUND, codes::NOT_FOUND, "account not found"),
-        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, codes::INTERNAL, e.to_string()),
+        Err(e) => {
+            return err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                codes::INTERNAL,
+                e.to_string(),
+            );
+        }
     };
 
     let password = generate_password();
     let password_hash = match hash_password(&password) {
         Ok(h) => h,
-        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, codes::INTERNAL, e.to_string()),
+        Err(e) => {
+            return err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                codes::INTERNAL,
+                e.to_string(),
+            );
+        }
     };
     if let Err(e) = state.db.set_account_password(&id, &password_hash) {
-        return err(StatusCode::INTERNAL_SERVER_ERROR, codes::INTERNAL, e.to_string());
+        return err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            codes::INTERNAL,
+            e.to_string(),
+        );
     }
     // 旧凭据立即失效 + 断开活跃隧道会话
     let _ = state.jwt.revoke_all(&id);
@@ -267,7 +363,14 @@ pub async fn reset_password(
 
     let connect_url = build_connect_url(&state, &account.username, &password);
     state.remember_connect_url(&id, &connect_url);
-    audit(&state, &claims, &ip, "account.reset_password", Some(&id), &account.username);
+    audit(
+        &state,
+        &claims,
+        &ip,
+        "account.reset_password",
+        Some(&id),
+        &account.username,
+    );
 
     ok(json!({
         "password": password,
@@ -282,27 +385,25 @@ pub async fn qrcode(
     Path(id): Path<String>,
 ) -> Response {
     match state.take_connect_url(&id) {
-        Some(url) => {
-            match qrcode::QrCode::new(url.as_bytes()) {
-                Ok(code) => {
-                    let svg = code
-                        .render::<qrcode::render::svg::Color>()
-                        .min_dimensions(240, 240)
-                        .build();
-                    (
-                        StatusCode::OK,
-                        [(axum::http::header::CONTENT_TYPE, "image/svg+xml")],
-                        svg,
-                    )
-                        .into_response()
-                }
-                Err(e) => err(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    codes::INTERNAL,
-                    e.to_string(),
-                ),
+        Some(url) => match qrcode::QrCode::new(url.as_bytes()) {
+            Ok(code) => {
+                let svg = code
+                    .render::<qrcode::render::svg::Color>()
+                    .min_dimensions(240, 240)
+                    .build();
+                (
+                    StatusCode::OK,
+                    [(axum::http::header::CONTENT_TYPE, "image/svg+xml")],
+                    svg,
+                )
+                    .into_response()
             }
-        }
+            Err(e) => err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                codes::INTERNAL,
+                e.to_string(),
+            ),
+        },
         None => err(
             StatusCode::NOT_FOUND,
             codes::NOT_FOUND,
@@ -320,7 +421,13 @@ pub async fn delete_account(
     let account = match state.db.get_account(&id) {
         Ok(Some(a)) => a,
         Ok(None) => return err(StatusCode::NOT_FOUND, codes::NOT_FOUND, "account not found"),
-        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, codes::INTERNAL, e.to_string()),
+        Err(e) => {
+            return err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                codes::INTERNAL,
+                e.to_string(),
+            );
+        }
     };
     match state.db.delete_account(&id) {
         Ok(_) => {
@@ -328,10 +435,21 @@ pub async fn delete_account(
             if let Some(listener) = &state.runtime.listener {
                 listener.disconnect_client(&id);
             }
-            audit(&state, &claims, &ip, "account.delete", Some(&id), &account.username);
+            audit(
+                &state,
+                &claims,
+                &ip,
+                "account.delete",
+                Some(&id),
+                &account.username,
+            );
             ok(json!(null))
         }
-        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, codes::INTERNAL, e.to_string()),
+        Err(e) => err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            codes::INTERNAL,
+            e.to_string(),
+        ),
     }
 }
 

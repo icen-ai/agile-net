@@ -9,11 +9,12 @@ name = "agile_net_node"
 path = "src/lib.rs"
 
 [[bin]]
-name = "agile-net-node"
+name = "anet-svc"
 path = "src/main.rs"
 
 [dependencies]
 agile-net-core = { path = "../core" }
+agile-net-client = { path = "../client" }
 tokio = { workspace = true }
 rustls = { workspace = true }
 tokio-rustls = { workspace = true }
@@ -44,6 +45,9 @@ arc-swap = { workspace = true }
 sha2 = { workspace = true }
 qrcode = { workspace = true }
 sysinfo = { workspace = true }
+clap = { workspace = true }
+rpassword = "7"
+reqwest = { workspace = true }
 dashmap = { workspace = true }
 ip_network = { workspace = true }
 rcgen = { workspace = true }

@@ -96,12 +96,11 @@ impl TlsConfigBuilder {
                 generate_self_signed(&self.sni_hostname)?
             };
 
-        let server_config = rustls::ServerConfig::builder_with_protocol_versions(&[
-            &rustls::version::TLS13,
-        ])
-        .with_no_client_auth()
-        .with_single_cert(certs.clone(), key)
-        .map_err(|e| Error::Tls(e.to_string()))?;
+        let server_config =
+            rustls::ServerConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
+                .with_no_client_auth()
+                .with_single_cert(certs.clone(), key)
+                .map_err(|e| Error::Tls(e.to_string()))?;
 
         Ok((Arc::new(server_config), certs))
     }
@@ -235,8 +234,7 @@ pub fn load_or_generate_self_signed(
     let (certs, key) = generate_self_signed(hostname)?;
 
     if let Some(parent) = cert_path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| Error::Tls(format!("create cert dir: {e}")))?;
+        std::fs::create_dir_all(parent).map_err(|e| Error::Tls(format!("create cert dir: {e}")))?;
     }
 
     // 写 PEM
@@ -244,7 +242,10 @@ pub fn load_or_generate_self_signed(
         .iter()
         .map(|c| {
             let b64 = base64_encode(c.as_ref());
-            format!("-----BEGIN CERTIFICATE-----\n{}\n-----END CERTIFICATE-----\n", wrap64(&b64))
+            format!(
+                "-----BEGIN CERTIFICATE-----\n{}\n-----END CERTIFICATE-----\n",
+                wrap64(&b64)
+            )
         })
         .collect::<String>();
     std::fs::write(cert_path, cert_pem).map_err(|e| Error::Tls(format!("write cert: {e}")))?;

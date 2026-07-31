@@ -55,7 +55,15 @@
     GUI 服务端面板可选上游中继配置（保存即热重启内嵌节点）。
   - 测试：`crates/node/tests/control_plane_test.rs`（双节点握手发现 + 票据链 + 档位强制 +
     开关审计 + 迁移幂等）；docker 链路断言新增 T7（管理面穿透 E2E）。
-- P3：进行中。
+- **P3 改名打包（已完成，2026-07-31）**：
+  - `agile-net-node` → **`anet-svc`**：子命令 `serve`（默认）/ `tui` / `client` / `cli`；
+    原 `anet` CLI 收编为 `crates/node::cli` 模块（cli crate 删除，消除 cli→node 反向依赖）；
+    原 `agile-net-client` daemon 收编为 `agile_net_client::daemon`（client [[bin]] 移除）。
+  - `agilenet-desktop` → **`anet-gui`**（package/bin/productName；identifier `ai.icen.agilenet` 保持不变以保证升级兼容）。
+  - Dockerfile 单产物（anet-svc）；编排命令全部 `anet-svc serve`；链路测试客户端改用 `anet-svc client`；
+    CI 链路门禁标签 T1-T7；README/AGENTS/apps README 同步。
+  - crate 包名（agile-net-node/client/core）保留——产物指二进制，包名不动以减少迁移面。
+- 状态：**全部分期完成**。
 ## 1. 终态产物
 
 | 产物 | 内容 | 场景 |

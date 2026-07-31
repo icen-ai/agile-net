@@ -44,7 +44,11 @@ impl LogBuffer {
         let buf = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         buf.iter()
             .rev()
-            .filter(|e| level.map(|l| e.level.eq_ignore_ascii_case(l)).unwrap_or(true))
+            .filter(|e| {
+                level
+                    .map(|l| e.level.eq_ignore_ascii_case(l))
+                    .unwrap_or(true)
+            })
             .filter(|e| module.map(|m| e.module.starts_with(m)).unwrap_or(true))
             .take(limit)
             .cloned()

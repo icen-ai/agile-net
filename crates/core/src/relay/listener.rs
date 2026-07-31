@@ -9,7 +9,9 @@
 
 use crate::error::{Error, Result};
 use crate::proto::frame::{Frame, FrameType};
-use crate::proto::message::{AuthKind, AuthRequest, OpenChannel, PROTOCOL_VERSION, PROTOCOL_VERSION_FLOW_CONTROL};
+use crate::proto::message::{
+    AuthKind, AuthRequest, OpenChannel, PROTOCOL_VERSION, PROTOCOL_VERSION_FLOW_CONTROL,
+};
 use crate::proxy::router::{Outbound, ProxyRouter};
 use crate::relay::mux::{MuxChannel, MuxSession, OpenRequest};
 use crate::tunnel::tls::TlsConfigBuilder;
@@ -371,7 +373,8 @@ impl RelayListener {
             return false;
         };
         let (count, window_start) = *entry.value();
-        window_start.elapsed() <= Duration::from_secs(60) && count > self.max_auth_failures_per_minute
+        window_start.elapsed() <= Duration::from_secs(60)
+            && count > self.max_auth_failures_per_minute
     }
 
     /// 记录一次认证失败。
@@ -391,7 +394,11 @@ impl RelayListener {
     }
 
     /// 处理单个 TCP 连接（TLS 握手 + 认证 + 控制循环）
-    async fn handle_connection(self: &Arc<Self>, stream: TcpStream, peer_addr: SocketAddr) -> Result<()> {
+    async fn handle_connection(
+        self: &Arc<Self>,
+        stream: TcpStream,
+        peer_addr: SocketAddr,
+    ) -> Result<()> {
         // 待认证连接上限
         let pending = self.pending_auth.fetch_add(1, Ordering::Relaxed) + 1;
         if pending > self.max_pending_auth {
@@ -401,9 +408,10 @@ impl RelayListener {
         let _pending_guard = ConnGuard(self.pending_auth.clone());
 
         // TLS 握手 + 首帧认证全程限时，防 Slowloris
-        let authed = tokio::time::timeout(AUTH_TIMEOUT, self.tls_handshake_and_auth(stream, peer_addr))
-            .await
-            .map_err(|_| Error::Timeout)??;
+        let authed =
+            tokio::time::timeout(AUTH_TIMEOUT, self.tls_handshake_and_auth(stream, peer_addr))
+                .await
+                .map_err(|_| Error::Timeout)??;
 
         let (tls_stream, identity, token_hash, peer_version) = match authed {
             Some(v) => v,
@@ -413,11 +421,22 @@ impl RelayListener {
 
         let flow_control = peer_version >= PROTOCOL_VERSION_FLOW_CONTROL;
         match identity {
-            AuthIdentity::Node { node_id, advertise, .. } => {
-                self.serve_node_session(tls_stream, peer_addr, node_id, advertise, token_hash, flow_control).await
+            AuthIdentity::Node {
+                node_id, advertise, ..
+            } => {
+                self.serve_node_session(
+                    tls_stream,
+                    peer_addr,
+                    node_id,
+                    advertise,
+                    token_hash,
+                    flow_control,
+                )
+                .await
             }
             AuthIdentity::Client { account_id, acl } => {
-                self.serve_client_session(tls_stream, peer_addr, account_id, acl, flow_control).await
+                self.serve_client_session(tls_stream, peer_addr, account_id, acl, flow_control)
+                    .await
             }
         }
     }
@@ -427,7 +446,14 @@ impl RelayListener {
         &self,
         stream: TcpStream,
         peer_addr: SocketAddr,
-    ) -> Result<Option<(tokio_rustls::server::TlsStream<TcpStream>, AuthIdentity, String, u32)>> {
+    ) -> Result<
+        Option<(
+            tokio_rustls::server::TlsStream<TcpStream>,
+            AuthIdentity,
+            String,
+            u32,
+        )>,
+    > {
         let mut tls_stream = self.tls_acceptor.accept(stream).await?;
         debug!(peer = %peer_addr, "tls handshake completed");
 
@@ -457,14 +483,21 @@ impl RelayListener {
                 let peer_version = auth_req.version;
                 // 握手 v2：下游令牌带暴露标记时下发控制面端点（旧下游忽略未知字段）
                 let auth_ok = match &identity {
-                    AuthIdentity::Node { control: Some(offer), .. } => {
+                    AuthIdentity::Node {
+                        control: Some(offer),
+                        ..
+                    } => {
                         serde_json::json!({ "version": PROTOCOL_VERSION, "control": offer })
                     }
                     _ => serde_json::json!({ "version": PROTOCOL_VERSION }),
                 };
-                Frame::new(FrameType::AuthOk, 0, bytes::Bytes::from(auth_ok.to_string()))
-                    .write_to(&mut tls_stream)
-                    .await?;
+                Frame::new(
+                    FrameType::AuthOk,
+                    0,
+                    bytes::Bytes::from(auth_ok.to_string()),
+                )
+                .write_to(&mut tls_stream)
+                .await?;
                 Ok(Some((tls_stream, identity, token_hash, peer_version)))
             }
             None => {
@@ -582,7 +615,9 @@ impl RelayListener {
             Ok(v) => v,
             Err(e) => {
                 warn!(error = %e, "invalid open payload from client");
-                let _ = mux.send_frame(Frame::empty(FrameType::OpenFail, req.channel_id)).await;
+                let _ = mux
+                    .send_frame(Frame::empty(FrameType::OpenFail, req.channel_id))
+                    .await;
                 return;
             }
         };
@@ -592,7 +627,9 @@ impl RelayListener {
         // ACL：目标必须命中该账号权限组的规则
         if !acl_router.matches_target(&target) {
             warn!(target = %target, "client open denied by ACL");
-            let _ = mux.send_frame(Frame::empty(FrameType::OpenFail, req.channel_id)).await;
+            let _ = mux
+                .send_frame(Frame::empty(FrameType::OpenFail, req.channel_id))
+                .await;
             return;
         }
 
@@ -600,12 +637,21 @@ impl RelayListener {
 
         // 优先走下游节点通告路由，否则本机直连
         let bridged = if let Some(peer_id) = self.resolve_peer(&open_req.target_addr) {
-            match self.open_channel(&peer_id, &open_req.target_addr, open_req.target_port).await {
+            match self
+                .open_channel(&peer_id, &open_req.target_addr, open_req.target_port)
+                .await
+            {
                 Ok(peer_channel) => {
-                    if mux.send_frame(Frame::empty(FrameType::OpenOk, req.channel_id)).await.is_err() {
+                    if mux
+                        .send_frame(Frame::empty(FrameType::OpenOk, req.channel_id))
+                        .await
+                        .is_err()
+                    {
                         return;
                     }
-                    crate::relay::bridge::bridge(channel, peer_channel).await.ok();
+                    crate::relay::bridge::bridge(channel, peer_channel)
+                        .await
+                        .ok();
                     true
                 }
                 Err(e) => {
@@ -616,7 +662,11 @@ impl RelayListener {
         } else {
             match TcpStream::connect(&target).await {
                 Ok(local) => {
-                    if mux.send_frame(Frame::empty(FrameType::OpenOk, req.channel_id)).await.is_err() {
+                    if mux
+                        .send_frame(Frame::empty(FrameType::OpenOk, req.channel_id))
+                        .await
+                        .is_err()
+                    {
                         return;
                     }
                     crate::relay::bridge::bridge(channel, local).await.ok();
@@ -630,7 +680,9 @@ impl RelayListener {
         };
 
         if !bridged {
-            let _ = mux.send_frame(Frame::empty(FrameType::OpenFail, req.channel_id)).await;
+            let _ = mux
+                .send_frame(Frame::empty(FrameType::OpenFail, req.channel_id))
+                .await;
         }
         mux.close_channel(req.channel_id);
     }

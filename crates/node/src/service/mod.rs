@@ -40,11 +40,14 @@ pub struct NodeServerOptions {
     pub log_buffer: Option<LogBuffer>,
     /// 路由再发布：客户端引擎合并路由 + 开启器注册表（GUI 内嵌场景；
     /// 客户端隧道规则转售给下游，Open 命中时经对应隧道转发）
-    pub client_routes: Option<(
-        Arc<ArcSwap<ProxyRouter>>,
-        Arc<dashmap::DashMap<String, Arc<dyn ChannelOpener>>>,
-    )>,
+    pub client_routes: Option<ClientRoutes>,
 }
+
+/// 路由再发布注入件：客户端引擎的合并路由表 + 通道开启器注册表。
+pub type ClientRoutes = (
+    Arc<ArcSwap<ProxyRouter>>,
+    Arc<dashmap::DashMap<String, Arc<dyn ChannelOpener>>>,
+);
 
 /// 运行中的节点实例（`stop` 幂等）。
 pub struct NodeServer {
@@ -71,7 +74,7 @@ impl NodeServer {
         agile_net_core::init_crypto_provider();
 
         let mut tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
-        let log_buffer = opts.log_buffer.unwrap_or_else(LogBuffer::new);
+        let log_buffer = opts.log_buffer.unwrap_or_default();
 
         // 1. 数据库
         let db_path = opts
@@ -209,7 +212,9 @@ impl NodeServer {
                 let certs = load_pem_certs(ca_path)?;
                 tls_builder = tls_builder.ca_certs(certs);
             } else if connector_cfg.insecure {
-                tracing::warn!("connector TLS: INSECURE mode (no certificate verification) — dev only!");
+                tracing::warn!(
+                    "connector TLS: INSECURE mode (no certificate verification) — dev only!"
+                );
                 tls_builder = tls_builder.allow_self_signed(true);
             }
 
@@ -323,7 +328,11 @@ impl NodeServer {
                         let new_router = build_router(&db);
                         let count = new_router.route_count();
                         shared_router.store(Arc::new(new_router));
-                        tracing::debug!(version = current, rules = count, "proxy router hot-reloaded");
+                        tracing::debug!(
+                            version = current,
+                            rules = count,
+                            "proxy router hot-reloaded"
+                        );
                     }
                 }
             }));
@@ -338,7 +347,9 @@ impl NodeServer {
                 loop {
                     interval.tick().await;
                     match db.cleanup_audit_log(90) {
-                        Ok(n) if n > 0 => tracing::info!(removed = n, "audit log retention cleanup"),
+                        Ok(n) if n > 0 => {
+                            tracing::info!(removed = n, "audit log retention cleanup")
+                        }
                         _ => {}
                     }
                     let _ = db.cleanup_expired_refresh_tokens();
@@ -366,7 +377,14 @@ impl NodeServer {
         let api_port = api_socket_addr.port();
 
         let state = {
-            let mut st = ApiState::new(db.clone(), jwt.clone(), runtime.clone(), public_host.clone(), api_port, relay_port);
+            let mut st = ApiState::new(
+                db.clone(),
+                jwt.clone(),
+                runtime.clone(),
+                public_host.clone(),
+                api_port,
+                relay_port,
+            );
             if let Some(lim) = &config.limits {
                 st.login_limiter = st.login_limiter.clone().with_config(
                     lim.login_per_minute,
@@ -537,7 +555,11 @@ fn seed_relay_tokens_from_env(db: &Database) -> Result<()> {
     let Ok(tokens) = std::env::var("AGILE_RELAY_TOKENS") else {
         return Ok(());
     };
-    for entry in tokens.split(',').map(|t| t.trim()).filter(|t| !t.is_empty()) {
+    for entry in tokens
+        .split(',')
+        .map(|t| t.trim())
+        .filter(|t| !t.is_empty())
+    {
         let (token, expose, scope) = match entry.split_once('|') {
             Some((t, flags)) => {
                 let mut expose = false;
@@ -605,7 +627,10 @@ fn load_pem_certs(path: &str) -> Result<Vec<rustls::pki_types::CertificateDer<'s
 fn load_pem_certs_and_key(
     cert_path: &std::path::Path,
     key_path: &std::path::Path,
-) -> Result<(Vec<rustls::pki_types::CertificateDer<'static>>, rustls::pki_types::PrivateKeyDer<'static>)> {
+) -> Result<(
+    Vec<rustls::pki_types::CertificateDer<'static>>,
+    rustls::pki_types::PrivateKeyDer<'static>,
+)> {
     let cert_data = std::fs::read(cert_path)?;
     let certs: Vec<_> = rustls_pemfile::certs(&mut cert_data.as_slice())
         .collect::<std::result::Result<Vec<_>, _>>()

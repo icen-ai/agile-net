@@ -127,7 +127,11 @@ impl ClientTunnel {
 
         let auth_req = AuthRequest {
             node_id: self.account_id.clone(),
-            token: self.tunnel_token.read().unwrap_or_else(|e| e.into_inner()).clone(),
+            token: self
+                .tunnel_token
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone(),
             kind: AuthKind::Client,
             advertise: Vec::new(),
             version: PROTOCOL_VERSION,

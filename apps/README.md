@@ -1,7 +1,7 @@
 # AgileNet 客户端应用（桌面 & Android）
 
 `apps/desktop` 是基于 **Tauri 2** 的跨平台客户端，前端为原生 HTML/JS（无 Node 构建链），
-后端直接复用 `agile-net-client` 引擎（与 CLI/daemon 同一数据面）：
+后端直接复用 `agile-net-client` 引擎（与 `anet-svc client` 同一数据面）：
 
 - **Windows** 桌面应用（`.exe` / `.msi`，内嵌 WebView2 Bootstrapper）
 - **Android** 应用（`.apk` / `.aab`，Tauri 2 Mobile）
@@ -120,7 +120,7 @@ ui/ (HTML+JS)  ──IPC──>  src/lib.rs (Tauri commands)
                               ├─ list_credentials（~/.agile-net/credentials.json, 0600）
                               └─ parse_connect_url（agilenet:// 接入链接解析）
                               │
-                        agile-net-client（引擎）
+                        agile-net-client 引擎（anet-svc client 同源）
                               │
                         agile-net-core（TLS 1.3 / mux / relay / proxy）
 ```

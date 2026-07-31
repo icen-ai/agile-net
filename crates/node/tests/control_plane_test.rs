@@ -4,8 +4,8 @@
 //! 断言：B 自动发现 A 的控制端点 → 管理版客户端配置收到 manageable →
 //! 票据链换取 scoped 管理会话（rules 档位强制）→ 开关变更落审计。
 
-use agile_net_core::config::node::{ConnectorConfig, ListenerConfig};
 use agile_net_core::config::NodeConfig;
+use agile_net_core::config::node::{ConnectorConfig, ListenerConfig};
 use agile_net_node::db::{Database, hash_password, sha256_hex};
 use agile_net_node::service::{NodeServer, NodeServerOptions};
 
@@ -170,7 +170,9 @@ async fn handshake_v2_control_offer_and_manageable_discovery() {
             .to_string()
     };
     let r = http
-        .get(format!("{base_a}/api/v1/admin/audit-logs?action=admin.session_via_relay"))
+        .get(format!(
+            "{base_a}/api/v1/admin/audit-logs?action=admin.session_via_relay"
+        ))
         .bearer_auth(&admin_token)
         .send()
         .await
@@ -247,7 +249,10 @@ async fn handshake_v2_control_offer_and_manageable_discovery() {
 
     // console-ticket upstream：返回握手 v2 当前票据
     let r = http
-        .post(format!("http://{}/api/v1/client/console-ticket", b.api_addr()))
+        .post(format!(
+            "http://{}/api/v1/client/console-ticket",
+            b.api_addr()
+        ))
         .bearer_auth(&ctoken)
         .json(&serde_json::json!({"upstream": "node-root"}))
         .send()
@@ -294,7 +299,10 @@ async fn expose_control_toggle_audited() {
         .unwrap();
     let j: serde_json::Value = r.json().await.unwrap();
     let items = j["data"]["items"].as_array().unwrap();
-    let t = items.iter().find(|t| t["token_prefix"] == "psk_p2te****").unwrap();
+    let t = items
+        .iter()
+        .find(|t| t["token_prefix"] == "psk_p2te****")
+        .unwrap();
     assert_eq!(t["expose_control"].as_bool(), Some(true));
     assert_eq!(t["control_scope"].as_str(), Some("rules"));
     let id = t["id"].as_str().unwrap();
@@ -309,7 +317,9 @@ async fn expose_control_toggle_audited() {
         .unwrap();
     assert!(r.status().is_success());
     let r = http
-        .get(format!("{base}/api/v1/admin/audit-logs?action=relay_token.expose_control"))
+        .get(format!(
+            "{base}/api/v1/admin/audit-logs?action=relay_token.expose_control"
+        ))
         .bearer_auth(&token)
         .send()
         .await
@@ -317,7 +327,9 @@ async fn expose_control_toggle_audited() {
     let j: serde_json::Value = r.json().await.unwrap();
     let items = j["data"]["items"].as_array().unwrap();
     assert!(
-        items.iter().any(|i| i["detail"].as_str().is_some_and(|d| d.contains("off"))),
+        items
+            .iter()
+            .any(|i| i["detail"].as_str().is_some_and(|d| d.contains("off"))),
         "开关变更应落审计: {items:?}"
     );
 
@@ -339,7 +351,8 @@ async fn migration_v3_columns_present() {
         .unwrap();
     assert!(expose);
     assert_eq!(scope, "ro");
-    db.update_relay_token_control(&rec.id, false, "full").unwrap();
+    db.update_relay_token_control(&rec.id, false, "full")
+        .unwrap();
     let (_, expose, scope) = db
         .get_relay_token_control(&sha256_hex(b"psk_x"))
         .unwrap()

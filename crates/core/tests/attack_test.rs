@@ -119,10 +119,13 @@ async fn first_frame_must_be_auth() -> Result<()> {
     tokio::time::sleep(Duration::from_millis(60)).await;
 
     // 手工 TLS 客户端，首帧发 Data
-    let tls = TlsConfigBuilder::new().allow_self_signed(true).build_client()?;
+    let tls = TlsConfigBuilder::new()
+        .allow_self_signed(true)
+        .build_client()?;
     let connector = tokio_rustls::TlsConnector::from(tls);
     let tcp = TcpStream::connect(addr).await?;
-    let server_name = rustls::pki_types::ServerName::try_from("cdn.cloudflare.com".to_string()).unwrap();
+    let server_name =
+        rustls::pki_types::ServerName::try_from("cdn.cloudflare.com".to_string()).unwrap();
     let mut stream = connector.connect(server_name, tcp).await?;
     Frame::new(FrameType::Data, 1, Bytes::from("hi"))
         .write_to(&mut stream)
@@ -148,10 +151,13 @@ async fn wrong_token_has_penalty_delay() -> Result<()> {
     });
     tokio::time::sleep(Duration::from_millis(60)).await;
 
-    let tls = TlsConfigBuilder::new().allow_self_signed(true).build_client()?;
+    let tls = TlsConfigBuilder::new()
+        .allow_self_signed(true)
+        .build_client()?;
     let connector = tokio_rustls::TlsConnector::from(tls);
     let tcp = TcpStream::connect(addr).await?;
-    let server_name = rustls::pki_types::ServerName::try_from("cdn.cloudflare.com".to_string()).unwrap();
+    let server_name =
+        rustls::pki_types::ServerName::try_from("cdn.cloudflare.com".to_string()).unwrap();
     let mut stream = connector.connect(server_name, tcp).await?;
 
     let auth = AuthRequest {
@@ -232,7 +238,10 @@ async fn slowloris_pending_auth_capped() -> Result<()> {
     // 此时新连接被待认证上限拒绝（快速失败）
     let probe = RelayConnector::new(addr, "node-b", "tok")?;
     let res = tokio::time::timeout(Duration::from_secs(3), probe.connect()).await;
-    assert!(res.is_err() || !probe.is_connected(), "Slowloris 期间不应还能完成认证");
+    assert!(
+        res.is_err() || !probe.is_connected(),
+        "Slowloris 期间不应还能完成认证"
+    );
 
     // 等待握手超时（10s）释放槽位后，正常认证恢复
     drop(holders);
@@ -313,12 +322,11 @@ async fn cert_fingerprint_pinning() -> Result<()> {
 
     let (certs, key) = generate_self_signed("cdn.cloudflare.com")?;
     let fp = agile_net_core::tunnel::tls::cert_fingerprint_sha256(&certs[0]);
-    let server_config = rustls::ServerConfig::builder_with_protocol_versions(&[
-        &rustls::version::TLS13,
-    ])
-    .with_no_client_auth()
-    .with_single_cert(certs, key)
-    .map_err(|e| agile_net_core::error::Error::Tls(e.to_string()))?;
+    let server_config =
+        rustls::ServerConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
+            .with_no_client_auth()
+            .with_single_cert(certs, key)
+            .map_err(|e| agile_net_core::error::Error::Tls(e.to_string()))?;
     let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server_config));
     let listener = Arc::new(RelayListener::with_tls_acceptor(addr, "tok", acceptor));
     let l = listener.clone();
@@ -344,10 +352,12 @@ async fn cert_fingerprint_pinning() -> Result<()> {
     assert!(attacker.connect().await.is_err(), "错误指纹必须被拒绝");
 
     // 畸形指纹 → 构建即报错
-    assert!(TlsConfigBuilder::new()
-        .pinned_fingerprint("not-hex")
-        .build_client()
-        .is_err());
+    assert!(
+        TlsConfigBuilder::new()
+            .pinned_fingerprint("not-hex")
+            .build_client()
+            .is_err()
+    );
     Ok(())
 }
 
@@ -362,7 +372,10 @@ fn auth_kind_enforced() {
         advertise: vec![],
         version: 1,
     };
-    assert!(v.validate(&auth).is_none(), "client kind 必须被 StaticTokenValidator 拒绝");
+    assert!(
+        v.validate(&auth).is_none(),
+        "client kind 必须被 StaticTokenValidator 拒绝"
+    );
     auth.kind = agile_net_core::proto::message::AuthKind::Node;
     assert!(matches!(v.validate(&auth), Some(AuthIdentity::Node { .. })));
 }
@@ -512,15 +525,15 @@ async fn tls12_rejected() -> Result<()> {
 
     // 仅支持 TLS 1.2 的客户端配置
     let _ = rustls::crypto::ring::default_provider().install_default();
-    let client_config = rustls::ClientConfig::builder_with_protocol_versions(&[
-        &rustls::version::TLS12,
-    ])
-    .dangerous()
-    .with_custom_certificate_verifier(Arc::new(NoVerify))
-    .with_no_client_auth();
+    let client_config =
+        rustls::ClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS12])
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(NoVerify))
+            .with_no_client_auth();
     let connector = tokio_rustls::TlsConnector::from(Arc::new(client_config));
     let tcp = TcpStream::connect(addr).await?;
-    let server_name = rustls::pki_types::ServerName::try_from("cdn.cloudflare.com".to_string()).unwrap();
+    let server_name =
+        rustls::pki_types::ServerName::try_from("cdn.cloudflare.com".to_string()).unwrap();
     let res = connector.connect(server_name, tcp).await;
     assert!(res.is_err(), "TLS 1.2 必须被拒绝（仅允许 TLS 1.3）");
 

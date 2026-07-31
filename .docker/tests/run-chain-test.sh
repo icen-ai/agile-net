@@ -90,7 +90,7 @@ ACC_PASS2=$(create_account "$MID_TOKEN" "$MID_API" "$GID2" "chainuser2")
 [ -n "$ACC_PASS2" ] && [ "$ACC_PASS2" != "null" ] && ok "mid 账号已创建" || bad "mid 账号创建失败"
 
 # ---------- 启动客户端（连接 root） ----------
-log "启动 agile-net-client（连接 root）..."
+log "启动 anet-svc client（连接 root）..."
 cat > /tmp/client.toml <<EOF
 proxy_port = 57890
 
@@ -100,7 +100,7 @@ username = "chainuser"
 password = "$ACC_PASS"
 insecure = true
 EOF
-agile-net-client /tmp/client.toml > /tmp/client.log 2>&1 &
+anet-svc client /tmp/client.toml > /tmp/client.log 2>&1 &
 CLIENT_PID=$!
 sleep 4
 
@@ -183,7 +183,7 @@ insecure = true
 EOF
 kill $CLIENT_PID 2>/dev/null || true
 sleep 1
-agile-net-client /tmp/client.toml > /tmp/client2.log 2>&1 &
+anet-svc client /tmp/client.toml > /tmp/client2.log 2>&1 &
 CLIENT_PID=$!
 sleep 5
 if curl -sf --max-time 20 --socks5-hostname 127.0.0.1:57891 http://10.140.0.100/ | grep -q "Welcome to nginx"; then
@@ -255,7 +255,7 @@ insecure = true
 EOF
 kill $CLIENT_PID 2>/dev/null || true
 sleep 1
-agile-net-client /tmp/client.toml > /tmp/client3.log 2>&1 &
+anet-svc client /tmp/client.toml > /tmp/client3.log 2>&1 &
 CLIENT_PID=$!
 sleep 4
 BOOT=$(curl -sf --max-time 15 --socks5-hostname 127.0.0.1:57892 -X POST \

@@ -27,7 +27,11 @@ pub(crate) fn audit(
         &claims.username,
         action,
         target,
-        if detail.is_empty() { None } else { Some(detail) },
+        if detail.is_empty() {
+            None
+        } else {
+            Some(detail)
+        },
         Some(&ip.to_string()),
     );
 }

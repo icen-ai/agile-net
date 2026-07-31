@@ -3,6 +3,7 @@
 pub mod acme;
 pub mod api;
 pub mod auth;
+pub mod cli;
 pub mod db;
 pub mod logs;
 pub mod relay_auth;
