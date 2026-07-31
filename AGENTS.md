@@ -94,6 +94,9 @@ docker build -f .docker/Dockerfile -t anet:dev .
 docker compose -f .docker/docker-compose.test.yaml up --abort-on-container-exit --exit-code-from tester
 docker compose -f .docker/docker-compose.chain.yaml up -d
 
+# 发布（全自动）：打 tag 推送即全平台构建并挂载 GitHub Release，无需本地构建
+git tag vX.Y.Z && git push origin vX.Y.Z   # 产物矩阵与签名现状见 docs/release.md
+
 # Tauri 桌面/Android（独立 workspace）
 cargo check --manifest-path apps/desktop/Cargo.toml
 ```
