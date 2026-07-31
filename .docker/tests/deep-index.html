@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<!-- 保留 "Welcome to nginx" 字样以兼容 grep 类链路断言 -->
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AgileNet 深层网络目标</title>
+<style>
+  :root { --bg:#EDEDED; --panel:#F8F8F8; --panel2:#FFF; --border:#DCDFE3; --text:#3C3F43; --strong:#2E3237; --dim:#686B72; --dim2:#8C8E94; --accent:#3C3F43; --accent-fg:#FCFCFC; --ok:#15803D; --ok-bg:rgba(21,128,61,.10); }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { background:var(--bg); color:var(--text); font:14px/1.6 -apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif; min-height:100vh; display:flex; align-items:center; justify-content:center; padding:24px; }
+  .card { background:var(--panel); border:1px solid var(--border); border-radius:14px; max-width:640px; width:100%; padding:32px 34px; }
+  .logo { display:inline-flex; width:44px; height:44px; border-radius:12px; background:var(--accent); color:var(--accent-fg); align-items:center; justify-content:center; margin-bottom:16px; }
+  h1 { font-size:20px; color:var(--strong); margin-bottom:6px; }
+  .sub { color:var(--dim2); font-size:13px; margin-bottom:22px; }
+  .badge { display:inline-flex; align-items:center; gap:6px; background:var(--ok-bg); color:var(--ok); font-weight:600; font-size:12px; border-radius:999px; padding:3px 12px; margin-bottom:18px; }
+  .badge::before { content:""; width:8px; height:8px; border-radius:50%; background:var(--ok); }
+  .chain { background:var(--panel2); border:1px solid var(--border); border-radius:10px; padding:14px 16px; font-family:ui-monospace,Consolas,monospace; font-size:12.5px; color:var(--dim); word-break:break-all; }
+  .chain b { color:var(--strong); }
+  .kv { display:flex; justify-content:space-between; padding:7px 0; border-bottom:1px dashed var(--border); font-size:13px; }
+  .kv:last-child { border-bottom:none; }
+  .kv .k { color:var(--dim); }
+  .kv .v { font-family:ui-monospace,Consolas,monospace; color:var(--strong); }
+  .foot { margin-top:18px; color:var(--dim2); font-size:12px; }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="logo">
+    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z"/></svg>
+  </div>
+  <h1>你已到达最深层网络 deep-net</h1>
+  <p class="sub">此页面由仅 deep-net 内可达的 nginx (target) 提供 — Welcome to nginx</p>
+  <div class="badge">四级链路穿透成功</div>
+  <div class="chain">你的电脑 <b>→</b> gateway(127.0.0.1:18080) <b>→</b> client proxy <b>→</b> node-root <b>→</b> node-mid <b>→</b> node-leaf <b>→</b> node-deep <b>→</b> <b>target</b></div>
+  <div style="margin-top:18px">
+    <div class="kv"><span class="k">目标网段</span><span class="v">deep-net 10.140.0.0/16</span></div>
+    <div class="kv"><span class="k">目标地址</span><span class="v">10.140.0.100</span></div>
+    <div class="kv"><span class="k">链路层级</span><span class="v">root / mid / leaf / deep（4 级 Relay）</span></div>
+    <div class="kv"><span class="k">宿主机直连</span><span class="v">不可达（仅经 AgileNet 链路）</span></div>
+  </div>
+  <p class="foot">AgileNet 深度链路演示 · docker-compose.chain.yaml</p>
+</div>
+</body>
+</html>

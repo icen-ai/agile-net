@@ -1,0 +1,123 @@
+# AgileNet 深度链路演示（常驻版）
+#
+# 拓扑（四层嵌套网络，四级节点链）：
+#   宿主机 ──► node-root ──public──► node-mid ──mid──► node-leaf ──leaf──► node-deep ──deep──► target
+#
+# 与 docker-compose.test.yaml 的区别：常驻运行（无 tester 断言），并将 root 的
+# API(9090) 与 Relay 监听(4430) 发布到宿主机 127.0.0.1，供宿主机上的
+# agile-net-client 连入；AGILE_PUBLIC_HOST=127.0.0.1 保证客户端拿到的隧道端点可解析。
+#
+# 用法：
+#   docker compose -f .docker/docker-compose.chain.yaml up -d
+#   宿主机客户端: addr = "http://127.0.0.1:19090"（隧道端点自动下发为 127.0.0.1:4430）
+name: anet-chain
+
+services:
+  # ---------- 内网目标（仅 deep-net 可达），自定义页面标识链路层级 ----------
+  target:
+    image: nginx:alpine
+    container_name: anet-chain-target
+    volumes:
+      - ./tests/deep-index.html:/usr/share/nginx/html/index.html:ro
+    networks:
+      deep-net:
+        ipv4_address: 10.140.0.100
+
+  # ---------- L1 根节点（公网），API/隧道端口发布到宿主机 ----------
+  node-root:
+    image: anet:dev
+    container_name: anet-chain-root
+    command: ["agile-net-node", "/etc/agile-net/node.toml"]
+    environment:
+      AGILE_ADMIN_PASSWORD: "ChainTest123!"
+      AGILE_RELAY_TOKENS: "psk_midtoken_000000000000000000000000000000000000"
+      AGILE_PUBLIC_HOST: "127.0.0.1"
+    volumes:
+      - ./configs/node-root.toml:/etc/agile-net/node.toml:ro
+    ports:
+      - "127.0.0.1:19090:9090"
+      - "127.0.0.1:4430:4430"
+    networks:
+      public-net:
+        ipv4_address: 172.28.0.10
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:9090/"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # ---------- L2 中间节点 ----------
+  node-mid:
+    image: anet:dev
+    container_name: anet-chain-mid
+    command: ["agile-net-node", "/etc/agile-net/node.toml"]
+    environment:
+      AGILE_ADMIN_PASSWORD: "ChainTest123!"
+      AGILE_RELAY_TOKENS: "psk_leaftoken_00000000000000000000000000000000000"
+      AGILE_PUBLIC_HOST: "node-mid"
+    volumes:
+      - ./configs/node-mid.toml:/etc/agile-net/node.toml:ro
+    networks:
+      public-net:
+        ipv4_address: 172.28.0.20
+      mid-net:
+        ipv4_address: 10.100.0.20
+    depends_on:
+      node-root:
+        condition: service_healthy
+
+  # ---------- L3 叶子节点 ----------
+  node-leaf:
+    image: anet:dev
+    container_name: anet-chain-leaf
+    command: ["agile-net-node", "/etc/agile-net/node.toml"]
+    environment:
+      AGILE_RELAY_TOKENS: "psk_deeptoken_00000000000000000000000000000000000"
+    volumes:
+      - ./configs/node-leaf.toml:/etc/agile-net/node.toml:ro
+    networks:
+      mid-net:
+        ipv4_address: 10.100.0.30
+      leaf-net:
+        ipv4_address: 10.120.0.30
+    depends_on:
+      node-root:
+        condition: service_healthy
+
+  # ---------- L4 深度节点（纯 connector） ----------
+  node-deep:
+    image: anet:dev
+    container_name: anet-chain-deep
+    command: ["agile-net-node", "/etc/agile-net/node.toml"]
+    volumes:
+      - ./configs/node-deep.toml:/etc/agile-net/node.toml:ro
+    networks:
+      leaf-net:
+        ipv4_address: 10.120.0.40
+      deep-net:
+        ipv4_address: 10.140.0.40
+    depends_on:
+      node-leaf:
+        condition: service_started
+
+networks:
+  public-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
+  mid-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.100.0.0/16
+  leaf-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.120.0.0/16
+  deep-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.140.0.0/16

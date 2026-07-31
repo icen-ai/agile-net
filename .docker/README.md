@@ -37,3 +37,22 @@ docker compose -f .docker/docker-compose.test.yaml up \
 - `configs/node-*.toml`：listener/connector/advertise/insecure（容器内自签证书互通，测试环境用 `insecure = true`；生产用证书固定）
 - Relay token 通过 `AGILE_RELAY_TOKENS` 环境变量幂等预置（见 configs 中 token 值）
 - 管理员通过 `AGILE_ADMIN_PASSWORD` 预置（容器自动化用）
+
+## 常驻链路演示（docker-compose.chain.yaml）
+
+同一四级链拓扑的常驻版本（无 tester 断言），供从**宿主机**真实访问最深层网络：
+
+- `node-root` 的 API(9090) 与 Relay(4430) 发布到宿主机（`127.0.0.1:19090` / `127.0.0.1:4430`），
+  且 `AGILE_PUBLIC_HOST=127.0.0.1` 保证客户端拉到的隧道端点在宿主机可解析
+- `target` 挂载 `tests/deep-index.html` 作为深层网络标识页
+
+```bash
+docker compose -f .docker/docker-compose.chain.yaml up -d
+# 宿主机客户端连入（addr 指向发布的 API 端口，隧道端点自动下发 127.0.0.1:4430）
+# [[nodes]] addr = "http://127.0.0.1:19090" ...
+```
+
+经客户端本地代理即可访问 `http://10.140.0.100/`；演示时可在宿主机再架一层
+HTTP→CONNECT 转发（如 target/tmp/chain-gateway.js），把 `http://127.0.0.1:18080/`
+映射到深层目标，浏览器直接打开即可。
+清理：`docker compose -f .docker/docker-compose.chain.yaml down -v`
