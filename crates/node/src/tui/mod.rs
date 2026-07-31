@@ -38,12 +38,12 @@ impl Tab {
 
     pub fn title(self) -> &'static str {
         match self {
-            Tab::Dashboard => "📊 概览",
-            Tab::Rules => "🔀 规则",
-            Tab::Groups => "🛡️ 权限组",
-            Tab::Accounts => "👥 账号",
-            Tab::Tokens => "🔑 令牌",
-            Tab::Audit => "📜 审计",
+            Tab::Dashboard => "概览",
+            Tab::Rules => "规则",
+            Tab::Groups => "权限组",
+            Tab::Accounts => "账号",
+            Tab::Tokens => "令牌",
+            Tab::Audit => "审计",
         }
     }
 
@@ -282,7 +282,7 @@ impl TuiApp {
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
             )
-            .block(Block::default().borders(Borders::ALL).title("⚡ AgileNet Node"));
+            .block(Block::default().borders(Borders::ALL).title("AgileNet Node"));
         f.render_widget(tabs, chunks[0]);
 
         // 主内容
@@ -339,7 +339,7 @@ impl TuiApp {
         let p = Paragraph::new(text).block(
             Block::default()
                 .borders(Borders::ALL)
-                .title("📊 节点概览"),
+                .title("节点概览"),
         );
         f.render_widget(p, area);
     }
@@ -373,7 +373,7 @@ impl TuiApp {
                 .style(Style::default().fg(Color::Yellow)),
         )
         .row_highlight_style(Style::default().bg(Color::DarkGray))
-        .block(Block::default().borders(Borders::ALL).title("🔀 路由规则"));
+        .block(Block::default().borders(Borders::ALL).title("路由规则"));
         f.render_stateful_widget(table, area, &mut self.table_state);
     }
 
@@ -401,7 +401,7 @@ impl TuiApp {
         )
         .header(Row::new(vec!["名称", "规则数", "账号数", "备注"]).style(Style::default().fg(Color::Yellow)))
         .row_highlight_style(Style::default().bg(Color::DarkGray))
-        .block(Block::default().borders(Borders::ALL).title("🛡️ 权限组"));
+        .block(Block::default().borders(Borders::ALL).title("权限组"));
         f.render_stateful_widget(table, area, &mut self.table_state);
     }
 
@@ -432,7 +432,7 @@ impl TuiApp {
         )
         .header(Row::new(vec!["账号", "权限组", "状态", "最后在线", "备注"]).style(Style::default().fg(Color::Yellow)))
         .row_highlight_style(Style::default().bg(Color::DarkGray))
-        .block(Block::default().borders(Borders::ALL).title("👥 客户端账号（按 e 启停）"));
+        .block(Block::default().borders(Borders::ALL).title("客户端账号（按 e 启停）"));
         f.render_stateful_widget(table, area, &mut self.table_state);
     }
 
@@ -463,7 +463,7 @@ impl TuiApp {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title("🔑 Relay 令牌（按 n 生成新令牌）"),
+                .title("Relay 令牌（按 n 生成新令牌）"),
         );
         f.render_stateful_widget(table, area, &mut self.table_state);
     }
@@ -494,7 +494,7 @@ impl TuiApp {
         )
         .header(Row::new(vec!["时间", "操作人", "动作", "目标", "来源 IP"]).style(Style::default().fg(Color::Yellow)))
         .row_highlight_style(Style::default().bg(Color::DarkGray))
-        .block(Block::default().borders(Borders::ALL).title("📜 审计日志"));
+        .block(Block::default().borders(Borders::ALL).title("审计日志"));
         f.render_stateful_widget(table, area, &mut self.table_state);
     }
 }

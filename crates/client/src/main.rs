@@ -102,7 +102,7 @@ async fn main() -> Result<()> {
         .map(|a| (a.username, a.password));
     client.start_proxy_with_auth(config.proxy_port, auth).await?;
     tracing::info!(
-        "⚡ local proxy listening on 127.0.0.1:{} (SOCKS5/HTTP)",
+        "local proxy listening on 127.0.0.1:{} (SOCKS5/HTTP)",
         client.proxy_port()
     );
 

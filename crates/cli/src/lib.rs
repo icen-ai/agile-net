@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
-#[command(name = "anet", version, about = "⚡ AgileNet CLI — 网络穿透与代理链路由管理工具")]
+#[command(name = "anet", version, about = "AgileNet CLI — 网络穿透与代理链路由管理工具")]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
@@ -519,7 +519,7 @@ pub async fn run_cli(cli: Cli) -> Result<()> {
                     .await;
             }
             Session::clear();
-            println!("✅ 已登出并清除本地会话");
+            println!("已登出并清除本地会话");
             Ok(())
         }
         Commands::Tui => {
@@ -534,7 +534,7 @@ pub async fn run_cli(cli: Cli) -> Result<()> {
             if json_out {
                 print_json(&d);
             } else {
-                println!("⚡ 节点状态");
+                println!("节点状态");
                 println!("  名称:     {}", d["node_name"].as_str().unwrap_or("-"));
                 println!("  版本:     v{}", d["version"].as_str().unwrap_or("-"));
                 println!("  运行时长: {}s", d["uptime"].as_u64().unwrap_or(0));
@@ -579,7 +579,7 @@ async fn cmd_login(api: Option<String>, args: LoginArgs) -> Result<()> {
     };
     let password = match args.password {
         Some(p) => {
-            eprintln!("⚠️  提示：通过命令行参数传递密码会留在 shell 历史中，建议使用交互式输入（省略 -p）");
+            eprintln!("提示：通过命令行参数传递密码会留在 shell 历史中，建议使用交互式输入（省略 -p）");
             p
         }
         None => rpassword::prompt_password("密码: ").context("读取密码失败")?,
@@ -602,7 +602,7 @@ async fn cmd_login(api: Option<String>, args: LoginArgs) -> Result<()> {
         refresh_token: j["data"]["refresh_token"].as_str().unwrap_or_default().to_string(),
     };
     session.save()?;
-    println!("✅ 登录成功（{}），会话已保存", base);
+    println!("登录成功（{}），会话已保存", base);
     Ok(())
 }
 
@@ -643,7 +643,7 @@ async fn cmd_rule(api: Option<String>, args: RuleArgs, json_out: bool) -> Result
                 "resolve": a.resolve, "remark": a.remark.unwrap_or_default(),
             }))).await?;
             if json_out { print_json(&d); } else {
-                println!("✅ 规则已创建: {}", d["value"].as_str().unwrap_or("-"));
+                println!("规则已创建: {}", d["value"].as_str().unwrap_or("-"));
             }
         }
         RuleSub::Update(u) => {
@@ -654,7 +654,7 @@ async fn cmd_rule(api: Option<String>, args: RuleArgs, json_out: bool) -> Result
             if let Some(r) = u.remark { body["remark"] = json!(r); }
             let d = client.api("PUT", &format!("/api/v1/admin/rules/{id}"), Some(body)).await?;
             if json_out { print_json(&d); } else {
-                println!("✅ 规则已更新: {}", d["value"].as_str().unwrap_or("-"));
+                println!("规则已更新: {}", d["value"].as_str().unwrap_or("-"));
             }
         }
         RuleSub::Delete(d) => {
@@ -665,7 +665,7 @@ async fn cmd_rule(api: Option<String>, args: RuleArgs, json_out: bool) -> Result
                 format!("/api/v1/admin/rules/{id}")
             };
             client.api("DELETE", &path, None).await?;
-            println!("✅ 规则已删除");
+            println!("规则已删除");
         }
         RuleSub::Batch(b) => {
             let text = std::fs::read_to_string(&b.file)
@@ -675,7 +675,7 @@ async fn cmd_rule(api: Option<String>, args: RuleArgs, json_out: bool) -> Result
                 "rules": rules, "on_conflict": b.on_conflict,
             }))).await?;
             if json_out { print_json(&d); } else {
-                println!("✅ 导入完成: 新建 {} · 跳过 {} · 更新 {} · 错误 {}",
+                println!("导入完成: 新建 {} · 跳过 {} · 更新 {} · 错误 {}",
                     d["created"], d["skipped"], d["updated"], d["errors"].as_array().map(|e| e.len()).unwrap_or(0));
             }
         }
@@ -728,7 +728,7 @@ async fn cmd_group(api: Option<String>, args: GroupArgs, json_out: bool) -> Resu
                 "name": a.name, "remark": a.remark.unwrap_or_default(), "rule_ids": rule_ids,
             }))).await?;
             if json_out { print_json(&d); } else {
-                println!("✅ 权限组已创建: {}", d["name"].as_str().unwrap_or("-"));
+                println!("权限组已创建: {}", d["name"].as_str().unwrap_or("-"));
             }
         }
         GroupSub::Update(u) => {
@@ -738,7 +738,7 @@ async fn cmd_group(api: Option<String>, args: GroupArgs, json_out: bool) -> Resu
             if let Some(r) = u.remark { body["remark"] = json!(r); }
             let d = client.api("PUT", &format!("/api/v1/admin/groups/{id}"), Some(body)).await?;
             if json_out { print_json(&d); } else {
-                println!("✅ 权限组已更新: {}", d["name"].as_str().unwrap_or("-"));
+                println!("权限组已更新: {}", d["name"].as_str().unwrap_or("-"));
             }
         }
         GroupSub::Delete(d) => {
@@ -749,7 +749,7 @@ async fn cmd_group(api: Option<String>, args: GroupArgs, json_out: bool) -> Resu
                 format!("/api/v1/admin/groups/{id}")
             };
             client.api("DELETE", &path, None).await?;
-            println!("✅ 权限组已删除");
+            println!("权限组已删除");
         }
         GroupSub::SetRules(s) => {
             let id = resolve_id(&mut client, "/api/v1/admin/groups?page_size=100", &s.id).await?;
@@ -760,7 +760,7 @@ async fn cmd_group(api: Option<String>, args: GroupArgs, json_out: bool) -> Resu
             let d = client.api("PUT", &format!("/api/v1/admin/groups/{id}/rules"), Some(json!({
                 "rule_ids": ids,
             }))).await?;
-            println!("✅ 规则绑定已更新（{} 条）", d["rule_count"].as_i64().unwrap_or(0));
+            println!("规则绑定已更新（{} 条）", d["rule_count"].as_i64().unwrap_or(0));
         }
     }
     Ok(())
@@ -806,10 +806,10 @@ async fn cmd_account(api: Option<String>, args: AccountArgs, json_out: bool) -> 
                 "username": a.username, "group_id": gid, "remark": a.remark.unwrap_or_default(),
             }))).await?;
             if json_out { print_json(&d); } else {
-                println!("✅ 账号已创建: {}", d["username"].as_str().unwrap_or("-"));
+                println!("账号已创建: {}", d["username"].as_str().unwrap_or("-"));
                 println!("   密码（仅此一次）: {}", d["password"].as_str().unwrap_or("-"));
                 println!("   接入链接: {}", d["connect_url"].as_str().unwrap_or("-"));
-                println!("   ⚠️  请立即保存，密码不可找回");
+                println!("   请立即保存，密码不可找回");
             }
         }
         AccountSub::Update(u) => {
@@ -822,18 +822,18 @@ async fn cmd_account(api: Option<String>, args: AccountArgs, json_out: bool) -> 
             if let Some(e) = u.enabled { body["enabled"] = json!(e); }
             if let Some(r) = u.remark { body["remark"] = json!(r); }
             client.api("PUT", &format!("/api/v1/admin/accounts/{id}"), Some(body)).await?;
-            println!("✅ 账号已更新");
+            println!("账号已更新");
         }
         AccountSub::Delete(d) => {
             let id = resolve_id(&mut client, "/api/v1/admin/accounts?page_size=100", &d.id).await?;
             client.api("DELETE", &format!("/api/v1/admin/accounts/{id}"), None).await?;
-            println!("✅ 账号已删除");
+            println!("账号已删除");
         }
         AccountSub::ResetPassword(r) => {
             let id = resolve_id(&mut client, "/api/v1/admin/accounts?page_size=100", &r.id).await?;
             let d = client.api("POST", &format!("/api/v1/admin/accounts/{id}/reset-password"), None).await?;
             if json_out { print_json(&d); } else {
-                println!("✅ 密码已重置（仅此一次）: {}", d["password"].as_str().unwrap_or("-"));
+                println!("密码已重置（仅此一次）: {}", d["password"].as_str().unwrap_or("-"));
                 println!("   接入链接: {}", d["connect_url"].as_str().unwrap_or("-"));
             }
         }
@@ -866,14 +866,14 @@ async fn cmd_token(api: Option<String>, args: TokenArgs, json_out: bool) -> Resu
                 "remark": a.remark.unwrap_or_default(),
             }))).await?;
             if json_out { print_json(&d); } else {
-                println!("✅ Relay 令牌已生成（仅此一次）: {}", d["token"].as_str().unwrap_or("-"));
-                println!("   ⚠️  服务端只存哈希，请立即保存");
+                println!("Relay 令牌已生成（仅此一次）: {}", d["token"].as_str().unwrap_or("-"));
+                println!("   服务端只存哈希，请立即保存");
             }
         }
         TokenSub::Delete(d) => {
             let id = resolve_id(&mut client, "/api/v1/admin/node/relay-tokens", &d.id).await?;
             client.api("DELETE", &format!("/api/v1/admin/node/relay-tokens/{id}"), None).await?;
-            println!("✅ 令牌已吊销");
+            println!("令牌已吊销");
         }
     }
     Ok(())
@@ -906,13 +906,13 @@ async fn cmd_admin(api: Option<String>, args: AdminArgs, json_out: bool) -> Resu
                 "username": a.username, "password": password,
             }))).await?;
             if json_out { print_json(&d); } else {
-                println!("✅ 管理员已创建: {}", d["username"].as_str().unwrap_or("-"));
+                println!("管理员已创建: {}", d["username"].as_str().unwrap_or("-"));
             }
         }
         AdminSub::Delete(d) => {
             let id = resolve_id(&mut client, "/api/v1/admin/admins", &d.id).await?;
             client.api("DELETE", &format!("/api/v1/admin/admins/{id}"), None).await?;
-            println!("✅ 管理员已删除（其会话已吊销）");
+            println!("管理员已删除（其会话已吊销）");
         }
         AdminSub::Passwd(p) => {
             let old_password = match p.old_password {
@@ -926,7 +926,7 @@ async fn cmd_admin(api: Option<String>, args: AdminArgs, json_out: bool) -> Resu
             let d = client.api("PUT", "/api/v1/auth/password", Some(json!({
                 "old_password": old_password, "new_password": new_password,
             }))).await?;
-            println!("✅ {}", d["message"].as_str().unwrap_or("密码已修改"));
+            println!("{}", d["message"].as_str().unwrap_or("密码已修改"));
         }
     }
     Ok(())

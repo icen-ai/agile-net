@@ -45,7 +45,7 @@ let LANG = localStorage.getItem('ag_lang') || 'zh';
 const T = (k) => (I18N[LANG] && I18N[LANG][k]) || I18N.zh[k] || k;
 function applyLanguage() { LANG = localStorage.getItem('ag_lang') || 'zh'; refreshNodes(); refreshProxy(); }
 function applyTheme() {
-  document.documentElement.dataset.theme = localStorage.getItem('ag_theme') || 'dark';
+  document.documentElement.dataset.theme = localStorage.getItem('ag_theme') || 'light';
 }
 
 function esc(s) {
@@ -285,7 +285,7 @@ function toggleManual(open) {
   const f = $('manual-form');
   const show = open === true ? true : f.style.display === 'none';
   f.style.display = show ? 'block' : 'none';
-  $('manual-arrow').textContent = show ? '▾' : '▸';
+  $('manual-arrow').innerHTML = AgIcon(show ? 'chevron-down' : 'chevron-right', 13);
 }
 
 window.addEventListener('DOMContentLoaded', async () => {
@@ -311,7 +311,7 @@ window.addEventListener('DOMContentLoaded', async () => {
 
   await loadSettings();
   $('s-lang').value = localStorage.getItem('ag_lang') || 'zh';
-  $('s-theme').value = localStorage.getItem('ag_theme') || 'dark';
+  $('s-theme').value = localStorage.getItem('ag_theme') || 'light';
   $('s-lang').onchange = (e) => { localStorage.setItem('ag_lang', e.target.value); applyLanguage(); };
   $('s-theme').onchange = (e) => { localStorage.setItem('ag_theme', e.target.value); applyTheme(); };
   applyTheme();

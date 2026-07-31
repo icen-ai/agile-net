@@ -15,8 +15,8 @@ PASS=0
 FAIL=0
 
 log()  { echo "[chain-test] $*"; }
-ok()   { PASS=$((PASS+1)); echo "  ✅ $*"; }
-bad()  { FAIL=$((FAIL+1)); echo "  ❌ $*"; }
+ok()   { PASS=$((PASS+1)); echo "  [PASS] $*"; }
+bad()  { FAIL=$((FAIL+1)); echo "  [FAIL] $*"; }
 
 wait_api() {
   # $1 = api base

@@ -8,7 +8,7 @@
 </head>
 <body>
 <header>
-  <div class="brand">⚡ AgileNet</div>
+  <div class="brand"><span class="logo"><i data-ic="zap" data-sz="15"></i></span>AgileNet</div>
   <div class="proxy-pill" id="proxy-pill">
     <span class="dot off" id="proxy-dot"></span><span id="proxy-text">代理未启动</span>
   </div>
@@ -18,7 +18,7 @@
   <div id="net-banner" class="net-banner" style="display:none"></div>
   <!-- 空状态引导（未连接任何节点时显示） -->
   <section id="onboarding" class="hero" style="display:none">
-    <div class="hero-logo">⚡</div>
+    <div class="hero-logo"><i data-ic="zap" data-sz="30"></i></div>
     <h1>欢迎使用 AgileNet</h1>
     <p class="hero-sub">企业级网络穿透与代理链路由 · 三步接入您的内网</p>
     <div class="hero-steps">
@@ -28,7 +28,7 @@
     </div>
     <div class="hero-input">
       <input id="connect-url-hero" class="mono" placeholder="粘贴接入链接 agilenet://connect?...">
-      <button id="btn-import-hero" class="big">🚀 一键接入</button>
+      <button id="btn-import-hero" class="big"><i data-ic="rocket" data-sz="17"></i>一键接入</button>
     </div>
     <div class="hero-alt">或 <a href="javascript:void(0)" onclick="pasteFromClipboard()">从剪贴板导入</a> · <a href="javascript:void(0)" onclick="toggleManual(true)">手动填写</a></div>
   </section>
@@ -38,13 +38,13 @@
     <div class="row">
       <input id="connect-url" class="grow mono" placeholder="粘贴接入链接添加另一个节点 agilenet://connect?...">
       <button id="btn-import">导入并连接</button>
-      <button id="btn-paste" class="ghost" title="从剪贴板导入">📋</button>
+      <button id="btn-paste" class="ghost icon-btn" title="从剪贴板导入"><i data-ic="clipboard" data-sz="15"></i></button>
     </div>
   </section>
 
   <!-- 本地代理 -->
   <section class="card">
-    <h3>🔌 本地代理 <span class="hint inline">SOCKS5 / HTTP 自动识别，仅监听 127.0.0.1</span></h3>
+    <h3><i data-ic="power"></i>本地代理 <span class="hint inline">SOCKS5 / HTTP 自动识别，仅监听 127.0.0.1</span></h3>
     <div class="row">
       <label>端口</label>
       <input id="proxy-port" type="number" value="7890" style="width:100px">
@@ -55,13 +55,13 @@
 
   <!-- 节点列表 -->
   <section class="card">
-    <h3>🌐 节点 <button class="ghost small" id="btn-refresh" title="刷新">⟳</button></h3>
+    <h3><i data-ic="globe"></i>节点 <button class="ghost small icon-btn" id="btn-refresh" title="刷新"><i data-ic="refresh-cw" data-sz="13"></i></button></h3>
     <div id="nodes-list"><div class="empty">尚未连接节点</div></div>
   </section>
 
   <!-- 手动添加 -->
   <section class="card">
-    <h3 onclick="toggleManual()" style="cursor:pointer">➕ 手动添加节点 <span class="hint" id="manual-arrow">▸</span></h3>
+    <h3 onclick="toggleManual()" style="cursor:pointer"><i data-ic="plus"></i>手动添加节点 <span class="hint" id="manual-arrow"><i data-ic="chevron-right" data-sz="13"></i></span></h3>
     <div id="manual-form" style="display:none">
       <div class="grid2">
         <div><label>节点 API 地址（host:port 或 https://…）</label><input id="m-addr" placeholder="cdn.example.com:9090"></div>
@@ -80,19 +80,19 @@
 
   <!-- 已保存节点 -->
   <section class="card" id="creds-card" style="display:none">
-    <h3>💾 已保存节点</h3>
+    <h3><i data-ic="hard-drive"></i>已保存节点</h3>
     <div id="creds-list"></div>
   </section>
 
   <!-- 合并路由 -->
   <section class="card" id="rules-card" style="display:none">
-    <h3>🔀 生效路由（合并视图）</h3>
+    <h3><i data-ic="route"></i>生效路由（合并视图）</h3>
     <table><thead><tr><th>类型</th><th>匹配值</th><th>节点</th></tr></thead><tbody id="rules-body"></tbody></table>
   </section>
 
   <!-- 设置 -->
   <section class="card">
-    <h3>⚙️ 设置</h3>
+    <h3><i data-ic="settings"></i>设置</h3>
     <div class="row col">
       <label class="chk"><input type="checkbox" id="s-autostart"> 开机自动启动 AgileNet</label>
       <label class="chk"><input type="checkbox" id="s-autoproxy" checked> 连接节点后自动启动本地代理</label>
@@ -103,8 +103,8 @@
           <option value="en">English</option>
         </select>
         <select id="s-theme">
-          <option value="dark">🌙 深色</option>
-          <option value="light">☀️ 浅色</option>
+          <option value="light">浅色</option>
+          <option value="dark">深色</option>
         </select>
       </div>
       <div class="hint" data-i18n="hint-tray">关闭主窗口将最小化到系统托盘，右键托盘图标可退出</div>
@@ -113,6 +113,7 @@
 </main>
 
 <div id="toasts"></div>
+<script src="icons.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

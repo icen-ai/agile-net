@@ -4,7 +4,7 @@
 
 ---
 
-## 📌 项目概览 (Project Overview)
+## 项目概览 (Project Overview)
 
 **AgileNet** 是一个高安全、轻量级、Token 优化的 Rust 多节点网络穿透与代理链路由系统。
 
@@ -20,7 +20,7 @@
 
 ---
 
-## ⚙️ Agent 核心行为准则 (Core Rules)
+## Agent 核心行为准则 (Core Rules)
 
 1. **禁用子 Agent**：严禁直接或间接调用子 Agent 工具（如 `Agent` / `spawn_agent`），所有任务须在当前 Session 中独立高效完成。
 2. **任务结束总结**：每次 Turn 或任务结束时，必须使用**中文**进行清晰、结构化的总结汇报。
@@ -29,7 +29,7 @@
 
 ---
 
-## 🏛️ 架构与编码约定 (Architecture & Coding Idioms)
+## 架构与编码约定 (Architecture & Coding Idioms)
 
 1. **Rustls 加密提供者**：
    - 使用 `rustls = "0.23"` 且启用了 `ring` feature。
@@ -48,12 +48,14 @@
    - 数据面 token 比较必须常数时间（`constant_time_eq`）；认证失败按 IP 限流（20 次/分钟）并随机延迟惩罚。
    - 敏感操作（登录/增删改/启停/重置/吊销）须调用 `record_audit_log` 记录系统审计日志（含 detail 与来源 IP），严禁记录任何密码/Token 明文。
 4. **前端 SPA 与嵌入式 UI**：
-   - `crates/node/src/ui/mod.rs` 嵌入单页 Web Dashboard。
-   - 原生 JavaScript 交互使用 `async function fnFetch(...)` 确保包含 Bearer Token 并在 401 时跳转登录。
+   - `crates/node/src/ui/mod.rs` 嵌入单页 Web Dashboard；`apps/desktop/ui/` 为桌面/Android 共用前端（无 Node 构建链）。
+   - 原生 JavaScript 交互统一经 `api(...)` 封装：自动附带 Bearer Token，401 时用 refresh_token 续期，失败回登录页。
+   - 图标统一使用内置 Lucide 内联 SVG（Web 端 `ic()` / 桌面端 `AgIcon()`，仅收录用到的图标，无构建链下等价 tree-shaking），严禁以文字表情符号充当图标；文档中同样不得出现文字表情。
+   - 视觉设计 token 对齐 Cindy 桌面端（浅色为默认主题），详见 `docs/architecture/ui-design.md`。
 
 ---
 
-## 🧪 常用开发命令 (Common Commands)
+## 常用开发命令 (Common Commands)
 
 所有命令均要求前缀 `rtk`：
 
