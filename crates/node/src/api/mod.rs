@@ -315,6 +315,7 @@ pub fn create_app(state: ApiState) -> Router {
         .route("/api/v1/admin/node/stats", get(handlers::node::stats))
         .route("/api/v1/admin/node/logs", get(handlers::node::logs))
         .route("/api/v1/admin/node/settings", put(handlers::node::update_settings))
+        .route("/api/v1/admin/node/kick", post(handlers::node::kick_peer))
         .route(
             "/api/v1/admin/node/relay-tokens",
             get(handlers::relay_tokens::list_tokens).post(handlers::relay_tokens::create_token),

@@ -1,5 +1,10 @@
 # AgileNet 里程碑计划总览
 
+> **状态说明（当前）**：M1–M8 已全部落地并超额完成——实现以 docs/api、docs/database、
+> docs/architecture 为最终规格；验收以 91 项 Rust 测试 + 10 项 Docker 四级链路断言为准
+> （`cargo test --workspace`、`.docker/docker-compose.test.yaml` 全绿）。
+> 下列文档为历史计划，规格细节以 architecture/api/database 文档为准。
+
 ## 原则
 
 - 每个里程碑有**可观测、可验收**的产出

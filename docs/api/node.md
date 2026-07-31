@@ -242,6 +242,31 @@ Token 全文仅创建时返回，列出时只显示前缀。
 
 ---
 
+## POST `/api/v1/admin/node/kick`
+
+强制断开指定下游节点会话（kick）。被踢节点将按其退避策略自动重连；
+如需永久封禁，请先吊销其 relay token 再 kick。
+
+### 请求
+
+```json
+{ "node_id": "node-b" }
+```
+
+### 响应 200
+
+```json
+{ "code": 0, "data": { "kicked": true } }
+```
+
+### 错误
+
+| code | 场景 |
+|------|------|
+| 40400 | 该节点当前不在线 |
+
+---
+
 ## WebSocket `/api/v1/admin/node/events`
 
 实时事件流。

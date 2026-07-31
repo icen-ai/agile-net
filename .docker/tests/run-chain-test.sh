@@ -127,6 +127,41 @@ else
   ok "T3 ACL 正确拒绝规则外目标"
 fi
 
+# ---------- T6: 断链自愈（kick mid → 链路中断 → 自动重连恢复） ----------
+log "T6: 断链自愈 — kick node-mid 后链路中断再自动恢复"
+# 6a. 先确认链路可用
+if curl -sf --max-time 15 --socks5-hostname 127.0.0.1:7890 http://10.140.0.100/ | grep -q "Welcome to nginx"; then
+  ok "T6a kick 前链路可用"
+else
+  bad "T6a kick 前链路已不可用（前置失败）"
+fi
+# 6b. root 踢掉 node-mid → 链路必须中断
+curl -sf -X POST "$ROOT_API/api/v1/admin/node/kick" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"node_id":"node-mid"}' > /dev/null || bad "T6 kick 接口调用失败"
+sleep 3
+if curl -sf --max-time 8 --socks5-hostname 127.0.0.1:7890 http://10.140.0.100/ > /dev/null 2>&1; then
+  bad "T6b kick 后链路仍然可用（断开未生效）"
+else
+  ok "T6b kick 后链路按预期中断"
+fi
+# 6c. node-mid 自动重连（指数退避 ≤ ~8s）后链路必须恢复
+RECOVERED=0
+i=0
+while [ $i -lt 10 ]; do
+  sleep 3
+  if curl -sf --max-time 8 --socks5-hostname 127.0.0.1:7890 http://10.140.0.100/ | grep -q "Welcome to nginx"; then
+    RECOVERED=1
+    break
+  fi
+  i=$((i+1))
+done
+if [ "$RECOVERED" = "1" ]; then
+  ok "T6c 链路自动恢复（$(( (i+1)*3 ))s 内重连成功）"
+else
+  bad "T6c 30s 内链路未自愈"
+fi
+
 # ---------- T4: 多节点同时接入 ----------
 log "T4: 客户端同时接入 root 与 mid（合并路由）"
 cat > /tmp/client.toml <<EOF

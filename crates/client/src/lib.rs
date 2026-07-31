@@ -180,6 +180,8 @@ struct ClientInner {
     inbound_shutdown_tx: tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
     openers: Arc<DashMap<String, Arc<dyn ChannelOpener>>>,
     hosts_manager: HostsManager,
+    /// 代理入站统计（代理启动后可用）
+    proxy_stats: Arc<arc_swap::ArcSwapOption<agile_net_core::proxy::inbound::ProxyStats>>,
 }
 
 impl ClientInner {
@@ -257,6 +259,7 @@ impl AgileNetClient {
                 inbound_shutdown_tx: tokio::sync::Mutex::new(None),
                 openers: Arc::new(DashMap::new()),
                 hosts_manager: HostsManager::new(),
+                proxy_stats: Arc::new(arc_swap::ArcSwapOption::from_pointee(None)),
             }),
         }
     }
@@ -354,6 +357,7 @@ impl AgileNetClient {
         }
         tasks.push(spawn_heartbeat(
             self.inner.http_client.clone(),
+            self.inner.proxy_stats.clone(),
             node_id.clone(),
             base_url.clone(),
             access_token.clone(),
@@ -466,6 +470,7 @@ impl AgileNetClient {
         *self.inner.inbound_shutdown_tx.lock().await = Some(tx);
 
         let inbound = Arc::new(inbound);
+        self.inner.proxy_stats.store(Some(inbound.stats()));
         tokio::spawn(async move {
             tokio::select! {
                 _ = inbound.start_on(bound) => {},
@@ -480,6 +485,7 @@ impl AgileNetClient {
         if let Some(tx) = self.inner.inbound_shutdown_tx.lock().await.take() {
             let _ = tx.send(());
         }
+        self.inner.proxy_stats.store(None);
         self.inner.proxy_port.store(Arc::new(0));
     }
 }
@@ -513,6 +519,7 @@ async fn pull_config(
 
 fn spawn_heartbeat(
     http: reqwest::Client,
+    stats_slot: Arc<arc_swap::ArcSwapOption<agile_net_core::proxy::inbound::ProxyStats>>,
     node_id: String,
     base_url: String,
     access_token: String,
@@ -521,13 +528,31 @@ fn spawn_heartbeat(
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut last_tx: u64 = 0;
+        let mut last_rx: u64 = 0;
         loop {
             interval.tick().await;
+
+            // 真实流量统计（增量：自上次上报以来）
+            let (delta_tx, delta_rx, active) = match stats_slot.load().as_ref() {
+                Some(stats) => {
+                    let tx = stats.bytes_up.load(std::sync::atomic::Ordering::Relaxed);
+                    let rx = stats.bytes_down.load(std::sync::atomic::Ordering::Relaxed);
+                    let active = stats.active_connections.load(std::sync::atomic::Ordering::Relaxed);
+                    let d_tx = tx.saturating_sub(last_tx);
+                    let d_rx = rx.saturating_sub(last_rx);
+                    last_tx = tx;
+                    last_rx = rx;
+                    (d_tx as i64, d_rx as i64, active as i64)
+                }
+                None => (0, 0, 0),
+            };
+
             let body = serde_json::json!({
                 "uptime": started.elapsed().as_secs(),
-                "bytes_tx": 0,
-                "bytes_rx": 0,
-                "active_connections": 0,
+                "bytes_tx": delta_tx,
+                "bytes_rx": delta_rx,
+                "active_connections": active,
             });
             let resp = http
                 .post(format!("{base_url}/api/v1/client/heartbeat"))

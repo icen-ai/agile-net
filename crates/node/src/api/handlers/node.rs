@@ -224,6 +224,44 @@ pub async fn update_settings(
     }))
 }
 
+#[derive(Deserialize)]
+pub struct KickRequest {
+    pub node_id: String,
+}
+
+/// 强制断开指定下游节点（被踢节点的重连由其对端退避策略控制）。
+pub async fn kick_peer(
+    AdminAuth(claims): AdminAuth,
+    State(state): State<ApiState>,
+    ClientIp(ip): ClientIp,
+    Json(req): Json<KickRequest>,
+) -> Response {
+    let Some(listener) = &state.runtime.listener else {
+        return err(
+            StatusCode::BAD_REQUEST,
+            codes::BAD_REQUEST,
+            "relay listener not enabled",
+        );
+    };
+    if listener.disconnect_peer(&req.node_id) {
+        audit(
+            &state,
+            &claims,
+            &ip,
+            "node.kick_peer",
+            Some(&req.node_id),
+            "",
+        );
+        ok(json!({ "kicked": true }))
+    } else {
+        err(
+            StatusCode::NOT_FOUND,
+            codes::NOT_FOUND,
+            format!("peer {} not connected", req.node_id),
+        )
+    }
+}
+
 /// WebSocket 实时事件流（节点/客户端上下线 + 30s 统计快照）。
 ///
 /// 浏览器 WebSocket 无法设置请求头，故支持 `?token=<access_token>` 查询参数认证。

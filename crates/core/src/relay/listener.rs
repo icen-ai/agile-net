@@ -203,6 +203,21 @@ impl RelayListener {
         self.peers.iter().map(|p| p.key().clone()).collect()
     }
 
+    /// 强制断开指定下游节点（管理面 kick / 吊销令牌后立即生效）。
+    /// 返回是否存在该节点会话。
+    pub fn disconnect_peer(&self, node_id: &str) -> bool {
+        if let Some((_, peer)) = self.peers.remove(node_id) {
+            peer.mux.shutdown();
+            self.set_peer_routes(node_id, Vec::new());
+            let _ = self.events.send(PeerEvent::NodeDisconnected {
+                node_id: node_id.to_string(),
+            });
+            true
+        } else {
+            false
+        }
+    }
+
     /// 在线客户端账号数。
     pub fn online_client_count(&self) -> usize {
         self.clients.len()

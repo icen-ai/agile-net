@@ -178,6 +178,8 @@ pub struct MuxSession {
     next_channel_id: AtomicU32,
     /// 最后一次收到任何帧的时间（epoch 毫秒），用于心跳超时检测
     last_activity: Arc<AtomicU64>,
+    /// 读任务中止句柄（shutdown 用）
+    reader_abort: tokio::task::AbortHandle,
 }
 
 impl MuxSession {
@@ -193,8 +195,9 @@ impl MuxSession {
         let (mut reader, mut writer) = tokio::io::split(stream);
         let (tx_frames, mut rx_frames) = mpsc::channel::<Frame>(1024);
 
-        let channels = Arc::new(DashMap::new());
-        let open_waiters = Arc::new(DashMap::new());
+        let channels: Arc<DashMap<u32, mpsc::Sender<Bytes>>> = Arc::new(DashMap::new());
+        let open_waiters: Arc<DashMap<u32, oneshot::Sender<Result<()>>>> = Arc::new(DashMap::new());
+        let last_activity = Arc::new(AtomicU64::new(now_millis()));
 
         // 启动后台写任务
         tokio::spawn(async move {
@@ -205,33 +208,28 @@ impl MuxSession {
             }
         });
 
-        let session = Arc::new(Self {
-            tx_frames,
-            channels: channels.clone(),
-            open_waiters: open_waiters.clone(),
-            next_channel_id: AtomicU32::new(starting_id),
-            last_activity: Arc::new(AtomicU64::new(now_millis())),
-        });
+        // 启动后台读任务（先拿中止句柄，再组装 session）
+        let channels_task = channels.clone();
+        let open_waiters_task = open_waiters.clone();
+        let last_activity_task = last_activity.clone();
+        let tx_frames_task = tx_frames.clone();
 
-        let session_clone = session.clone();
-        let last_activity = session.last_activity.clone();
-        // 启动后台读任务
         let reader_handle = tokio::spawn(async move {
             while let Ok(frame) = Frame::read_from(&mut reader).await {
-                last_activity.store(now_millis(), Ordering::Relaxed);
+                last_activity_task.store(now_millis(), Ordering::Relaxed);
                 match frame.frame_type {
                     FrameType::Data | FrameType::DataFin => {
-                        if let Some(tx) = channels.get(&frame.channel_id) {
+                        if let Some(tx) = channels_task.get(&frame.channel_id) {
                             let _ = tx.send(frame.payload).await;
                         }
                     }
                     FrameType::OpenOk => {
-                        if let Some((_, waiter)) = open_waiters.remove(&frame.channel_id) {
+                        if let Some((_, waiter)) = open_waiters_task.remove(&frame.channel_id) {
                             let _ = waiter.send(Ok(()));
                         }
                     }
                     FrameType::OpenFail => {
-                        if let Some((_, waiter)) = open_waiters.remove(&frame.channel_id) {
+                        if let Some((_, waiter)) = open_waiters_task.remove(&frame.channel_id) {
                             let _ = waiter.send(Err(Error::Protocol("open channel failed".into())));
                         }
                     }
@@ -246,19 +244,34 @@ impl MuxSession {
                         }
                     }
                     FrameType::Ping => {
-                        let _ = session_clone
-                            .send_frame(Frame::empty(FrameType::Pong, 0))
-                            .await;
+                        let _ = tx_frames_task.send(Frame::empty(FrameType::Pong, 0)).await;
                     }
                     FrameType::Close => {
-                        channels.remove(&frame.channel_id);
+                        channels_task.remove(&frame.channel_id);
                     }
                     _ => {}
                 }
             }
         });
+        let reader_abort = reader_handle.abort_handle();
+
+        let session = Arc::new(Self {
+            tx_frames,
+            channels,
+            open_waiters,
+            next_channel_id: AtomicU32::new(starting_id),
+            last_activity,
+            reader_abort,
+        });
 
         (session, reader_handle)
+    }
+
+    /// 强制关闭会话（管理面 kick）：中止读任务并清空全部通道。
+    pub fn shutdown(&self) {
+        self.reader_abort.abort();
+        self.channels.clear();
+        self.open_waiters.clear();
     }
 
     /// 发送帧
