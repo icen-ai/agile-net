@@ -10,7 +10,7 @@
 //! - 并发连接数上限（防连接洪泛）
 
 use crate::error::{Error, Result};
-use crate::proxy::outbound::{DirectOutbound, TunnelOutbound};
+use crate::proxy::outbound::{DirectOutbound, Socks5ForwardOutbound, TunnelOutbound};
 use crate::proxy::router::{Outbound, ProxyRouter};
 use crate::relay::listener::RelayListener;
 use crate::tunnel::opener::ChannelOpener;
@@ -404,6 +404,21 @@ async fn handle_socks5(
                 ))
             }
         }
+        Outbound::Forward { addr } => {
+            stream
+                .write_all(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+                .await?;
+            match Socks5ForwardOutbound::proxy_stream(addr, &target_host, target_port, stream)
+                .await
+            {
+                Ok((up, down)) => {
+                    ctx.stats.bytes_up.fetch_add(up, Ordering::Relaxed);
+                    ctx.stats.bytes_down.fetch_add(down, Ordering::Relaxed);
+                    Ok(())
+                }
+                Err(e) => Err(e),
+            }
+        }
     }
 }
 
@@ -581,6 +596,32 @@ async fn handle_http(
                 Err(Error::Other(
                     "no channel opener configured for tunnel routing".into(),
                 ))
+            }
+        }
+        Outbound::Forward { addr } => {
+            match Socks5ForwardOutbound::connect(addr, &target_host, target_port).await {
+                Ok(mut upstream) => {
+                    if method == "CONNECT" {
+                        stream
+                            .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                            .await?;
+                        if req_buf.len() > header_end {
+                            upstream.write_all(&req_buf[header_end..]).await?;
+                        }
+                    } else {
+                        // 普通 HTTP 请求转发时必须带上原始请求
+                        upstream.write_all(&req_buf).await?;
+                    }
+                    let (up, down) =
+                        tokio::io::copy_bidirectional(&mut stream, &mut upstream).await?;
+                    ctx.stats.bytes_up.fetch_add(up, Ordering::Relaxed);
+                    ctx.stats.bytes_down.fetch_add(down, Ordering::Relaxed);
+                    Ok(())
+                }
+                Err(e) => {
+                    let _ = stream.write_all(b"HTTP/1.1 502 Bad Gateway\r\n\r\n").await;
+                    Err(e)
+                }
             }
         }
     }

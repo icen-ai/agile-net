@@ -35,6 +35,7 @@
     <div class="nav-item active" data-view="connect"><i data-ic="link"></i><span class="nav-label">连接</span></div>
     <div class="nav-item" data-view="nodes"><i data-ic="globe"></i><span class="nav-label">节点</span></div>
     <div class="nav-item" data-view="routes"><i data-ic="route"></i><span class="nav-label">路由</span></div>
+    <div class="nav-item" data-view="subscription"><i data-ic="satellite-dish"></i><span class="nav-label">订阅</span></div>
     <div class="nav-item" data-view="settings"><i data-ic="settings"></i><span class="nav-label">设置</span></div>
   </aside>
 
@@ -144,6 +145,33 @@
       </div>
     </section>
 
+    <!-- 订阅：Clash 系订阅导入 + mihomo 内核托管 -->
+    <section class="view" id="view-subscription" hidden>
+      <div class="page-title"><i data-ic="satellite-dish" data-sz="19"></i>订阅</div>
+      <div class="page-desc">导入 Clash 系订阅，无需第三方客户端；内核由应用托管（钉版本 SHA-256 校验）</div>
+
+      <div class="card">
+        <h3><i data-ic="power"></i>订阅内核 <span class="hint inline" id="sub-status-text">未开启</span></h3>
+        <div class="kv"><span class="k">内核版本</span><span class="mono" id="sub-version">-</span></div>
+        <div class="kv"><span class="k">本地出口</span><span class="mono">127.0.0.1:57892（mixed）</span></div>
+        <label class="chk" style="margin-top:8px"><input type="checkbox" id="s-unified" checked> 未命中 AgileNet 规则的流量经订阅出口（统一 57890 单端口）</label>
+      </div>
+
+      <div class="card">
+        <h3><i data-ic="rss"></i>订阅列表
+          <span class="h3-tools"><button class="ghost small icon-btn" id="btn-add-sub" title="添加订阅"><i data-ic="plus" data-sz="14"></i></button></span>
+        </h3>
+        <div id="subs-list"><div class="empty">尚未添加订阅</div></div>
+      </div>
+
+      <div class="card" id="groups-card" style="display:none">
+        <h3><i data-ic="globe"></i>代理节点
+          <span class="h3-tools"><button class="ghost small icon-btn" id="btn-test-all" title="全部测速"><i data-ic="refresh-cw" data-sz="13"></i></button></span>
+        </h3>
+        <div id="groups-list"></div>
+      </div>
+    </section>
+
     <!-- 设置 -->
     <section class="view" id="view-settings" hidden>
       <div class="page-title"><i data-ic="settings" data-sz="19"></i>设置</div>
@@ -185,6 +213,10 @@
             <div class="role-info"><b>Web 远程面</b><span class="hint">把本机管理界面经 HTTP 暴露（默认仅 127.0.0.1，须先设管理密码）</span></div>
             <label class="switch"><input type="checkbox" id="r-web"><span class="slider"></span></label>
           </div>
+          <div class="role-row">
+            <div class="role-info"><b>订阅代理角色</b><span class="hint">mihomo 内核托管（钉版本校验），在「订阅」页管理订阅与节点选择</span></div>
+            <label class="switch"><input type="checkbox" id="r-sub"><span class="slider"></span></label>
+          </div>
           <div id="web-panel" style="display:none">
             <div class="kv"><span class="k">监听地址</span><span><input id="web-listen" class="mono" style="width:170px"> <button id="btn-web-listen-save" class="ghost small">保存</button></span></div>
             <div class="hint" id="web-status"></div>
@@ -198,6 +230,11 @@
           <label class="chk"><input type="checkbox" id="s-autostart"> 开机自动启动 AgileNet</label>
           <label class="chk"><input type="checkbox" id="s-autoproxy" checked> 连接节点后自动启动本地代理</label>
           <label class="chk"><input type="checkbox" id="s-autoreconnect" checked> 启动应用时自动重连已保存节点</label>
+          <label class="chk"><input type="checkbox" id="s-sysproxy"> 托管系统代理（指向本地代理端口，被外部抢占时提醒）</label>
+          <div class="net-banner" id="sysproxy-banner" style="display:none;width:100%">
+            <i data-ic="triangle-alert" data-sz="14"></i><span id="sysproxy-banner-text">系统代理已被外部修改</span>
+            <button class="ghost small" id="btn-sysproxy-reclaim" style="margin-left:auto">收回</button>
+          </div>
           <div class="lang-theme">
             <select id="s-lang">
               <option value="zh">中文</option>
@@ -257,6 +294,22 @@
   </div>
 </div>
 
+<!-- 添加订阅弹窗 -->
+<div class="modal-mask" id="sub-modal" style="display:none">
+  <div class="modal">
+    <h3><i data-ic="rss" data-sz="16"></i> 添加订阅</h3>
+    <div class="hint" style="margin:6px 0 12px">粘贴 Clash 系订阅地址（URL 将视为凭据本地加密级保护，不会出现在日志中）</div>
+    <div class="row col" style="gap:10px">
+      <div><label>备注名（可选）</label><input id="sub-name" placeholder="我的机场"></div>
+      <div><label>订阅地址</label><input id="sub-url" class="mono" placeholder="https://…"></div>
+    </div>
+    <div class="row" style="justify-content:flex-end;margin-top:14px">
+      <button id="sub-cancel" class="ghost">取消</button>
+      <button id="sub-ok">添加</button>
+    </div>
+  </div>
+</div>
+
 <!-- 卸载确认弹窗（多选清理项，确认后调系统卸载程序并退出） -->
 <div class="modal-mask" id="uninstall-modal" style="display:none">
   <div class="modal">
@@ -264,7 +317,7 @@
     <div class="hint" style="margin:6px 0 12px">应用退出后由系统卸载程序完成移除。请选择要一并清理的本地数据：</div>
     <div class="row col" style="gap:10px">
       <label class="chk"><input type="checkbox" id="un-creds" checked> 已保存的节点与凭据</label>
-      <label class="chk"><input type="checkbox" id="un-server" checked> 服务端节点数据（数据库与证书）</label>
+      <label class="chk"><input type="checkbox" id="un-server" checked> 服务端节点数据与订阅内核（数据库、证书、mihomo）</label>
       <label class="chk"><input type="checkbox" id="un-prefs" checked> 配置与偏好（角色设置、Web 密码、主题语言）</label>
       <label class="chk"><input type="checkbox" id="un-audit"> 审计日志</label>
     </div>

@@ -14,6 +14,8 @@ pub enum Outbound {
     Direct,
     /// 通过隧道转发到指定节点
     Tunnel { node_id: String },
+    /// 转发到本地回环上游代理（mihomo sidecar mixed 入站，SOCKS5 二次握手）
+    Forward { addr: SocketAddr },
 }
 
 impl Outbound {
@@ -21,6 +23,10 @@ impl Outbound {
         Self::Tunnel {
             node_id: node_id.into(),
         }
+    }
+
+    pub fn forward(addr: SocketAddr) -> Self {
+        Self::Forward { addr }
     }
 }
 

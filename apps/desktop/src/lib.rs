@@ -11,6 +11,8 @@ use std::sync::Arc;
 use tauri::{Manager, State};
 
 mod roles;
+mod subscription;
+mod sysproxy;
 use roles::RoleSettings;
 
 /// 前端传入的连接参数（与 Web REST 共用 agile-net-client::ParsedConnect）
@@ -30,6 +32,8 @@ pub struct AppState {
     server: Arc<tokio::sync::Mutex<Option<NodeServer>>>,
     /// 控制台 loopback 转发器：node_id → 本地环回端口
     consoles: Arc<tokio::sync::Mutex<std::collections::HashMap<String, u16>>>,
+    /// 订阅内核（mihomo sidecar）
+    kernel: Arc<subscription::KernelManager>,
 }
 
 impl AppState {
@@ -41,6 +45,7 @@ impl AppState {
             roles: Arc::new(tokio::sync::Mutex::new(RoleSettings::load())),
             server: Arc::new(tokio::sync::Mutex::new(None)),
             consoles: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
+            kernel: Arc::new(subscription::KernelManager::default()),
         }
     }
 }
@@ -175,6 +180,11 @@ async fn start_proxy(app: tauri::AppHandle, state: State<'_, AppState>, port: u1
     }
     state.client.start_proxy(port).await.map_err(map_err)?;
     refresh_tray_icon(&app);
+    // 系统代理托管中：端口可能变化，重写期望值
+    if state.roles.lock().await.system_proxy {
+        let server = expected_sysproxy(&state);
+        let _ = tokio::task::spawn_blocking(move || sysproxy::reclaim(&server)).await;
+    }
     Ok(state.client.proxy_port())
 }
 
@@ -669,6 +679,171 @@ async fn restore_web_role(app: &tauri::AppHandle) {
     }
 }
 
+// ==================== 订阅代理（mihomo sidecar） ====================
+
+/// 应用回落上游：订阅角色开 + 统一出口开 + 内核运行 → 未命中规则的流量回落到内核 mixed。
+async fn apply_proxy_fallback(state: &State<'_, AppState>) {
+    let (sub, unified) = {
+        let r = state.roles.lock().await;
+        (r.subscription, r.subscription_unified)
+    };
+    let running = state.kernel.running().await;
+    let addr = if sub && unified && running {
+        Some(std::net::SocketAddr::from((
+            [127, 0, 0, 1],
+            subscription::MIHOMO_MIXED_PORT,
+        )))
+    } else {
+        None
+    };
+    state.client.set_proxy_fallback(addr);
+}
+
+#[tauri::command]
+async fn list_subscriptions() -> Result<Vec<subscription::Subscription>, String> {
+    Ok(subscription::list_subscriptions())
+}
+
+/// 添加订阅；角色开启中即重启内核纳入新订阅。
+#[tauri::command]
+async fn add_subscription(
+    state: State<'_, AppState>,
+    name: String,
+    url: String,
+) -> Result<subscription::Subscription, String> {
+    let sub = subscription::add_subscription(&name, &url)?;
+    if state.roles.lock().await.subscription {
+        state.kernel.stop().await;
+        if let Err(e) = state.kernel.start().await {
+            return Err(format!("订阅已保存，但内核重启失败: {e}"));
+        }
+        apply_proxy_fallback(&state).await;
+    }
+    Ok(sub)
+}
+
+/// 删除订阅；角色开启中即重启内核（清空则停机）。
+#[tauri::command]
+async fn remove_subscription(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    subscription::remove_subscription(&id)?;
+    if state.roles.lock().await.subscription {
+        state.kernel.stop().await;
+        if !subscription::list_subscriptions().is_empty() {
+            state.kernel.start().await?;
+        }
+        apply_proxy_fallback(&state).await;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn update_subscription(id: String) -> Result<subscription::Subscription, String> {
+    subscription::update_subscription(&id).await
+}
+
+#[tauri::command]
+async fn subscription_status(state: State<'_, AppState>) -> Result<subscription::KernelStatus, String> {
+    Ok(state.kernel.status().await)
+}
+
+#[tauri::command]
+async fn proxy_groups() -> Result<serde_json::Value, String> {
+    subscription::kernel_api().await?.proxies().await
+}
+
+#[tauri::command]
+async fn select_proxy(group: String, name: String) -> Result<(), String> {
+    subscription::kernel_api().await?.select(&group, &name).await
+}
+
+#[tauri::command]
+async fn test_delay(name: String) -> Result<u32, String> {
+    subscription::kernel_api().await?.delay(&name).await
+}
+
+/// 开关D：订阅代理角色。开启即下载/启动内核（崩溃自动退避重启），关闭即停机。
+#[tauri::command]
+async fn set_subscription_role(
+    state: State<'_, AppState>,
+    enabled: bool,
+) -> Result<subscription::KernelStatus, String> {
+    if enabled {
+        state.kernel.start().await?;
+    } else {
+        state.kernel.stop().await;
+    }
+    {
+        let mut roles = state.roles.lock().await;
+        roles.subscription = enabled;
+        roles.save()?;
+    }
+    roles::audit(
+        "gui.role_toggle",
+        serde_json::json!({"role": "subscription", "on": enabled}),
+    );
+    apply_proxy_fallback(&state).await;
+    Ok(state.kernel.status().await)
+}
+
+/// 订阅流量是否经统一出口（ProxyRouter 回落）。
+#[tauri::command]
+async fn set_subscription_unified(state: State<'_, AppState>, enabled: bool) -> Result<(), String> {
+    {
+        let mut roles = state.roles.lock().await;
+        roles.subscription_unified = enabled;
+        roles.save()?;
+    }
+    apply_proxy_fallback(&state).await;
+    Ok(())
+}
+
+// ==================== 系统代理托管 ====================
+
+/// 期望的系统代理值（本地代理端口）。
+fn expected_sysproxy(state: &State<'_, AppState>) -> String {
+    format!("127.0.0.1:{}", state.client.proxy_port())
+}
+
+#[tauri::command]
+async fn set_system_proxy(state: State<'_, AppState>, enabled: bool) -> Result<(), String> {
+    if enabled {
+        if state.client.proxy_port() == 0 {
+            return Err("请先启动本地代理".into());
+        }
+        let server = expected_sysproxy(&state);
+        tokio::task::spawn_blocking(move || sysproxy::engage(&server))
+            .await
+            .map_err(map_err)??;
+    } else {
+        tokio::task::spawn_blocking(sysproxy::disengage)
+            .await
+            .map_err(map_err)??;
+    }
+    {
+        let mut roles = state.roles.lock().await;
+        roles.system_proxy = enabled;
+        roles.save()?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn sysproxy_status(state: State<'_, AppState>) -> Result<sysproxy::SysProxyStatus, String> {
+    let managed = state.roles.lock().await.system_proxy;
+    let expected = expected_sysproxy(&state);
+    tokio::task::spawn_blocking(move || sysproxy::inspect(managed, &expected))
+        .await
+        .map_err(map_err)?
+}
+
+#[tauri::command]
+async fn reclaim_sysproxy(state: State<'_, AppState>) -> Result<(), String> {
+    let server = expected_sysproxy(&state);
+    tokio::task::spawn_blocking(move || sysproxy::reclaim(&server))
+        .await
+        .map_err(map_err)?
+}
+
 // ==================== 卸载 ====================
 
 /// 卸载清理选项（勾选哪些本地数据随卸载一并删除）
@@ -701,15 +876,21 @@ async fn uninstall_app(
         }),
     );
 
-    // 停掉内嵌节点 / Web 远程面 / 全部隧道（释放 SQLite 与端口占用）
+    // 停掉内嵌节点 / Web 远程面 / 订阅内核 / 全部隧道（释放 SQLite 与端口占用）
     if let Some(s) = state.server.lock().await.take() {
         s.stop().await;
     }
     if let Some(h) = state.web_api.lock().await.take() {
         h.stop().await;
     }
+    state.kernel.stop().await;
     state.client.disconnect_all().await;
     state.client.stop_proxy().await;
+
+    // 系统代理托管中：卸载前还原系统代理
+    if state.roles.lock().await.system_proxy {
+        let _ = tokio::task::spawn_blocking(sysproxy::disengage).await;
+    }
 
     // 卸载必做：移除开机自启
     {
@@ -720,6 +901,7 @@ async fn uninstall_app(
     let dir = roles::data_dir();
     if options.credentials {
         let _ = std::fs::remove_file(dir.join("credentials.json"));
+        let _ = std::fs::remove_file(dir.join("subscriptions.json"));
     }
     if options.prefs {
         let _ = std::fs::remove_file(dir.join("gui-settings.json"));
@@ -730,6 +912,7 @@ async fn uninstall_app(
     }
     if options.server_data {
         let _ = std::fs::remove_dir_all(roles::embedded_dir());
+        let _ = std::fs::remove_dir_all(subscription::kernel_dir());
     }
 
     launch_system_uninstaller()?;
@@ -797,6 +980,51 @@ fn refresh_tray_icon(app: &tauri::AppHandle) {
     };
     let proxy_on = app.state::<AppState>().client.proxy_port() > 0;
     let _ = tray.set_icon(Some(tray_icon(app, proxy_on)));
+}
+
+/// 启动时恢复订阅内核（上次退出时订阅角色处于开启状态）。
+async fn restore_subscription_role(app: &tauri::AppHandle) {
+    let state = app.state::<AppState>();
+    if !state.roles.lock().await.subscription {
+        return;
+    }
+    if subscription::list_subscriptions().is_empty() {
+        tracing::warn!("subscription role was enabled but no subscription exists — keeping kernel stopped");
+        return;
+    }
+    match state.kernel.start().await {
+        Ok(()) => {
+            tracing::info!("subscription kernel restored");
+            apply_proxy_fallback(&state).await;
+        }
+        Err(e) => tracing::error!(error = %e, "failed to restore subscription kernel"),
+    }
+}
+
+/// 系统代理冲突巡检（30s）：托管中系统值 ≠ 期望值即记审计（每轮冲突只记一次，恢复后可再记）。
+async fn sysproxy_watch(app: tauri::AppHandle) {
+    let mut in_conflict = false;
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        let state = app.state::<AppState>();
+        let managed = state.roles.lock().await.system_proxy;
+        if !managed {
+            in_conflict = false;
+            continue;
+        }
+        let expected = expected_sysproxy(&state);
+        if let Ok(Ok(st)) =
+            tokio::task::spawn_blocking(move || sysproxy::inspect(true, &expected)).await
+        {
+            if st.conflict && !in_conflict {
+                roles::audit(
+                    "gui.sysproxy_conflict",
+                    serde_json::json!({"expected": st.expected, "current": st.current}),
+                );
+            }
+            in_conflict = st.conflict;
+        }
+    }
 }
 
 /// 构建系统托盘（显示窗口 / 代理开关 / 退出）
@@ -906,15 +1134,33 @@ pub fn run() {
             open_upstream_console,
             set_server_connector,
             uninstall_app,
+            list_subscriptions,
+            add_subscription,
+            remove_subscription,
+            update_subscription,
+            subscription_status,
+            proxy_groups,
+            select_proxy,
+            test_delay,
+            set_subscription_role,
+            set_subscription_unified,
+            set_system_proxy,
+            sysproxy_status,
+            reclaim_sysproxy,
         ])
         .setup(|app| {
             setup_tray(app)?;
 
-            // 恢复上次开启的服务端角色（内嵌节点）
+            // 恢复上次开启的服务端角色（内嵌节点）与订阅内核；启动系统代理巡检
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 restore_server_role(&handle).await;
                 restore_web_role(&handle).await;
+                restore_subscription_role(&handle).await;
+            });
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                sysproxy_watch(handle).await;
             });
 
             // 关闭窗口时最小化到托盘（不退出进程）；系统主题变化时刷新托盘图标黑白

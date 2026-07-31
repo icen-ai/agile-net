@@ -8,7 +8,27 @@
 
 ## 0. 实施进度
 
-（未开始）
+- **P1 + P2（已完成，2026-07-31）**：
+  - `apps/desktop/src/subscription.rs`：内核管理器——v1.19.29 钉版本下载
+    （官方 Release + 镜像回退，SHA-256 内置校验/篡改拒绝落盘并审计；win x64 + macOS arm64/x64）、
+    supervisor 任务独占子进程 + mpsc 停止信号（**槽位作存活标记由 supervisor 收尾清除，
+    stop 用 clone 发送端——take 会让等待循环秒退、运行时直接停机产生孤儿进程**）、
+    启动就绪检查（控制面 10s 未就绪即回收并报端口占用）、崩溃指数退避重启（上限 5 次审计放弃）、
+    config.yaml 全量生成（proxy-providers 零解析）、external-controller REST 客户端（loopback:59292 + secret 持久化）。
+  - `crates/core`：`Outbound::Forward` + `Socks5ForwardOutbound`（入站已解析目标，
+    作 SOCKS5 客户端二次握手转交上游；SOCKS5/HTTP 两种入站全覆盖，含 mock 服务端单测）。
+  - `crates/client`：`set_proxy_fallback`——回落地址写入合并路由默认出站
+    （命中规则走隧道，未命中回落 127.0.0.1:57892；关闭回落即直连）。
+  - `apps/desktop/src/sysproxy.rs`：系统代理托管（Windows 注册表 + InternetSetOption 即时生效 /
+    macOS networksetup 逐服务），开启前快照、关闭还原；30s 巡检冲突审计；
+    设置页横幅 + 一键收回；代理端口变更自动重写期望值。
+  - GUI：侧栏「订阅」页（内核状态/订阅卡片/代理组测速切换）、角色开关 D、
+    统一出口开关、系统代理托管开关；卸载清理项覆盖 subscriptions.json 与内核目录；
+    订阅命令不进 Web 远程面（本机专属）。
+  - 测试：配置生成/转义/URL 脱敏单测、SOCKS5 转发握手与失败应答单测、
+    内核 E2E（下载→启动→REST 握手→停止，`--ignored` 手动运行）。
+
+（实际端口落地为 mixed `57892`（57891 开发机已占用，文档各处同步））
 
 ## 1. 技术选型：mihomo sidecar，不 Rust 重写
 
@@ -33,14 +53,14 @@
 │                                 │ 生成 config.yaml / 启停 / 巡检  │
 │                                 ▼                                 │
 │   ProxyRouter ◀── 回落上游 ── mihomo 进程 (sidecar)               │
-│   57890 本地代理                  ├─ mixed 入站  127.0.0.1:57891  │
+│   57890 本地代理                  ├─ mixed 入站  127.0.0.1:57892  │
 │   AgileNet 规则→隧道              └─ REST 控制  127.0.0.1:59292   │
 │   其余流量→mihomo                       (external-controller)     │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
 - **端口规范**（对齐 AGENTS.md 5 万段、规避 Clash 系常用端口）：
-  mihomo mixed 入站 `127.0.0.1:57891`（避让 7890/7897），
+  mihomo mixed 入站 `127.0.0.1:57892`（避让 7890/7897），
   external-controller `127.0.0.1:59292`（避让 9090），均仅 loopback。
 - **数据布局**（全部在 `~/.agile-net/` 下，卸载清理项同步覆盖）：
   - `mihomo/mihomo[.exe]`：内核二进制（钉版本）
@@ -59,7 +79,7 @@
   启动 / 停止 / 崩溃退避重启（指数退避，上限 5 次后记审计并灵动岛告警）、版本查询。
 - 首次启用时惰性下载；下载进度经灵动岛通知反馈（不新增 UI 体系）。
 - 配置生成器：订阅清单 → `config.yaml`
-  （proxy-providers 逐订阅一项、`mixed-port: 57891`、`external-controller: 127.0.0.1:59292`、
+  （proxy-providers 逐订阅一项、`mixed-port: 57892`、`external-controller: 127.0.0.1:59292`、
   `secret` 首启随机生成并持久化于 `subscriptions.json`、`log-level: warning`、
   默认 GROUP 聚合全部 provider）。
 - 内核 REST 客户端：`GET /proxies` / `GET /proxies/{name}/delay` / `PUT /proxies/{group}`
@@ -82,8 +102,8 @@
 
 ### 3.3 P1 出口形态
 
-mihomo mixed `127.0.0.1:57891` 独立可用（用户可手动指应用过去）；
-设置页明示「AgileNet 代理 57890 / 订阅代理 57891」两个入口。**此阶段不动 ProxyRouter。**
+mihomo mixed `127.0.0.1:57892` 独立可用（用户可手动指应用过去）；
+设置页明示「AgileNet 代理 57890 / 订阅代理 57892」两个入口。**此阶段不动 ProxyRouter。**
 
 ### 3.4 P1 测试
 
@@ -97,10 +117,10 @@ mihomo mixed `127.0.0.1:57891` 独立可用（用户可手动指应用过去）�
 
 ### 4.1 ProxyRouter 回落上游
 
-- `crates/core` `ProxyRouter` 增加可选回落上游（`127.0.0.1:57891`）：
+- `crates/core` `ProxyRouter` 增加可选回落上游（`127.0.0.1:57892`）：
   AgileNet 规则命中的走隧道；未命中的转发至 mihomo；订阅角色关闭时回落 = 直连（现状不变）。
 - 客户端引擎装配处注入回落地址；GUI 侧提供「订阅流量经统一出口」开关（默认开）。
-- 防环：mihomo 配置 `rules` 首条 `IP-CIDR,127.0.0.0/8,DIRECT` 且回落只认 57891 入站；
+- 防环：mihomo 配置 `rules` 首条 `IP-CIDR,127.0.0.0/8,DIRECT` 且回落只认 57892 入站；
   mihomo 自身出站不得再指回 57890（配置生成器静态保证 + 启动断言）。
 
 ### 4.2 系统代理托管（诊断核心）
@@ -132,6 +152,6 @@ mihomo mixed `127.0.0.1:57891` 独立可用（用户可手动指应用过去）�
 ## 6. 分期验收
 
 - **P1 完成**：添加订阅 → 内核自动下载启动 → 订阅页可见节点组与延迟 →
-  切换节点生效 → curl 经 57891 出口 IP 变化；崩溃内核自动拉起并告警。
+  切换节点生效 → curl 经 57892 出口 IP 变化；崩溃内核自动拉起并告警。
 - **P2 完成**：57890 单端口同时承载 AgileNet 隧道流量与订阅流量（规则命中分流正确）；
   系统代理托管开启后被第三方篡改 → 30s 内灵动岛告警并可一键收回，事件落审计。

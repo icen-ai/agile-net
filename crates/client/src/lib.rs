@@ -426,6 +426,8 @@ struct ClientInner {
     cache: Arc<ConfigCache>,
     /// 用户暂停的规则（node_id → "type:value" 小写集合），重建合并路由时跳过
     paused_rules: DashMap<String, std::collections::HashSet<String>>,
+    /// 代理回落上游（订阅内核 mixed 入站；None = 未命中规则直连）
+    proxy_fallback: arc_swap::ArcSwapOption<SocketAddr>,
 }
 
 impl ClientInner {
@@ -485,6 +487,10 @@ impl ClientInner {
                 );
             }
         }
+        // 回落上游（订阅内核）：未命中任何规则的流量转发至 loopback 上游代理
+        if let Some(addr) = self.proxy_fallback.load().as_ref() {
+            new_router.set_default(Outbound::forward(**addr));
+        }
         self.shared_router.store(Arc::new(new_router));
         self.apply_hosts();
     }
@@ -541,6 +547,7 @@ impl AgileNetClient {
                         .unwrap_or_else(|_| ConfigCache::with_dir(std::env::temp_dir())),
                 ),
                 paused_rules: DashMap::new(),
+                proxy_fallback: arc_swap::ArcSwapOption::from_pointee(None),
             }),
         }
     }
@@ -552,6 +559,12 @@ impl AgileNetClient {
     /// 合并路由表共享句柄（路由再发布：注入内嵌节点 connector）。
     pub fn shared_router_handle(&self) -> Arc<ArcSwap<ProxyRouter>> {
         self.inner.shared_router.clone()
+    }
+
+    /// 设置代理回落上游（订阅内核 mixed 入站；None 恢复未命中直连）。
+    pub fn set_proxy_fallback(&self, addr: Option<SocketAddr>) {
+        self.inner.proxy_fallback.store(addr.map(Arc::new));
+        self.inner.rebuild_merged_router();
     }
 
     /// 通道开启器注册表共享句柄（路由再发布：注入内嵌节点 connector）。

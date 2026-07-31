@@ -647,6 +647,8 @@ async function initRoles() {
   $('r-client').checked = settings.client;
   $('r-server').checked = settings.server;
   $('r-web').checked = settings.web;
+  $('r-sub').checked = !!settings.subscription;
+  $('s-unified').checked = settings.subscription_unified !== false;
   $('web-listen').value = settings.web_listen;
   applyClientRole(settings.client);
   refreshServerPanel();
@@ -690,6 +692,28 @@ async function initRoles() {
       e.target.checked = false;
       toast(friendlyError(err), 'err');
       refreshServerPanel();
+    }
+  };
+
+  $('r-sub').onchange = async (e) => {
+    const on = e.target.checked;
+    e.target.disabled = true;
+    try {
+      if (on && !SUBS.length) {
+        e.target.checked = false;
+        toast('请先添加订阅', 'err');
+        switchView('subscription');
+        openSubModal();
+        return;
+      }
+      await invoke('set_subscription_role', { enabled: on });
+      toast(on ? '订阅代理已开启（内核运行中）' : '订阅代理已关闭', 'ok');
+      refreshSubStatus();
+    } catch (err) {
+      e.target.checked = !on;
+      toast(friendlyError(err), 'err');
+    } finally {
+      e.target.disabled = false;
     }
   };
 
@@ -772,6 +796,169 @@ async function initRoles() {
   };
 }
 
+/* ================= 订阅代理（mihomo sidecar） ================= */
+let SUBS = [];
+
+/** URL 脱敏（与后端 mask_url 同规则）：scheme://host/…路径前 8 位 */
+function maskUrl(url) {
+  const i = url.indexOf('://');
+  if (i < 0) return '…';
+  const rest = url.slice(i + 3);
+  const j = rest.indexOf('/');
+  if (j < 0) return url;
+  return url.slice(0, i) + '://' + rest.slice(0, j) + '/…' + rest.slice(j + 1, j + 9);
+}
+
+async function refreshSubs() {
+  try { SUBS = await invoke('list_subscriptions'); } catch (e) { SUBS = []; }
+  const list = $('subs-list');
+  if (!SUBS.length) {
+    list.innerHTML = '<div class="empty">尚未添加订阅</div>';
+    return;
+  }
+  list.innerHTML = SUBS.map(s =>
+    '<div class="sub-row"><span class="sub-name">' + esc(s.name) + '</span>' +
+    '<span class="mono dim" title="' + esc(s.url) + '">' + esc(maskUrl(s.url)) + '</span>' +
+    '<span class="hint inline">' + (s.updated_at ? '更新于 ' + new Date(s.updated_at * 1000).toLocaleString() : '未刷新') + '</span>' +
+    '<span class="h3-tools">' +
+    '<button class="ghost small" data-sub-update="' + esc(s.id) + '">刷新</button>' +
+    '<button class="danger small" data-sub-del="' + esc(s.id) + '">删除</button></span></div>'
+  ).join('');
+}
+
+async function refreshSubStatus() {
+  let st;
+  try { st = await invoke('subscription_status'); } catch (e) { return; }
+  $('sub-status-text').textContent = st.running
+    ? '运行中'
+    : (st.installed ? '已安装，未运行' : (st.supported ? '未开启' : '当前平台不支持'));
+  $('sub-version').textContent = st.version || (st.installed ? '已安装' : '-');
+  if (st.running) refreshGroups();
+  else $('groups-card').style.display = 'none';
+}
+
+async function refreshGroups() {
+  const card = $('groups-card');
+  let d;
+  try { d = await invoke('proxy_groups'); } catch (e) { card.style.display = 'none'; return; }
+  const px = (d && d.proxies) || {};
+  const groups = Object.entries(px).filter(([, p]) => p.all && ['Selector', 'URLTest', 'Fallback'].includes(p.type));
+  if (!groups.length) { card.style.display = 'none'; return; }
+  card.style.display = 'block';
+  $('groups-list').innerHTML = groups.map(([gn, g]) =>
+    '<div class="kv"><span class="k">分组</span><span>' + esc(gn) + '（' + esc(g.type) + '，当前 ' + esc(g.now || '-') + '）</span></div>' +
+    '<div class="sub-nodes">' + g.all.map(n => {
+      const p = px[n] || {};
+      const hist = (p.history && p.history.length) ? p.history[p.history.length - 1].delay : 0;
+      const label = esc(n) + (hist ? ' · ' + hist + 'ms' : '');
+      return '<button class="ghost small node-pick' + (g.now === n ? ' active' : '') + '" data-group="' + esc(gn) + '" data-node="' + esc(n) + '">' + label + '</button>';
+    }).join('') + '</div>'
+  ).join('');
+}
+
+function openSubModal() {
+  $('sub-name').value = ''; $('sub-url').value = '';
+  $('sub-modal').style.display = 'flex';
+  $('sub-url').focus();
+}
+
+function initSubscription() {
+  $('btn-add-sub').onclick = openSubModal;
+  $('sub-cancel').onclick = () => { $('sub-modal').style.display = 'none'; };
+  $('sub-ok').onclick = async () => {
+    const url = $('sub-url').value.trim();
+    if (!url) { toast('请粘贴订阅地址', 'err'); return; }
+    try {
+      await invoke('add_subscription', { name: $('sub-name').value.trim(), url });
+      $('sub-modal').style.display = 'none';
+      toast('订阅已添加', 'ok');
+      refreshSubs();
+      refreshSubStatus();
+    } catch (err) { toast(friendlyError(err), 'err'); }
+  };
+  $('subs-list').addEventListener('click', async (e) => {
+    const btn = e.target.closest('button');
+    if (!btn) return;
+    try {
+      if (btn.dataset.subUpdate) {
+        btn.disabled = true;
+        await invoke('update_subscription', { id: btn.dataset.subUpdate });
+        toast('订阅已刷新', 'ok');
+        refreshSubs(); refreshGroups();
+      } else if (btn.dataset.subDel) {
+        if (btn.dataset.confirm === '1') {
+          await invoke('remove_subscription', { id: btn.dataset.subDel });
+          toast('订阅已删除', 'ok');
+          refreshSubs(); refreshSubStatus();
+          return;
+        }
+        btn.dataset.confirm = '1';
+        const old = btn.innerHTML;
+        btn.innerHTML = '<span style="font-size:11px">确认</span>';
+        setTimeout(() => { if (btn.isConnected) { btn.dataset.confirm = ''; btn.innerHTML = old; } }, 2500);
+      }
+    } catch (err) { toast(friendlyError(err), 'err'); btn.disabled = false; }
+  });
+  $('groups-list').addEventListener('click', async (e) => {
+    const btn = e.target.closest('button.node-pick');
+    if (!btn) return;
+    try {
+      await invoke('select_proxy', { group: btn.dataset.group, name: btn.dataset.node });
+      toast('已切换到 ' + btn.dataset.node, 'ok');
+      refreshGroups();
+    } catch (err) { toast(friendlyError(err), 'err'); }
+  });
+  $('btn-test-all').onclick = async () => {
+    const btns = [...$('groups-list').querySelectorAll('button.node-pick')];
+    if (!btns.length) return;
+    toast('正在测速（' + btns.length + ' 个节点）…', 'ok');
+    for (const btn of btns) {
+      try {
+        const ms = await invoke('test_delay', { name: btn.dataset.node });
+        btn.textContent = btn.dataset.node + ' · ' + ms + 'ms';
+      } catch (e) {
+        btn.textContent = btn.dataset.node + ' · 超时';
+      }
+    }
+  };
+  $('s-unified').onchange = async (e) => {
+    try {
+      await invoke('set_subscription_unified', { enabled: e.target.checked });
+      toast(e.target.checked ? '统一出口已开启（57890 单端口）' : '统一出口已关闭', 'ok');
+    } catch (err) { e.target.checked = !e.target.checked; toast(friendlyError(err), 'err'); }
+  };
+}
+
+/* ================= 系统代理托管 ================= */
+let _spConflict = false;
+async function refreshSysproxy() {
+  let st;
+  try { st = await invoke('sysproxy_status'); } catch (e) { return; }
+  $('s-sysproxy').checked = st.managed;
+  const banner = $('sysproxy-banner');
+  if (st.managed && st.conflict) {
+    banner.style.display = 'flex';
+    $('sysproxy-banner-text').textContent = '系统代理已被外部修改（当前 ' + (st.current || '未启用') + '，期望 ' + st.expected + '）';
+    if (!_spConflict) { _spConflict = true; toast('系统代理已被外部修改，可在「设置 → 偏好」收回', 'err'); }
+  } else {
+    banner.style.display = 'none';
+    _spConflict = false;
+  }
+}
+function initSysproxy() {
+  $('s-sysproxy').onchange = async (e) => {
+    try {
+      await invoke('set_system_proxy', { enabled: e.target.checked });
+      toast(e.target.checked ? '已托管系统代理' : '已还原系统代理', 'ok');
+      refreshSysproxy();
+    } catch (err) { e.target.checked = !e.target.checked; toast(friendlyError(err), 'err'); }
+  };
+  $('btn-sysproxy-reclaim').onclick = async () => {
+    try { await invoke('reclaim_sysproxy'); toast('已收回系统代理', 'ok'); refreshSysproxy(); }
+    catch (err) { toast(friendlyError(err), 'err'); }
+  };
+}
+
 /* ================= 设置 ================= */
 async function loadSettings() {
   $('s-autoproxy').checked = PREFS.autoproxy;
@@ -799,6 +986,8 @@ function switchView(v) {
   document.querySelectorAll('.view').forEach(s => { s.hidden = s.id !== 'view-' + v; });
   if (v === 'nodes' || v === 'routes') refreshNodes();
   if (v === 'connect') refreshCreds();
+  if (v === 'subscription') { refreshSubs(); refreshSubStatus(); }
+  if (v === 'settings') refreshSysproxy();
 }
 function initTitlebar() {
   if (!TAURI || !TAURI.window) return;
@@ -826,6 +1015,9 @@ window.addEventListener('DOMContentLoaded', async () => {
     document.body.classList.add('http-mode');
     const rc = $('roles-card'); if (rc) rc.style.display = 'none';
     const as = $('s-autostart'); if (as) { const l = as.closest('label'); if (l) l.style.display = 'none'; }
+    const sp = $('s-sysproxy'); if (sp) { const l = sp.closest('label'); if (l) l.style.display = 'none'; }
+    const subNav = document.querySelector('.nav-item[data-view="subscription"]');
+    if (subNav) subNav.style.display = 'none';
     $('login-ok').onclick = webLogin;
     $('login-pass').addEventListener('keydown', e => { if (e.key === 'Enter') webLogin(); });
     if (!httpToken) { showLogin(); return; }
@@ -911,6 +1103,11 @@ window.addEventListener('DOMContentLoaded', async () => {
 
   await loadSettings();
   await initRoles();
+  initSubscription();
+  initSysproxy();
+  refreshSubs();
+  refreshSubStatus();
+  refreshSysproxy();
   $('s-lang').value = localStorage.getItem('ag_lang') || 'zh';
   $('s-theme').value = localStorage.getItem('ag_theme') || 'light';
   $('s-lang').onchange = (e) => { localStorage.setItem('ag_lang', e.target.value); applyLanguage(); };
@@ -931,5 +1128,5 @@ window.addEventListener('DOMContentLoaded', async () => {
     }
   }
 
-  setInterval(() => { refreshNodes(); refreshProxy(); }, 10000);
+  setInterval(() => { refreshNodes(); refreshProxy(); refreshSubStatus(); refreshSysproxy(); }, 10000);
 });

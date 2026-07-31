@@ -156,6 +156,16 @@ a { color: var(--link); text-decoration: none; }
 .kv { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px dashed var(--row-border); font-size: 13px; }
 .kv .k { color: var(--dim); }
 
+/* 订阅页 */
+.sub-row { display: flex; align-items: center; gap: 10px; padding: 8px 2px; border-bottom: 1px dashed var(--row-border); font-size: 13px; }
+.sub-row:last-child { border-bottom: none; }
+.sub-name { font-weight: 600; color: var(--text-strong); flex-shrink: 0; }
+.sub-row .mono { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sub-row .h3-tools { margin-left: auto; }
+.sub-nodes { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 0 2px; }
+.node-pick.active { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+.dim { color: var(--dim2); }
+
 /* 列表折叠搜索（默认收起，点搜索图标展开） */
 .list-search { margin: -4px 0 12px; }
 .list-search input { font-size: 12.5px; padding: 7px 12px; }

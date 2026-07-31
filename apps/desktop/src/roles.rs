@@ -31,6 +31,19 @@ pub struct RoleSettings {
     /// 服务端角色作为下游中继接入上游（路由再发布：客户端隧道规则转售给下游）
     #[serde(default)]
     pub server_connector: Option<ServerConnectorConfig>,
+    /// 开关D：订阅代理角色（mihomo sidecar，anet-gui 独享附加服务）
+    #[serde(default)]
+    pub subscription: bool,
+    /// 订阅流量经统一出口（ProxyRouter 回落到内核 mixed 入站；默认开）
+    #[serde(default = "default_true")]
+    pub subscription_unified: bool,
+    /// 系统代理托管（指向本地代理端口；关闭时还原快照）
+    #[serde(default)]
+    pub system_proxy: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// 内嵌节点的上游中继配置（token 为敏感凭据，settings 文件本身 0600 保护）。
@@ -64,6 +77,9 @@ impl Default for RoleSettings {
             web: false,
             web_listen: default_web_listen(),
             server_connector: None,
+            subscription: false,
+            subscription_unified: true,
+            system_proxy: false,
         }
     }
 }
