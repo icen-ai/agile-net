@@ -85,14 +85,77 @@ async fn connect_node(state: State<'_, AppState>, input: ConnectInput) -> Result
     Ok(node_state)
 }
 
-/// 断开节点
+/// 断开节点（保留已保存凭据；删除凭据走 delete_credential）
 #[tauri::command]
 async fn disconnect_node(state: State<'_, AppState>, node_id: String) -> Result<(), String> {
     state.client.disconnect(&node_id).await;
+    Ok(())
+}
+
+/// 删除已保存的凭据
+#[tauri::command]
+async fn delete_credential(state: State<'_, AppState>, key: String) -> Result<(), String> {
     let guard = state.creds.lock().await;
     if let Some(store) = guard.as_ref() {
-        store.remove(&node_id).await;
+        store.remove(&key).await;
     }
+    Ok(())
+}
+
+/// 导出已保存凭据为 agilenet://connect 接入链接（含明文密码，谨慎分享）
+#[tauri::command]
+async fn export_credential(state: State<'_, AppState>, key: String) -> Result<String, String> {
+    let guard = state.creds.lock().await;
+    let store = guard.as_ref().ok_or("凭据存储不可用")?;
+    let c = store.get(&key).await.ok_or("凭据不存在或已删除")?;
+    let stripped = c
+        .addr
+        .trim_start_matches("http://")
+        .trim_start_matches("https://")
+        .trim_end_matches('/');
+    let (host, port) = match stripped.rsplit_once(':') {
+        Some((h, p)) if p.parse::<u16>().is_ok() => (h.to_string(), p.to_string()),
+        _ => (stripped.to_string(), "59090".to_string()),
+    };
+    let mut url = format!(
+        "agilenet://connect?server={host}&port={port}&account={}&password={}",
+        c.username, c.password
+    );
+    if let Some(fp) = &c.pinned_fingerprint {
+        url.push_str(&format!("&tls=1&fp={fp}"));
+    }
+    if c.insecure {
+        url.push_str("&insecure=1");
+    }
+    Ok(url)
+}
+
+/// 暂停/恢复一条路由规则（rule_key 格式 "type:value"）
+#[tauri::command]
+async fn set_rule_paused(
+    state: State<'_, AppState>,
+    node_id: String,
+    rule_key: String,
+    paused: bool,
+) -> Result<(), String> {
+    state.client.set_rule_paused(&node_id, &rule_key, paused);
+    Ok(())
+}
+
+/// 查询某节点被暂停的规则
+#[tauri::command]
+async fn get_paused_rules(state: State<'_, AppState>, node_id: String) -> Result<Vec<String>, String> {
+    Ok(state.client.get_paused_rules(&node_id))
+}
+
+/// 整体恢复某节点的暂停集合（前端持久化恢复用）
+#[tauri::command]
+async fn set_paused_rules(
+    state: State<'_, AppState>,
+    node_id: String,
+    keys: Vec<String>,
+) -> Result<(), String> {
+    state.client.set_paused_rules(&node_id, keys);
     Ok(())
 }
 
@@ -157,6 +220,7 @@ fn parse_connect_url(url: String) -> Result<ConnectInput, String> {
     let mut account = String::new();
     let mut password = String::new();
     let mut fp: Option<String> = None;
+    let mut insecure = false;
     for pair in rest.split('&') {
         let mut kv = pair.splitn(2, '=');
         let (k, v) = (kv.next().unwrap_or(""), kv.next().unwrap_or(""));
@@ -167,6 +231,7 @@ fn parse_connect_url(url: String) -> Result<ConnectInput, String> {
             "account" => account = v,
             "password" => password = v,
             "fp" => fp = Some(v),
+            "insecure" => insecure = v == "1" || v.eq_ignore_ascii_case("true"),
             _ => {}
         }
     }
@@ -183,7 +248,7 @@ fn parse_connect_url(url: String) -> Result<ConnectInput, String> {
         addr,
         username: account,
         password,
-        insecure: false,
+        insecure,
         pinned_cert_path: None,
         pinned_fingerprint: fp,
         manage_hosts: false,
@@ -308,6 +373,11 @@ pub fn run() {
             disconnect_node,
             list_nodes,
             list_credentials,
+            delete_credential,
+            export_credential,
+            set_rule_paused,
+            get_paused_rules,
+            set_paused_rules,
             start_proxy,
             stop_proxy,
             proxy_status,

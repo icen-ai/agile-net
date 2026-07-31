@@ -7,15 +7,20 @@
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<!-- 一体化标题栏（无边框窗口，左侧拖拽区 + 右侧窗口控制） -->
+<!-- 一体化标题栏（无边框窗口，左侧拖拽区 + 右侧窗口控制；中央灵动岛） -->
 <header class="titlebar">
   <div class="tb-drag" data-tauri-drag-region>
     <span class="logo"><i data-ic="zap" data-sz="13"></i></span>
     <span class="tb-title">AgileNet</span>
     <span class="tb-spacer"></span>
-    <div class="proxy-pill" id="proxy-pill">
-      <span class="dot off" id="proxy-dot"></span><span id="proxy-text">代理未启动</span>
+  </div>
+  <!-- 灵动岛：状态摘要 + 通知弹出 + 网络异常可展开详情 -->
+  <div class="island" id="island">
+    <div class="island-bar" id="island-bar">
+      <span class="dot off" id="proxy-dot"></span><span id="proxy-text">代理未启动</span><span class="island-chev" id="island-chev"><i data-ic="chevron-down" data-sz="12"></i></span>
     </div>
+    <div class="island-msg" id="island-msg"></div>
+    <div class="island-detail" id="island-detail"></div>
   </div>
   <div class="tb-controls">
     <button id="tb-min" title="最小化"><i data-ic="minus" data-sz="15"></i></button>
@@ -52,7 +57,7 @@
           <input id="connect-url-hero" class="mono" placeholder="粘贴接入链接 agilenet://connect?...">
           <button id="btn-import-hero" class="big"><i data-ic="rocket" data-sz="17"></i>一键接入</button>
         </div>
-        <div class="hero-alt">或 <a href="javascript:void(0)" onclick="pasteFromClipboard()">从剪贴板导入</a> · <a href="javascript:void(0)" onclick="toggleManual(true)">手动填写</a></div>
+        <div class="hero-alt">或 <a href="javascript:void(0)" id="link-paste">从剪贴板导入</a> · <a href="javascript:void(0)" id="link-manual">手动填写</a></div>
       </div>
 
       <!-- 快速接入（有节点后的紧凑条） -->
@@ -75,9 +80,9 @@
         </div>
       </div>
 
-      <!-- 手动添加 -->
+      <!-- 手动添加（折叠） -->
       <div class="card">
-        <h3 onclick="toggleManual()" style="cursor:pointer"><i data-ic="plus"></i>手动添加节点 <span class="hint" id="manual-arrow"><i data-ic="chevron-right" data-sz="13"></i></span></h3>
+        <h3 id="manual-toggle" style="cursor:pointer"><i data-ic="plus"></i>手动添加节点 <span class="hint" id="manual-arrow"><i data-ic="chevron-right" data-sz="13"></i></span></h3>
         <div id="manual-form" style="display:none">
           <div class="grid2">
             <div><label>节点 API 地址（host:port 或 https://…）</label><input id="m-addr" placeholder="cdn.example.com:59090"></div>
@@ -94,9 +99,12 @@
         </div>
       </div>
 
-      <!-- 已保存节点 -->
+      <!-- 已保存节点（管理：连接/断开/导出/删除） -->
       <div class="card" id="creds-card" style="display:none">
-        <h3><i data-ic="hard-drive"></i>已保存节点</h3>
+        <h3><i data-ic="hard-drive"></i>已保存节点
+          <span class="h3-tools"><button class="ghost small icon-btn search-toggle" data-search="creds" title="搜索"><i data-ic="search" data-sz="13"></i></button></span>
+        </h3>
+        <div class="list-search" id="search-creds" hidden><input placeholder="搜索账号 / 地址" ></div>
         <div id="creds-list"></div>
       </div>
     </section>
@@ -107,19 +115,28 @@
       <div class="page-desc">已连接节点与实时状态；离线节点整卡降饱和标识</div>
       <div id="net-banner" class="net-banner" style="display:none"></div>
       <div class="card">
-        <h3><i data-ic="globe"></i>节点列表 <button class="ghost small icon-btn" id="btn-refresh" title="刷新"><i data-ic="refresh-cw" data-sz="13"></i></button></h3>
+        <h3><i data-ic="globe"></i>节点列表
+          <span class="h3-tools">
+            <button class="ghost small icon-btn" id="btn-refresh" title="刷新"><i data-ic="refresh-cw" data-sz="13"></i></button>
+            <button class="ghost small icon-btn search-toggle" data-search="nodes" title="搜索"><i data-ic="search" data-sz="13"></i></button>
+          </span>
+        </h3>
+        <div class="list-search" id="search-nodes" hidden><input placeholder="搜索名称 / 地址 / 状态"></div>
         <div id="nodes-list"><div class="empty">尚未连接节点</div></div>
       </div>
     </section>
 
-    <!-- 路由：合并视图（长表粘性表头 + 内部滚动） -->
+    <!-- 路由：合并视图（可暂停单条规则自由组合；长表粘性表头 + 内部滚动） -->
     <section class="view" id="view-routes" hidden>
       <div class="page-title"><i data-ic="route" data-sz="19"></i>路由</div>
-      <div class="page-desc">全部节点下发规则的合并视图，状态点标识所属节点在线情况</div>
+      <div class="page-desc">全部节点下发规则的合并视图；关闭开关可暂停单条规则（立即生效并本地记忆）</div>
       <div class="card" id="rules-card">
-        <h3><i data-ic="route"></i>生效路由（合并视图）</h3>
+        <h3><i data-ic="route"></i>生效路由（合并视图）
+          <span class="h3-tools"><button class="ghost small icon-btn search-toggle" data-search="rules" title="搜索"><i data-ic="search" data-sz="13"></i></button></span>
+        </h3>
+        <div class="list-search" id="search-rules" hidden><input placeholder="搜索类型 / 匹配值 / 节点"></div>
         <div class="table-scroll">
-          <table><thead><tr><th>类型</th><th>匹配值</th><th>节点</th></tr></thead><tbody id="rules-body"></tbody></table>
+          <table><thead><tr><th>类型</th><th>匹配值</th><th>节点</th><th>启用</th></tr></thead><tbody id="rules-body"></tbody></table>
         </div>
       </div>
     </section>
@@ -155,7 +172,6 @@
   </main>
 </div>
 
-<div id="toasts"></div>
 <script src="icons.js"></script>
 <script src="app.js"></script>
 </body>

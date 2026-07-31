@@ -270,6 +270,8 @@ struct ClientInner {
     proxy_stats: Arc<arc_swap::ArcSwapOption<agile_net_core::proxy::inbound::ProxyStats>>,
     /// 节点配置离线缓存
     cache: Arc<ConfigCache>,
+    /// 用户暂停的规则（node_id → "type:value" 小写集合），重建合并路由时跳过
+    paused_rules: DashMap<String, std::collections::HashSet<String>>,
 }
 
 impl ClientInner {
@@ -290,8 +292,12 @@ impl ClientInner {
             if state.status != NodeStatus::Connected {
                 continue;
             }
+            let paused = self.paused_rules.get(node_id);
             for rule in &state.rules {
                 let key = format!("{}:{}", rule.rule_type, rule.value.to_lowercase());
+                if paused.as_ref().is_some_and(|s| s.contains(&key)) {
+                    continue; // 用户已暂停：不占用冲突位次，允许其他节点同名规则接管
+                }
                 if !seen.insert(key) {
                     continue; // 冲突：后连节点让位于先连节点
                 }
@@ -363,6 +369,7 @@ impl AgileNetClient {
                 hosts_manager: HostsManager::new(),
                 proxy_stats: Arc::new(arc_swap::ArcSwapOption::from_pointee(None)),
                 cache: Arc::new(ConfigCache::new().unwrap_or_else(|_| ConfigCache::with_dir(std::env::temp_dir()))),
+                paused_rules: DashMap::new(),
             }),
         }
     }
@@ -644,6 +651,41 @@ impl AgileNetClient {
 
     /// 重建合并路由表（供外部/测试调用）。
     pub fn rebuild_merged_router(&self) {
+        self.inner.rebuild_merged_router();
+    }
+
+    /// 暂停/恢复某节点的一条规则（rule_key 格式 "type:value"，立即重建合并路由）。
+    pub fn set_rule_paused(&self, node_id: &str, rule_key: &str, paused: bool) {
+        if paused {
+            self.inner
+                .paused_rules
+                .entry(node_id.to_string())
+                .or_default()
+                .insert(rule_key.to_string());
+        } else if let Some(mut set) = self.inner.paused_rules.get_mut(node_id) {
+            set.remove(rule_key);
+        }
+        self.inner.rebuild_merged_router();
+    }
+
+    /// 某节点当前被暂停的规则 key 列表。
+    pub fn get_paused_rules(&self, node_id: &str) -> Vec<String> {
+        self.inner
+            .paused_rules
+            .get(node_id)
+            .map(|s| s.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// 整体恢复某节点的暂停集合（前端启动时从本地持久化恢复）。
+    pub fn set_paused_rules(&self, node_id: &str, keys: Vec<String>) {
+        if keys.is_empty() {
+            self.inner.paused_rules.remove(node_id);
+        } else {
+            self.inner
+                .paused_rules
+                .insert(node_id.to_string(), keys.into_iter().collect());
+        }
         self.inner.rebuild_merged_router();
     }
 

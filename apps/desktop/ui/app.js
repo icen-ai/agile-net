@@ -2,7 +2,7 @@
 // Tauri IPC 桥（v2：window.__TAURI__.core.invoke）；纯浏览器预览时提供空数据桩
 const TAURI = window.__TAURI__ || null;
 const invoke = TAURI ? TAURI.core.invoke : (cmd) => {
-  const mock = { list_nodes: [], list_credentials: [], proxy_status: { running: false, port: 57890 }, get_autostart: false };
+  const mock = { list_nodes: [], list_credentials: [], proxy_status: { running: false, port: 57890 }, get_autostart: false, get_paused_rules: [] };
   return cmd in mock ? Promise.resolve(mock[cmd]) : Promise.resolve(null);
 };
 const $ = (id) => document.getElementById(id);
@@ -47,7 +47,7 @@ const I18N = {
 };
 let LANG = localStorage.getItem('ag_lang') || 'zh';
 const T = (k) => (I18N[LANG] && I18N[LANG][k]) || I18N.zh[k] || k;
-function applyLanguage() { LANG = localStorage.getItem('ag_lang') || 'zh'; refreshNodes(); refreshProxy(); }
+function applyLanguage() { LANG = localStorage.getItem('ag_lang') || 'zh'; refreshNodes(true); refreshProxy(); }
 function applyTheme() {
   document.documentElement.dataset.theme = localStorage.getItem('ag_theme') || 'light';
 }
@@ -57,13 +57,57 @@ function esc(s) {
     '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;','`':'&#96;'
   }[c]));
 }
-function toast(msg, type) {
-  const el = document.createElement('div');
-  el.className = 'toast ' + (type || '');
-  el.textContent = msg;
-  $('toasts').appendChild(el);
-  setTimeout(() => el.remove(), 3600);
-}
+
+/* ================= 灵动岛（状态 + 通知 + 异常详情） ================= */
+const Island = {
+  timer: null, canExpand: false, detailNodes: [],
+  init() {
+    $('island-bar').onclick = () => { if (this.canExpand) this.toggleDetail(); };
+  },
+  /** 常态状态条。mode: on | off | warn */
+  setStatus(mode, text, detailNodes) {
+    const t = $('proxy-text');
+    if (t.textContent !== text) t.textContent = text;
+    const cls = 'dot ' + (mode === 'warn' ? 'warn' : mode);
+    if ($('proxy-dot').className !== cls) $('proxy-dot').className = cls;
+    this.detailNodes = detailNodes || [];
+    this.canExpand = mode === 'warn' && this.detailNodes.length > 0;
+    $('island').classList.toggle('warn', mode === 'warn');
+    if (!this.canExpand) this.hideDetail();
+  },
+  /** 瞬时通知（自动收回） */
+  notify(msg, type) {
+    clearTimeout(this.timer);
+    this.hideDetail();
+    const m = $('island-msg');
+    m.textContent = msg;
+    m.className = 'island-msg show ' + (type || '');
+    $('island-bar').style.display = 'none';
+    $('island').classList.add('expanded');
+    this.timer = setTimeout(() => this.collapse(), 3200);
+  },
+  collapse() {
+    $('island-msg').className = 'island-msg';
+    $('island-bar').style.display = '';
+    $('island').classList.remove('expanded');
+  },
+  toggleDetail() {
+    const d = $('island-detail');
+    if (d.classList.contains('show')) { this.hideDetail(); return; }
+    d.innerHTML = '<div class="dt-title">以下节点当前不可达，其网段流量不会进入隧道：</div>' +
+      this.detailNodes.map(n =>
+        '<div class="island-row"><span class="dot off"></span><b>' + esc(n.node_name) + '</b>' +
+        '<span class="mono">' + esc(n.addr) + '</span><span class="st">' + esc(statusText(n.status)) + '</span></div>'
+      ).join('');
+    d.classList.add('show');
+    $('island').classList.add('expanded');
+  },
+  hideDetail() {
+    $('island-detail').classList.remove('show');
+    if (!$('island-msg').classList.contains('show')) $('island').classList.remove('expanded');
+  },
+};
+function toast(msg, type) { Island.notify(msg, type); }
 
 /** 把底层错误翻译成用户友好的中文提示 */
 function friendlyError(e) {
@@ -86,52 +130,148 @@ function updateOnboarding(nodes) {
   $('creds-card').style.display = (window._creds && Object.keys(window._creds).length) ? 'block' : 'none';
 }
 
+/* ================= 列表过滤（搜索） ================= */
+const FILTERS = { nodes: '', creds: '', rules: '' };
+function bindSearch() {
+  document.querySelectorAll('.search-toggle').forEach(btn => {
+    btn.onclick = () => {
+      const key = btn.dataset.search;
+      const row = $('search-' + key);
+      const input = row.querySelector('input');
+      if (row.hidden) { row.hidden = false; input.focus(); }
+      else { row.hidden = true; input.value = ''; setFilter(key, ''); }
+    };
+  });
+  ['nodes', 'creds', 'rules'].forEach(key => {
+    $('search-' + key).querySelector('input').oninput = (e) => setFilter(key, e.target.value);
+  });
+}
+function setFilter(key, v) {
+  FILTERS[key] = v.trim().toLowerCase();
+  if (key === 'nodes') renderNodeList(window._nodes || []);
+  if (key === 'rules') renderMergedRules(window._nodes || []);
+  if (key === 'creds') renderCredList(window._credsRaw || [], window._nodeStatus || {});
+}
+
 /* ================= 节点管理 ================= */
-async function refreshNodes() {
+let lastNodesSig = null;
+const restoredPaused = new Set();
+
+async function refreshNodes(force) {
   let nodes = [];
   try {
     nodes = await invoke('list_nodes');
-    const list = $('nodes-list');
-    if (!nodes.length) {
-      list.innerHTML = '<div class="empty">尚未连接节点</div>';
-    } else {
-      list.innerHTML = nodes.map(n =>
-        '<div class="node-card"><div class="info">' +
-        '<div class="name">' + esc(n.node_name) + ' ' + statusBadgeHtml(n.status) + '</div>' +
-        '<div class="addr mono">' + esc(n.addr) + ' · 规则 ' + (n.rules || []).length + ' 条 · 配置 v' + n.config_version + '</div>' +
-        '</div>' +
-        '<button class="danger small" onclick="disconnectNode(\'' + esc(n.node_id) + '\')">断开</button></div>'
-      ).join('');
-    }
+  } catch (e) { toast(friendlyError(e), 'err'); updateOnboarding([]); return; }
+  window._nodes = nodes;
+  window._nodeStatus = Object.fromEntries(nodes.map(n => [n.node_id, n.status]));
+  await restorePaused(nodes);
+  const sig = JSON.stringify(nodes);
+  if (force || sig !== lastNodesSig) {
+    lastNodesSig = sig;
+    await loadPaused(nodes);
+    renderNodeList(nodes);
     renderMergedRules(nodes);
-  } catch (e) { toast(friendlyError(e), 'err'); }
+  }
   updateOnboarding(nodes);
 }
+function statusText(s) {
+  if (s === 'Connected') return T('st-connected');
+  if (s === 'Connecting') return T('st-connecting');
+  if (s === 'Reconnecting') return T('st-reconnecting');
+  return T('st-disconnected');
+}
 function statusBadgeHtml(s) {
-  if (s === 'Connected') return '<span class="badge b-ok">已连接</span>';
-  if (s === 'Connecting') return '<span class="badge b-warn"><span class="pulse"></span>连接中</span>';
-  if (s === 'Reconnecting') return '<span class="badge b-warn"><span class="pulse"></span>重连中</span>';
-  return '<span class="badge b-off">已断开</span>';
+  if (s === 'Connected') return '<span class="badge b-ok">' + T('st-connected') + '</span>';
+  if (s === 'Connecting') return '<span class="badge b-warn"><span class="pulse"></span>' + T('st-connecting') + '</span>';
+  if (s === 'Reconnecting') return '<span class="badge b-warn"><span class="pulse"></span>' + T('st-reconnecting') + '</span>';
+  return '<span class="badge b-off">' + T('st-disconnected') + '</span>';
+}
+function renderNodeList(nodes) {
+  const list = $('nodes-list');
+  const f = FILTERS.nodes;
+  const shown = !f ? nodes : nodes.filter(n =>
+    n.node_name.toLowerCase().includes(f) || n.addr.toLowerCase().includes(f) || statusText(n.status).includes(f));
+  if (!shown.length) {
+    list.innerHTML = '<div class="empty">' + (f ? '无匹配结果' : T('no-nodes')) + '</div>';
+    return;
+  }
+  list.innerHTML = shown.map(n =>
+    '<div class="node-card' + (n.status === 'Connected' || n.status === 'Connecting' || n.status === 'Reconnecting' ? '' : ' down') + '"><div class="info">' +
+    '<div class="name">' + esc(n.node_name) + ' ' + statusBadgeHtml(n.status) + '</div>' +
+    '<div class="addr mono">' + esc(n.addr) + ' · 规则 ' + (n.rules || []).length + ' 条 · 配置 v' + n.config_version + '</div>' +
+    '</div><button class="danger small" data-act="disconnect" data-id="' + esc(n.node_id) + '">断开</button></div>'
+  ).join('');
+}
+
+/* ---- 路由合并视图（可暂停单条规则） ---- */
+function ruleKey(r) { return (r.type + ':' + r.value).toLowerCase(); }
+async function loadPaused(nodes) {
+  const map = {};
+  for (const n of nodes) {
+    try { map[n.node_id] = new Set(await invoke('get_paused_rules', { nodeId: n.node_id })); }
+    catch (e) { map[n.node_id] = new Set(); }
+  }
+  window._paused = map;
+}
+async function restorePaused(nodes) {
+  let saved;
+  try { saved = JSON.parse(localStorage.getItem('ag_paused_rules') || '{}'); } catch (e) { return; }
+  for (const n of nodes) {
+    if (restoredPaused.has(n.node_id)) continue;
+    restoredPaused.add(n.node_id);
+    const keys = saved[n.node_id];
+    if (keys && keys.length) {
+      try { await invoke('set_paused_rules', { nodeId: n.node_id, keys }); } catch (e) {}
+    }
+  }
+}
+function persistPaused() {
+  const out = {};
+  for (const [k, set] of Object.entries(window._paused || {})) out[k] = [...set];
+  localStorage.setItem('ag_paused_rules', JSON.stringify(out));
 }
 function renderMergedRules(nodes) {
+  const f = FILTERS.rules;
+  const pausedMap = window._paused || {};
   const rows = [];
   for (const n of nodes) {
     const dot = n.status === 'Connected' ? 'ok' : (n.status === 'Disconnected' ? 'down' : 'warn');
+    const pset = pausedMap[n.node_id] || new Set();
     for (const r of (n.rules || [])) {
-      rows.push('<tr><td><span class="rdot ' + dot + '"></span><span class="badge b-ok">' + esc(r.type) + '</span></td>' +
+      const key = ruleKey(r);
+      if (f && !(r.value.toLowerCase().includes(f) || r.type.toLowerCase().includes(f) || n.node_name.toLowerCase().includes(f))) continue;
+      const paused = pset.has(key);
+      rows.push('<tr class="' + (paused ? 'rule-paused' : '') + '"><td><span class="rdot ' + dot + '"></span><span class="badge b-ok">' + esc(r.type) + '</span></td>' +
         '<td class="mono">' + esc(r.value) + '</td>' +
-        '<td style="color:var(--dim)">' + esc(n.node_name) + '</td></tr>');
+        '<td style="color:var(--dim)">' + esc(n.node_name) + '</td>' +
+        '<td><label class="switch"><input type="checkbox" data-node="' + esc(n.node_id) + '" data-rule="' + esc(key) + '"' + (paused ? '' : ' checked') + '><span class="slider"></span></label></td></tr>');
     }
   }
-  $('rules-body').innerHTML = rows.join('') || '<tr><td colspan="3" class="empty">' + T('no-rules') + '</td></tr>';
+  $('rules-body').innerHTML = rows.join('') || '<tr><td colspan="4" class="empty">' + (f ? '无匹配结果' : T('no-rules')) + '</td></tr>';
+}
+async function toggleRule(nodeId, key, paused) {
+  try {
+    await invoke('set_rule_paused', { nodeId, ruleKey: key, paused });
+    const map = window._paused || (window._paused = {});
+    const set = map[nodeId] || (map[nodeId] = new Set());
+    if (paused) set.add(key); else set.delete(key);
+    persistPaused();
+    const tr = document.querySelector('input[data-node][data-rule="' + CSS.escape(key) + '"]');
+    if (tr) tr.closest('tr').classList.toggle('rule-paused', paused);
+    toast(paused ? '已暂停该规则（立即生效）' : '已恢复该规则', 'ok');
+  } catch (e) {
+    toast(friendlyError(e), 'err');
+    refreshNodes(true);
+  }
 }
 
 async function disconnectNode(nodeId) {
   try {
     await invoke('disconnect_node', { nodeId });
-    toast('已断开', 'ok');
-    refreshNodes();
+    toast(T('disconnected'), 'ok');
+    refreshNodes(true);
     refreshCreds();
+    refreshProxy();
   } catch (e) { toast(friendlyError(e), 'err'); }
 }
 
@@ -156,7 +296,7 @@ async function connectWith(input, btn) {
         }
       } catch (e) { /* 代理自启失败不阻塞连接 */ }
     }
-    refreshNodes();
+    refreshNodes(true);
     refreshCreds();
     refreshProxy();
     return true;
@@ -202,20 +342,24 @@ async function pasteFromClipboard() {
 async function refreshProxy() {
   try {
     const st = await invoke('proxy_status');
-    $('proxy-dot').className = 'dot ' + (st.running ? 'on' : 'off');
-    $('proxy-text').textContent = st.running ? (T('proxy-running') + ' 127.0.0.1:' + st.port) : T('proxy-stopped');
-    $('btn-proxy-toggle').textContent = st.running ? T('btn-stop-proxy') : T('btn-start-proxy');
-    $('proxy-hint').textContent = st.running ? '系统/应用代理指向 127.0.0.1:' + st.port + ' 即可' : '';
-    // 顶栏徽章：有节点降级时黄色提示
     const nodes = await invoke('list_nodes').catch(() => []);
-    const degraded = nodes.some(n => n.status !== 'Connected');
-    if (nodes.length && degraded) {
-      $('proxy-dot').className = 'dot on';
-      $('proxy-dot').style.background = 'var(--warn)';
-      $('proxy-text').textContent = T('st-degraded');
+    const degraded = nodes.filter(n => n.status !== 'Connected');
+    let mode, text;
+    if (nodes.length && degraded.length) {
+      mode = 'warn';
+      text = T('st-degraded') + '（' + degraded.length + '）';
+    } else if (st.running) {
+      mode = 'on';
+      text = T('proxy-running') + ' 127.0.0.1:' + st.port;
     } else {
-      $('proxy-dot').style.background = '';
+      mode = 'off';
+      text = T('proxy-stopped');
     }
+    Island.setStatus(mode, text, degraded);
+    const btnText = st.running ? T('btn-stop-proxy') : T('btn-start-proxy');
+    if ($('btn-proxy-toggle').textContent !== btnText) $('btn-proxy-toggle').textContent = btnText;
+    const hint = st.running ? '系统/应用代理指向 127.0.0.1:' + st.port + ' 即可' : '';
+    if ($('proxy-hint').textContent !== hint) $('proxy-hint').textContent = hint;
   } catch (e) {}
 }
 async function toggleProxy() {
@@ -223,34 +367,49 @@ async function toggleProxy() {
     const st = await invoke('proxy_status');
     if (st.running) {
       await invoke('stop_proxy');
-      toast('代理已停止', 'ok');
+      toast(T('proxy-off'), 'ok');
     } else {
       const port = parseInt($('proxy-port').value || '57890', 10);
       const actual = await invoke('start_proxy', { port });
-      toast('代理已启动 127.0.0.1:' + actual, 'ok');
+      toast(T('proxy-on') + ' 127.0.0.1:' + actual, 'ok');
     }
     refreshProxy();
   } catch (e) { toast(friendlyError(e), 'err'); }
 }
 
-/* ================= 已保存凭据 ================= */
+/* ================= 已保存凭据（管理：连接/断开/导出/删除） ================= */
 async function refreshCreds() {
   try {
     const creds = await invoke('list_credentials');
+    window._credsRaw = creds;
     window._creds = Object.fromEntries(creds);
-    const list = $('creds-list');
-    if (!creds.length) {
-      list.innerHTML = '<div class="empty">无保存的凭据</div>';
-    } else {
-      list.innerHTML = creds.map(([key, c]) =>
-        '<div class="node-card"><div class="info">' +
-        '<div class="name">' + esc(c.username) + '</div>' +
-        '<div class="addr mono">' + esc(c.addr) + (c.insecure ? ' · <span class="badge b-warn">insecure</span>' : '') + '</div>' +
-        '</div><button class="ghost small" onclick=\'reconnectSaved(' + JSON.stringify(key) + ', this)\'>重新连接</button></div>'
-      ).join('');
-    }
+    renderCredList(creds, window._nodeStatus || {});
     invoke('list_nodes').then(nodes => updateOnboarding(nodes)).catch(() => {});
   } catch (e) {}
+}
+function renderCredList(creds, statusMap) {
+  const list = $('creds-list');
+  const f = FILTERS.creds;
+  const shown = !f ? creds : creds.filter(([key, c]) =>
+    c.username.toLowerCase().includes(f) || c.addr.toLowerCase().includes(f) || key.toLowerCase().includes(f));
+  if (!shown.length) {
+    list.innerHTML = '<div class="empty">' + (f ? '无匹配结果' : T('no-creds')) + '</div>';
+    return;
+  }
+  list.innerHTML = shown.map(([key, c]) => {
+    const st = statusMap[key];
+    const badge = st ? statusBadgeHtml(st) : '<span class="badge b-gray">未连接</span>';
+    const mainBtn = st === 'Connected'
+      ? '<button class="ghost small" data-act="disconnect" data-key="' + esc(key) + '">断开</button>'
+      : '<button class="ghost small" data-act="reconnect" data-key="' + esc(key) + '">' + (st ? '重连' : '连接') + '</button>';
+    return '<div class="node-card"><div class="info">' +
+      '<div class="name">' + esc(c.username) + ' ' + badge + '</div>' +
+      '<div class="addr mono">' + esc(c.addr) + (c.insecure ? ' · <span class="badge b-warn">insecure</span>' : '') + '</div>' +
+      '</div><div class="card-actions">' + mainBtn +
+      '<button class="ghost small icon-btn" title="导出接入链接（复制到剪贴板）" data-act="export" data-key="' + esc(key) + '">' + AgIcon('share-2', 13) + '</button>' +
+      '<button class="danger small icon-btn" title="删除该凭据" data-act="delcred" data-key="' + esc(key) + '">' + AgIcon('trash-2', 13) + '</button>' +
+      '</div></div>';
+  }).join('');
 }
 async function reconnectSaved(key, btn) {
   const c = (window._creds || {})[key];
@@ -260,6 +419,27 @@ async function reconnectSaved(key, btn) {
     insecure: c.insecure, pinned_cert_path: null, pinned_fingerprint: c.pinned_fingerprint || null,
     manage_hosts: false, save_credential: true,
   }, btn || null);
+}
+async function exportCred(key) {
+  try {
+    const url = await invoke('export_credential', { key });
+    await navigator.clipboard.writeText(url);
+    toast('接入链接已复制到剪贴板（含明文密码，谨慎分享）', 'ok');
+  } catch (e) { toast(friendlyError(e), 'err'); }
+}
+async function deleteCred(key, btn) {
+  if (btn.dataset.confirm === '1') {
+    try {
+      await invoke('delete_credential', { key });
+      toast('已删除保存的节点', 'ok');
+      refreshCreds();
+    } catch (e) { toast(friendlyError(e), 'err'); }
+    return;
+  }
+  btn.dataset.confirm = '1';
+  const old = btn.innerHTML;
+  btn.innerHTML = '<span style="font-size:11px">确认</span>';
+  setTimeout(() => { if (btn.isConnected) { btn.dataset.confirm = ''; btn.innerHTML = old; } }, 2500);
 }
 
 /* ================= 设置 ================= */
@@ -307,12 +487,17 @@ function toggleManual(open) {
 }
 
 window.addEventListener('DOMContentLoaded', async () => {
+  Island.init();
+  bindSearch();
   document.querySelectorAll('.nav-item').forEach(n => n.onclick = () => switchView(n.dataset.view));
   initTitlebar();
   if (TAURI && TAURI.app) { TAURI.app.getVersion().then(v => { const el = $('ver'); if (el) el.textContent = v; }).catch(() => {}); }
   $('btn-import').onclick = (e) => importUrl($('connect-url').value, e.target);
   $('btn-import-hero').onclick = (e) => importUrl($('connect-url-hero').value, e.target);
   $('btn-paste').onclick = pasteFromClipboard;
+  $('link-paste').onclick = pasteFromClipboard;
+  $('link-manual').onclick = () => toggleManual(true);
+  $('manual-toggle').onclick = () => toggleManual();
   $('connect-url').addEventListener('keydown', e => { if (e.key === 'Enter') $('btn-import').click(); });
   $('connect-url-hero').addEventListener('keydown', e => { if (e.key === 'Enter') $('btn-import-hero').click(); });
   $('connect-url-hero').focus();
@@ -328,7 +513,26 @@ window.addEventListener('DOMContentLoaded', async () => {
     }, $('btn-connect'));
   };
   $('btn-proxy-toggle').onclick = toggleProxy;
-  $('btn-refresh').onclick = refreshNodes;
+  $('btn-refresh').onclick = () => { refreshNodes(true); refreshProxy(); };
+
+  // 列表动作事件委托（CSP 禁止内联 onclick）
+  $('nodes-list').addEventListener('click', (e) => {
+    const btn = e.target.closest('button[data-act]');
+    if (btn && btn.dataset.act === 'disconnect') disconnectNode(btn.dataset.id);
+  });
+  $('creds-list').addEventListener('click', (e) => {
+    const btn = e.target.closest('button[data-act]');
+    if (!btn) return;
+    const key = btn.dataset.key;
+    if (btn.dataset.act === 'reconnect') reconnectSaved(key, btn);
+    if (btn.dataset.act === 'disconnect') disconnectNode(key);
+    if (btn.dataset.act === 'export') exportCred(key);
+    if (btn.dataset.act === 'delcred') deleteCred(key, btn);
+  });
+  $('rules-body').addEventListener('change', (e) => {
+    const cb = e.target.closest('input[data-rule]');
+    if (cb) toggleRule(cb.dataset.node, cb.dataset.rule, !cb.checked);
+  });
 
   await loadSettings();
   $('s-lang').value = localStorage.getItem('ag_lang') || 'zh';
@@ -336,7 +540,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   $('s-lang').onchange = (e) => { localStorage.setItem('ag_lang', e.target.value); applyLanguage(); };
   $('s-theme').onchange = (e) => { localStorage.setItem('ag_theme', e.target.value); applyTheme(); };
   applyTheme();
-  refreshNodes();
+  refreshNodes(true);
   refreshProxy();
   await refreshCreds();
 
