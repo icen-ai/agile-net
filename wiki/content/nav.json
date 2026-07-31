@@ -1,0 +1,49 @@
+[
+  {
+    "group": "开始",
+    "icon": "rocket",
+    "items": [
+      { "title": "AgileNet 简介", "path": "index", "icon": "zap" },
+      { "title": "安装", "path": "getting-started/installation", "icon": "download" },
+      { "title": "快速上手", "path": "getting-started/quickstart", "icon": "rocket" }
+    ]
+  },
+  {
+    "group": "核心概念",
+    "icon": "layers",
+    "items": [
+      { "title": "架构与双产物", "path": "concepts/architecture", "icon": "network" },
+      { "title": "安全模型", "path": "concepts/security", "icon": "shield" },
+      { "title": "带内管理面", "path": "concepts/management-plane", "icon": "monitor" }
+    ]
+  },
+  {
+    "group": "使用指南",
+    "icon": "book-open",
+    "items": [
+      { "title": "anet-gui 图形客户端", "path": "guides/gui", "icon": "monitor" },
+      { "title": "anet-svc 服务器", "path": "guides/svc", "icon": "server" },
+      { "title": "命令行 anet-svc cli", "path": "guides/cli", "icon": "terminal" },
+      { "title": "Docker 链路与演示", "path": "guides/docker", "icon": "box" },
+      { "title": "Clash / FlClash 共存", "path": "guides/clash", "icon": "route" }
+    ]
+  },
+  {
+    "group": "参考",
+    "icon": "file-text",
+    "items": [
+      { "title": "REST API", "path": "reference/api", "icon": "globe" },
+      { "title": "配置文件", "path": "reference/configuration", "icon": "settings" },
+      { "title": "错误码", "path": "reference/errors", "icon": "triangle-alert" },
+      { "title": "数据库 Schema", "path": "reference/database", "icon": "database" }
+    ]
+  },
+  {
+    "group": "开发",
+    "icon": "wrench",
+    "items": [
+      { "title": "构建、测试与发布", "path": "development/build-release", "icon": "wrench" },
+      { "title": "路线图", "path": "development/roadmap", "icon": "arrow-right" }
+    ]
+  }
+]

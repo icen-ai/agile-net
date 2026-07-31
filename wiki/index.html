@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AgileNet 文档</title>
+<meta name="description" content="AgileNet — 高安全、轻量级的 Rust 多节点网络穿透与代理链路由系统。双产物 anet-gui / anet-svc 官方文档。">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%233C3F43' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z'/></svg>">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<header class="topbar">
+  <button class="tb-icon-btn" id="btn-menu" aria-label="目录"><i data-ic="menu" data-sz="18"></i></button>
+  <a class="brand" href="#/">
+    <span class="brand-logo"><i data-ic="zap" data-sz="16"></i></span>
+    <span class="brand-name">AgileNet</span>
+    <span class="brand-tag">文档</span>
+  </a>
+  <div class="tb-spacer"></div>
+  <button class="search-btn" id="btn-search">
+    <i data-ic="search" data-sz="14"></i><span>搜索文档</span><kbd>Ctrl K</kbd>
+  </button>
+  <a class="tb-icon-btn" href="https://github.com/icen-ai/agile-net" target="_blank" rel="noopener" aria-label="GitHub"><i data-ic="github" data-sz="17"></i></a>
+  <button class="tb-icon-btn" id="btn-theme" aria-label="切换主题"></button>
+</header>
+
+<div class="layout">
+  <aside class="sidebar" id="sidebar">
+    <nav id="nav"></nav>
+    <div class="sidebar-foot">
+      <a href="https://github.com/icen-ai/agile-net" target="_blank" rel="noopener"><i data-ic="github" data-sz="13"></i> icen-ai/agile-net</a>
+      <a href="https://github.com/icen-ai/agile-net/releases" target="_blank" rel="noopener"><i data-ic="download" data-sz="13"></i> 下载发布版</a>
+    </div>
+  </aside>
+  <div class="sidebar-mask" id="sidebar-mask"></div>
+
+  <main class="main">
+    <article class="content" id="content"></article>
+    <footer class="footer">
+      <span>AgileNet — 双产物网络穿透与代理链路由系统</span>
+      <span>文档与软件同源，托管于 <a href="https://github.com/icen-ai/agile-net" target="_blank" rel="noopener">GitHub</a></span>
+    </footer>
+  </main>
+
+  <aside class="toc" id="toc"></aside>
+</div>
+
+<!-- 搜索面板 -->
+<div class="search-mask" id="search-mask" style="display:none">
+  <div class="search-panel">
+    <div class="search-input-row">
+      <i data-ic="search" data-sz="15"></i>
+      <input id="search-input" placeholder="搜索文档内容…" autocomplete="off">
+      <kbd>ESC</kbd>
+    </div>
+    <div class="search-results" id="search-results"></div>
+  </div>
+</div>
+
+<script src="assets/icons.js"></script>
+<script src="assets/marked.min.js"></script>
+<script src="assets/app.js"></script>
+</body>
+</html>
