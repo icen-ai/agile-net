@@ -38,6 +38,8 @@
   </aside>
 
   <main class="content">
+    <!-- 客户端角色关闭时的全局提示 -->
+    <div id="role-banner" class="net-banner" style="display:none"><i data-ic="info" data-sz="14"></i>客户端角色已停用：节点连接与本地代理均已关闭，可在「设置 → 角色与远程面」重新开启</div>
     <!-- 连接：快速接入 / 本地代理 / 手动添加 / 已保存节点 -->
     <section class="view" id="view-connect">
       <div class="page-title"><i data-ic="link" data-sz="19"></i>连接</div>
@@ -144,7 +146,39 @@
     <!-- 设置 -->
     <section class="view" id="view-settings" hidden>
       <div class="page-title"><i data-ic="settings" data-sz="19"></i>设置</div>
-      <div class="page-desc">启动行为、语言与主题</div>
+      <div class="page-desc">角色开关、启动行为、语言与主题</div>
+
+      <!-- 三路独立开关：客户端 / 服务端 / Web 远程面 -->
+      <div class="card">
+        <h3><i data-ic="server"></i>角色与远程面</h3>
+        <div class="role-list">
+          <div class="role-row">
+            <div class="role-info"><b>客户端角色</b><span class="hint">连接上游节点、本地代理与路由组合（关闭即断开全部节点）</span></div>
+            <label class="switch"><input type="checkbox" id="r-client" checked><span class="slider"></span></label>
+          </div>
+          <div class="role-row">
+            <div class="role-info"><b>服务端角色</b><span class="hint">内嵌完整节点（Relay / 账号 / 规则 / 审计），本机可作为转发机或留守管理端</span></div>
+            <label class="switch"><input type="checkbox" id="r-server"><span class="slider"></span></label>
+          </div>
+          <div id="server-panel" style="display:none">
+            <div class="kv"><span class="k">管理 API</span><span class="mono" id="sv-api">-</span></div>
+            <div class="kv"><span class="k">Relay 监听</span><span class="mono" id="sv-relay">-</span></div>
+            <div class="row" style="margin-top:8px">
+              <button id="btn-open-console" class="ghost small"><i data-ic="external-link" data-sz="13"></i> 打开控制台</button>
+              <span class="hint inline">控制台在独立窗口中管理内嵌节点</span>
+            </div>
+          </div>
+          <div class="role-row">
+            <div class="role-info"><b>Web 远程面</b><span class="hint">把本机管理界面经 HTTP 暴露（默认仅 127.0.0.1，须先设管理密码）</span></div>
+            <label class="switch"><input type="checkbox" id="r-web"><span class="slider"></span></label>
+          </div>
+          <div id="web-panel" style="display:none">
+            <div class="kv"><span class="k">监听地址</span><span><input id="web-listen" class="mono" style="width:170px"> <button id="btn-web-listen-save" class="ghost small">保存</button></span></div>
+            <div class="hint" id="web-status"></div>
+          </div>
+        </div>
+      </div>
+
       <div class="card">
         <h3><i data-ic="settings"></i>偏好</h3>
         <div class="row col">
@@ -170,6 +204,23 @@
       </div>
     </section>
   </main>
+</div>
+
+<!-- 强制设置管理密码弹窗（服务端角色 / Web 远程面首开） -->
+<div class="modal-mask" id="pwd-modal" style="display:none">
+  <div class="modal">
+    <h3 id="pwd-title"><i data-ic="shield" data-sz="16"></i> 设置管理密码</h3>
+    <div class="hint" id="pwd-desc" style="margin:6px 0 12px"></div>
+    <div class="row col" style="gap:10px">
+      <div id="pwd-user-row"><label>管理员账号</label><input id="pwd-user" value="admin" autocomplete="off"></div>
+      <div><label>管理密码（至少 10 位）</label><input id="pwd-pass" type="password" autocomplete="new-password"></div>
+      <div><label>重复密码</label><input id="pwd-pass2" type="password" autocomplete="new-password"></div>
+    </div>
+    <div class="row" style="justify-content:flex-end;margin-top:14px">
+      <button id="pwd-cancel" class="ghost">取消</button>
+      <button id="pwd-ok">确认并继续</button>
+    </div>
+  </div>
 </div>
 
 <script src="icons.js"></script>

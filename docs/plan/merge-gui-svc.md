@@ -3,6 +3,17 @@
 > 状态：方向已确认（2026-07-31 多轮讨论收敛）。本文档为实施依据。
 > 核心思想：**消灭 frps/frpc 式分裂**——上下游本就是同一个程序，最终只有两个产物。
 
+## 0. 实施进度
+
+- **P1 节点可嵌入化（已完成，2026-07-31）**：`crates/node` 装配根抽为 `service::NodeServer::start/stop`
+  （main.rs 薄壳化；API 支持端口 0 动态分配回填；优雅停机）；`apps/desktop` 三路独立开关
+  （客户端默认开 / 服务端默认关 / Web 远程面默认关，状态持久化 + `gui.role_toggle` /
+  `web.exposure_change` 审计 JSONL）；服务端角色首开强制设管理密码（argon2id），
+  内嵌实例默认端口避让（API 127.0.0.1:59290 / Relay 54431，数据于 `~/.agile-net/embedded-node/`）；
+  控制台独立 Tauri 窗口复用内嵌节点 SPA；Web 远程面的密码基础设施就位，
+  HTTP 服务本身随 P1.5 落地。测试：`crates/node/tests/service_test.rs`（start/serve/stop + 同库重启）。
+- P1.5 / P1.6 / P2 / P3：进行中。
+
 ## 1. 终态产物
 
 | 产物 | 内容 | 场景 |

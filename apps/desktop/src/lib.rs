@@ -2,11 +2,16 @@
 //!
 //! 通过 IPC 向前端暴露节点管理、代理控制与凭据存储能力，
 //! 全部网络逻辑复用 agile-net-client 引擎（与 CLI/daemon 同一数据面）。
+//! 服务端角色内嵌完整 agile-net-node（与 anet-svc 同一装配根 NodeServer）。
 
 use agile_net_client::{AgileNetClient, ConnectParams, Credential, CredentialStore, NodeState};
+use agile_net_node::service::NodeServer;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tauri::{Manager, State};
+
+mod roles;
+use roles::RoleSettings;
 
 /// 前端传入的连接参数
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -36,6 +41,8 @@ pub struct ProxyStatus {
 pub struct AppState {
     client: AgileNetClient,
     creds: Arc<tokio::sync::Mutex<Option<CredentialStore>>>,
+    roles: Arc<tokio::sync::Mutex<RoleSettings>>,
+    server: Arc<tokio::sync::Mutex<Option<NodeServer>>>,
 }
 
 impl AppState {
@@ -43,6 +50,8 @@ impl AppState {
         Self {
             client: AgileNetClient::new(),
             creds: Arc::new(tokio::sync::Mutex::new(CredentialStore::open_default().ok())),
+            roles: Arc::new(tokio::sync::Mutex::new(RoleSettings::load())),
+            server: Arc::new(tokio::sync::Mutex::new(None)),
         }
     }
 }
@@ -54,6 +63,9 @@ fn map_err<E: std::fmt::Display>(e: E) -> String {
 /// 连接节点
 #[tauri::command]
 async fn connect_node(state: State<'_, AppState>, input: ConnectInput) -> Result<NodeState, String> {
+    if !state.roles.lock().await.client {
+        return Err("客户端角色已停用，请在「设置 → 角色与远程面」开启".into());
+    }
     let params = ConnectParams {
         addr: input.addr.clone(),
         username: input.username.clone(),
@@ -188,6 +200,9 @@ async fn list_credentials(state: State<'_, AppState>) -> Result<Vec<(String, Cre
 /// 启动本地代理
 #[tauri::command]
 async fn start_proxy(state: State<'_, AppState>, port: u16) -> Result<u16, String> {
+    if !state.roles.lock().await.client {
+        return Err("客户端角色已停用，请在「设置 → 角色与远程面」开启".into());
+    }
     state.client.start_proxy(port).await.map_err(map_err)?;
     Ok(state.client.proxy_port())
 }
@@ -293,6 +308,216 @@ fn get_autostart(app: tauri::AppHandle) -> Result<bool, String> {
     app.autolaunch().is_enabled().map_err(map_err)
 }
 
+// ==================== 三路角色开关（客户端 / 服务端 / Web 远程面） ====================
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ServerStatus {
+    pub running: bool,
+    pub has_admin: bool,
+    pub api_addr: String,
+    pub relay_addr: String,
+}
+
+#[tauri::command]
+async fn get_role_settings(state: State<'_, AppState>) -> Result<RoleSettings, String> {
+    Ok(state.roles.lock().await.clone())
+}
+
+/// 开关A：客户端角色。关闭即断开全部节点并停止本地代理。
+#[tauri::command]
+async fn set_client_role(state: State<'_, AppState>, enabled: bool) -> Result<(), String> {
+    if !enabled {
+        state.client.disconnect_all().await;
+        state.client.stop_proxy().await;
+    }
+    let mut roles = state.roles.lock().await;
+    roles.client = enabled;
+    roles.save()?;
+    drop(roles);
+    roles::audit("gui.role_toggle", serde_json::json!({"role": "client", "on": enabled}));
+    Ok(())
+}
+
+/// 服务端角色运行状态。
+#[tauri::command]
+async fn server_status(state: State<'_, AppState>) -> Result<ServerStatus, String> {
+    let running = state.server.lock().await.is_some();
+    let has_admin = roles::open_embedded_db()
+        .and_then(|db| db.has_admin().map_err(|e| e.to_string()))
+        .unwrap_or(false);
+    Ok(ServerStatus {
+        running,
+        has_admin,
+        api_addr: roles::EMBEDDED_API_ADDR.into(),
+        relay_addr: roles::EMBEDDED_RELAY_ADDR.into(),
+    })
+}
+
+/// 首开强制设管理密码：创建内嵌节点管理员（argon2id 哈希落库）。
+#[tauri::command]
+async fn init_server_admin(username: String, password: String) -> Result<(), String> {
+    if username.trim().is_empty() {
+        return Err("管理员账号不能为空".into());
+    }
+    if password.len() < 10 {
+        return Err("管理密码至少 10 位".into());
+    }
+    let db = roles::open_embedded_db()?;
+    if db.has_admin().map_err(|e| e.to_string())? {
+        return Err("管理员已存在，请在控制台内变更".into());
+    }
+    let hash = agile_net_node::db::hash_password(&password).map_err(map_err)?;
+    db.create_admin(username.trim(), &hash).map_err(map_err)?;
+    Ok(())
+}
+
+/// 开关B：服务端角色。开启即启动内嵌节点（须先设管理密码），关闭即停机。
+#[tauri::command]
+async fn set_server_role(state: State<'_, AppState>, enabled: bool) -> Result<ServerStatus, String> {
+    if enabled {
+        let has_admin = roles::open_embedded_db()
+            .and_then(|db| db.has_admin().map_err(|e| e.to_string()))
+            .unwrap_or(false);
+        if !has_admin {
+            return Err("NO_ADMIN:首开服务端角色须先设置管理密码".into());
+        }
+        let mut slot = state.server.lock().await;
+        if slot.is_none() {
+            let server = NodeServer::start_with(
+                roles::build_embedded_config(),
+                agile_net_node::service::NodeServerOptions {
+                    db_path: Some(roles::embedded_db_path().to_string_lossy().to_string()),
+                    api_listen: Some(roles::EMBEDDED_API_ADDR.into()),
+                    skip_env_seed: true,
+                    ..Default::default()
+                },
+            )
+            .await
+            .map_err(|e| format!("内嵌节点启动失败: {e}"))?;
+            tracing::info!(api = %server.api_addr(), "embedded node started");
+            *slot = Some(server);
+        }
+    } else {
+        let server = state.server.lock().await.take();
+        if let Some(s) = server {
+            s.stop().await;
+        }
+    }
+    {
+        let mut roles = state.roles.lock().await;
+        roles.server = enabled;
+        roles.save()?;
+    }
+    roles::audit("gui.role_toggle", serde_json::json!({"role": "server", "on": enabled}));
+    let has_admin = roles::open_embedded_db()
+        .and_then(|db| db.has_admin().map_err(|e| e.to_string()))
+        .unwrap_or(false);
+    Ok(ServerStatus {
+        running: enabled,
+        has_admin,
+        api_addr: roles::EMBEDDED_API_ADDR.into(),
+        relay_addr: roles::EMBEDDED_RELAY_ADDR.into(),
+    })
+}
+
+#[tauri::command]
+async fn has_web_password() -> Result<bool, String> {
+    Ok(roles::has_web_password())
+}
+
+/// 设置 Web 远程面管理密码（argon2id 哈希落盘）。
+#[tauri::command]
+async fn set_web_password(password: String) -> Result<(), String> {
+    roles::set_web_password(&password)?;
+    roles::audit("web.exposure_change", serde_json::json!({"change": "password_set"}));
+    Ok(())
+}
+
+/// 开关C：Web 远程面。强制先设管理密码；监听地址变更记审计。
+/// （HTTP 服务本身由客户端管理面 Web 化模块提供。）
+#[tauri::command]
+async fn set_web_role(state: State<'_, AppState>, enabled: bool, listen: Option<String>) -> Result<(), String> {
+    if enabled && !roles::has_web_password() {
+        return Err("NO_WEB_PASSWORD:开启 Web 远程面须先设置管理密码".into());
+    }
+    let listen = listen.filter(|s| !s.trim().is_empty());
+    if let Some(l) = &listen {
+        l.parse::<std::net::SocketAddr>()
+            .map_err(|_| "监听地址格式应为 host:port".to_string())?;
+    }
+    let mut roles = state.roles.lock().await;
+    let old_listen = roles.web_listen.clone();
+    roles.web = enabled;
+    if let Some(l) = listen {
+        roles.web_listen = l;
+    }
+    let new_listen = roles.web_listen.clone();
+    roles.save()?;
+    drop(roles);
+    roles::audit("gui.role_toggle", serde_json::json!({"role": "web", "on": enabled}));
+    if enabled && old_listen != new_listen {
+        roles::audit("web.exposure_change", serde_json::json!({"listen": new_listen}));
+    }
+    Ok(())
+}
+
+/// 打开内嵌节点控制台（独立窗口复用节点管理 SPA）。
+#[tauri::command]
+async fn open_console(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    let addr = {
+        let slot = state.server.lock().await;
+        slot.as_ref().map(|s| s.api_addr())
+    }
+    .ok_or("服务端角色未运行")?;
+    if let Some(w) = app.get_webview_window("console") {
+        let _ = w.unminimize();
+        let _ = w.show();
+        let _ = w.set_focus();
+        return Ok(());
+    }
+    let url: tauri::Url = format!("http://{addr}/").parse().map_err(map_err)?;
+    tauri::WebviewWindowBuilder::new(&app, "console", tauri::WebviewUrl::External(url))
+        .title("AgileNet 控制台")
+        .inner_size(1180.0, 780.0)
+        .min_inner_size(860.0, 600.0)
+        .build()
+        .map_err(map_err)?;
+    Ok(())
+}
+
+/// 启动时恢复服务端角色（上次退出时处于开启状态）。
+async fn restore_server_role(app: &tauri::AppHandle) {
+    let state = app.state::<AppState>();
+    let enabled = state.roles.lock().await.server;
+    if !enabled {
+        return;
+    }
+    let has_admin = roles::open_embedded_db()
+        .and_then(|db| db.has_admin().map_err(|e| e.to_string()))
+        .unwrap_or(false);
+    if !has_admin {
+        tracing::warn!("server role was enabled but no admin exists — keeping embedded node stopped");
+        return;
+    }
+    match NodeServer::start_with(
+        roles::build_embedded_config(),
+        agile_net_node::service::NodeServerOptions {
+            db_path: Some(roles::embedded_db_path().to_string_lossy().to_string()),
+            api_listen: Some(roles::EMBEDDED_API_ADDR.into()),
+            skip_env_seed: true,
+            ..Default::default()
+        },
+    )
+    .await
+    {
+        Ok(server) => {
+            tracing::info!(api = %server.api_addr(), "embedded node restored");
+            *state.server.lock().await = Some(server);
+        }
+        Err(e) => tracing::error!(error = %e, "failed to restore embedded node"),
+    }
+}
+
 /// 构建系统托盘（显示窗口 / 代理开关 / 退出）
 fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     use tauri::menu::{MenuBuilder, MenuItemBuilder};
@@ -384,9 +609,24 @@ pub fn run() {
             parse_connect_url,
             set_autostart,
             get_autostart,
+            get_role_settings,
+            set_client_role,
+            server_status,
+            init_server_admin,
+            set_server_role,
+            has_web_password,
+            set_web_password,
+            set_web_role,
+            open_console,
         ])
         .setup(|app| {
             setup_tray(app)?;
+
+            // 恢复上次开启的服务端角色（内嵌节点）
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                restore_server_role(&handle).await;
+            });
 
             // 关闭窗口时最小化到托盘（不退出进程）
             if let Some(window) = app.get_webview_window("main") {

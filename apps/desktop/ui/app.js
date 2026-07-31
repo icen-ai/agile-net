@@ -485,6 +485,141 @@ async function deleteCred(key, btn) {
   setTimeout(() => { if (btn.isConnected) { btn.dataset.confirm = ''; btn.innerHTML = old; } }, 2500);
 }
 
+/* ================= 三路角色开关 ================= */
+let pwdResolver = null;
+
+/** 强制设置管理密码弹窗（Promise 化；取消 resolve null） */
+function askPassword(opts) {
+  return new Promise((resolve) => {
+    $('pwd-title').innerHTML = AgIcon('shield', 16) + ' ' + esc(opts.title);
+    $('pwd-desc').textContent = opts.desc;
+    $('pwd-user-row').style.display = opts.showUser ? 'block' : 'none';
+    $('pwd-pass').value = ''; $('pwd-pass2').value = '';
+    $('pwd-modal').style.display = 'flex';
+    $('pwd-pass').focus();
+    pwdResolver = resolve;
+  });
+}
+function closePwdModal(result) {
+  $('pwd-modal').style.display = 'none';
+  if (pwdResolver) { const r = pwdResolver; pwdResolver = null; r(result); }
+}
+function applyClientRole(on) {
+  $('role-banner').style.display = on ? 'none' : 'flex';
+}
+async function refreshServerPanel() {
+  let st = null;
+  try { st = await invoke('server_status'); } catch (e) { return; }
+  window._serverStatus = st;
+  const on = $('r-server').checked || st.running;
+  $('server-panel').style.display = on ? 'block' : 'none';
+  $('sv-api').textContent = st.api_addr || '-';
+  $('sv-relay').textContent = st.relay_addr || '-';
+}
+function refreshWebPanel() {
+  const on = $('r-web').checked;
+  $('web-panel').style.display = on ? 'block' : 'none';
+  $('web-status').textContent = on ? '监听地址保存后生效；浏览器访问需输入管理密码' : '';
+}
+async function initRoles() {
+  let settings = { client: true, server: false, web: false, web_listen: '127.0.0.1:59291' };
+  try { settings = await invoke('get_role_settings'); } catch (e) {}
+  $('r-client').checked = settings.client;
+  $('r-server').checked = settings.server;
+  $('r-web').checked = settings.web;
+  $('web-listen').value = settings.web_listen;
+  applyClientRole(settings.client);
+  refreshServerPanel();
+  refreshWebPanel();
+
+  $('r-client').onchange = async (e) => {
+    try {
+      await invoke('set_client_role', { enabled: e.target.checked });
+      applyClientRole(e.target.checked);
+      toast(e.target.checked ? '客户端角色已开启' : '客户端角色已停用（已断开全部节点）', 'ok');
+      if (e.target.checked) { refreshNodes(true); refreshProxy(); refreshCreds(); }
+    } catch (err) {
+      e.target.checked = !e.target.checked;
+      toast(friendlyError(err), 'err');
+    }
+  };
+
+  $('r-server').onchange = async (e) => {
+    const on = e.target.checked;
+    try {
+      if (on) {
+        // 首开强制设管理密码
+        const st = await invoke('server_status');
+        if (!st.has_admin) {
+          e.target.checked = false;
+          const cred = await askPassword({
+            title: '设置服务端管理密码',
+            desc: '首开服务端角色须先设置内嵌节点管理员，该密码用于登录控制台。',
+            showUser: true,
+          });
+          if (!cred) return;
+          await invoke('init_server_admin', { username: cred.user, password: cred.pass });
+          e.target.checked = true;
+          toast('管理员已创建', 'ok');
+        }
+      }
+      await invoke('set_server_role', { enabled: on });
+      await refreshServerPanel();
+      toast(on ? '服务端角色已开启（内嵌节点运行中）' : '服务端角色已关闭', 'ok');
+    } catch (err) {
+      e.target.checked = false;
+      toast(friendlyError(err), 'err');
+      refreshServerPanel();
+    }
+  };
+
+  $('r-web').onchange = async (e) => {
+    const on = e.target.checked;
+    try {
+      if (on && !(await invoke('has_web_password'))) {
+        e.target.checked = false;
+        const cred = await askPassword({
+          title: '设置 Web 远程面管理密码',
+          desc: '开启 Web 远程面前须先设置管理密码；从浏览器访问本机管理界面时需输入。',
+          showUser: false,
+        });
+        if (!cred) return;
+        await invoke('set_web_password', { password: cred.pass });
+        e.target.checked = true;
+        toast('管理密码已设置', 'ok');
+      }
+      await invoke('set_web_role', { enabled: on, listen: $('web-listen').value.trim() || null });
+      refreshWebPanel();
+      toast(on ? 'Web 远程面已开启' : 'Web 远程面已关闭', 'ok');
+    } catch (err) {
+      e.target.checked = !on;
+      toast(friendlyError(err), 'err');
+    }
+  };
+
+  $('btn-web-listen-save').onclick = async () => {
+    try {
+      await invoke('set_web_role', { enabled: $('r-web').checked, listen: $('web-listen').value.trim() });
+      toast('监听地址已保存', 'ok');
+    } catch (err) { toast(friendlyError(err), 'err'); }
+  };
+
+  $('btn-open-console').onclick = async () => {
+    try { await invoke('open_console'); }
+    catch (err) { toast(friendlyError(err), 'err'); }
+  };
+
+  $('pwd-cancel').onclick = () => closePwdModal(null);
+  $('pwd-ok').onclick = () => {
+    const user = $('pwd-user').value.trim();
+    const p1 = $('pwd-pass').value, p2 = $('pwd-pass2').value;
+    if ($('pwd-user-row').style.display !== 'none' && !user) { toast('请填写管理员账号', 'err'); return; }
+    if (p1.length < 10) { toast('管理密码至少 10 位', 'err'); return; }
+    if (p1 !== p2) { toast('两次输入的密码不一致', 'err'); return; }
+    closePwdModal({ user, pass: p1 });
+  };
+}
+
 /* ================= 设置 ================= */
 async function loadSettings() {
   $('s-autoproxy').checked = PREFS.autoproxy;
@@ -578,6 +713,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   });
 
   await loadSettings();
+  await initRoles();
   $('s-lang').value = localStorage.getItem('ag_lang') || 'zh';
   $('s-theme').value = localStorage.getItem('ag_theme') || 'light';
   $('s-lang').onchange = (e) => { localStorage.setItem('ag_lang', e.target.value); applyLanguage(); };

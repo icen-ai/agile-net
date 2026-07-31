@@ -90,6 +90,16 @@ impl ApiState {
         }
     }
 
+    /// 管理 API 端口（启动值；动态端口场景由 NodeServer 回填实际值）。
+    pub fn api_port(&self) -> u16 {
+        self.api_port
+    }
+
+    /// 回填实际绑定的 API 端口（端口 0 动态分配后调用）。
+    pub fn set_api_port(&mut self, port: u16) {
+        self.api_port = port;
+    }
+
     /// 客户端 API 接入端点（connect_url 用）。
     pub fn public_api_endpoint(&self) -> (String, u16) {
         // 优先读数据库中的运行时设置，回落到启动值

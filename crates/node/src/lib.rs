@@ -6,5 +6,6 @@ pub mod auth;
 pub mod db;
 pub mod logs;
 pub mod relay_auth;
+pub mod service;
 pub mod tui;
 pub mod ui;
