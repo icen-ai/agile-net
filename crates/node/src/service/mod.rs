@@ -38,6 +38,12 @@ pub struct NodeServerOptions {
     pub skip_env_seed: bool,
     /// 复用调用方的内存日志缓冲（缺省新建）
     pub log_buffer: Option<LogBuffer>,
+    /// 路由再发布：客户端引擎合并路由 + 开启器注册表（GUI 内嵌场景；
+    /// 客户端隧道规则转售给下游，Open 命中时经对应隧道转发）
+    pub client_routes: Option<(
+        Arc<ArcSwap<ProxyRouter>>,
+        Arc<dashmap::DashMap<String, Arc<dyn ChannelOpener>>>,
+    )>,
 }
 
 /// 运行中的节点实例（`stop` 幂等）。
@@ -97,12 +103,21 @@ impl NodeServer {
         // 3. 路由表（节点本地代理由全部规则驱动，命中 → 自动选路隧道，未命中 → 直连）
         let shared_router = Arc::new(ArcSwap::from_pointee(build_router(&db)));
 
+        // 握手 v2：控制端点槽（API 装配后回填）与可管理上游注册表（connector 同步）
+        let control_api_slot: Arc<arc_swap::ArcSwapOption<(String, u16)>> =
+            Arc::new(arc_swap::ArcSwapOption::from_pointee(None));
+        let manageable_registry = crate::relay_auth::ManageableRegistry::default();
+
         // 4. Relay Listener
         let mut relay_listener: Option<Arc<RelayListener>> = None;
         let mut cert_fingerprint: Option<String> = None;
         if let Some(listener_cfg) = &config.listener {
             let addr: SocketAddr = listener_cfg.addr.parse()?;
-            let validator = Arc::new(DbTokenValidator::new(db.clone()));
+            let validator = Arc::new(
+                DbTokenValidator::new(db.clone())
+                    .with_control_api(control_api_slot.clone())
+                    .with_manageable(manageable_registry.clone()),
+            );
 
             let tls_acceptor = if let Some(acme_cfg) = &config.acme {
                 // ACME 模式：ALPN 多路复用解析器（签发/续期免停机热替换）
@@ -209,12 +224,50 @@ impl NodeServer {
             if let Some(l) = &relay_listener {
                 connector = connector.with_peer_router(l.clone());
             }
+            // 路由再发布：客户端隧道规则转售给下游（GUI 内嵌场景注入）
+            if let Some((cr, ops)) = &opts.client_routes {
+                connector = connector.with_client_routes(cr.clone(), ops.clone());
+            }
             let connector = Arc::new(connector);
             let c = connector.clone();
             tasks.push(tokio::spawn(async move {
                 c.run().await;
             }));
             tracing::info!(upstream = %upstream, "relay connector running");
+            // 握手 v2：同步上游暴露的控制端点到可管理注册表
+            {
+                let c = connector.clone();
+                let registry = manageable_registry.clone();
+                tasks.push(tokio::spawn(async move {
+                    let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
+                    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                    loop {
+                        interval.tick().await;
+                        match c.control_offer() {
+                            Some(offer) => {
+                                let key = if offer.node_name.is_empty() {
+                                    "upstream".to_string()
+                                } else {
+                                    offer.node_name.clone()
+                                };
+                                let stale = registry
+                                    .get(&key)
+                                    .map(|old| old.ticket != offer.ticket)
+                                    .unwrap_or(true);
+                                if stale {
+                                    tracing::info!(upstream = %key, api = %format!("{:?}:{}", offer.api_host, offer.api_port), "manageable upstream discovered");
+                                }
+                                registry.insert(key, offer);
+                            }
+                            None => {
+                                if !registry.is_empty() {
+                                    registry.clear();
+                                }
+                            }
+                        }
+                    }
+                }));
+            }
             relay_connector = Some(connector);
         }
 
@@ -251,6 +304,7 @@ impl NodeServer {
             proxy_listen,
             log_buffer,
             cert_fingerprint,
+            manageable: manageable_registry.clone(),
         });
 
         // 路由热更新监视：config_version 变化即重建节点本地代理路由表。
@@ -312,7 +366,7 @@ impl NodeServer {
         let api_port = api_socket_addr.port();
 
         let state = {
-            let mut st = ApiState::new(db.clone(), jwt.clone(), runtime.clone(), public_host, api_port, relay_port);
+            let mut st = ApiState::new(db.clone(), jwt.clone(), runtime.clone(), public_host.clone(), api_port, relay_port);
             if let Some(lim) = &config.limits {
                 st.login_limiter = st.login_limiter.clone().with_config(
                     lim.login_per_minute,
@@ -383,6 +437,9 @@ impl NodeServer {
         } else {
             state
         };
+
+        // 握手 v2：回填本节点管理 API 端点（relay_token 暴露控制面下发内容）
+        control_api_slot.store(Some(Arc::new((public_host.clone(), bound_api_addr.port()))));
 
         Ok(Self {
             db,
@@ -475,18 +532,34 @@ fn seed_admin_from_env(db: &Database) -> Result<()> {
 ///
 /// 容器编排场景下，下游节点的 connector token 需要预先存在于上游数据库。
 /// 已存在（按哈希判重）的 token 会跳过，保证幂等。
+/// 语法扩展：`psk_xxx|expose:rules` 或 `psk_xxx|expose`（暴露控制面，档位缺省 full）。
 fn seed_relay_tokens_from_env(db: &Database) -> Result<()> {
     let Ok(tokens) = std::env::var("AGILE_RELAY_TOKENS") else {
         return Ok(());
     };
-    for token in tokens.split(',').map(|t| t.trim()).filter(|t| !t.is_empty()) {
+    for entry in tokens.split(',').map(|t| t.trim()).filter(|t| !t.is_empty()) {
+        let (token, expose, scope) = match entry.split_once('|') {
+            Some((t, flags)) => {
+                let mut expose = false;
+                let mut scope = "full";
+                for f in flags.split(':') {
+                    match f {
+                        "expose" => expose = true,
+                        "ro" | "rules" | "full" => scope = f,
+                        _ => {}
+                    }
+                }
+                (t, expose, scope)
+            }
+            None => (entry, false, "full"),
+        };
         let hash = crate::db::sha256_hex(token.as_bytes());
         if db.check_relay_token(&hash)? {
             continue;
         }
         let prefix = format!("{}****", &token[..token.len().min(8)]);
-        db.create_relay_token(&hash, &prefix, "seeded from environment")?;
-        tracing::info!(prefix = %prefix, "relay token seeded from environment");
+        db.create_relay_token_full(&hash, &prefix, "seeded from environment", expose, scope)?;
+        tracing::info!(prefix = %prefix, expose, scope, "relay token seeded from environment");
     }
     Ok(())
 }

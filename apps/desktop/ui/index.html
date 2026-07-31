@@ -167,6 +167,18 @@
               <button id="btn-open-console" class="ghost small"><i data-ic="external-link" data-sz="13"></i> 打开控制台</button>
               <span class="hint inline">控制台在独立窗口中管理内嵌节点</span>
             </div>
+            <div class="kv" style="margin-top:6px"><span class="k">上游中继（路由再发布）</span><span class="hint inline">可选：接入上游后，本机客户端隧道的规则将转售给下游</span></div>
+            <div class="grid2" style="margin-top:6px">
+              <div><label>上游地址</label><input id="sc-upstream" class="mono" placeholder="root.example.com:54430"></div>
+              <div><label>Relay Token</label><input id="sc-token" type="password" class="mono" placeholder="psk_..."></div>
+              <div><label>SNI 域名</label><input id="sc-sni" class="mono" value="cdn.cloudflare.com"></div>
+              <div><label class="chk" style="margin-top:22px"><input type="checkbox" id="sc-insecure"> 跳过证书校验（仅开发）</label></div>
+            </div>
+            <div class="row" style="margin-top:8px">
+              <button id="btn-sc-save" class="ghost small">保存并重连</button>
+              <button id="btn-sc-clear" class="ghost small">清除</button>
+              <span class="hint" id="sc-status"></span>
+            </div>
           </div>
           <div class="role-row">
             <div class="role-info"><b>Web 远程面</b><span class="hint">把本机管理界面经 HTTP 暴露（默认仅 127.0.0.1，须先设管理密码）</span></div>

@@ -87,6 +87,7 @@ async fn cli_full_workflow_against_live_api() {
         proxy_listen: None,
         log_buffer: LogBuffer::new(),
         cert_fingerprint: None,
+        manageable: Default::default(),
     });
     let state = ApiState::new(db.clone(), jwt, runtime, "127.0.0.1".into(), 59090, 54430);
     let app = create_app(state);

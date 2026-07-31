@@ -45,6 +45,8 @@ pub enum AuthIdentity {
         node_id: String,
         /// 通告的可服务网段/域名
         advertise: Vec<String>,
+        /// 握手 v2：暴露控制面时向该下游下发的管理端点（AuthOk 携带）
+        control: Option<crate::proto::message::ControlOffer>,
     },
     /// 客户端账号，附带目标访问控制规则
     Client {
@@ -82,6 +84,7 @@ impl TokenValidator for StaticTokenValidator {
             Some(AuthIdentity::Node {
                 node_id: auth.node_id.clone(),
                 advertise: auth.advertise.clone(),
+                control: None,
             })
         } else {
             None
@@ -410,7 +413,7 @@ impl RelayListener {
 
         let flow_control = peer_version >= PROTOCOL_VERSION_FLOW_CONTROL;
         match identity {
-            AuthIdentity::Node { node_id, advertise } => {
+            AuthIdentity::Node { node_id, advertise, .. } => {
                 self.serve_node_session(tls_stream, peer_addr, node_id, advertise, token_hash, flow_control).await
             }
             AuthIdentity::Client { account_id, acl } => {
@@ -452,7 +455,13 @@ impl RelayListener {
                 self.clear_auth_failures(&peer_addr.ip());
                 let token_hash = sha256_hex(auth_req.token.as_bytes());
                 let peer_version = auth_req.version;
-                let auth_ok = serde_json::json!({ "version": PROTOCOL_VERSION });
+                // 握手 v2：下游令牌带暴露标记时下发控制面端点（旧下游忽略未知字段）
+                let auth_ok = match &identity {
+                    AuthIdentity::Node { control: Some(offer), .. } => {
+                        serde_json::json!({ "version": PROTOCOL_VERSION, "control": offer })
+                    }
+                    _ => serde_json::json!({ "version": PROTOCOL_VERSION }),
+                };
                 Frame::new(FrameType::AuthOk, 0, bytes::Bytes::from(auth_ok.to_string()))
                     .write_to(&mut tls_stream)
                     .await?;

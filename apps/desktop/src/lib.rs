@@ -89,7 +89,10 @@ async fn connect_node(state: State<'_, AppState>, input: ConnectInput) -> Result
 #[tauri::command]
 async fn disconnect_node(state: State<'_, AppState>, node_id: String) -> Result<(), String> {
     state.client.disconnect(&node_id).await;
-    state.consoles.lock().await.remove(&node_id);
+    let mut map = state.consoles.lock().await;
+    map.remove(&node_id);
+    let prefix = format!("{node_id}|");
+    map.retain(|k, _| !k.starts_with(&prefix));
     Ok(())
 }
 
@@ -279,6 +282,26 @@ async fn init_server_admin(username: String, password: String) -> Result<(), Str
     Ok(())
 }
 
+/// 启动内嵌节点（读当前角色配置；注入客户端引擎路由再发布）。
+async fn start_embedded_node(state: &State<'_, AppState>) -> Result<NodeServer, String> {
+    let connector = state.roles.lock().await.server_connector.clone();
+    NodeServer::start_with(
+        roles::build_embedded_config(connector.as_ref()),
+        agile_net_node::service::NodeServerOptions {
+            db_path: Some(roles::embedded_db_path().to_string_lossy().to_string()),
+            api_listen: Some(roles::EMBEDDED_API_ADDR.into()),
+            skip_env_seed: true,
+            client_routes: Some((
+                state.client.shared_router_handle(),
+                state.client.openers_handle(),
+            )),
+            ..Default::default()
+        },
+    )
+    .await
+    .map_err(|e| format!("内嵌节点启动失败: {e}"))
+}
+
 /// 开关B：服务端角色。开启即启动内嵌节点（须先设管理密码），关闭即停机。
 #[tauri::command]
 async fn set_server_role(state: State<'_, AppState>, enabled: bool) -> Result<ServerStatus, String> {
@@ -291,17 +314,7 @@ async fn set_server_role(state: State<'_, AppState>, enabled: bool) -> Result<Se
         }
         let mut slot = state.server.lock().await;
         if slot.is_none() {
-            let server = NodeServer::start_with(
-                roles::build_embedded_config(),
-                agile_net_node::service::NodeServerOptions {
-                    db_path: Some(roles::embedded_db_path().to_string_lossy().to_string()),
-                    api_listen: Some(roles::EMBEDDED_API_ADDR.into()),
-                    skip_env_seed: true,
-                    ..Default::default()
-                },
-            )
-            .await
-            .map_err(|e| format!("内嵌节点启动失败: {e}"))?;
+            let server = start_embedded_node(&state).await?;
             tracing::info!(api = %server.api_addr(), "embedded node started");
             *slot = Some(server);
         }
@@ -440,38 +453,7 @@ async fn open_node_console(
     let (ticket, api_port) = state.client.console_ticket(&node_id).await.map_err(map_err)?;
 
     // 2. loopback 转发器（每节点复用；断开重连后由调用方重建）
-    let local_port = {
-        let mut map = state.consoles.lock().await;
-        if let Some(p) = map.get(&node_id) {
-            *p
-        } else {
-            let opener = state.client.opener(&node_id).ok_or("节点未连接")?;
-            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-                .await
-                .map_err(map_err)?;
-            let port = listener.local_addr().map_err(map_err)?.port();
-            tauri::async_runtime::spawn(async move {
-                loop {
-                    let Ok((stream, _)) = listener.accept().await else {
-                        break;
-                    };
-                    let opener = opener.clone();
-                    tauri::async_runtime::spawn(async move {
-                        match opener.open("", "127.0.0.1", api_port).await {
-                            Ok(ch) => {
-                                let _ = agile_net_core::relay::bridge::bridge(stream, ch).await;
-                            }
-                            Err(e) => {
-                                tracing::debug!(error = %e, "console channel open failed");
-                            }
-                        }
-                    });
-                }
-            });
-            map.insert(node_id.clone(), port);
-            port
-        }
-    };
+    let local_port = ensure_console_forwarder(&state, &node_id, "127.0.0.1", api_port).await?;
 
     // 3. 打开/聚焦控制台窗口（复用节点管理 SPA；票据经 URL fragment 传递，不进日志与历史）
     let label = console_window_label(&node_id);
@@ -498,6 +480,95 @@ async fn open_node_console(
     Ok(())
 }
 
+/// 打开可管理上游的控制台（握手 v2 发现；经当前节点隧道访问上游管理面）。
+#[tauri::command]
+async fn open_upstream_console(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    node_id: String,
+    upstream: String,
+) -> Result<(), String> {
+    let (ticket, api_host, api_port, scope) = state
+        .client
+        .upstream_console_ticket(&node_id, &upstream)
+        .await
+        .map_err(map_err)?;
+
+    // 转发器目标为上游 API（经当前节点隧道直达，ACL 由隧道对端收口）
+    let fwd_key = format!("{node_id}|{upstream}");
+    let local_port = ensure_console_forwarder(&state, &fwd_key, &api_host, api_port).await?;
+
+    let label = console_window_label(&fwd_key);
+    if let Some(w) = app.get_webview_window(&label) {
+        let _ = w.unminimize();
+        let _ = w.show();
+        let _ = w.set_focus();
+        return Ok(());
+    }
+    let url: tauri::Url = format!("http://127.0.0.1:{local_port}/#boot={ticket}")
+        .parse()
+        .map_err(map_err)?;
+    tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::External(url))
+        .title(format!("AgileNet 控制台 — {upstream}（经 {node_id}）"))
+        .inner_size(1180.0, 780.0)
+        .min_inner_size(860.0, 600.0)
+        .build()
+        .map_err(map_err)?;
+
+    roles::audit(
+        "admin.console_access",
+        serde_json::json!({
+            "target": upstream,
+            "path": format!("本机→{node_id}→relay"),
+            "identity": format!("relay 票据（scope={scope}）"),
+        }),
+    );
+    Ok(())
+}
+
+/// 控制台 loopback 转发器：本地环回端口 → 指定节点隧道 → 目标 API。
+/// key 去重（node_id 或 node_id|upstream）；断开重连后由调用方清理重建。
+async fn ensure_console_forwarder(
+    state: &State<'_, AppState>,
+    key: &str,
+    target_host: &str,
+    target_port: u16,
+) -> Result<u16, String> {
+    let mut map = state.consoles.lock().await;
+    if let Some(p) = map.get(key) {
+        return Ok(*p);
+    }
+    // key 的第一段恒为 node_id
+    let node_id = key.split('|').next().unwrap_or(key);
+    let opener = state.client.opener(node_id).ok_or("节点未连接")?;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .map_err(map_err)?;
+    let port = listener.local_addr().map_err(map_err)?.port();
+    let target_host = target_host.to_string();
+    tauri::async_runtime::spawn(async move {
+        loop {
+            let Ok((stream, _)) = listener.accept().await else {
+                break;
+            };
+            let opener = opener.clone();
+            let target_host = target_host.clone();
+            tauri::async_runtime::spawn(async move {
+                match opener.open("", &target_host, target_port).await {
+                    Ok(ch) => {
+                        let _ = agile_net_core::relay::bridge::bridge(stream, ch).await;
+                    }
+                    Err(e) => {
+                        tracing::debug!(error = %e, "console channel open failed");
+                    }
+                }
+            });
+        }
+    });
+    map.insert(key.to_string(), port);
+    Ok(port)
+}
+
 /// Tauri 窗口标签（仅字母数字-_）。
 fn console_window_label(node_id: &str) -> String {
     let sanitized: String = node_id
@@ -521,23 +592,45 @@ async fn restore_server_role(app: &tauri::AppHandle) {
         tracing::warn!("server role was enabled but no admin exists — keeping embedded node stopped");
         return;
     }
-    match NodeServer::start_with(
-        roles::build_embedded_config(),
-        agile_net_node::service::NodeServerOptions {
-            db_path: Some(roles::embedded_db_path().to_string_lossy().to_string()),
-            api_listen: Some(roles::EMBEDDED_API_ADDR.into()),
-            skip_env_seed: true,
-            ..Default::default()
-        },
-    )
-    .await
-    {
+    match start_embedded_node(&state).await {
         Ok(server) => {
             tracing::info!(api = %server.api_addr(), "embedded node restored");
             *state.server.lock().await = Some(server);
         }
         Err(e) => tracing::error!(error = %e, "failed to restore embedded node"),
     }
+}
+
+/// 读取/更新内嵌节点的上游中继配置（路由再发布；运行中变更即重启内嵌节点）。
+#[tauri::command]
+async fn set_server_connector(
+    state: State<'_, AppState>,
+    config: Option<roles::ServerConnectorConfig>,
+) -> Result<(), String> {
+    if let Some(c) = &config {
+        if c.upstream_addr.trim().is_empty() || c.token.trim().is_empty() {
+            return Err("上游地址与 Relay Token 不能为空".into());
+        }
+    }
+    {
+        let mut roles = state.roles.lock().await;
+        roles.server_connector = config.clone();
+        roles.save()?;
+    }
+    roles::audit(
+        "gui.role_toggle",
+        serde_json::json!({"role": "server_connector", "configured": config.is_some()}),
+    );
+    // 运行中的内嵌节点：重启以应用新 connector 配置
+    let running = state.server.lock().await.is_some();
+    if running {
+        if let Some(s) = state.server.lock().await.take() {
+            s.stop().await;
+        }
+        let server = start_embedded_node(&state).await?;
+        *state.server.lock().await = Some(server);
+    }
+    Ok(())
 }
 
 /// 启动时恢复 Web 远程面（上次退出时处于开启状态且已设管理密码）。
@@ -675,6 +768,8 @@ pub fn run() {
             set_web_role,
             open_console,
             open_node_console,
+            open_upstream_console,
+            set_server_connector,
         ])
         .setup(|app| {
             setup_tray(app)?;

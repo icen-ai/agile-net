@@ -86,10 +86,32 @@ fn build_config_response(state: &ApiState, account_id: &str) -> Response {
         .map(|a| a.admin_console)
         .unwrap_or(false);
 
+    // 可管理上游自动发现（握手 v2）：仅管理版账号下发；
+    // 票据经 console-ticket 端点按需取用，不随配置广播
+    let manageable: Vec<serde_json::Value> = if admin_console {
+        state
+            .runtime
+            .manageable
+            .iter()
+            .map(|item| {
+                let o = item.value();
+                json!({
+                    "node_name": o.node_name,
+                    "api": format!("{}:{}", o.api_host.as_deref().unwrap_or("?"), o.api_port),
+                    "scope": o.scope,
+                    "via": "relay",
+                })
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+
     ok(json!({
         "version": version,
         "node_name": node_name,
         "admin_console": admin_console,
+        "manageable": manageable,
         "rules": rules,
         "tunnel": {
             "server": server,
@@ -160,9 +182,17 @@ use axum::response::IntoResponse;
 ///
 /// 仅当账号被授予「管理此节点」权限（admin_console）时签发；
 /// 票据 10 分钟一次性，凭它在 /api/v1/auth/admin-bootstrap 换取管理会话。
+#[derive(Deserialize)]
+pub struct ConsoleTicketRequest {
+    /// 上游节点名（可管理上游；缺省为本节点自身）
+    #[serde(default)]
+    pub upstream: Option<String>,
+}
+
 pub async fn console_ticket(
     ClientAuth(claims): ClientAuth,
     State(state): State<ApiState>,
+    body: Option<Json<ConsoleTicketRequest>>,
 ) -> Response {
     let account = match state.db.get_account(&claims.sub) {
         Ok(Some(a)) if a.enabled => a,
@@ -175,6 +205,26 @@ pub async fn console_ticket(
             "管理权限未授予该账号",
         );
     }
+
+    // 上游目标：返回握手 v2 发现的当前票据与端点（中继令牌换取，scoped）
+    if let Some(upstream) = body.and_then(|b| b.upstream.clone()) {
+        let Some(offer) = state.runtime.manageable.get(&upstream).map(|o| o.clone()) else {
+            return err(
+                StatusCode::NOT_FOUND,
+                codes::NOT_FOUND,
+                "该上游未暴露控制面或已断开",
+            );
+        };
+        return ok(json!({
+            "ticket": offer.ticket,
+            "api": format!("{}:{}", offer.api_host.as_deref().unwrap_or("?"), offer.api_port),
+            "node_name": offer.node_name,
+            "scope": offer.scope,
+            "via": "relay",
+        }))
+        .into_response();
+    }
+
     match state
         .db
         .create_admin_ticket("account", &account.id, "full", 1, 600)

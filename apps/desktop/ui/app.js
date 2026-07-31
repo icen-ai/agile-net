@@ -307,8 +307,14 @@ function renderNodeList(nodes) {
     '<div class="node-card' + (n.status === 'Connected' || n.status === 'Connecting' || n.status === 'Reconnecting' ? '' : ' down') + '"><div class="info">' +
     '<div class="name">' + esc(n.node_name) + ' ' + statusBadgeHtml(n.status) + (n.admin_console ? ' <span class="badge b-info">可管理</span>' : '') + '</div>' +
     '<div class="addr mono">' + esc(n.addr) + ' · 规则 ' + (n.rules || []).length + ' 条 · 配置 v' + n.config_version + '</div>' +
+    ((n.manageable || []).length
+      ? '<div class="addr" style="margin-top:4px">可管理上游：' + n.manageable.map(m =>
+          '<span class="badge b-info">' + esc(m.node_name) + '</span>' +
+          (!HTTP_MODE ? ' <button class="ghost small" data-act="upconsole" data-id="' + esc(n.node_id) + '" data-up="' + esc(m.node_name) + '">' + AgIcon('monitor', 12) + ' 管理</button>' : '')
+        ).join(' ') + '</div>'
+      : '') +
     '</div><div class="card-actions">' +
-    (n.admin_console && n.status === 'Connected'
+    (n.admin_console && n.status === 'Connected' && !HTTP_MODE
       ? '<button class="ghost small" data-act="console" data-id="' + esc(n.node_id) + '">' + AgIcon('monitor', 13) + ' 管理此节点</button>' : '') +
     '<button class="danger small" data-act="disconnect" data-id="' + esc(n.node_id) + '">断开</button></div></div>'
   ).join('');
@@ -422,11 +428,17 @@ async function connectWith(input, btn) {
   }
 }
 
-/* ================= 控制台通道（管理此节点） ================= */
+/* ================= 控制台通道（管理此节点 / 可管理上游） ================= */
 async function openNodeConsole(nodeId) {
   try {
     await invoke('open_node_console', { nodeId });
     toast('控制台已在新窗口打开', 'ok');
+  } catch (e) { toast(friendlyError(e), 'err'); }
+}
+async function openUpstreamConsole(nodeId, upstream) {
+  try {
+    await invoke('open_upstream_console', { nodeId, upstream });
+    toast('上游控制台已在新窗口打开', 'ok');
   } catch (e) { toast(friendlyError(e), 'err'); }
 }
 
@@ -688,6 +700,38 @@ async function initRoles() {
     catch (err) { toast(friendlyError(err), 'err'); }
   };
 
+  // 上游中继（路由再发布）配置
+  const sc = settings.server_connector || null;
+  if (sc) {
+    $('sc-upstream').value = sc.upstream_addr || '';
+    $('sc-token').value = sc.token || '';
+    $('sc-sni').value = sc.sni_hostname || 'cdn.cloudflare.com';
+    $('sc-insecure').checked = !!sc.insecure;
+    $('sc-status').textContent = '已配置，内嵌节点将作为下游接入 ' + sc.upstream_addr;
+  }
+  $('btn-sc-save').onclick = async () => {
+    const cfg = {
+      upstream_addr: $('sc-upstream').value.trim(),
+      token: $('sc-token').value.trim(),
+      sni_hostname: $('sc-sni').value.trim() || 'cdn.cloudflare.com',
+      insecure: $('sc-insecure').checked,
+    };
+    if (!cfg.upstream_addr || !cfg.token) { toast('请填写上游地址与 Relay Token', 'err'); return; }
+    try {
+      await invoke('set_server_connector', { config: cfg });
+      $('sc-status').textContent = '已配置，内嵌节点将作为下游接入 ' + cfg.upstream_addr;
+      toast('上游中继已保存（客户端隧道规则将转售给下游）', 'ok');
+    } catch (err) { toast(friendlyError(err), 'err'); }
+  };
+  $('btn-sc-clear').onclick = async () => {
+    try {
+      await invoke('set_server_connector', { config: null });
+      $('sc-upstream').value = ''; $('sc-token').value = '';
+      $('sc-status').textContent = '';
+      toast('已清除上游中继配置', 'ok');
+    } catch (err) { toast(friendlyError(err), 'err'); }
+  };
+
   $('pwd-cancel').onclick = () => closePwdModal(null);
   $('pwd-ok').onclick = () => {
     const user = $('pwd-user').value.trim();
@@ -789,6 +833,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     if (!btn) return;
     if (btn.dataset.act === 'disconnect') disconnectNode(btn.dataset.id);
     if (btn.dataset.act === 'console') openNodeConsole(btn.dataset.id);
+    if (btn.dataset.act === 'upconsole') openUpstreamConsole(btn.dataset.id, btn.dataset.up);
   });
   $('creds-list').addEventListener('click', (e) => {
     const btn = e.target.closest('button[data-act]');

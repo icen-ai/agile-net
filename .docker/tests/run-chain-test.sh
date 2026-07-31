@@ -6,6 +6,8 @@
 #   T3  ACL 拒绝：访问规则外目标必须失败
 #   T4  多节点接入：同一客户端同时接 root 与 mid，目标两种路径均可达
 #   T5  长轮询配置热更新：新增规则后客户端无需重连即生效
+#   T6  断链自愈：kick mid → 链路中断 → 自动重连恢复
+#   T7  管理面穿透：握手 v2 控制端点发现 + 票据链换取 scoped 管理会话（rules 档位强制）
 set -u
 
 ROOT_API="http://node-root:59090"
@@ -213,6 +215,69 @@ else
     tail -20 /tmp/client2.log
   fi
 fi
+
+# ---------- T7: 管理面穿透（握手 v2 控制端点发现 + 票据链换取 scoped 管理会话） ----------
+log "T7: 管理面穿透 — mid 发现 root 控制端点，客户端经隧道管理 root"
+# T7a. mid 上创建管理版账号（admin_console）
+GID3=$(create_group "$MID_TOKEN" "$MID_API" "ops组")
+ACC_PASS3=$(curl -sf -X POST "$MID_API/api/v1/admin/accounts" \
+  -H "Authorization: Bearer $MID_TOKEN" -H 'Content-Type: application/json' \
+  -d "{\"username\":\"chainadmin\",\"group_id\":\"$GID3\",\"admin_console\":true}" | jq -r '.data.password')
+[ -n "$ACC_PASS3" ] && [ "$ACC_PASS3" != "null" ] && ok "T7a 管理版账号已创建" || bad "T7a 管理版账号创建失败"
+
+# T7b. 管理版客户端配置自动发现可管理上游（握手 v2：root 向 mid 暴露控制面）
+CT=$(curl -sf -X POST "$MID_API/api/v1/auth/login" -H 'Content-Type: application/json' \
+  -d "{\"username\":\"chainadmin\",\"password\":\"$ACC_PASS3\"}" | jq -r '.data.access_token')
+MG=$(curl -sf "$MID_API/api/v1/client/config" -H "Authorization: Bearer $CT" | jq -r '[.data.manageable[]?|.node_name]|join(",")')
+case "$MG" in
+  *node-root*) ok "T7b 可管理上游自动发现（manageable=$MG）";;
+  *) bad "T7b 未发现可管理上游（manageable=$MG）";;
+esac
+
+# T7c. 取上游控制台票据（中继令牌换取，scoped）
+TICKET=$(curl -sf -X POST "$MID_API/api/v1/client/console-ticket" \
+  -H "Authorization: Bearer $CT" -H 'Content-Type: application/json' \
+  -d '{"upstream":"node-root"}' | jq -r '.data.ticket // empty')
+case "$TICKET" in
+  adt_*) ok "T7c 上游控制台票据已签发";;
+  *) bad "T7c 票据签发失败";;
+esac
+
+# T7d. 经数据面隧道（SOCKS5 → mid → root API）用票据换取 scoped 管理会话
+cat > /tmp/client.toml <<EOF
+proxy_port = 57892
+
+[[nodes]]
+addr = "$MID_API"
+username = "chainadmin"
+password = "$ACC_PASS3"
+insecure = true
+EOF
+kill $CLIENT_PID 2>/dev/null || true
+sleep 1
+agile-net-client /tmp/client.toml > /tmp/client3.log 2>&1 &
+CLIENT_PID=$!
+sleep 4
+BOOT=$(curl -sf --max-time 15 --socks5-hostname 127.0.0.1:57892 -X POST \
+  "http://node-root:59090/api/v1/auth/admin-bootstrap" \
+  -H 'Content-Type: application/json' -d "{\"ticket\":\"$TICKET\"}")
+MJWT=$(echo "$BOOT" | jq -r '.data.access_token // empty')
+MSCOPE=$(echo "$BOOT" | jq -r '.data.scope // empty')
+if [ -n "$MJWT" ] && [ "$MSCOPE" = "rules" ]; then
+  ok "T7d 隧道内票据换取 scoped 管理会话（scope=$MSCOPE）"
+else
+  bad "T7d 票据换取失败（$BOOT）"
+  tail -10 /tmp/client3.log
+fi
+
+# T7e/T7f. scope 三档强制：rules 可读、组写被拒（403）
+RC=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 --socks5-hostname 127.0.0.1:57892 \
+  -H "Authorization: Bearer $MJWT" "http://node-root:59090/api/v1/admin/node/status")
+[ "$RC" = "200" ] && ok "T7e rules 档位读取通过（200）" || bad "T7e 读取失败（$RC）"
+RC2=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 --socks5-hostname 127.0.0.1:57892 -X POST \
+  -H "Authorization: Bearer $MJWT" -H 'Content-Type: application/json' \
+  -d '{"name":"should-deny"}' "http://node-root:59090/api/v1/admin/groups")
+[ "$RC2" = "403" ] && ok "T7f rules 档位组写被拒（403）" || bad "T7f 组写未拒（$RC2）"
 
 # ---------- 汇总 ----------
 kill $CLIENT_PID 2>/dev/null || true

@@ -27,7 +27,8 @@ services:
     command: ["agile-net-node", "/etc/agile-net/node.toml"]
     environment:
       AGILE_ADMIN_PASSWORD: "ChainTest123!"
-      AGILE_RELAY_TOKENS: "psk_midtoken_000000000000000000000000000000000000"
+      # 语法：token|expose:scope —— 向 mid 暴露控制面（rules 档位），T7 管理面穿透用
+      AGILE_RELAY_TOKENS: "psk_midtoken_000000000000000000000000000000000000|expose:rules"
       AGILE_PUBLIC_HOST: "node-root"
     volumes:
       - ./configs/node-root.toml:/etc/agile-net/node.toml:ro

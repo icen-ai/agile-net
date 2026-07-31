@@ -151,6 +151,20 @@ impl ProxyRouter {
         }
     }
 
+    /// 全部规则值（CIDR 字面值与域名模式）——路由再发布（re-advertise）用。
+    pub fn rule_values(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        for (net, _) in self.cidr_table.iter() {
+            out.push(net.to_string());
+        }
+        out.extend(self.host_exact.keys().cloned());
+        for (suffix, _) in &self.host_suffixes {
+            out.push(format!("*{suffix}"));
+        }
+        out.sort();
+        out
+    }
+
     /// 当前路由条目总数。
     pub fn route_count(&self) -> usize {
         let (ipv4_count, ipv6_count) = self.cidr_table.len();

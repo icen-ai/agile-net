@@ -70,8 +70,18 @@ pub struct RelayTokenRecord {
     pub id: String,
     pub token_prefix: String,
     pub remark: String,
+    /// 允许该下游中继管理本节点（默认关）
+    #[serde(default)]
+    pub expose_control: bool,
+    /// 管理授权档位：ro / rules / full
+    #[serde(default = "default_control_scope")]
+    pub control_scope: String,
     pub last_used_at: Option<String>,
     pub created_at: String,
+}
+
+fn default_control_scope() -> String {
+    "full".into()
 }
 
 /// 审计日志记录

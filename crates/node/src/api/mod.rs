@@ -33,6 +33,8 @@ pub struct NodeRuntime {
     pub log_buffer: LogBuffer,
     /// Relay 证书 SHA-256 指纹（客户端证书固定用；ACME 模式为 None）
     pub cert_fingerprint: Option<String>,
+    /// 可管理上游注册表（握手 v2 发现；config 下发与状态展示用）
+    pub manageable: crate::relay_auth::ManageableRegistry,
 }
 
 impl NodeRuntime {
@@ -369,7 +371,7 @@ pub fn create_app(state: ApiState) -> Router {
         )
         .route(
             "/api/v1/admin/node/relay-tokens/{id}",
-            delete(handlers::relay_tokens::delete_token),
+            put(handlers::relay_tokens::update_token).delete(handlers::relay_tokens::delete_token),
         )
         .route("/api/v1/admin/node/events", any(handlers::node::events_ws))
         // ---- Admin: Audit ----

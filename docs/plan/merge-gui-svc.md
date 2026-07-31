@@ -35,7 +35,27 @@
     独立 Tauri 窗口 `#boot=ticket` 自举管理会话；节点卡片「管理此节点」入口与「可管理」徽标；
     管理链接导入警示；审计 `admin.console_access`（operator 以 `link:`/`relay:` 前缀区分令牌级会话）。
   - 测试：`crates/node/tests/admin_link_test.rs`（全链路/未授权拒绝/scope 三档/授予与收回）。
-- P2 / P3：进行中。
+- **P2 协议项（已完成，2026-07-31）**：
+  - `relay_token.expose_control`：DB 迁移 v3（开关 + `control_scope` 档位）；创建/更新 API
+    （`relay_token.expose_control` 审计必落：令牌前缀、on/off、档位、操作人）；
+    控制台令牌页勾选「允许该下游中继管理本节点」+ ro/rules/full 档位选择 + 强警示。
+  - 握手 v2：AuthOk 载荷向后兼容扩展 `control`（exposed/api_host/api_port/node_name/ticket/scope）；
+    旧下游忽略未知字段，版本号保持 2 不割裂。暴露即签发管理引导票据
+    （kind=relay，subject=`psk_前缀@下游节点`，7 天/限次，只存哈希；
+    安全边界等同中继令牌——吊销+踢会话即全线回收）。
+  - 可管理节点自动发现：connector 记录 `control_offer`；下游节点注册表同步 →
+    管理版客户端 config 收到 `manageable` 列表（GUI 节点卡片「可管理上游」入口）；
+    `admin_console` 账号数据面隐式放开上游端点（host/32 或精确主机）。
+  - 控制台通道：`POST /api/v1/client/console-ticket {upstream}` 返回握手当前票据；
+    桌面 `open_upstream_console`——loopback 转发器经当前节点隧道直达上游 API + `#boot` 自举；
+    换取审计 `admin.session_via_relay`（operator=`relay:psk_前缀@下游`）。
+  - 路由再发布：connector 注入客户端引擎合并路由与开启器（`with_client_routes`），
+    通告集 = 静态 + 客户端规则值，规则集变化自动重连重新通告（不引入新帧类型）；
+    Open 命中再发布规则时经对应客户端隧道转发（via=客户端隧道）。
+    GUI 服务端面板可选上游中继配置（保存即热重启内嵌节点）。
+  - 测试：`crates/node/tests/control_plane_test.rs`（双节点握手发现 + 票据链 + 档位强制 +
+    开关审计 + 迁移幂等）；docker 链路断言新增 T7（管理面穿透 E2E）。
+- P3：进行中。
 ## 1. 终态产物
 
 | 产物 | 内容 | 场景 |

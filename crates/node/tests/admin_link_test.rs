@@ -3,7 +3,7 @@
 
 use agile_net_node::api::{ApiState, NodeRuntime, create_app};
 use agile_net_node::auth::jwt::JwtService;
-use agile_net_node::db::{Database, hash_password};
+use agile_net_node::db::Database;
 use agile_net_node::logs::LogBuffer;
 use axum::{
     Router,
@@ -26,6 +26,7 @@ async fn test_app() -> (Router, Database) {
         proxy_listen: None,
         log_buffer: LogBuffer::new(),
         cert_fingerprint: None,
+        manageable: Default::default(),
     });
     let state = ApiState::new(db.clone(), jwt, runtime, "127.0.0.1".into(), 59090, 54430);
     (create_app(state), db)

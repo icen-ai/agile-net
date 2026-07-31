@@ -54,6 +54,21 @@ pub async fn status(
         None => json!({ "enabled": false }),
     };
 
+    // 可管理上游（握手 v2 发现；脱敏：不含票据）
+    let manageable_json: Vec<serde_json::Value> = state
+        .runtime
+        .manageable
+        .iter()
+        .map(|item| {
+            let o = item.value();
+            json!({
+                "node_name": o.node_name,
+                "api": format!("{}:{}", o.api_host.as_deref().unwrap_or("?"), o.api_port),
+                "scope": o.scope,
+            })
+        })
+        .collect();
+
     let proxy_json = match (&state.runtime.proxy_listen, &state.runtime.proxy_stats) {
         (Some(addr), Some(stats)) => json!({
             "enabled": true,
@@ -71,6 +86,7 @@ pub async fn status(
         "node_name": node_name,
         "version": env!("CARGO_PKG_VERSION"),
         "uptime": state.runtime.uptime_secs(),
+        "manageable_upstreams": manageable_json,
         "roles": {
             "listener": listener_json,
             "connector": connector_json,

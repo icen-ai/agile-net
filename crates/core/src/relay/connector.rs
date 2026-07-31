@@ -6,11 +6,14 @@
 use crate::error::{Error, Result};
 use crate::proto::frame::{Frame, FrameType};
 use crate::proto::message::{
-    AuthKind, AuthRequest, OpenChannel, PROTOCOL_VERSION, PROTOCOL_VERSION_FLOW_CONTROL,
+    AuthKind, AuthRequest, ControlOffer, OpenChannel, PROTOCOL_VERSION,
+    PROTOCOL_VERSION_FLOW_CONTROL,
 };
+use crate::proxy::router::{Outbound, ProxyRouter};
 use crate::relay::bridge::bridge;
 use crate::relay::listener::{AUTH_TIMEOUT, RelayListener};
 use crate::relay::mux::{MuxSession, OpenRequest};
+use crate::tunnel::opener::ChannelOpener;
 use crate::tunnel::tls::TlsConfigBuilder;
 
 use bytes::Bytes;
@@ -59,8 +62,14 @@ pub struct RelayConnector {
     sni_hostname: String,
     /// 本节点向**下游**提供路由的 Listener（多级串联时用于链式转发）
     peer_router: Option<Arc<RelayListener>>,
-    /// 向上游通告的可服务网段/域名
+    /// 向上游通告的可服务网段/域名（静态配置）
     advertise: Vec<String>,
+    /// 握手 v2：上游暴露控制面时下发的管理端点
+    control: Arc<arc_swap::ArcSwapOption<ControlOffer>>,
+    /// 路由再发布：客户端隧道合并路由（规则转售给下游，via=客户端隧道）
+    client_router: Option<Arc<arc_swap::ArcSwap<ProxyRouter>>>,
+    /// 路由再发布：node_id → 客户端隧道开启器
+    openers: Option<Arc<dashmap::DashMap<String, Arc<dyn ChannelOpener>>>>,
     state: Arc<AtomicU8>,
     shutdown_notify: Arc<Notify>,
     shutdown_flag: Arc<AtomicBool>,
@@ -101,6 +110,9 @@ impl RelayConnector {
             sni_hostname: tls_builder.sni_hostname,
             peer_router: None,
             advertise: Vec::new(),
+            control: Arc::new(arc_swap::ArcSwapOption::from_pointee(None)),
+            client_router: None,
+            openers: None,
             state: Arc::new(AtomicU8::new(ConnectionState::Disconnected as u8)),
             shutdown_notify: Arc::new(Notify::new()),
             shutdown_flag: Arc::new(AtomicBool::new(false)),
@@ -117,6 +129,35 @@ impl RelayConnector {
     pub fn with_advertise(mut self, advertise: Vec<String>) -> Self {
         self.advertise = advertise;
         self
+    }
+
+    /// 路由再发布：注入客户端引擎的合并路由与开启器注册表。
+    ///
+    /// 效果：握手时把客户端隧道规则并入通告集；Open 请求命中这些规则时
+    /// 经对应客户端隧道转发（规则 via=客户端隧道）；规则集变化时自动重连
+    /// 重新通告（reconnect 即刷新，无需新帧类型，旧上游完全兼容）。
+    pub fn with_client_routes(
+        mut self,
+        router: Arc<arc_swap::ArcSwap<ProxyRouter>>,
+        openers: Arc<dashmap::DashMap<String, Arc<dyn ChannelOpener>>>,
+    ) -> Self {
+        self.client_router = Some(router);
+        self.openers = Some(openers);
+        self
+    }
+
+    /// 握手 v2：上游暴露的控制面端点（未暴露/未连接时为 None）。
+    pub fn control_offer(&self) -> Option<ControlOffer> {
+        self.control.load_full().map(|a| (*a).clone())
+    }
+
+    /// 当前有效通告集 = 静态配置 + 客户端隧道规则值（路由再发布）。
+    fn effective_advertise(&self) -> Vec<String> {
+        let mut set: std::collections::BTreeSet<String> = self.advertise.iter().cloned().collect();
+        if let Some(r) = &self.client_router {
+            set.extend(r.load().rule_values());
+        }
+        set.into_iter().collect()
     }
 
     pub fn upstream_addr(&self) -> SocketAddr {
@@ -172,12 +213,12 @@ impl RelayConnector {
         let mut tls_stream = self.tls_connector.connect(server_name, tcp_stream).await?;
         debug!(upstream = %self.upstream_addr, "tls connected to upstream");
 
-        // 发送 Auth 帧
+        // 发送 Auth 帧（通告集 = 静态 + 客户端隧道规则再发布）
         let auth_req = AuthRequest {
             node_id: self.node_id.clone(),
             token: self.token.clone(),
             kind: AuthKind::Node,
-            advertise: self.advertise.clone(),
+            advertise: self.effective_advertise(),
             version: PROTOCOL_VERSION,
         };
         let payload = serde_json::to_vec(&auth_req).map_err(|e| Error::Protocol(e.to_string()))?;
@@ -191,11 +232,34 @@ impl RelayConnector {
         match res_frame.frame_type {
             FrameType::AuthOk => {
                 info!(upstream = %self.upstream_addr, "authenticated successfully with upstream");
-                // 服务端版本（AuthOk payload {"version":N}，缺省为 1）
+                // 服务端版本（AuthOk payload {"version":N}，缺省为 1）+ 可选控制面端点
                 if !res_frame.payload.is_empty()
                     && let Ok(v) = serde_json::from_slice::<serde_json::Value>(&res_frame.payload)
                 {
                     server_version = v["version"].as_u64().unwrap_or(1) as u32;
+                    if let Some(cv) = v.get("control") {
+                        match serde_json::from_value::<ControlOffer>(cv.clone()) {
+                            Ok(mut offer) => {
+                                // 上游未报名时以 connector 配置的上游地址代替
+                                if offer.api_host.is_none() {
+                                    offer.api_host = Some(self.upstream_addr.ip().to_string());
+                                }
+                                info!(
+                                    upstream = %self.upstream_addr,
+                                    node = %offer.node_name,
+                                    api = %format!("{}:{}", offer.api_host.as_deref().unwrap_or("?"), offer.api_port),
+                                    scope = %offer.scope,
+                                    "upstream exposes control plane (manageable)"
+                                );
+                                self.control.store(Some(Arc::new(offer)));
+                            }
+                            Err(e) => {
+                                debug!(error = %e, "ignore malformed control offer");
+                            }
+                        }
+                    } else {
+                        self.control.store(None);
+                    }
                 }
             }
             FrameType::AuthFail => {
@@ -220,6 +284,8 @@ impl RelayConnector {
         let shutdown_flag = self.shutdown_flag.clone();
         let state = self.state.clone();
         let peer_router = self.peer_router.clone();
+        let client_router = self.client_router.clone();
+        let openers = self.openers.clone();
         let mux_task = mux.clone();
 
         tokio::spawn(async move {
@@ -259,8 +325,10 @@ impl RelayConnector {
                     Some(req) = open_rx.recv() => {
                         let mux_inner = mux_task.clone();
                         let peer_router = peer_router.clone();
+                        let client_router = client_router.clone();
+                        let openers = openers.clone();
                         tokio::spawn(async move {
-                            if let Err(e) = Self::handle_open(mux_inner, req, peer_router).await {
+                            if let Err(e) = Self::handle_open(mux_inner, req, peer_router, client_router, openers).await {
                                 debug!(error = %e, "open channel handling finished with error");
                             }
                         });
@@ -287,10 +355,26 @@ impl RelayConnector {
             match self.connect_once().await {
                 Ok(session) => {
                     attempt = 0;
-                    // 等待会话断开（后台任务结束时把状态置为 Disconnected）
+                    // 等待会话断开（后台任务结束时把状态置为 Disconnected）；
+                    // 客户端隧道规则集变化时主动重连，向上游重新通告（路由再发布）
+                    let mut last_router = self.client_router.as_ref().map(|r| r.load_full());
                     while self.state() == ConnectionState::Connected {
                         if self.shutdown_flag.load(Ordering::Relaxed) {
                             break;
+                        }
+                        if let Some(r) = &self.client_router {
+                            let cur = r.load_full();
+                            let changed = match &last_router {
+                                Some(prev) => !Arc::ptr_eq(prev, &cur),
+                                None => true,
+                            };
+                            if changed {
+                                info!("client tunnel routes changed — reconnecting to re-advertise");
+                                self.shutdown_notify.notify_waiters();
+                                tokio::time::sleep(Duration::from_millis(300)).await;
+                                break;
+                            }
+                            last_router = Some(cur);
                         }
                         tokio::time::sleep(Duration::from_millis(500)).await;
                     }
@@ -327,11 +411,13 @@ impl RelayConnector {
             .store(ConnectionState::Disconnected as u8, Ordering::Relaxed);
     }
 
-    /// 收到 Open 帧后：优先向下游路由（多级串联），否则连接本地真实服务。
+    /// 收到 Open 帧后：下游路由（多级串联）→ 客户端隧道路由（再发布）→ 本机直连。
     async fn handle_open(
         mux: Arc<MuxSession>,
         req: OpenRequest,
         peer_router: Option<Arc<RelayListener>>,
+        client_router: Option<Arc<arc_swap::ArcSwap<ProxyRouter>>>,
+        openers: Option<Arc<dashmap::DashMap<String, Arc<dyn ChannelOpener>>>>,
     ) -> Result<()> {
         let open_req: OpenChannel = serde_json::from_slice(&req.payload)
             .map_err(|e| Error::Protocol(format!("invalid open channel payload: {e}")))?;
@@ -364,6 +450,45 @@ impl RelayConnector {
                         mux.close_channel(req.channel_id);
                         return Err(e);
                     }
+            }
+        }
+
+        // 路由再发布：目标命中客户端隧道合并规则 → 经对应客户端隧道转发
+        if let (Some(router), Some(openers)) = (&client_router, &openers) {
+            let outbound = router.load().route_target(&target_addr).clone();
+            if let Outbound::Tunnel { node_id } = outbound {
+                let opener = openers.get(&node_id).map(|r| r.value().clone());
+                match opener {
+                    Some(opener) => {
+                        match opener
+                            .open(&node_id, &open_req.target_addr, open_req.target_port)
+                            .await
+                        {
+                            Ok(tunnel_channel) => {
+                                mux.send_frame(Frame::empty(FrameType::OpenOk, req.channel_id))
+                                    .await?;
+                                let (up, down) = bridge(channel, tunnel_channel).await?;
+                                debug!(channel_id = req.channel_id, via = %node_id, up, down, "re-published channel closed");
+                                mux.close_channel(req.channel_id);
+                                return Ok(());
+                            }
+                            Err(e) => {
+                                warn!(node = %node_id, error = %e, "re-published open via client tunnel failed");
+                                mux.send_frame(Frame::empty(FrameType::OpenFail, req.channel_id))
+                                    .await?;
+                                mux.close_channel(req.channel_id);
+                                return Err(e);
+                            }
+                        }
+                    }
+                    None => {
+                        warn!(node = %node_id, "route re-published but opener missing (tunnel down?)");
+                        mux.send_frame(Frame::empty(FrameType::OpenFail, req.channel_id))
+                            .await?;
+                        mux.close_channel(req.channel_id);
+                        return Err(Error::Protocol("client tunnel opener missing".into()));
+                    }
+                }
             }
         }
 

@@ -149,6 +149,16 @@ const MIGRATIONS: &[(u32, &str, &str)] = &[
     CREATE INDEX idx_admin_ticket_exp ON admin_ticket(expires_at);
     "#,
     ),
+    (
+        3,
+        "relay_token_expose_control",
+        r#"
+    -- Relay 链接的「暴露控制面」开关：允许该下游中继管理本节点（默认关）
+    ALTER TABLE relay_token ADD COLUMN expose_control INTEGER NOT NULL DEFAULT 0;
+    -- 管理授权档位：ro（只读）/ rules（只读+规则写）/ full（全权）
+    ALTER TABLE relay_token ADD COLUMN control_scope TEXT NOT NULL DEFAULT 'full';
+    "#,
+    ),
 ];
 
 impl Database {
@@ -1023,27 +1033,71 @@ impl Database {
     // ==================== Relay Token ====================
 
     pub fn create_relay_token(&self, token_hash: &str, token_prefix: &str, remark: &str) -> Result<RelayTokenRecord> {
+        self.create_relay_token_full(token_hash, token_prefix, remark, false, "full")
+    }
+
+    /// 创建 Relay Token（可勾选「允许该下游中继管理本节点」+ 授权档位）。
+    pub fn create_relay_token_full(
+        &self,
+        token_hash: &str,
+        token_prefix: &str,
+        remark: &str,
+        expose_control: bool,
+        control_scope: &str,
+    ) -> Result<RelayTokenRecord> {
         let conn = self.conn();
         let id = uuid::Uuid::new_v4().to_string();
         let now = now_rfc3339();
         conn.execute(
-            "INSERT INTO relay_token (id, token_hash, token_prefix, remark, created_at) VALUES (?1,?2,?3,?4,?5)",
-            params![id, token_hash, token_prefix, remark, now],
+            "INSERT INTO relay_token (id, token_hash, token_prefix, remark, expose_control, control_scope, created_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7)",
+            params![id, token_hash, token_prefix, remark, expose_control as i32, control_scope, now],
         )
         .map_err(db_err)?;
         Ok(RelayTokenRecord {
             id,
             token_prefix: token_prefix.to_string(),
             remark: remark.to_string(),
+            expose_control,
+            control_scope: control_scope.to_string(),
             last_used_at: None,
             created_at: now,
+        })
+    }
+
+    /// 更新暴露控制面开关与授权档位（开关变更走 relay_token.expose_control 审计）。
+    pub fn update_relay_token_control(
+        &self,
+        id: &str,
+        expose_control: bool,
+        control_scope: &str,
+    ) -> Result<()> {
+        let conn = self.conn();
+        conn.execute(
+            "UPDATE relay_token SET expose_control = ?1, control_scope = ?2 WHERE id = ?3",
+            params![expose_control as i32, control_scope, id],
+        )
+        .map_err(db_err)?;
+        Ok(())
+    }
+
+    /// 按哈希查暴露标记与档位（握手 v2 下发判定）。
+    pub fn get_relay_token_control(&self, token_hash: &str) -> Result<Option<(String, bool, String)>> {
+        let conn = self.conn();
+        let mut stmt = conn
+            .prepare("SELECT token_prefix, expose_control, control_scope FROM relay_token WHERE token_hash = ?1")
+            .map_err(db_err)?;
+        let mut rows = stmt.query(params![token_hash]).map_err(db_err)?;
+        Ok(match rows.next().map_err(db_err)? {
+            Some(r) => Some((r.get(0).map_err(db_err)?, r.get::<_, i32>(1).map_err(db_err)? != 0, r.get(2).map_err(db_err)?)),
+            None => None,
         })
     }
 
     pub fn list_relay_tokens(&self) -> Result<Vec<RelayTokenRecord>> {
         let conn = self.conn();
         let mut stmt = conn
-            .prepare("SELECT id, token_prefix, remark, last_used_at, created_at FROM relay_token ORDER BY created_at DESC")
+            .prepare("SELECT id, token_prefix, remark, expose_control, control_scope, last_used_at, created_at FROM relay_token ORDER BY created_at DESC")
             .map_err(db_err)?;
         let rows = stmt
             .query_map([], |r| {
@@ -1051,8 +1105,10 @@ impl Database {
                     id: r.get(0)?,
                     token_prefix: r.get(1)?,
                     remark: r.get(2)?,
-                    last_used_at: r.get(3)?,
-                    created_at: r.get(4)?,
+                    expose_control: r.get::<_, i32>(3)? != 0,
+                    control_scope: r.get(4)?,
+                    last_used_at: r.get(5)?,
+                    created_at: r.get(6)?,
                 })
             })
             .map_err(db_err)?;

@@ -835,7 +835,7 @@ function openBatchImport() {
 async function renderTokens() {
   $('view').innerHTML = '<div class="page-title">' + ic('key-round', 20) + 'Relay 令牌</div><div class="page-desc">下游节点连入本节点的预共享密钥（psk_ 48 位），服务端只存哈希，全文仅创建时展示一次</div>' +
     '<div class="toolbar"><div class="spacer"></div><button onclick="openCreateToken()">' + ic('plus', 15) + '生成令牌</button></div>' +
-    '<div class="card table-wrap"><table><thead><tr><th>前缀</th><th>备注</th><th>最近使用</th><th>创建时间</th><th>操作</th></tr></thead><tbody id="tok-body"></tbody></table></div>';
+    '<div class="card table-wrap"><table><thead><tr><th>前缀</th><th>备注</th><th>暴露控制面</th><th>最近使用</th><th>创建时间</th><th>操作</th></tr></thead><tbody id="tok-body"></tbody></table></div>';
   await loadTokens();
 }
 async function loadTokens() {
@@ -845,20 +845,51 @@ async function loadTokens() {
     body.innerHTML = (d.items||[]).map(t =>
       '<tr><td class="mono">' + esc(t.token_prefix) + '</td>' +
       '<td>' + esc(t.remark || '-') + '</td>' +
+      '<td><label class="chk" style="display:flex;align-items:center;gap:5px"><input type="checkbox" ' + (t.expose_control ? 'checked' : '') +
+        ' onchange="toggleExpose('' + esc(t.id) + '', this.checked)"><span style="font-size:12px">允许管理</span></label>' +
+        (t.expose_control ? '<select class="ghost small" onchange="setScope('' + esc(t.id) + '', this.value)">' +
+          ['ro','rules','full'].map(sc => '<option value="' + sc + '" ' + (t.control_scope === sc ? 'selected' : '') + '>' + ({ro:'只读',rules:'规则',full:'全权'})[sc] + '</option>').join('') + '</select>' : '') + '</td>' +
       '<td style="color:var(--dim)">' + esc(t.last_used_at || '未使用') + '</td>' +
       '<td style="color:var(--dim)">' + esc(t.created_at) + '</td>' +
       '<td><button class="danger small" onclick="delToken(\'' + esc(t.id) + '\')">吊销</button></td></tr>'
-    ).join('') || '<tr><td colspan="5" class="empty">暂无令牌</td></tr>';
+    ).join('') || '<tr><td colspan="6" class="empty">暂无令牌</td></tr>';
+  } catch(e) { toast(e.message, 'err'); }
+}
+async function toggleExpose(id, on) {
+  try {
+    const cur = (await api('GET', '/api/v1/admin/node/relay-tokens')).items.find(t => t.id === id);
+    await api('PUT', '/api/v1/admin/node/relay-tokens/' + id, { expose_control: on, control_scope: (cur && cur.control_scope) || 'full' });
+    toast(on ? '已允许该下游中继管理本节点（变更已记审计）' : '已关闭控制面暴露', 'ok');
+    loadTokens();
+  } catch(e) { toast(e.message, 'err'); loadTokens(); }
+}
+async function setScope(id, scope) {
+  try {
+    await api('PUT', '/api/v1/admin/node/relay-tokens/' + id, { expose_control: true, control_scope: scope });
+    toast('授权档位已更新', 'ok');
   } catch(e) { toast(e.message, 'err'); }
 }
 function openCreateToken() {
   openModal('生成 Relay 令牌',
-    '<label>备注（如：分公司跳板机）</label><input id="nt-remark" style="width:100%">',
+    '<label>备注（如：分公司跳板机）</label><input id="nt-remark" style="width:100%">' +
+    '<label class="chk" style="display:flex;align-items:center;gap:6px;margin-top:8px"><input type="checkbox" id="nt-expose"> 允许该下游中继管理本节点（暴露控制面，默认关）</label>' +
+    '<div id="nt-expose-opts" style="display:none;margin:6px 0">' +
+      '<label>授权档位</label><select id="nt-scope" style="width:100%">' +
+        '<option value="ro">只读（仅查看状态/配置）</option>' +
+        '<option value="rules">可改规则（只读 + 规则增删改）</option>' +
+        '<option value="full" selected>全权（等同管理员）</option>' +
+      '</select>' +
+      '<div class="hint" style="color:var(--danger)">' + ic('triangle-alert', 13) + ' 下游持该令牌即可换取本节点管理会话（零开通），签发与换取均记审计；吊销令牌即全线回收。</div>' +
+    '</div>',
     [
       {label:'取消', kind:'ghost', fn: closeModal},
       {label:'生成', fn: async () => {
         try {
-          const d = await api('POST', '/api/v1/admin/node/relay-tokens', { remark: $('nt-remark').value.trim() });
+          const d = await api('POST', '/api/v1/admin/node/relay-tokens', {
+            remark: $('nt-remark').value.trim(),
+            expose_control: $('nt-expose').checked,
+            control_scope: $('nt-scope').value,
+          });
           openModal('令牌已生成 — 仅此一次展示',
             '<div class="secret-box"><span class="mono">' + esc(d.token) + '</span></div>' +
             '<div class="actions" style="justify-content:flex-start;margin-top:10px"><button class="ghost small" onclick="copyText(\'' + esc(d.token) + '\')">' + ic('copy', 13) + '复制令牌</button></div>' +
@@ -867,6 +898,7 @@ function openCreateToken() {
         } catch(e) { toast(e.message, 'err'); }
       }},
     ]);
+  $('nt-expose').onchange = (e) => { $('nt-expose-opts').style.display = e.target.checked ? 'block' : 'none'; };
 }
 async function delToken(id) {
   confirmAction('确定吊销该令牌？使用它的下游节点将在断开后无法重连。', async () => {
@@ -884,7 +916,7 @@ async function renderAudit() {
         ['admin.login','admin.init','rule.create','rule.update','rule.delete','rule.batch_import',
          'group.create','group.update','group.delete','group.update_rules',
          'account.create','account.update','account.delete','account.reset_password','account.enable','account.disable',
-         'relay_token.create','relay_token.delete','node.update_settings'].map(a =>
+         'relay_token.create','relay_token.delete','relay_token.expose_control','account.issue_admin_link','admin.console_access','admin.session_via_relay','node.update_settings'].map(a =>
           '<option value="' + a + '" ' + (S.filter.auditAction===a?'selected':'') + '>' + a + '</option>').join('') +
       '</select>' +
     '</div>' +

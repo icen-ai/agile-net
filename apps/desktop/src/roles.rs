@@ -6,7 +6,7 @@
 //! - 开关变更与 Web 面暴露变更写入 `~/.agile-net/gui-audit.jsonl`（审计）
 //! - Web 远程面管理密码以 argon2id 哈希存于 `~/.agile-net/web-auth.json`
 
-use agile_net_core::config::node::{ApiConfig, ListenerConfig};
+use agile_net_core::config::node::{ApiConfig, ConnectorConfig, ListenerConfig};
 use agile_net_core::config::NodeConfig;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -28,6 +28,28 @@ pub struct RoleSettings {
     /// Web 面监听地址（127.0.0.1 / LAN，显式可配）
     #[serde(default = "default_web_listen")]
     pub web_listen: String,
+    /// 服务端角色作为下游中继接入上游（路由再发布：客户端隧道规则转售给下游）
+    #[serde(default)]
+    pub server_connector: Option<ServerConnectorConfig>,
+}
+
+/// 内嵌节点的上游中继配置（token 为敏感凭据，settings 文件本身 0600 保护）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServerConnectorConfig {
+    /// 上游地址（host:port）
+    pub upstream_addr: String,
+    /// Relay Token（psk_）
+    pub token: String,
+    /// TLS SNI 域名
+    #[serde(default = "default_connector_sni")]
+    pub sni_hostname: String,
+    /// 跳过证书校验（仅开发）
+    #[serde(default)]
+    pub insecure: bool,
+}
+
+fn default_connector_sni() -> String {
+    "cdn.cloudflare.com".into()
 }
 
 fn default_web_listen() -> String {
@@ -41,6 +63,7 @@ impl Default for RoleSettings {
             server: false,
             web: false,
             web_listen: default_web_listen(),
+            server_connector: None,
         }
     }
 }
@@ -123,8 +146,8 @@ pub fn audit(action: &str, detail: serde_json::Value) {
     }
 }
 
-/// 构建内嵌节点配置（默认端口避让本地独立节点）。
-pub fn build_embedded_config() -> NodeConfig {
+/// 构建内嵌节点配置（默认端口避让本地独立节点；可选接入上游做路由再发布）。
+pub fn build_embedded_config(connector: Option<&ServerConnectorConfig>) -> NodeConfig {
     let dir = embedded_dir();
     let certs = dir.join("certs");
     NodeConfig {
@@ -142,7 +165,15 @@ pub fn build_embedded_config() -> NodeConfig {
             key_path: certs.join("relay-key.pem").to_string_lossy().to_string(),
             sni_hostname: "cdn.cloudflare.com".into(),
         }),
-        connector: None,
+        connector: connector.map(|c| ConnectorConfig {
+            upstream_addr: c.upstream_addr.clone(),
+            token: c.token.clone(),
+            sni_hostname: c.sni_hostname.clone(),
+            advertise: Vec::new(), // 通告集 = 客户端隧道规则（动态再发布）
+            ca_cert_path: None,
+            pinned_cert_path: None,
+            insecure: c.insecure,
+        }),
         proxy: None,
         acme: None,
         log: None,

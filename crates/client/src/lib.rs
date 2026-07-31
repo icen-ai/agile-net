@@ -74,6 +74,27 @@ pub struct NodeState {
     /// 该账号被授予「管理此节点」权限（管理版接入链接）
     #[serde(default)]
     pub admin_console: bool,
+    /// 可管理上游（握手 v2 自动发现；仅管理版账号下发）
+    #[serde(default)]
+    pub manageable: Vec<ManageableNode>,
+}
+
+/// 可管理节点（本机/已连节点/上游链自动发现）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ManageableNode {
+    pub node_name: String,
+    /// 管理 API 端点（host:port，经隧道可达）
+    pub api: String,
+    /// 管理授权档位：ro / rules / full
+    #[serde(default = "default_manageable_scope")]
+    pub scope: String,
+    /// 发现路径：relay（上游链）
+    #[serde(default)]
+    pub via: String,
+}
+
+fn default_manageable_scope() -> String {
+    "full".into()
 }
 
 /// 单个节点连接的运行时句柄。
@@ -438,6 +459,11 @@ impl ClientInner {
                     _ => {}
                 }
             }
+            // 管理面隐式路由：可管理上游 API 端点经该节点隧道可达
+            // （ACL 统一：收回权限即失去管理通路；冲突位次与显式规则一致，先连优先）
+            if state.admin_console {
+                add_manageable_routes(&mut new_router, &state.node_id, &state.manageable, &mut seen);
+            }
         }
         self.shared_router.store(Arc::new(new_router));
         self.apply_hosts();
@@ -500,6 +526,16 @@ impl AgileNetClient {
         self.inner.shared_router.load_full()
     }
 
+    /// 合并路由表共享句柄（路由再发布：注入内嵌节点 connector）。
+    pub fn shared_router_handle(&self) -> Arc<ArcSwap<ProxyRouter>> {
+        self.inner.shared_router.clone()
+    }
+
+    /// 通道开启器注册表共享句柄（路由再发布：注入内嵌节点 connector）。
+    pub fn openers_handle(&self) -> Arc<DashMap<String, Arc<dyn ChannelOpener>>> {
+        self.inner.openers.clone()
+    }
+
     pub fn proxy_port(&self) -> u16 {
         **self.inner.proxy_port.load()
     }
@@ -555,6 +591,7 @@ impl AgileNetClient {
         let tunnel_port = config["tunnel"]["port"].as_u64().unwrap_or(443) as u16;
         let version = config["version"].as_u64().unwrap_or(0);
         let admin_console = config["admin_console"].as_bool().unwrap_or(false);
+        let manageable = parse_manageable(&config);
         let rules = parse_rules(&config);
 
         // 3. 建立数据面隧道
@@ -585,6 +622,7 @@ impl AgileNetClient {
             rules,
             config_version: version,
             admin_console,
+            manageable,
         };
 
         // 4. 后台任务：隧道自动重连 + 心跳 + 配置长轮询
@@ -688,6 +726,7 @@ impl AgileNetClient {
             rules: cached.rules.clone(),
             config_version: cached.config_version,
             admin_console: false,
+            manageable: Vec::new(),
         };
 
         let mut tasks = Vec::new();
@@ -867,6 +906,49 @@ impl AgileNetClient {
     /// 节点的数据面通道开启器（控制台 loopback 转发器用）。
     pub fn opener(&self, node_id: &str) -> Option<Arc<dyn ChannelOpener>> {
         self.inner.openers.get(node_id).map(|r| r.value().clone())
+    }
+
+    /// 申请可管理上游的控制台票据（中继令牌换取，scoped；握手 v2 发现的当前票据）。
+    ///
+    /// 返回 (ticket, api_host, api_port, scope)：控制台经本节点隧道访问上游管理面。
+    pub async fn upstream_console_ticket(
+        &self,
+        node_id: &str,
+        upstream: &str,
+    ) -> Result<(String, String, u16, String)> {
+        let handle = self
+            .inner
+            .nodes
+            .get(node_id)
+            .ok_or_else(|| anyhow!("节点未连接: {node_id}"))?;
+        if !handle.state.admin_console {
+            return Err(anyhow!("该节点未授予管理权限"));
+        }
+        let base_url = api_base_url(&handle.params.addr);
+        let token = handle.access_token.load().as_ref().clone();
+        drop(handle);
+
+        let resp = self
+            .inner
+            .http_client
+            .post(format!("{base_url}/api/v1/client/console-ticket"))
+            .bearer_auth(&token)
+            .json(&serde_json::json!({ "upstream": upstream }))
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            return Err(anyhow!("上游 console-ticket 签发失败: HTTP {}", resp.status()));
+        }
+        let json: serde_json::Value = resp.json().await?;
+        let data = &json["data"];
+        let ticket = data["ticket"].as_str().ok_or_else(|| anyhow!("响应缺少 ticket"))?.to_string();
+        let api = data["api"].as_str().ok_or_else(|| anyhow!("响应缺少 api"))?.to_string();
+        let scope = data["scope"].as_str().unwrap_or("full").to_string();
+        let (host, port) = match api.rsplit_once(':') {
+            Some((h, p)) => (h.to_string(), p.parse().map_err(|_| anyhow!("api 端点端口非法: {api}"))?),
+            None => return Err(anyhow!("api 端点格式非法: {api}")),
+        };
+        Ok((ticket, host, port, scope))
     }
 
     /// 申请控制台引导票据（仅被授予「管理此节点」权限的账号可用）。
@@ -1186,6 +1268,7 @@ fn spawn_config_watcher(
                     h.state.rules = rules;
                     h.state.config_version = version;
                     h.state.admin_console = data["admin_console"].as_bool().unwrap_or(false);
+                    h.state.manageable = parse_manageable(data);
                 }
                 inner.rebuild_merged_router();
             }
@@ -1222,6 +1305,50 @@ fn parse_rules(config: &serde_json::Value) -> Vec<ClientRule> {
                         rule_type: r["type"].as_str()?.to_string(),
                         value: r["value"].as_str()?.to_string(),
                         resolve: r["resolve"].as_bool().unwrap_or(false),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// 把可管理上游的 API 端点并入路由表（隐式隧道路由）。
+///
+/// 仅处理上游链（via=relay）端点；本机管理走 loopback 转发器不占路由位。
+/// IP 给 /32 CIDR，域名给精确主机；占用冲突位次（先连优先）。
+fn add_manageable_routes(
+    router: &mut ProxyRouter,
+    node_id: &str,
+    manageable: &[ManageableNode],
+    seen: &mut std::collections::HashSet<String>,
+) {
+    for m in manageable {
+        let Some(host) = m.api.rsplit_once(':').map(|(h, _)| h).filter(|h| !h.is_empty()) else {
+            continue;
+        };
+        let outbound = Outbound::tunnel(node_id.to_string());
+        if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+            let value = format!("{ip}/32");
+            if seen.insert(format!("ip-cidr:{}", value.to_lowercase())) {
+                let _ = router.add_cidr(&value, outbound);
+            }
+        } else if seen.insert(format!("host:{}", host.to_lowercase())) {
+            router.add_host_exact(host, outbound);
+        }
+    }
+}
+
+fn parse_manageable(config: &serde_json::Value) -> Vec<ManageableNode> {
+    config["manageable"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|m| {
+                    Some(ManageableNode {
+                        node_name: m["node_name"].as_str()?.to_string(),
+                        api: m["api"].as_str()?.to_string(),
+                        scope: m["scope"].as_str().unwrap_or("full").to_string(),
+                        via: m["via"].as_str().unwrap_or("relay").to_string(),
                     })
                 })
                 .collect()
@@ -1395,4 +1522,63 @@ fn strip_managed_block(content: &str) -> String {
         s.push('\n');
     }
     s
+}
+
+// ==================== 单元测试 ====================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn m(node_name: &str, api: &str) -> ManageableNode {
+        ManageableNode {
+            node_name: node_name.into(),
+            api: api.into(),
+            scope: "rules".into(),
+            via: "relay".into(),
+        }
+    }
+
+    #[test]
+    fn manageable_routes_ip_and_host() {
+        let mut router = ProxyRouter::new();
+        let mut seen = std::collections::HashSet::new();
+        let list = vec![m("root", "172.28.0.10:59090"), m("ops", "ops.internal:59090")];
+        add_manageable_routes(&mut router, "n1@x:1", &list, &mut seen);
+
+        // IP 端点 → /32 CIDR 命中
+        assert!(matches!(
+            router.route_target("172.28.0.10:59090"),
+            Outbound::Tunnel { node_id } if node_id == "n1@x:1"
+        ));
+        // 域名端点 → 精确主机命中
+        assert!(matches!(
+            router.route_target("ops.internal:59090"),
+            Outbound::Tunnel { node_id } if node_id == "n1@x:1"
+        ));
+        // 同主机其他端口也命中（按主机路由）
+        assert!(matches!(
+            router.route_target("ops.internal:443"),
+            Outbound::Tunnel { .. }
+        ));
+        // 无关目标不受影响（默认直连）
+        assert!(matches!(router.route_target("other.net:80"), Outbound::Direct));
+    }
+
+    #[test]
+    fn manageable_routes_respect_first_wins() {
+        let mut router = ProxyRouter::new();
+        let mut seen = std::collections::HashSet::new();
+        // 先占位的显式规则（host:ops.internal 属于另一个节点）
+        seen.insert("host:ops.internal".to_string());
+        router.add_host_exact("ops.internal", Outbound::tunnel("n0@a:1"));
+
+        let list = vec![m("ops", "ops.internal:59090")];
+        add_manageable_routes(&mut router, "n1@x:1", &list, &mut seen);
+        // 隐式路由不抢占已占用位次
+        assert!(matches!(
+            router.route_target("ops.internal:59090"),
+            Outbound::Tunnel { node_id } if node_id == "n0@a:1"
+        ));
+    }
 }
