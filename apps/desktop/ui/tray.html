@@ -7,10 +7,10 @@
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%233C3F43' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z'/></svg>">
 <link rel="stylesheet" href="style.css">
 <style>
-/* 托盘弹窗：透明窗口 + 圆角面板（GUI 风格自定义托盘菜单） */
-html, body { background: transparent; overflow: hidden; height: auto; }
-body { display: block; padding: 6px; }
-.tp { background: var(--panel2); border: 1px solid var(--border); border-radius: 13px; box-shadow: 0 16px 44px rgba(0,0,0,.22); padding: 7px; user-select: none; }
+/* 托盘弹窗：不透明整版面板（GUI 风格自定义托盘菜单） */
+html, body { background: var(--panel2); overflow: hidden; height: 100%; }
+body { display: block; padding: 0; }
+.tp { height: 100%; box-sizing: border-box; background: var(--panel2); padding: 8px; user-select: none; overflow-y: auto; }
 .tp-head { display: flex; align-items: center; gap: 8px; padding: 6px 8px 10px; }
 .tp-head .logo { width: 24px; height: 24px; border-radius: 7px; background: var(--accent); color: var(--accent-fg); display: inline-flex; align-items: center; justify-content: center; }
 .tp-head b { font-size: 13px; color: var(--text-strong); }

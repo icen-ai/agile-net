@@ -1371,7 +1371,18 @@ fn api_base_url(addr: &str) -> String {
     if addr.starts_with("http://") || addr.starts_with("https://") {
         addr.trim_end_matches('/').to_string()
     } else {
-        format!("http://{}", addr.trim_end_matches('/'))
+        // 默认 HTTP 是节点 API 的出厂形态（内置 HTTPS 需在节点侧配置证书）；
+        // 非 loopback 明文场景给出显式告警，生产应配置 HTTPS 或证书固定
+        let host = addr.trim_end_matches('/');
+        let is_loopback = host
+            .split(':')
+            .next()
+            .map(|h| h == "127.0.0.1" || h == "localhost" || h == "::1")
+            .unwrap_or(false);
+        if !is_loopback {
+            tracing::warn!(addr = %addr, "节点 API 使用明文 HTTP：生产环境请为节点配置内置 HTTPS，或使用证书固定");
+        }
+        format!("http://{host}")
     }
 }
 

@@ -184,8 +184,14 @@ struct InboundCtx {
 }
 
 /// 自连环防护：目标是代理自身监听地址时拒绝（否则 CONNECT 自身会无限递归新建连接）。
+/// 端口相同且 IP 为精确监听地址 / 任意 loopback / 未指定地址均判定为自连
+/// （0.0.0.0 监听时 127.0.0.1 请求也必须拦截）。
 fn is_self_connect(ctx: &InboundCtx, addr: &SocketAddr) -> bool {
-    *addr == ctx.listen_addr
+    if addr.port() != ctx.listen_addr.port() {
+        return false;
+    }
+    let ip = addr.ip();
+    ip.is_loopback() || ip.is_unspecified() || *addr == ctx.listen_addr
 }
 
 struct ActiveGuard(Arc<ProxyStats>);
@@ -311,8 +317,8 @@ async fn handle_socks5(
             let port_num = u16::from_be_bytes(port);
             (String::from_utf8_lossy(&domain).to_string(), port_num)
         }
-        0x06 => {
-            // IPv6
+        0x04 => {
+            // IPv6（RFC 1928: ATYP=0x04）
             let mut ip = [0u8; 16];
             stream.read_exact(&mut ip).await?;
             let mut port = [0u8; 2];

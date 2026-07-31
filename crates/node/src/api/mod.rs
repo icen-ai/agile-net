@@ -61,7 +61,9 @@ pub struct ApiState {
     pub jwt: Arc<JwtService>,
     pub runtime: Arc<NodeRuntime>,
     pub login_limiter: LoginRateLimiter,
-    /// 创建/重置账号后的 connect_url 短期缓存（10 分钟，供二维码取用）
+    /// refresh 端点限流（10 次/分钟/IP；refresh 每次执行 DB 写入轮换，必须限速）
+    pub refresh_limiter: LoginRateLimiter,
+    /// 创建/重置账号后的 connect_url 短期缓存（3 分钟，供二维码取用；含明文密码不宜长存）
     connect_url_cache: Arc<DashMap<String, (String, Instant)>>,
     /// 节点公网接入地址（运行时可通过设置 API 热更新）
     public_host: Arc<arc_swap::ArcSwap<String>>,
@@ -85,6 +87,7 @@ impl ApiState {
             jwt,
             runtime,
             login_limiter: LoginRateLimiter::new(),
+            refresh_limiter: LoginRateLimiter::new().with_config(10, u32::MAX, 15),
             connect_url_cache: Arc::new(DashMap::new()),
             public_host: Arc::new(arc_swap::ArcSwap::from_pointee(public_host)),
             api_port,
@@ -132,7 +135,8 @@ impl ApiState {
     pub fn take_connect_url(&self, account_id: &str) -> Option<String> {
         self.connect_url_cache.get(account_id).and_then(|e| {
             let (url, ts) = e.value();
-            if ts.elapsed() < Duration::from_secs(600) {
+            // 含明文密码，仅短期缓存 3 分钟
+            if ts.elapsed() < Duration::from_secs(180) {
                 Some(url.clone())
             } else {
                 None
@@ -181,7 +185,12 @@ impl LoginRateLimiter {
     }
 
     /// 检查是否允许尝试登录（限流 + 锁定判定）。
+    /// 附带惰性清扫：条目数超 1024 时淘汰 30 分钟未活动的失败记录（防内存无上限增长）。
     pub fn check(&self, ip: IpAddr) -> Result<(), LoginBlockReason> {
+        if self.inner.len() > 1024 {
+            self.inner
+                .retain(|_, e| e.window_start.elapsed() < Duration::from_secs(30 * 60));
+        }
         let mut entry = self.inner.entry(ip).or_insert(LoginAttempts {
             window_start: Instant::now(),
             attempts: 0,

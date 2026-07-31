@@ -30,7 +30,7 @@ impl ClientWebAuth for MockAuth {
         Ok(())
     }
     fn verify_password(&self, password: &str) -> bool {
-        *self.password_set.lock().unwrap() && password == "test123456"
+        *self.password_set.lock().unwrap() && password == "Test123456"
     }
     fn jwt_secret(&self) -> String {
         "test-secret-key".into()
@@ -40,7 +40,7 @@ impl ClientWebAuth for MockAuth {
     }
 }
 
-const PW: &str = "test123456";
+const PW: &str = "Test123456";
 
 async fn boot(
     has_pw: bool,

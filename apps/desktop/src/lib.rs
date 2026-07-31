@@ -1155,7 +1155,6 @@ fn toggle_tray_popup(app: &tauri::AppHandle, anchor: tauri::PhysicalPosition<f64
     .inner_size(W, H)
     .resizable(false)
     .decorations(false)
-    .transparent(true)
     .always_on_top(true)
     .skip_taskbar(true)
     .position(x, y)
@@ -1272,12 +1271,12 @@ pub fn run() {
                 sysproxy_watch(handle).await;
             });
 
-            // 窗口尺寸：主屏逻辑宽的 3/5，宽高比 4:3
+            // 窗口尺寸：主屏逻辑宽的 1/2，宽高比 4:3
             if let Some(window) = app.get_webview_window("main") {
                 if let Ok(Some(monitor)) = window.primary_monitor() {
                     let scale = monitor.scale_factor();
                     let logical_w = monitor.size().width as f64 / scale;
-                    let w = (logical_w * 0.6).round().max(860.0);
+                    let w = (logical_w * 0.5).round().max(860.0);
                     let h = (w * 0.75).round().max(600.0);
                     let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize {
                         width: w,

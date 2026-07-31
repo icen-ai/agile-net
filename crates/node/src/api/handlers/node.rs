@@ -387,36 +387,39 @@ pub async fn metrics(AdminAuth(_): AdminAuth, State(state): State<ApiState>) -> 
 
 /// WebSocket 实时事件流（节点/客户端上下线 + 30s 统计快照）。
 ///
-/// 浏览器 WebSocket 无法设置请求头，故支持 `?token=<access_token>` 查询参数认证。
-pub async fn events_ws(
-    State(state): State<ApiState>,
-    ws: WebSocketUpgrade,
-    Query(q): Query<EventsQuery>,
-) -> Response {
-    // 手动验证 token（Admin 角色）
-    let authed = state
-        .jwt
-        .verify(&q.token)
-        .map(|c| c.typ == "access" && c.role == "admin")
-        .unwrap_or(false);
-    if !authed {
-        return err(
-            StatusCode::UNAUTHORIZED,
-            codes::INVALID_CREDENTIALS,
-            "invalid or expired token",
-        );
-    }
+/// 浏览器 WebSocket 无法设置请求头，为避免 token 进入访问日志/浏览器历史，
+/// 采用**升级后首条消息认证**：客户端连接后立即发送 access_token（5s 超时），
+/// 服务端校验 admin 角色与 scope 档位（fail-closed）后才推送事件。
+pub async fn events_ws(State(state): State<ApiState>, ws: WebSocketUpgrade) -> Response {
     ws.on_upgrade(move |socket| handle_ws(socket, state))
 }
 
-#[derive(Deserialize)]
-pub struct EventsQuery {
-    #[serde(default)]
-    pub token: String,
+/// 首条消息等待认证（超时或未通过即关闭）。
+async fn ws_authenticate(socket: &mut WebSocket, state: &ApiState) -> bool {
+    use axum::extract::ws::Message;
+    let msg = tokio::time::timeout(std::time::Duration::from_secs(5), socket.recv()).await;
+    let token = match msg {
+        Ok(Some(Ok(Message::Text(t)))) => t.trim().to_string(),
+        _ => return false,
+    };
+    state
+        .jwt
+        .verify(&token)
+        .map(|c| {
+            c.typ == "access"
+                && c.role == "admin"
+                && matches!(c.scope.as_str(), "ro" | "rules" | "full")
+        })
+        .unwrap_or(false)
 }
 
 async fn handle_ws(mut socket: WebSocket, state: ApiState) {
     use agile_net_core::relay::listener::PeerEvent;
+
+    // 首条消息认证（token 不经 URL，避免落入访问日志/浏览器历史）
+    if !ws_authenticate(&mut socket, &state).await {
+        return; // drop 即关闭连接
+    }
 
     let mut event_rx = state
         .runtime

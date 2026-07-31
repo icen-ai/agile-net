@@ -133,7 +133,19 @@ pub struct RefreshRequest {
     pub refresh_token: String,
 }
 
-pub async fn refresh(State(state): State<ApiState>, Json(req): Json<RefreshRequest>) -> Response {
+pub async fn refresh(
+    State(state): State<ApiState>,
+    ClientIp(ip): ClientIp,
+    Json(req): Json<RefreshRequest>,
+) -> Response {
+    // refresh 每次执行 DB 写入轮换（吊销+签发+tunnel_token 轮换），必须限速
+    if state.refresh_limiter.check(ip).is_err() {
+        return err(
+            StatusCode::TOO_MANY_REQUESTS,
+            codes::RATE_LIMITED,
+            "too many refresh attempts, try again later",
+        );
+    }
     match state.jwt.refresh(&req.refresh_token) {
         Ok((claims, tokens)) => ok(json!({
             "access_token": tokens.access_token,
@@ -371,7 +383,7 @@ pub async fn admin_bootstrap(
 }
 
 /// 管理员凭据强度校验。
-fn validate_admin_credentials(username: &str, password: &str) -> Result<(), String> {
+pub(crate) fn validate_admin_credentials(username: &str, password: &str) -> Result<(), String> {
     if username.is_empty() || username.len() > 32 {
         return Err("username must be 1-32 characters".into());
     }

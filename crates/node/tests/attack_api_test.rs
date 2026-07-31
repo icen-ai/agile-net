@@ -379,7 +379,7 @@ async fn authorization_enforced() {
     .await;
     assert_eq!(status, StatusCode::OK);
 
-    // WS 事件未授权（真实服务器 + 合法升级头 + 无效 token → 401）
+    // WS 事件未授权（升级后首条消息认证：握手 101，发送无效 token 首帧即被关闭，不产生事件流）
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     tokio::spawn(async move {
@@ -389,7 +389,7 @@ async fn authorization_enforced() {
         .await
         .unwrap();
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let handshake = "GET /api/v1/admin/node/events?token=bad HTTP/1.1\r\n\
+    let handshake = "GET /api/v1/admin/node/events HTTP/1.1\r\n\
                      Host: 127.0.0.1\r\n\
                      Connection: Upgrade\r\n\
                      Upgrade: websocket\r\n\
@@ -399,11 +399,25 @@ async fn authorization_enforced() {
     let mut buf = vec![0u8; 1024];
     let n = stream.read(&mut buf).await.unwrap();
     let resp = String::from_utf8_lossy(&buf[..n]);
-    assert!(
-        resp.contains("401"),
-        "无效 token 的 WS 握手必须 401，实际: {}",
-        &resp[..resp.len().min(120)]
-    );
+    assert!(resp.contains("101"), "WS 升级应成功，实际: {}", &resp[..resp.len().min(120)]);
+
+    // 发送 masked text frame "bad"（首条消息即 token；无效则连接被关闭）
+    let mask = [0x01u8, 0x02, 0x03, 0x04];
+    let mut frame = vec![0x81u8, 0x80 | 3u8];
+    frame.extend_from_slice(&mask);
+    for (i, b) in b"bad".iter().enumerate() {
+        frame.push(b ^ mask[i]);
+    }
+    stream.write_all(&frame).await.unwrap();
+    let mut buf = vec![0u8; 1024];
+    let n = tokio::time::timeout(std::time::Duration::from_secs(3), stream.read(&mut buf))
+        .await
+        .unwrap()
+        .unwrap();
+    if n > 0 {
+        assert_eq!(buf[0], 0x88, "无效认证后应收到 close 帧，实际收到数据帧");
+    }
+    // n == 0：服务端直接断开，同样满足「未授权即关闭」
 }
 
 /// B7: 批量赋值攻击 —— 未知字段被忽略，不能提权

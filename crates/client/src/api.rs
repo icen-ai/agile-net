@@ -374,6 +374,17 @@ async fn init_password(
             "管理密码至少 10 位",
         );
     }
+    // 与服务端一致的复杂度要求：含大小写字母与数字
+    let has_lower = req.password.chars().any(|c| c.is_ascii_lowercase());
+    let has_upper = req.password.chars().any(|c| c.is_ascii_uppercase());
+    let has_digit = req.password.chars().any(|c| c.is_ascii_digit());
+    if !(has_lower && has_upper && has_digit) {
+        return err(
+            StatusCode::BAD_REQUEST,
+            codes::VALIDATION_FAILED,
+            "管理密码须包含大小写字母和数字",
+        );
+    }
     match state.auth.set_password(&req.password) {
         Ok(()) => {
             state.auth.audit(
@@ -425,6 +436,11 @@ impl LoginRateLimiter {
     }
 
     fn check(&self, ip: IpAddr) -> std::result::Result<(), LoginBlockReason> {
+        // 惰性清扫：条目数超 1024 时淘汰 30 分钟未活动的失败记录（防内存无上限增长）
+        if self.inner.len() > 1024 {
+            self.inner
+                .retain(|_, e| e.window_start.elapsed() < Duration::from_secs(30 * 60));
+        }
         let mut entry = self.inner.entry(ip).or_insert(LoginAttempts {
             window_start: Instant::now(),
             attempts: 0,

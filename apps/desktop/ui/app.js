@@ -854,7 +854,10 @@ async function refreshGroups() {
     return;
   }
   PROXY_DATA = (d && d.proxies) || {};
-  const groups = Object.entries(PROXY_DATA).filter(([, p]) => p.all && ['Selector', 'URLTest', 'Fallback'].includes(p.type));
+  // 隐藏 mihomo 内置 GLOBAL 组；技术名映射为友好名
+  const GROUP_LABELS = { 'AGILE-SUB': '订阅节点' };
+  const groups = Object.entries(PROXY_DATA).filter(([n, p]) =>
+    n !== 'GLOBAL' && p.all && ['Selector', 'URLTest', 'Fallback'].includes(p.type));
   if (!groups.length) {
     $('group-tabs').innerHTML = '';
     $('node-grid').innerHTML = '<div class="empty">暂无节点（请到「订阅」页刷新订阅）</div>';
@@ -862,7 +865,7 @@ async function refreshGroups() {
   }
   if (!CUR_GROUP || !groups.some(([n]) => n === CUR_GROUP)) CUR_GROUP = groups[0][0];
   $('group-tabs').innerHTML = groups.map(([n]) =>
-    '<button class="group-tab' + (n === CUR_GROUP ? ' active' : '') + '" data-group-tab="' + esc(n) + '">' + esc(n) + '</button>'
+    '<button class="group-tab' + (n === CUR_GROUP ? ' active' : '') + '" data-group-tab="' + esc(n) + '">' + esc(GROUP_LABELS[n] || n) + '</button>'
   ).join('');
   renderNodeGrid();
 }
@@ -873,7 +876,9 @@ function renderNodeGrid() {
   $('node-grid').innerHTML = g.all.map(n => {
     const p = PROXY_DATA[n] || {};
     const hist = (p.history && p.history.length) ? p.history[p.history.length - 1].delay : 0;
-    return '<div class="node-card' + (g.now === n ? ' current' : '') + '" data-group="' + esc(CUR_GROUP) + '" data-node="' + esc(n) + '">' +
+    const cur = g.now === n;
+    return '<div class="node-card' + (cur ? ' current' : '') + '" data-group="' + esc(CUR_GROUP) + '" data-node="' + esc(n) + '">' +
+      (cur ? '<span class="node-check">' + AgIcon('check', 13) + '</span>' : '') +
       '<div class="node-name" title="' + esc(n) + '">' + esc(n) + '</div>' +
       '<div class="node-foot"><span class="node-proto">' + esc(p.type || '') + '</span>' +
       '<span class="node-delay' + (hist ? ' ok' : '') + '">' + (hist ? hist + ' ms' : '') + '</span></div>' +

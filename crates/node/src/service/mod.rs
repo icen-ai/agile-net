@@ -537,9 +537,8 @@ fn seed_admin_from_env(db: &Database) -> Result<()> {
         return Ok(());
     };
     let username = std::env::var("AGILE_ADMIN_USERNAME").unwrap_or_else(|_| "admin".to_string());
-    if password.len() < 10 {
-        anyhow::bail!("AGILE_ADMIN_PASSWORD must be at least 10 characters");
-    }
+    crate::api::handlers::auth::validate_admin_credentials(&username, &password)
+        .map_err(|e| anyhow::anyhow!("AGILE_ADMIN_PASSWORD/USERNAME 强度不足: {e}"))?;
     let hash = hash_password(&password)?;
     db.create_admin(&username, &hash)?;
     tracing::info!(username = %username, "admin account seeded from environment");
