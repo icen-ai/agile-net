@@ -846,8 +846,8 @@ async function loadTokens() {
       '<tr><td class="mono">' + esc(t.token_prefix) + '</td>' +
       '<td>' + esc(t.remark || '-') + '</td>' +
       '<td><label class="chk" style="display:flex;align-items:center;gap:5px"><input type="checkbox" ' + (t.expose_control ? 'checked' : '') +
-        ' onchange="toggleExpose('' + esc(t.id) + '', this.checked)"><span style="font-size:12px">允许管理</span></label>' +
-        (t.expose_control ? '<select class="ghost small" onchange="setScope('' + esc(t.id) + '', this.value)">' +
+        ' onchange="toggleExpose(\'' + esc(t.id) + '\', this.checked)"><span style="font-size:12px">允许管理</span></label>' +
+        (t.expose_control ? '<select class="ghost small" onchange="setScope(\'' + esc(t.id) + '\', this.value)">' +
           ['ro','rules','full'].map(sc => '<option value="' + sc + '" ' + (t.control_scope === sc ? 'selected' : '') + '>' + ({ro:'只读',rules:'规则',full:'全权'})[sc] + '</option>').join('') + '</select>' : '') + '</td>' +
       '<td style="color:var(--dim)">' + esc(t.last_used_at || '未使用') + '</td>' +
       '<td style="color:var(--dim)">' + esc(t.created_at) + '</td>' +
