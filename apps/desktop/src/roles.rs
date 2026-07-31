@@ -170,7 +170,23 @@ pub fn set_web_password(password: &str) -> Result<(), String> {
     let hash = agile_net_node::db::hash_password(password).map_err(|e| e.to_string())?;
     let dir = data_dir();
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let data = serde_json::json!({ "password_hash": hash });
+    // 保留既有 JWT 密钥（改密不吊销既有会话）
+    let secret = read_web_auth()["jwt_secret"]
+        .as_str()
+        .map(|s| s.to_string())
+        .unwrap_or_else(generate_secret);
+    write_web_auth(&hash, &secret)
+}
+
+fn read_web_auth() -> serde_json::Value {
+    std::fs::read_to_string(web_auth_path())
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| serde_json::json!({}))
+}
+
+fn write_web_auth(password_hash: &str, jwt_secret: &str) -> Result<(), String> {
+    let data = serde_json::json!({ "password_hash": password_hash, "jwt_secret": jwt_secret });
     let path = web_auth_path();
     std::fs::write(&path, serde_json::to_string_pretty(&data).map_err(|e| e.to_string())?)
         .map_err(|e| e.to_string())?;
@@ -182,17 +198,55 @@ pub fn set_web_password(password: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// 校验 Web 远程面管理密码（P1.5 客户端 Web API 登录使用）。
+fn generate_secret() -> String {
+    // 256 位随机密钥（两个 UUIDv4，源自操作系统 CSPRNG）
+    format!(
+        "{}{}",
+        uuid::Uuid::new_v4().simple(),
+        uuid::Uuid::new_v4().simple()
+    )
+}
+
+/// 校验 Web 远程面管理密码。
 #[allow(dead_code)]
 pub fn verify_web_password(password: &str) -> bool {
-    let Ok(data) = std::fs::read_to_string(web_auth_path()) else {
-        return false;
-    };
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(&data) else {
-        return false;
-    };
+    let v = read_web_auth();
     let Some(hash) = v["password_hash"].as_str() else {
         return false;
     };
     agile_net_node::db::verify_password(password, hash).unwrap_or(false)
+}
+
+/// 桌面端 Web 鉴权实现（注入 agile-net-client 管理面 Web API）。
+pub struct DesktopWebAuth;
+
+impl agile_net_client::api::ClientWebAuth for DesktopWebAuth {
+    fn has_password(&self) -> bool {
+        has_web_password()
+    }
+
+    fn set_password(&self, password: &str) -> Result<(), String> {
+        set_web_password(password)
+    }
+
+    fn verify_password(&self, password: &str) -> bool {
+        verify_web_password(password)
+    }
+
+    fn jwt_secret(&self) -> String {
+        let v = read_web_auth();
+        if let Some(s) = v["jwt_secret"].as_str() {
+            return s.to_string();
+        }
+        // 旧格式（仅密码哈希）懒升级：补写密钥
+        let secret = generate_secret();
+        if let Some(hash) = v["password_hash"].as_str() {
+            let _ = write_web_auth(hash, &secret);
+        }
+        secret
+    }
+
+    fn audit(&self, action: &str, detail: serde_json::Value) {
+        audit(action, detail);
+    }
 }

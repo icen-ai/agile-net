@@ -149,7 +149,7 @@
       <div class="page-desc">角色开关、启动行为、语言与主题</div>
 
       <!-- 三路独立开关：客户端 / 服务端 / Web 远程面 -->
-      <div class="card">
+      <div class="card" id="roles-card">
         <h3><i data-ic="server"></i>角色与远程面</h3>
         <div class="role-list">
           <div class="role-row">
@@ -204,6 +204,20 @@
       </div>
     </section>
   </main>
+</div>
+
+<!-- Web 远程面登录弹窗（仅浏览器模式） -->
+<div class="modal-mask" id="login-modal" style="display:none">
+  <div class="modal">
+    <h3><i data-ic="shield" data-sz="16"></i> Web 远程面</h3>
+    <div class="hint" style="margin:6px 0 12px">请输入管理密码登录本机管理界面</div>
+    <div class="row col" style="gap:10px">
+      <div><label>管理密码</label><input id="login-pass" type="password" autocomplete="current-password"></div>
+    </div>
+    <div class="row" style="justify-content:flex-end;margin-top:14px">
+      <button id="login-ok">登录</button>
+    </div>
+  </div>
 </div>
 
 <!-- 强制设置管理密码弹窗（服务端角色 / Web 远程面首开） -->

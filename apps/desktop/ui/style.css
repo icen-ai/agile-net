@@ -235,3 +235,6 @@ tr:last-child td { border-bottom: none; }
 .modal h3 { margin: 0; font-size: 15px; display: flex; align-items: center; gap: 6px; }
 .modal label { display: block; font-size: 12px; color: var(--dim); margin-bottom: 4px; }
 .modal input { width: 100%; box-sizing: border-box; }
+
+/* ===== 浏览器模式（Web 远程面）：隐藏窗口控制 ===== */
+body.http-mode .tb-controls { display: none; }

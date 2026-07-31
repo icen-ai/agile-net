@@ -4,33 +4,17 @@
 //! 全部网络逻辑复用 agile-net-client 引擎（与 CLI/daemon 同一数据面）。
 //! 服务端角色内嵌完整 agile-net-node（与 anet-svc 同一装配根 NodeServer）。
 
-use agile_net_client::{AgileNetClient, ConnectParams, Credential, CredentialStore, NodeState};
+use agile_net_client::{AgileNetClient, ConnectParams, Credential, CredentialStore, NodeState, ParsedConnect};
 use agile_net_node::service::NodeServer;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::sync::Arc;
 use tauri::{Manager, State};
 
 mod roles;
 use roles::RoleSettings;
 
-/// 前端传入的连接参数
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ConnectInput {
-    pub addr: String,
-    pub username: String,
-    pub password: String,
-    #[serde(default)]
-    pub insecure: bool,
-    #[serde(default)]
-    pub pinned_cert_path: Option<String>,
-    #[serde(default)]
-    pub pinned_fingerprint: Option<String>,
-    #[serde(default)]
-    pub manage_hosts: bool,
-    /// 连接成功后是否保存凭据
-    #[serde(default)]
-    pub save_credential: bool,
-}
+/// 前端传入的连接参数（与 Web REST 共用 agile-net-client::ParsedConnect）
+pub type ConnectInput = ParsedConnect;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ProxyStatus {
@@ -40,7 +24,8 @@ pub struct ProxyStatus {
 
 pub struct AppState {
     client: AgileNetClient,
-    creds: Arc<tokio::sync::Mutex<Option<CredentialStore>>>,
+    creds: Arc<Option<Arc<CredentialStore>>>,
+    web_api: Arc<tokio::sync::Mutex<Option<agile_net_client::api::ClientApiHandle>>>,
     roles: Arc<tokio::sync::Mutex<RoleSettings>>,
     server: Arc<tokio::sync::Mutex<Option<NodeServer>>>,
 }
@@ -49,7 +34,8 @@ impl AppState {
     fn new() -> Self {
         Self {
             client: AgileNetClient::new(),
-            creds: Arc::new(tokio::sync::Mutex::new(CredentialStore::open_default().ok())),
+            creds: Arc::new(CredentialStore::open_default().ok().map(Arc::new)),
+            web_api: Arc::new(tokio::sync::Mutex::new(None)),
             roles: Arc::new(tokio::sync::Mutex::new(RoleSettings::load())),
             server: Arc::new(tokio::sync::Mutex::new(None)),
         }
@@ -78,8 +64,7 @@ async fn connect_node(state: State<'_, AppState>, input: ConnectInput) -> Result
     let node_state = state.client.connect(params).await.map_err(map_err)?;
 
     if input.save_credential {
-        let guard = state.creds.lock().await;
-        if let Some(store) = guard.as_ref() {
+        if let Some(store) = state.creds.as_ref() {
             store
                 .save(
                     &node_state.node_id,
@@ -107,8 +92,7 @@ async fn disconnect_node(state: State<'_, AppState>, node_id: String) -> Result<
 /// 删除已保存的凭据
 #[tauri::command]
 async fn delete_credential(state: State<'_, AppState>, key: String) -> Result<(), String> {
-    let guard = state.creds.lock().await;
-    if let Some(store) = guard.as_ref() {
+    if let Some(store) = state.creds.as_ref() {
         store.remove(&key).await;
     }
     Ok(())
@@ -117,29 +101,9 @@ async fn delete_credential(state: State<'_, AppState>, key: String) -> Result<()
 /// 导出已保存凭据为 agilenet://connect 接入链接（含明文密码，谨慎分享）
 #[tauri::command]
 async fn export_credential(state: State<'_, AppState>, key: String) -> Result<String, String> {
-    let guard = state.creds.lock().await;
-    let store = guard.as_ref().ok_or("凭据存储不可用")?;
+    let store = state.creds.as_ref().as_ref().ok_or("凭据存储不可用")?;
     let c = store.get(&key).await.ok_or("凭据不存在或已删除")?;
-    let stripped = c
-        .addr
-        .trim_start_matches("http://")
-        .trim_start_matches("https://")
-        .trim_end_matches('/');
-    let (host, port) = match stripped.rsplit_once(':') {
-        Some((h, p)) if p.parse::<u16>().is_ok() => (h.to_string(), p.to_string()),
-        _ => (stripped.to_string(), "59090".to_string()),
-    };
-    let mut url = format!(
-        "agilenet://connect?server={host}&port={port}&account={}&password={}",
-        c.username, c.password
-    );
-    if let Some(fp) = &c.pinned_fingerprint {
-        url.push_str(&format!("&tls=1&fp={fp}"));
-    }
-    if c.insecure {
-        url.push_str("&insecure=1");
-    }
-    Ok(url)
+    Ok(agile_net_client::connect_url_of(&c))
 }
 
 /// 暂停/恢复一条路由规则（rule_key 格式 "type:value"）
@@ -184,8 +148,7 @@ async fn list_nodes(state: State<'_, AppState>) -> Result<Vec<NodeState>, String
 /// 已保存凭据列表
 #[tauri::command]
 async fn list_credentials(state: State<'_, AppState>) -> Result<Vec<(String, Credential)>, String> {
-    let guard = state.creds.lock().await;
-    let Some(store) = guard.as_ref() else {
+    let Some(store) = state.creds.as_ref() else {
         return Ok(Vec::new());
     };
     let mut out = Vec::new();
@@ -224,69 +187,10 @@ async fn proxy_status(state: State<'_, AppState>) -> Result<ProxyStatus, String>
     })
 }
 
-/// 解析 agilenet://connect?... 接入链接
+/// 解析 agilenet://connect?... 接入链接（实现位于 agile-net-client，与 Web REST 共用）
 #[tauri::command]
 fn parse_connect_url(url: String) -> Result<ConnectInput, String> {
-    let rest = url
-        .strip_prefix("agilenet://connect?")
-        .ok_or_else(|| "无效的接入链接前缀".to_string())?;
-    let mut server = String::new();
-    let mut port: Option<u16> = None;
-    let mut account = String::new();
-    let mut password = String::new();
-    let mut fp: Option<String> = None;
-    let mut insecure = false;
-    for pair in rest.split('&') {
-        let mut kv = pair.splitn(2, '=');
-        let (k, v) = (kv.next().unwrap_or(""), kv.next().unwrap_or(""));
-        let v = url_decode(v);
-        match k {
-            "server" => server = v,
-            "port" => port = v.parse().ok(),
-            "account" => account = v,
-            "password" => password = v,
-            "fp" => fp = Some(v),
-            "insecure" => insecure = v == "1" || v.eq_ignore_ascii_case("true"),
-            _ => {}
-        }
-    }
-    if server.is_empty() || account.is_empty() || password.is_empty() {
-        return Err("接入链接缺少必要参数 (server/account/password)".into());
-    }
-    // server 未含端口时用 port 参数补全
-    let addr = if server.contains(':') {
-        server
-    } else {
-        format!("{}:{}", server, port.unwrap_or(59090))
-    };
-    Ok(ConnectInput {
-        addr,
-        username: account,
-        password,
-        insecure,
-        pinned_cert_path: None,
-        pinned_fingerprint: fp,
-        manage_hosts: false,
-        save_credential: true,
-    })
-}
-
-fn url_decode(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
-                out.push(v);
-                i += 3;
-                continue;
-            }
-        }
-        out.push(if bytes[i] == b'+' { b' ' } else { bytes[i] });
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).to_string()
+    agile_net_client::parse_connect_url(&url)
 }
 
 /// 设置开机自启
@@ -433,8 +337,7 @@ async fn set_web_password(password: String) -> Result<(), String> {
     Ok(())
 }
 
-/// 开关C：Web 远程面。强制先设管理密码；监听地址变更记审计。
-/// （HTTP 服务本身由客户端管理面 Web 化模块提供。）
+/// 开关C：Web 远程面。强制先设管理密码；开启即在监听地址上启动管理面 Web API。
 #[tauri::command]
 async fn set_web_role(state: State<'_, AppState>, enabled: bool, listen: Option<String>) -> Result<(), String> {
     if enabled && !roles::has_web_password() {
@@ -445,20 +348,54 @@ async fn set_web_role(state: State<'_, AppState>, enabled: bool, listen: Option<
         l.parse::<std::net::SocketAddr>()
             .map_err(|_| "监听地址格式应为 host:port".to_string())?;
     }
-    let mut roles = state.roles.lock().await;
-    let old_listen = roles.web_listen.clone();
-    roles.web = enabled;
-    if let Some(l) = listen {
-        roles.web_listen = l;
+    let target_listen = {
+        let mut roles = state.roles.lock().await;
+        let old_listen = roles.web_listen.clone();
+        roles.web = enabled;
+        if let Some(l) = listen {
+            roles.web_listen = l;
+        }
+        let new_listen = roles.web_listen.clone();
+        roles.save()?;
+        if enabled && old_listen != new_listen {
+            roles::audit("web.exposure_change", serde_json::json!({"listen": new_listen}));
+        }
+        new_listen
+    };
+
+    // 先停旧实例（监听地址变更或关闭），再按需启动
+    if let Some(h) = state.web_api.lock().await.take() {
+        h.stop().await;
     }
-    let new_listen = roles.web_listen.clone();
-    roles.save()?;
-    drop(roles);
-    roles::audit("gui.role_toggle", serde_json::json!({"role": "web", "on": enabled}));
-    if enabled && old_listen != new_listen {
-        roles::audit("web.exposure_change", serde_json::json!({"listen": new_listen}));
+    if enabled {
+        let addr: std::net::SocketAddr = target_listen.parse().map_err(|_| "监听地址格式应为 host:port".to_string())?;
+        if addr.ip().is_unspecified() {
+            tracing::warn!(addr = %addr, "web 远程面监听在全部网卡——请确认已设强管理密码");
+        }
+        let handle = agile_net_client::api::start_client_api(
+            state.client.clone(),
+            state.creds.as_ref().clone(),
+            Arc::new(roles::DesktopWebAuth),
+            addr,
+            Some(spa_assets()),
+        )
+        .await
+        .map_err(|e| format!("Web 远程面启动失败: {e}"))?;
+        tracing::info!(addr = %handle.addr(), "web remote api started");
+        *state.web_api.lock().await = Some(handle);
     }
+    roles::audit("gui.role_toggle", serde_json::json!({"role": "web", "on": enabled, "listen": target_listen}));
     Ok(())
+}
+
+/// 桌面端管理 SPA 静态资产（include_str! 内嵌，无 Node 构建链）。
+fn spa_assets() -> agile_net_client::api::SpaAssets {
+    agile_net_client::api::SpaAssets {
+        index: include_str!("../ui/index.html"),
+        app_js: include_str!("../ui/app.js"),
+        icons_js: include_str!("../ui/icons.js"),
+        style_css: include_str!("../ui/style.css"),
+    }
 }
 
 /// 打开内嵌节点控制台（独立窗口复用节点管理 SPA）。
@@ -515,6 +452,40 @@ async fn restore_server_role(app: &tauri::AppHandle) {
             *state.server.lock().await = Some(server);
         }
         Err(e) => tracing::error!(error = %e, "failed to restore embedded node"),
+    }
+}
+
+/// 启动时恢复 Web 远程面（上次退出时处于开启状态且已设管理密码）。
+async fn restore_web_role(app: &tauri::AppHandle) {
+    let state = app.state::<AppState>();
+    let (enabled, listen) = {
+        let r = state.roles.lock().await;
+        (r.web, r.web_listen.clone())
+    };
+    if !enabled || !roles::has_web_password() {
+        return;
+    }
+    let addr: std::net::SocketAddr = match listen.parse() {
+        Ok(a) => a,
+        Err(_) => {
+            tracing::warn!(listen = %listen, "invalid web listen addr, skipping restore");
+            return;
+        }
+    };
+    match agile_net_client::api::start_client_api(
+        state.client.clone(),
+        state.creds.as_ref().clone(),
+        Arc::new(roles::DesktopWebAuth),
+        addr,
+        Some(spa_assets()),
+    )
+    .await
+    {
+        Ok(handle) => {
+            tracing::info!(addr = %handle.addr(), "web remote api restored");
+            *state.web_api.lock().await = Some(handle);
+        }
+        Err(e) => tracing::error!(error = %e, "failed to restore web remote api"),
     }
 }
 
@@ -626,6 +597,7 @@ pub fn run() {
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 restore_server_role(&handle).await;
+                restore_web_role(&handle).await;
             });
 
             // 关闭窗口时最小化到托盘（不退出进程）

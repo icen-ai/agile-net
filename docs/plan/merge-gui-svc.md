@@ -12,8 +12,17 @@
   内嵌实例默认端口避让（API 127.0.0.1:59290 / Relay 54431，数据于 `~/.agile-net/embedded-node/`）；
   控制台独立 Tauri 窗口复用内嵌节点 SPA；Web 远程面的密码基础设施就位，
   HTTP 服务本身随 P1.5 落地。测试：`crates/node/tests/service_test.rs`（start/serve/stop + 同库重启）。
-- P1.5 / P1.6 / P2 / P3：进行中。
-
+- **P1.5 客户端管理面 Web 化（已完成，2026-07-31）**：`crates/client` 新增 `api` 模块——
+  现有 ~15 个管理命令完整映射为 REST（统一 `{code,data}` 信封与错误码段）；
+  管理鉴权与服务端同强度（argon2id 密码哈希 + HS256 JWT 12h + 登录按 IP 限流 5 次/分钟、
+  连续失败锁 15 分钟 + 登录/导出审计回调）；凭据导出强制 `confirm=true` 二次确认；
+  SPA 静态资产由宿主 include_str! 内嵌并附带 CSP 安全头。
+  桌面端 `invoke` 桥双传输：Tauri 窗口内走 IPC，浏览器（Web 远程面）走 HTTP fetch
+  （命令→REST 映射表 + 401 自动回登录框）；浏览器模式隐藏本机专属 UI（窗口控制/自启/角色卡）。
+  开关C 启停即启停 Web API（默认 127.0.0.1:59291，LAN 暴露为显式配置并告警）。
+  `parse_connect_url` / `connect_url_of` 上移至 agile-net-client 供 IPC 与 REST 共用。
+  测试：`crates/client/tests/web_api_test.rs`（鉴权信封/限流锁定/导出二次确认+审计/规则暂停/SPA）。
+- P1.6 / P2 / P3：进行中。
 ## 1. 终态产物
 
 | 产物 | 内容 | 场景 |

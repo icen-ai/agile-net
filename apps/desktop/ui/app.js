@@ -1,10 +1,75 @@
 'use strict';
-// Tauri IPC 桥（v2：window.__TAURI__.core.invoke）；纯浏览器预览时提供空数据桩
+/* 双传输 invoke 桥：Tauri 窗口内走 IPC；浏览器（Web 远程面）走 HTTP REST。
+   REST 端点与命令一一映射（服务端见 crates/client/src/api.rs），信封 {code,data}/{code,message}。 */
 const TAURI = window.__TAURI__ || null;
-const invoke = TAURI ? TAURI.core.invoke : (cmd) => {
-  const mock = { list_nodes: [], list_credentials: [], proxy_status: { running: false, port: 57890 }, get_autostart: false, get_paused_rules: [] };
-  return cmd in mock ? Promise.resolve(mock[cmd]) : Promise.resolve(null);
+const HTTP_MODE = !TAURI;
+let httpToken = localStorage.getItem('ag_web_token') || '';
+
+const CMD_MAP = {
+  list_nodes:        ['GET', '/api/v1/nodes'],
+  connect_node:      ['POST', '/api/v1/nodes', a => a.input],
+  disconnect_node:   ['POST', '/api/v1/nodes/disconnect', a => ({ node_id: a.nodeId })],
+  list_credentials:  ['GET', '/api/v1/credentials'],
+  delete_credential: ['DELETE', a => '/api/v1/credentials?key=' + encodeURIComponent(a.key)],
+  export_credential: ['GET', a => '/api/v1/credentials/export?confirm=true&key=' + encodeURIComponent(a.key)],
+  set_rule_paused:   ['POST', '/api/v1/nodes/paused-rules/toggle', a => ({ node_id: a.nodeId, rule_key: a.ruleKey, paused: a.paused })],
+  get_paused_rules:  ['GET', a => '/api/v1/nodes/paused-rules?node_id=' + encodeURIComponent(a.nodeId)],
+  set_paused_rules:  ['PUT', '/api/v1/nodes/paused-rules', a => ({ node_id: a.nodeId, keys: a.keys })],
+  start_proxy:       ['POST', '/api/v1/proxy/start', a => ({ port: a.port })],
+  stop_proxy:        ['POST', '/api/v1/proxy/stop'],
+  proxy_status:      ['GET', '/api/v1/proxy/status'],
+  parse_connect_url: ['POST', '/api/v1/parse-connect-url', a => ({ url: a.url })],
 };
+
+async function httpInvoke(cmd, args) {
+  const spec = CMD_MAP[cmd];
+  if (!spec) throw new Error('该操作不支持 Web 远程调用');
+  const method = spec[0], path = spec[1], bodyFn = spec[2];
+  const url = typeof path === 'function' ? path(args || {}) : path;
+  const headers = { 'Authorization': 'Bearer ' + httpToken };
+  if (bodyFn) headers['Content-Type'] = 'application/json';
+  const resp = await fetch(url, {
+    method,
+    headers,
+    body: bodyFn ? JSON.stringify(bodyFn(args || {})) : undefined,
+  });
+  if (resp.status === 401) {
+    localStorage.removeItem('ag_web_token');
+    httpToken = '';
+    showLogin();
+    throw new Error('未登录或会话已过期');
+  }
+  const json = await resp.json().catch(() => ({}));
+  if (json.code !== 0) throw new Error(json.message || ('请求失败 (code ' + json.code + ')'));
+  return json.data;
+}
+
+const invoke = TAURI ? TAURI.core.invoke : httpInvoke;
+
+/* ---- Web 远程面登录 ---- */
+function showLogin() {
+  $('login-modal').style.display = 'flex';
+  const p = $('login-pass');
+  if (p) p.focus();
+}
+async function webLogin() {
+  const pass = $('login-pass').value;
+  if (!pass) return;
+  try {
+    const resp = await fetch('/api/v1/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: pass }),
+    });
+    const json = await resp.json();
+    if (json.code !== 0) { toast(json.message || '登录失败', 'err'); return; }
+    httpToken = json.data.access_token;
+    localStorage.setItem('ag_web_token', httpToken);
+    location.reload();
+  } catch (e) {
+    toast('无法连接管理服务', 'err');
+  }
+}
 const $ = (id) => document.getElementById(id);
 
 const PREFS = {
@@ -464,6 +529,8 @@ async function reconnectSaved(key, btn) {
   }, btn || null);
 }
 async function exportCred(key) {
+  // 凭据导出含明文密码：Web 远程面需二次确认
+  if (HTTP_MODE && !window.confirm('导出的接入链接包含明文密码，确定导出到剪贴板吗？')) return;
   try {
     const url = await invoke('export_credential', { key });
     await navigator.clipboard.writeText(url);
@@ -668,6 +735,17 @@ window.addEventListener('DOMContentLoaded', async () => {
   Island.init();
   bindSearch();
   document.querySelectorAll('.nav-item').forEach(n => n.onclick = () => switchView(n.dataset.view));
+
+  // 浏览器模式（Web 远程面）：隐藏本机专属 UI，未登录先出登录框
+  if (HTTP_MODE) {
+    document.body.classList.add('http-mode');
+    const rc = $('roles-card'); if (rc) rc.style.display = 'none';
+    const as = $('s-autostart'); if (as) { const l = as.closest('label'); if (l) l.style.display = 'none'; }
+    $('login-ok').onclick = webLogin;
+    $('login-pass').addEventListener('keydown', e => { if (e.key === 'Enter') webLogin(); });
+    if (!httpToken) { showLogin(); return; }
+  }
+
   initTitlebar();
   if (TAURI && TAURI.app) { TAURI.app.getVersion().then(v => { const el = $('ver'); if (el) el.textContent = v; }).catch(() => {}); }
   $('btn-import').onclick = (e) => importUrl($('connect-url').value, e.target);
