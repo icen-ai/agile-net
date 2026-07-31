@@ -54,3 +54,9 @@ anet-gui 是全功能图形客户端（Windows / macOS / Android），三路独�
 - 凭据存 `~/.agile-net/credentials.json`（Unix 0600）；导出接入链接含明文密码，请谨慎分享
 - 节点配置离线缓存 `~/.agile-net/cache/`：断网时沿用旧规则组网，恢复后无缝升级
 - 关闭主窗口最小化到系统托盘；托盘菜单可显示窗口、启停代理、退出
+
+## 移动端 (Android)
+
+- `app-*-debug.apk` 为移动端侧载包。
+- 移动端系统级状态岛与后台常驻服务（Android 前台服务通知 / iOS Live Activities）架构正在规划演进中，详情参考「开发 → 路线图」。
+

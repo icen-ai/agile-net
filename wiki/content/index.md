@@ -40,6 +40,14 @@
     <div class="cl-title"><i data-ic="globe" data-sz="15"></i>REST API 参考</div>
     <div class="cl-desc">统一 {code,data} 信封、JWT 认证、管理面与客户端端点</div>
   </a>
+  <a class="card-link" href="#/reference/protocol">
+    <div class="cl-title"><i data-ic="layers" data-sz="15"></i>Mux 帧协议</div>
+    <div class="cl-desc">Mux 帧结构、FrameType 规范、握手 v2 与 WindowUpdate 流控</div>
+  </a>
+  <a class="card-link" href="#/guides/troubleshooting">
+    <div class="cl-title"><i data-ic="wrench" data-sz="15"></i>故障排查与诊断</div>
+    <div class="cl-desc">Pinning 证书固定、系统 hosts 权限、端口占用与日志定位</div>
+  </a>
 </div>
 
 ## 特性一览

@@ -80,3 +80,12 @@
 - 登录按 IP 限流（默认 5 次/分钟，连续失败 5 次锁 15 分钟，`[limits]` 可调）
 - 密码/令牌明文仅在创建响应中返回一次；二维码 10 分钟缓存
 - WebSocket `/api/v1/admin/node/events` 需 admin JWT
+
+## 客户端 Web 远程面 API (anet-gui 开关C)
+
+当 `anet-gui` 开启「Web 远程面」时，本地 HTTP 服务（默认 `127.0.0.1:59291`）暴露与上述规范完全一致的 REST API 接口。
+
+- **管理员初始化与登录**：`/api/v1/auth/init` / `/api/v1/auth/login`
+- **节点与网络控制**：`GET/POST /api/v1/nodes`（节点列表与发起连接）
+- **敏感导出约束**：凭据与接入链接导出属敏感操作，请求必须携带 `confirm=true`（如 `GET /api/v1/credentials/export?confirm=true`），否则返回 `40001` 错误码要求二次确认，并记入客户端审计。
+
