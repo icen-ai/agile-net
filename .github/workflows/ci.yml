@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, master]
   pull_request:
-    branches: [main]
+    branches: [main, master]
 
 env:
   CARGO_TERM_COLOR: always
@@ -22,15 +22,6 @@ jobs:
       - run: cargo check --workspace
       - run: cargo clippy --workspace -- -D warnings
 
-  test:
-    name: Test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo test --workspace
-
   fmt:
     name: Format
     runs-on: ubuntu-latest
@@ -40,3 +31,42 @@ jobs:
         with:
           components: rustfmt
       - run: cargo fmt --all -- --check
+
+  test:
+    name: Unit & Integration Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace
+
+  chain-test:
+    name: Docker 四级链路门禁
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build anet image
+        run: docker build -f .docker/Dockerfile -t anet:dev .
+      - name: Run chain test (T1-T6)
+        run: |
+          docker compose -f .docker/docker-compose.test.yaml up \
+            --abort-on-container-exit --exit-code-from tester
+      - name: Cleanup
+        if: always()
+        run: docker compose -f .docker/docker-compose.test.yaml down -v
+
+  desktop-check:
+    name: Desktop Client Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: desktop
+      - name: Install Tauri system deps (Linux)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+      - run: cargo check --manifest-path apps/desktop/Cargo.toml

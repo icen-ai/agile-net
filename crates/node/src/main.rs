@@ -93,25 +93,67 @@ async fn main() -> Result<()> {
 
     // 5. Relay Listener
     let mut relay_listener: Option<Arc<RelayListener>> = None;
+    let mut cert_fingerprint: Option<String> = None;
     if let Some(listener_cfg) = &config.listener {
         let addr: SocketAddr = listener_cfg.addr.parse()?;
-        let (certs, key) = load_or_generate_self_signed(
-            std::path::Path::new(&listener_cfg.cert_path),
-            std::path::Path::new(&listener_cfg.key_path),
-            &listener_cfg.sni_hostname,
-        )?;
-        let fingerprint = agile_net_core::tunnel::tls::cert_fingerprint_sha256(&certs[0]);
-        tracing::info!(sha256 = %fingerprint, "relay TLS certificate ready (可用于客户端证书固定)");
-
-        let server_config = rustls::ServerConfig::builder_with_protocol_versions(&[
-            &rustls::version::TLS13,
-        ])
-        .with_no_client_auth()
-        .with_single_cert(certs, key)
-        .map_err(|e| anyhow::anyhow!("tls server config: {e}"))?;
-        let tls_acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server_config));
-
         let validator = Arc::new(DbTokenValidator::new(db.clone()));
+
+        let tls_acceptor = if let Some(acme_cfg) = &config.acme {
+            // ACME 模式：ALPN 多路复用解析器（签发/续期免停机热替换）
+            let cert_path = std::path::PathBuf::from(&acme_cfg.cert_path);
+            let key_path = std::path::PathBuf::from(&acme_cfg.key_path);
+            let (certs, key) = if cert_path.exists() && key_path.exists() {
+                load_pem_certs_and_key(&cert_path, &key_path)?
+            } else {
+                // 首次启动：自签临时证书，ACME 签发后热替换
+                tracing::info!("no ACME cert yet, using temporary self-signed for boot");
+                agile_net_core::tunnel::tls::generate_self_signed(&acme_cfg.domain)?
+            };
+            let resolver = agile_net_node::acme::AlpnCertResolver::new(certs, key)?;
+            let server_config = rustls::ServerConfig::builder_with_protocol_versions(&[
+                &rustls::version::TLS13,
+            ])
+            .with_no_client_auth()
+            .with_cert_resolver(resolver.clone());
+
+            let manager = Arc::new(agile_net_node::acme::AcmeManager::new(
+                agile_net_node::acme::AcmeConfig {
+                    domain: acme_cfg.domain.clone(),
+                    email: acme_cfg.email.clone(),
+                    staging: acme_cfg.staging,
+                    renew_days: acme_cfg.renew_days,
+                    directory_url: acme_cfg.directory_url.clone(),
+                    cert_path,
+                    key_path,
+                },
+                resolver,
+                db.clone(),
+            ));
+            tokio::spawn(async move {
+                manager.run().await;
+            });
+            tracing::info!(domain = %acme_cfg.domain, "ACME manager running");
+            tokio_rustls::TlsAcceptor::from(Arc::new(server_config))
+        } else {
+            // 静态/自签证书模式
+            let (certs, key) = load_or_generate_self_signed(
+                std::path::Path::new(&listener_cfg.cert_path),
+                std::path::Path::new(&listener_cfg.key_path),
+                &listener_cfg.sni_hostname,
+            )?;
+            let fingerprint = agile_net_core::tunnel::tls::cert_fingerprint_sha256(&certs[0]);
+            tracing::info!(sha256 = %fingerprint, "relay TLS certificate ready (可用于客户端证书固定)");
+            cert_fingerprint = Some(fingerprint);
+
+            let server_config = rustls::ServerConfig::builder_with_protocol_versions(&[
+                &rustls::version::TLS13,
+            ])
+            .with_no_client_auth()
+            .with_single_cert(certs, key)
+            .map_err(|e| anyhow::anyhow!("tls server config: {e}"))?;
+            tokio_rustls::TlsAcceptor::from(Arc::new(server_config))
+        };
+
         let listener = Arc::new(RelayListener::with_validator(addr, validator, tls_acceptor));
         let l = listener.clone();
         tokio::spawn(async move {
@@ -193,7 +235,25 @@ async fn main() -> Result<()> {
         proxy_stats,
         proxy_listen,
         log_buffer,
+        cert_fingerprint,
     });
+
+    // 数据留存清理任务：审计日志 90 天 + 过期 refresh token，每 24h 执行
+    {
+        let db = db.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(24 * 3600));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                interval.tick().await;
+                match db.cleanup_audit_log(90) {
+                    Ok(n) if n > 0 => tracing::info!(removed = n, "audit log retention cleanup"),
+                    _ => {}
+                }
+                let _ = db.cleanup_expired_refresh_tokens();
+            }
+        });
+    }
 
     let relay_port = relay_listener
         .as_ref()
@@ -320,6 +380,25 @@ fn load_pem_certs(path: &str) -> Result<Vec<rustls::pki_types::CertificateDer<'s
         anyhow::bail!("no certificates in {path}");
     }
     Ok(certs)
+}
+
+/// 加载 PEM 证书链与私钥。
+fn load_pem_certs_and_key(
+    cert_path: &std::path::Path,
+    key_path: &std::path::Path,
+) -> Result<(Vec<rustls::pki_types::CertificateDer<'static>>, rustls::pki_types::PrivateKeyDer<'static>)> {
+    let cert_data = std::fs::read(cert_path)?;
+    let certs: Vec<_> = rustls_pemfile::certs(&mut cert_data.as_slice())
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|e| anyhow::anyhow!("parse cert PEM: {e}"))?;
+    if certs.is_empty() {
+        anyhow::bail!("no certificates in {}", cert_path.display());
+    }
+    let key_data = std::fs::read(key_path)?;
+    let key = rustls_pemfile::private_key(&mut key_data.as_slice())
+        .map_err(|e| anyhow::anyhow!("parse key PEM: {e}"))?
+        .ok_or_else(|| anyhow::anyhow!("no private key in {}", key_path.display()))?;
+    Ok((certs, key))
 }
 
 /// 解析上游地址（支持域名；IPv4 优先，规避双栈网络中 IPv6 不可达问题）。

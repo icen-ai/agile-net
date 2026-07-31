@@ -77,6 +77,7 @@ pub async fn status(
             "disabled": accounts_disabled,
         },
         "system": system_stats(),
+        "cert_fingerprint": state.runtime.cert_fingerprint,
     }))
 }
 
@@ -187,6 +188,7 @@ pub async fn logs(
 #[derive(Deserialize)]
 pub struct SettingsRequest {
     pub node_name: Option<String>,
+    pub public_host: Option<String>,
 }
 
 pub async fn update_settings(
@@ -209,6 +211,20 @@ pub async fn update_settings(
             return err(StatusCode::INTERNAL_SERVER_ERROR, codes::INTERNAL, e.to_string());
         }
         applied.push("node_name");
+    }
+    if let Some(host) = &req.public_host {
+        let host = host.trim();
+        if host.is_empty() || host.len() > 253 || host.contains('/') || host.contains(' ') {
+            return err(
+                StatusCode::BAD_REQUEST,
+                codes::VALIDATION_FAILED,
+                "invalid public_host",
+            );
+        }
+        if let Err(e) = state.db.set_config("public_host", host) {
+            return err(StatusCode::INTERNAL_SERVER_ERROR, codes::INTERNAL, e.to_string());
+        }
+        applied.push("public_host");
     }
     audit(
         &state,

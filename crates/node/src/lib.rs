@@ -1,5 +1,6 @@
 //! AgileNet Node 库定义
 
+pub mod acme;
 pub mod api;
 pub mod auth;
 pub mod db;

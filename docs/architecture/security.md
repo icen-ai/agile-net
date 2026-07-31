@@ -170,7 +170,10 @@ VALUES (?, 'create_account', 'acc_xxx', '{"group":"dev"}', '1.2.3.4', datetime('
 
 ### TLS 证书
 
-- 生产：手动放置证书（`listener.cert_path` / `key_path`），客户端使用**证书固定 (pinning)** 或私有 CA 校验
+- 生产推荐一：**ACME 自动证书**（Let's Encrypt，TLS-ALPN-01）——与 Relay 端口多路复用，
+  ALPN 为 `acme-tls/1` 的连接出示挑战证书、其余出示正式证书，签发与续期全程免停机热替换；
+  账户凭据持久化于 `node_config.acme.account`，证书落盘 `certs/acme-*.pem`
+- 生产推荐二：手动放置证书（`listener.cert_path` / `key_path`），客户端使用**证书固定 (pinning)** 或私有 CA 校验
 - 证书固定：节点启动日志输出证书 SHA-256 指纹，带外分发；客户端 `pinned_cert_path` 钉入后仅信任该证书，抗 MITM
 - 开发：证书缺失时自动生成自签证书并**持久化**到 `./certs/`（重启不变，pinning 保持稳定）
 - `insecure = true`（跳过校验）仅限开发调试，启动时打印醒目警告

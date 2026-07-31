@@ -41,11 +41,22 @@ pub async fn list_accounts(
         q.q.as_deref(),
     ) {
         Ok((mut items, total)) => {
-            // 在线状态来自数据面（relay listener 会话表）
-            if let Some(listener) = &state.runtime.listener {
-                for a in &mut items {
-                    a.online = listener.is_client_online(&a.id);
-                }
+            // 在线判定：数据面隧道会话存在，或最近 3 分钟有心跳
+            let now = chrono::Utc::now();
+            for a in &mut items {
+                let tunnel_online = state
+                    .runtime
+                    .listener
+                    .as_ref()
+                    .map(|l| l.is_client_online(&a.id))
+                    .unwrap_or(false);
+                let heartbeat_online = a
+                    .last_seen_at
+                    .as_ref()
+                    .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                    .map(|t| (now - t.with_timezone(&chrono::Utc)) < chrono::Duration::minutes(3))
+                    .unwrap_or(false);
+                a.online = tunnel_online || heartbeat_online;
             }
             ok(json!({
                 "items": items,

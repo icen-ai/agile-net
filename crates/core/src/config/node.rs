@@ -29,6 +29,39 @@ pub struct NodeConfig {
 
     /// 本地代理入站配置
     pub proxy: Option<ProxyConfig>,
+
+    /// ACME 自动证书配置（Let's Encrypt，TLS-ALPN-01）
+    pub acme: Option<AcmeConfig>,
+}
+
+/// ACME 自动证书配置。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AcmeConfig {
+    /// 证书域名（须解析到本节点 Relay 端口）
+    pub domain: String,
+
+    /// 账户联系邮箱
+    pub email: String,
+
+    /// 使用 Let's Encrypt Staging（测试用）
+    #[serde(default)]
+    pub staging: bool,
+
+    /// 到期前多少天续期（默认 30）
+    #[serde(default = "default_renew_days")]
+    pub renew_days: u32,
+
+    /// 自定义 CA directory URL（默认 Let's Encrypt）
+    #[serde(default)]
+    pub directory_url: Option<String>,
+
+    /// 签发证书存放路径
+    #[serde(default = "default_acme_cert_path")]
+    pub cert_path: String,
+
+    /// 签发私钥存放路径
+    #[serde(default = "default_acme_key_path")]
+    pub key_path: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -110,6 +143,7 @@ impl Default for NodeConfig {
             listener: None,
             connector: None,
             proxy: None,
+            acme: None,
         }
     }
 }
@@ -148,4 +182,16 @@ fn default_key_path() -> String {
 
 fn default_sni() -> String {
     "cdn.cloudflare.com".into()
+}
+
+fn default_renew_days() -> u32 {
+    30
+}
+
+fn default_acme_cert_path() -> String {
+    "certs/acme-cert.pem".into()
+}
+
+fn default_acme_key_path() -> String {
+    "certs/acme-key.pem".into()
 }

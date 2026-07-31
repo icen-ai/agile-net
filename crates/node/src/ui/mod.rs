@@ -834,9 +834,19 @@ async function loadAudit() {
 
 /* ================= 节点设置 ================= */
 async function renderSettings() {
-  $('view').innerHTML = '<div class="page-title">⚙️ 节点设置</div><div class="page-desc">基础信息与服务参数（网络监听类修改需重启生效）</div>' +
+  $('view').innerHTML = '<div class="page-title">⚙️ 节点设置</div><div class="page-desc">基础信息、公网接入、管理员与系统日志</div>' +
     '<div class="card"><h3>基础信息</h3>' +
       '<label>节点名称</label><div style="display:flex;gap:10px"><input id="set-name" style="flex:1"><button onclick="saveNodeName()">保存</button></div>' +
+      '<label>公网接入地址（connect_url 与隧道端点主机名）</label><div style="display:flex;gap:10px"><input id="set-host" style="flex:1" placeholder="cdn.example.com"><button onclick="savePublicHost()">保存</button></div>' +
+    '</div>' +
+    '<div class="card"><h3>管理员</h3>' +
+      '<div class="table-wrap"><table><thead><tr><th>用户名</th><th>创建时间</th><th>操作</th></tr></thead><tbody id="admin-body"></tbody></table></div>' +
+      '<div class="toolbar" style="margin-top:12px"><input id="na-user" placeholder="新管理员用户名"><input id="na-pass" type="password" placeholder="密码（≥10位含大小写数字）"><button onclick="createAdmin()">＋ 新建管理员</button></div>' +
+    '</div>' +
+    '<div class="card"><h3>修改我的密码</h3>' +
+      '<label>旧密码</label><input id="pw-old" type="password" style="width:280px">' +
+      '<label>新密码（≥10 位，含大小写字母与数字）</label><input id="pw-new" type="password" style="width:280px">' +
+      '<div style="margin-top:12px"><button onclick="changePassword()">修改密码（修改后需重新登录）</button></div>' +
     '</div>' +
     '<div class="card"><h3>服务信息</h3><div id="set-info"></div></div>' +
     '<div class="card"><h3>最近系统日志</h3><div id="set-logs" class="mono" style="max-height:300px;overflow-y:auto;color:var(--dim);font-size:12px"></div></div>';
@@ -847,8 +857,19 @@ async function renderSettings() {
       kv('版本', 'v' + st.version) + kv('运行时长', fmtUptime(st.uptime)) +
       kv('Relay 监听', st.roles.listener.enabled ? st.roles.listener.addr : '未启用') +
       kv('上游连接', st.roles.connector.enabled ? st.roles.connector.upstream + '（' + st.roles.connector.status + '）' : '未启用') +
-      kv('本地代理', st.proxy.enabled ? st.proxy.listen : '未启用');
+      kv('本地代理', st.proxy.enabled ? st.proxy.listen : '未启用') +
+      (st.cert_fingerprint
+        ? '<div class="kv"><span class="k">证书指纹 (SHA-256)</span><span class="mono" style="font-size:11px;word-break:break-all">' + esc(st.cert_fingerprint) +
+          ' <button class="ghost small" onclick="copyText(\'' + esc(st.cert_fingerprint) + '\')">复制</button></span></div>'
+        : '');
   } catch(e) { toast(e.message, 'err'); }
+  try {
+    const conf = await api('GET', '/api/v1/admin/admins');
+    $('admin-body').innerHTML = (conf.items||[]).map(a =>
+      '<tr><td><b>' + esc(a.username) + '</b></td><td style="color:var(--dim)">' + esc(a.created_at) + '</td>' +
+      '<td><button class="danger small" onclick="delAdmin(\'' + esc(a.id) + '\',\'' + esc(a.username) + '\')">删除</button></td></tr>'
+    ).join('') || '<tr><td colspan="3" class="empty">无</td></tr>';
+  } catch(e) {}
   try {
     const d = await api('GET', '/api/v1/admin/node/logs?limit=100');
     $('set-logs').innerHTML = (d.items||[]).map(l =>
@@ -861,6 +882,37 @@ async function saveNodeName() {
   try {
     await api('PUT', '/api/v1/admin/node/settings', { node_name: $('set-name').value.trim() });
     toast('已保存', 'ok');
+  } catch(e) { toast(e.message, 'err'); }
+}
+async function savePublicHost() {
+  try {
+    await api('PUT', '/api/v1/admin/node/settings', { public_host: $('set-host').value.trim() });
+    toast('公网地址已更新（新签发的接入链接立即生效）', 'ok');
+  } catch(e) { toast(e.message, 'err'); }
+}
+async function createAdmin() {
+  const username = $('na-user').value.trim(), password = $('na-pass').value;
+  if (!username || !password) { toast('请填写用户名与密码', 'err'); return; }
+  try {
+    await api('POST', '/api/v1/admin/admins', { username, password });
+    toast('管理员已创建', 'ok');
+    $('na-user').value = ''; $('na-pass').value = '';
+    renderSettings();
+  } catch(e) { toast(e.message, 'err'); }
+}
+async function delAdmin(id, username) {
+  confirmAction('确定删除管理员 ' + username + '？其会话将立即失效。', async () => {
+    try { await api('DELETE', '/api/v1/admin/admins/' + id); toast('已删除', 'ok'); renderSettings(); }
+    catch(e) { toast(e.message, 'err'); }
+  });
+}
+async function changePassword() {
+  const old_password = $('pw-old').value, new_password = $('pw-new').value;
+  if (!old_password || !new_password) { toast('请填写旧密码与新密码', 'err'); return; }
+  try {
+    await api('PUT', '/api/v1/auth/password', { old_password, new_password });
+    toast('密码已修改，请重新登录', 'ok');
+    setTimeout(doLogout, 1200);
   } catch(e) { toast(e.message, 'err'); }
 }
 

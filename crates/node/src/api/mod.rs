@@ -31,6 +31,8 @@ pub struct NodeRuntime {
     pub proxy_stats: Option<Arc<ProxyStats>>,
     pub proxy_listen: Option<String>,
     pub log_buffer: LogBuffer,
+    /// Relay 证书 SHA-256 指纹（客户端证书固定用；ACME 模式为 None）
+    pub cert_fingerprint: Option<String>,
 }
 
 impl NodeRuntime {
@@ -59,8 +61,8 @@ pub struct ApiState {
     pub login_limiter: LoginRateLimiter,
     /// 创建/重置账号后的 connect_url 短期缓存（10 分钟，供二维码取用）
     connect_url_cache: Arc<DashMap<String, (String, Instant)>>,
-    /// 节点公网接入地址
-    public_host: String,
+    /// 节点公网接入地址（运行时可通过设置 API 热更新）
+    public_host: Arc<arc_swap::ArcSwap<String>>,
     /// 管理 API 端口（connect_url 指向此端点登录）
     api_port: u16,
     /// Relay 数据面端口（config.tunnel 指向此端点建立隧道）
@@ -82,7 +84,7 @@ impl ApiState {
             runtime,
             login_limiter: LoginRateLimiter::new(),
             connect_url_cache: Arc::new(DashMap::new()),
-            public_host,
+            public_host: Arc::new(arc_swap::ArcSwap::from_pointee(public_host)),
             api_port,
             relay_port,
         }
@@ -90,12 +92,21 @@ impl ApiState {
 
     /// 客户端 API 接入端点（connect_url 用）。
     pub fn public_api_endpoint(&self) -> (String, u16) {
-        (self.public_host.clone(), self.api_port)
+        // 优先读数据库中的运行时设置，回落到启动值
+        let host = self
+            .db
+            .get_config("public_host")
+            .ok()
+            .flatten()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| self.public_host.load().as_ref().clone());
+        (host, self.api_port)
     }
 
     /// 数据面隧道端点（client config 用）。
     pub fn public_tunnel_endpoint(&self) -> (String, u16) {
-        (self.public_host.clone(), self.relay_port)
+        let (host, _) = self.public_api_endpoint();
+        (host, self.relay_port)
     }
 
     pub fn remember_connect_url(&self, account_id: &str, url: &str) {
@@ -309,6 +320,19 @@ pub fn create_app(state: ApiState) -> Router {
         .route(
             "/api/v1/admin/accounts/{id}/qrcode",
             get(handlers::accounts::qrcode),
+        )
+        // ---- Admin: Admins ----
+        .route(
+            "/api/v1/admin/admins",
+            get(handlers::admins::list_admins).post(handlers::admins::create_admin),
+        )
+        .route(
+            "/api/v1/admin/admins/{id}",
+            delete(handlers::admins::delete_admin),
+        )
+        .route(
+            "/api/v1/auth/password",
+            put(handlers::admins::change_password),
         )
         // ---- Admin: Node ----
         .route("/api/v1/admin/node/status", get(handlers::node::status))

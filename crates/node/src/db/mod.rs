@@ -249,6 +249,73 @@ impl Database {
         Ok(())
     }
 
+    pub fn list_admins(&self) -> Result<Vec<AdminRecord>> {
+        let conn = self.conn();
+        let mut stmt = conn
+            .prepare("SELECT id, username, password, created_at, updated_at FROM admin ORDER BY created_at ASC")
+            .map_err(db_err)?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(AdminRecord {
+                    id: r.get(0)?,
+                    username: r.get(1)?,
+                    password_hash: r.get(2)?,
+                    created_at: r.get(3)?,
+                    updated_at: r.get(4)?,
+                })
+            })
+            .map_err(db_err)?;
+        let mut items = Vec::new();
+        for r in rows {
+            items.push(r.map_err(db_err)?);
+        }
+        Ok(items)
+    }
+
+    pub fn count_admins(&self) -> Result<i64> {
+        let conn = self.conn();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM admin", [], |r| r.get(0))
+            .map_err(db_err)?;
+        Ok(count)
+    }
+
+    pub fn get_admin_by_id(&self, id: &str) -> Result<Option<AdminRecord>> {
+        let conn = self.conn();
+        let mut stmt = conn
+            .prepare("SELECT id, username, password, created_at, updated_at FROM admin WHERE id = ?1")
+            .map_err(db_err)?;
+        let mut rows = stmt.query(params![id]).map_err(db_err)?;
+        Ok(match rows.next().map_err(db_err)? {
+            Some(r) => Some(AdminRecord {
+                id: r.get(0).map_err(db_err)?,
+                username: r.get(1).map_err(db_err)?,
+                password_hash: r.get(2).map_err(db_err)?,
+                created_at: r.get(3).map_err(db_err)?,
+                updated_at: r.get(4).map_err(db_err)?,
+            }),
+            None => None,
+        })
+    }
+
+    pub fn delete_admin(&self, id: &str) -> Result<()> {
+        let conn = self.conn();
+        conn.execute("DELETE FROM admin WHERE id = ?1", params![id])
+            .map_err(db_err)?;
+        Ok(())
+    }
+
+    /// 清理 N 天前的审计日志，返回删除条数。
+    pub fn cleanup_audit_log(&self, days: i64) -> Result<usize> {
+        let conn = self.conn();
+        let cutoff = (chrono::Utc::now() - chrono::Duration::days(days))
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        let n = conn
+            .execute("DELETE FROM audit_log WHERE created_at < ?1", params![cutoff])
+            .map_err(db_err)?;
+        Ok(n)
+    }
+
     // ==================== Rule ====================
 
     pub fn list_rules(

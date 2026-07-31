@@ -6,7 +6,7 @@
 use agile_net_client::{AgileNetClient, ConnectParams, Credential, CredentialStore, NodeState};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tauri::State;
+use tauri::{Manager, State};
 
 /// 前端传入的连接参数
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -202,6 +202,85 @@ fn url_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).to_string()
 }
 
+/// 设置开机自启
+#[tauri::command]
+fn set_autostart(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    use tauri_plugin_autostart::ManagerExt;
+    let manager = app.autolaunch();
+    if enabled {
+        manager.enable().map_err(map_err)
+    } else {
+        manager.disable().map_err(map_err)
+    }
+}
+
+/// 查询开机自启状态
+#[tauri::command]
+fn get_autostart(app: tauri::AppHandle) -> Result<bool, String> {
+    use tauri_plugin_autostart::ManagerExt;
+    app.autolaunch().is_enabled().map_err(map_err)
+}
+
+/// 构建系统托盘（显示窗口 / 代理开关 / 退出）
+fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+    use tauri::menu::{MenuBuilder, MenuItemBuilder};
+    use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
+
+    let show_item = MenuItemBuilder::with_id("show", "显示主窗口").build(app)?;
+    let proxy_item = MenuItemBuilder::with_id("toggle_proxy", "启动/停止代理").build(app)?;
+    let quit_item = MenuItemBuilder::with_id("quit", "退出 AgileNet").build(app)?;
+    let menu = MenuBuilder::new(app)
+        .items(&[&show_item, &proxy_item, &quit_item])
+        .build()?;
+
+    TrayIconBuilder::new()
+        .icon(app.default_window_icon().expect("window icon").clone())
+        .menu(&menu)
+        .tooltip("AgileNet 客户端")
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            "show" => {
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.unminimize();
+                    let _ = w.show();
+                    let _ = w.set_focus();
+                }
+            }
+            "toggle_proxy" => {
+                let state = app.state::<AppState>();
+                let client = state.client.clone();
+                tauri::async_runtime::spawn(async move {
+                    if client.proxy_port() > 0 {
+                        client.stop_proxy().await;
+                    } else {
+                        let _ = client.start_proxy(7890).await;
+                    }
+                });
+            }
+            "quit" => {
+                app.exit(0);
+            }
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            // 左键双击显示主窗口
+            if let TrayIconEvent::DoubleClick {
+                button: MouseButton::Left,
+                ..
+            } = event
+            {
+                let app = tray.app_handle();
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.unminimize();
+                    let _ = w.show();
+                    let _ = w.set_focus();
+                }
+            }
+        })
+        .build(app)?;
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tracing_subscriber::fmt()
@@ -212,6 +291,10 @@ pub fn run() {
         .init();
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         .manage(AppState::new())
         .invoke_handler(tauri::generate_handler![
             connect_node,
@@ -222,7 +305,24 @@ pub fn run() {
             stop_proxy,
             proxy_status,
             parse_connect_url,
+            set_autostart,
+            get_autostart,
         ])
+        .setup(|app| {
+            setup_tray(app)?;
+
+            // 关闭窗口时最小化到托盘（不退出进程）
+            if let Some(window) = app.get_webview_window("main") {
+                let w = window.clone();
+                window.on_window_event(move |event| {
+                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                        api.prevent_close();
+                        let _ = w.hide();
+                    }
+                });
+            }
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("error while running AgileNet desktop");
 }

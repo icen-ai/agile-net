@@ -1,6 +1,7 @@
 //! Handlers 集合
 
 pub mod accounts;
+pub mod admins;
 pub mod audit;
 pub mod auth;
 pub mod client;

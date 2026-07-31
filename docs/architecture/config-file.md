@@ -45,6 +45,15 @@ addr = "127.0.0.1:1080"
 # 暴露到非 loopback 时必须配置认证，否则为开放代理风险
 # username = "proxy-user"
 # password = "proxy-pass"
+
+# ACME 自动证书（可省略；Let's Encrypt，TLS-ALPN-01 免停机签发/续期）
+# [acme]
+# domain = "cdn.example.com"       # 须解析到本节点 Relay 端口
+# email = "ops@example.com"
+# staging = false                  # 测试用 true（Staging 不受信但限流宽松）
+# renew_days = 30                  # 到期前 30 天自动续期
+# cert_path = "certs/acme-cert.pem"
+# key_path = "certs/acme-key.pem"
 ```
 
 ## 环境变量

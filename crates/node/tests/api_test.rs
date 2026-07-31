@@ -25,6 +25,7 @@ async fn test_app() -> (Router, Database) {
         proxy_stats: None,
         proxy_listen: None,
         log_buffer: LogBuffer::new(),
+        cert_fingerprint: None,
     });
     let state = ApiState::new(db.clone(), jwt, runtime, "127.0.0.1".into(), 9090, 4430);
     (create_app(state), db)
@@ -488,4 +489,95 @@ fn password_hash_uses_argon2id() {
     let hash = hash_password("TestPassword123").unwrap();
     assert!(hash.starts_with("$argon2id$"));
     assert!(agile_net_node::db::verify_password("TestPassword123", &hash).unwrap());
+}
+
+// ==================== 管理员管理 ====================
+
+#[tokio::test]
+async fn admins_management_flow() {
+    let (app, _db) = test_app().await;
+    let token = init_and_login(&app).await;
+
+    // 列表：初始 1 个
+    let (status, body) = req(&app, "GET", "/api/v1/admin/admins", Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"]["items"].as_array().unwrap().len(), 1);
+
+    // 新建
+    let (status, body) = req(&app, "POST", "/api/v1/admin/admins", Some(&token), Some(json!({
+        "username": "ops_admin", "password": "OpsPass12345",
+    }))).await;
+    assert_eq!(status, StatusCode::OK);
+    let new_id = body["data"]["id"].as_str().unwrap().to_string();
+
+    // 新管理员可登录
+    let (status, _) = req(&app, "POST", "/api/v1/auth/login", None, Some(json!({
+        "username": "ops_admin", "password": "OpsPass12345",
+    }))).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // 弱密码拒绝
+    let (status, _) = req(&app, "POST", "/api/v1/admin/admins", Some(&token), Some(json!({
+        "username": "weak_admin", "password": "short",
+    }))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // 删除自己 → 拒绝
+    let me_id = body["data"]["id"].as_str().unwrap();
+    let _ = me_id;
+    let (_, me) = req(&app, "GET", "/api/v1/auth/me", Some(&token), None).await;
+    let self_id = me["data"]["id"].as_str().unwrap().to_string();
+    let (status, _) = req(&app, "DELETE", &format!("/api/v1/admin/admins/{self_id}"), Some(&token), None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // 删除新管理员 → 成功，其会话被吊销
+    let (_, login2) = req(&app, "POST", "/api/v1/auth/login", None, Some(json!({
+        "username": "ops_admin", "password": "OpsPass12345",
+    }))).await;
+    let refresh2 = login2["data"]["refresh_token"].as_str().unwrap().to_string();
+    let (status, _) = req(&app, "DELETE", &format!("/api/v1/admin/admins/{new_id}"), Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = req(&app, "POST", "/api/v1/auth/refresh", None, Some(json!({
+        "refresh_token": refresh2,
+    }))).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "被删管理员的 refresh token 必须失效");
+}
+
+#[tokio::test]
+async fn change_password_flow() {
+    let (app, _db) = test_app().await;
+    let token = init_and_login(&app).await;
+
+    // 旧密码错误 → 401
+    let (status, _) = req(&app, "PUT", "/api/v1/auth/password", Some(&token), Some(json!({
+        "old_password": "WrongOld123", "new_password": "NewPass12345",
+    }))).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    // 正确修改
+    let (status, _) = req(&app, "PUT", "/api/v1/auth/password", Some(&token), Some(json!({
+        "old_password": "AdminPass123", "new_password": "NewPass12345",
+    }))).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // 旧密码失效，新密码可登录
+    let (status, _) = req(&app, "POST", "/api/v1/auth/login", None, Some(json!({
+        "username": "admin", "password": "AdminPass123",
+    }))).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _) = req(&app, "POST", "/api/v1/auth/login", None, Some(json!({
+        "username": "admin", "password": "NewPass12345",
+    }))).await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn audit_retention_cleanup() {
+    let (_app, db) = test_app().await;
+    db.record_audit_log(None, "admin", "recent.action", None, None, None).unwrap();
+    // 刚插入的不是 90 天前，不应被清理
+    let n = db.cleanup_audit_log(90).unwrap();
+    assert_eq!(n, 0);
+    let (_, total) = db.list_audit_logs(1, 20, None).unwrap();
+    assert_eq!(total, 1);
 }
