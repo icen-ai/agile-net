@@ -69,6 +69,14 @@ pub struct ApiConfig {
     /// 监听地址
     #[serde(default = "default_api_addr")]
     pub addr: String,
+
+    /// API HTTPS 证书路径（配置后管理 API 以 HTTPS 提供）
+    #[serde(default)]
+    pub tls_cert_path: Option<String>,
+
+    /// API HTTPS 私钥路径
+    #[serde(default)]
+    pub tls_key_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -152,6 +160,8 @@ impl Default for ApiConfig {
     fn default() -> Self {
         Self {
             addr: default_api_addr(),
+            tls_cert_path: None,
+            tls_key_path: None,
         }
     }
 }

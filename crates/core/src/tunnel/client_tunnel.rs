@@ -6,7 +6,9 @@
 
 use crate::error::{Error, Result};
 use crate::proto::frame::{Frame, FrameType};
-use crate::proto::message::{AuthKind, AuthRequest, OpenChannel, PROTOCOL_VERSION};
+use crate::proto::message::{
+    AuthKind, AuthRequest, OpenChannel, PROTOCOL_VERSION, PROTOCOL_VERSION_FLOW_CONTROL,
+};
 use crate::relay::connector::ConnectionState;
 use crate::relay::listener::AUTH_TIMEOUT;
 use crate::relay::mux::{MuxChannel, MuxSession};
@@ -135,8 +137,15 @@ impl ClientTunnel {
             .await?;
 
         let res_frame = Frame::read_from(&mut tls_stream).await?;
+        let mut server_version = 1u32;
         match res_frame.frame_type {
-            FrameType::AuthOk => {}
+            FrameType::AuthOk => {
+                if !res_frame.payload.is_empty()
+                    && let Ok(v) = serde_json::from_slice::<serde_json::Value>(&res_frame.payload)
+                {
+                    server_version = v["version"].as_u64().unwrap_or(1) as u32;
+                }
+            }
             FrameType::AuthFail => {
                 return Err(Error::Auth("node rejected tunnel token".into()));
             }
@@ -148,7 +157,8 @@ impl ClientTunnel {
         }
 
         // 客户端是会话中唯一发起 Open 的一方，使用偶数 channel_id
-        let (mux, reader_handle) = MuxSession::start(tls_stream, 2, None);
+        let flow_control = server_version >= PROTOCOL_VERSION_FLOW_CONTROL;
+        let (mux, reader_handle) = MuxSession::start(tls_stream, 2, None, flow_control);
 
         // 会话维护任务：心跳（带抖动）+ 空闲超时检测
         let shutdown_notify = self.shutdown_notify.clone();

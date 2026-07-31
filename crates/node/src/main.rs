@@ -296,16 +296,40 @@ async fn main() -> Result<()> {
     let app = create_app(state).merge(create_ui_router());
 
     let api_listen_addr = std::env::var("API_LISTEN").unwrap_or_else(|_| config.api.addr.clone());
-    let api_listener = tokio::net::TcpListener::bind(&api_listen_addr).await?;
-    tracing::info!(addr = %api_listen_addr, "Web Dashboard & API Server started (http://{api_listen_addr})");
+    let api_socket_addr: SocketAddr = api_listen_addr.parse()?;
+    let api_tls_cert = std::env::var("API_TLS_CERT").ok().or_else(|| config.api.tls_cert_path.clone());
+    let api_tls_key = std::env::var("API_TLS_KEY").ok().or_else(|| config.api.tls_key_path.clone());
 
-    tokio::spawn(async move {
-        let _ = axum::serve(
-            api_listener,
-            app.into_make_service_with_connect_info::<SocketAddr>(),
-        )
-        .await;
-    });
+    match (api_tls_cert, api_tls_key) {
+        (Some(cert), Some(key)) => {
+            // HTTPS 模式（内置 TLS，可复用 ACME/静态证书；生产推荐）
+            let tls_config = axum_server::tls_rustls::RustlsConfig::from_pem_file(&cert, &key)
+                .await
+                .map_err(|e| anyhow::anyhow!("api tls config: {e}"))?;
+            tracing::info!(addr = %api_socket_addr, "Web Dashboard & API Server started (https://{api_socket_addr})");
+            tokio::spawn(async move {
+                let _ = axum_server::bind_rustls(api_socket_addr, tls_config)
+                    .serve(app.into_make_service_with_connect_info::<SocketAddr>())
+                    .await;
+            });
+        }
+        _ => {
+            if api_socket_addr.ip().is_unspecified() {
+                tracing::warn!(
+                    "API 以明文 HTTP 监听 {api_socket_addr} — 生产环境请配置 [api] tls_cert_path/tls_key_path 或前置 HTTPS 反代"
+                );
+            }
+            let api_listener = tokio::net::TcpListener::bind(api_socket_addr).await?;
+            tracing::info!(addr = %api_socket_addr, "Web Dashboard & API Server started (http://{api_socket_addr})");
+            tokio::spawn(async move {
+                let _ = axum::serve(
+                    api_listener,
+                    app.into_make_service_with_connect_info::<SocketAddr>(),
+                )
+                .await;
+            });
+        }
+    }
 
     tracing::info!("agile-net-node v{VERSION} ready");
 

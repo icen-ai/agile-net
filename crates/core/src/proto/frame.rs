@@ -37,6 +37,8 @@ pub enum FrameType {
     OpenFail = 0x12,
     Data = 0x20,
     DataFin = 0x21,
+    /// 流控窗口更新（payload = u32 BE，表示对端已消费的字节数）
+    WindowUpdate = 0x22,
     Ping = 0x30,
     Pong = 0x31,
     Close = 0x40,
@@ -53,6 +55,7 @@ impl FrameType {
             0x12 => Some(Self::OpenFail),
             0x20 => Some(Self::Data),
             0x21 => Some(Self::DataFin),
+            0x22 => Some(Self::WindowUpdate),
             0x30 => Some(Self::Ping),
             0x31 => Some(Self::Pong),
             0x40 => Some(Self::Close),

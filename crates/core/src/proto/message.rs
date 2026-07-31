@@ -36,8 +36,11 @@ fn default_version() -> u32 {
     1
 }
 
-/// 当前协议版本。
-pub const PROTOCOL_VERSION: u32 = 1;
+/// 当前协议版本（v2：per-channel 窗口流控）。
+pub const PROTOCOL_VERSION: u32 = 2;
+
+/// 支持 per-channel 窗口流控的最低协议版本。
+pub const PROTOCOL_VERSION_FLOW_CONTROL: u32 = 2;
 
 /// Open 帧 payload：listener 发给 connector，要求打开到目标的数据通道。
 #[derive(Debug, Clone, Serialize, Deserialize)]

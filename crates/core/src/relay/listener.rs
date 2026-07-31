@@ -9,7 +9,7 @@
 
 use crate::error::{Error, Result};
 use crate::proto::frame::{Frame, FrameType};
-use crate::proto::message::{AuthKind, AuthRequest, OpenChannel};
+use crate::proto::message::{AuthKind, AuthRequest, OpenChannel, PROTOCOL_VERSION, PROTOCOL_VERSION_FLOW_CONTROL};
 use crate::proxy::router::{Outbound, ProxyRouter};
 use crate::relay::mux::{MuxChannel, MuxSession, OpenRequest};
 use crate::tunnel::tls::TlsConfigBuilder;
@@ -372,18 +372,19 @@ impl RelayListener {
             .await
             .map_err(|_| Error::Timeout)??;
 
-        let (tls_stream, identity, token_hash) = match authed {
+        let (tls_stream, identity, token_hash, peer_version) = match authed {
             Some(v) => v,
             None => return Err(Error::Auth("authentication failed".into())),
         };
         drop(_pending_guard);
 
+        let flow_control = peer_version >= PROTOCOL_VERSION_FLOW_CONTROL;
         match identity {
             AuthIdentity::Node { node_id, advertise } => {
-                self.serve_node_session(tls_stream, peer_addr, node_id, advertise, token_hash).await
+                self.serve_node_session(tls_stream, peer_addr, node_id, advertise, token_hash, flow_control).await
             }
             AuthIdentity::Client { account_id, acl } => {
-                self.serve_client_session(tls_stream, peer_addr, account_id, acl).await
+                self.serve_client_session(tls_stream, peer_addr, account_id, acl, flow_control).await
             }
         }
     }
@@ -393,7 +394,7 @@ impl RelayListener {
         &self,
         stream: TcpStream,
         peer_addr: SocketAddr,
-    ) -> Result<Option<(tokio_rustls::server::TlsStream<TcpStream>, AuthIdentity, String)>> {
+    ) -> Result<Option<(tokio_rustls::server::TlsStream<TcpStream>, AuthIdentity, String, u32)>> {
         let mut tls_stream = self.tls_acceptor.accept(stream).await?;
         debug!(peer = %peer_addr, "tls handshake completed");
 
@@ -420,10 +421,12 @@ impl RelayListener {
             Some(identity) => {
                 self.clear_auth_failures(&peer_addr.ip());
                 let token_hash = sha256_hex(auth_req.token.as_bytes());
-                Frame::empty(FrameType::AuthOk, 0)
+                let peer_version = auth_req.version;
+                let auth_ok = serde_json::json!({ "version": PROTOCOL_VERSION });
+                Frame::new(FrameType::AuthOk, 0, bytes::Bytes::from(auth_ok.to_string()))
                     .write_to(&mut tls_stream)
                     .await?;
-                Ok(Some((tls_stream, identity, token_hash)))
+                Ok(Some((tls_stream, identity, token_hash, peer_version)))
             }
             None => {
                 warn!(peer = %peer_addr, node_id = %auth_req.node_id, "auth failed: bad token");
@@ -447,10 +450,11 @@ impl RelayListener {
         node_id: String,
         advertise: Vec<String>,
         token_hash: String,
+        flow_control: bool,
     ) -> Result<()> {
         info!(peer = %peer_addr, node_id = %node_id, "node authenticated successfully");
 
-        let (mux, reader_handle) = MuxSession::start(tls_stream, 1, None);
+        let (mux, reader_handle) = MuxSession::start(tls_stream, 1, None, flow_control);
 
         self.peers.insert(
             node_id.clone(),
@@ -484,12 +488,13 @@ impl RelayListener {
         peer_addr: SocketAddr,
         account_id: String,
         acl: Vec<String>,
+        flow_control: bool,
     ) -> Result<()> {
         info!(peer = %peer_addr, account = %account_id, "client authenticated successfully");
 
         let acl_router = build_acl_router(&acl);
         let (open_tx, mut open_rx) = tokio::sync::mpsc::channel::<OpenRequest>(64);
-        let (mux, reader_handle) = MuxSession::start(tls_stream, 1, Some(open_tx));
+        let (mux, reader_handle) = MuxSession::start(tls_stream, 1, Some(open_tx), flow_control);
 
         self.clients
             .entry(account_id.clone())

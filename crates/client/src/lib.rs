@@ -179,6 +179,8 @@ fn home_dir() -> PathBuf {
 /// 共享内部状态（后台任务通过 Arc 安全访问）。
 struct ClientInner {
     nodes: DashMap<String, NodeHandle>,
+    /// 节点连接顺序（路由冲突按先连优先）
+    node_order: std::sync::Mutex<Vec<String>>,
     shared_router: Arc<ArcSwap<ProxyRouter>>,
     proxy_port: ArcSwap<u16>,
     http_client: reqwest::Client,
@@ -191,14 +193,27 @@ struct ClientInner {
 
 impl ClientInner {
     /// 合并全部已连接节点的路由规则。
+    ///
+    /// 冲突语义（确定性）：按节点连接顺序，**先连优先**——
+    /// 相同 CIDR/域名模式以先连接的节点为准（标准最长前缀匹配仍优先于顺序）。
     fn rebuild_merged_router(&self) {
         let mut new_router = ProxyRouter::new();
-        for item in self.nodes.iter() {
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+        let order = self.node_order.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        for node_id in &order {
+            let Some(item) = self.nodes.get(node_id) else {
+                continue;
+            };
             let state = &item.value().state;
             if state.status != NodeStatus::Connected {
                 continue;
             }
             for rule in &state.rules {
+                let key = format!("{}:{}", rule.rule_type, rule.value.to_lowercase());
+                if !seen.insert(key) {
+                    continue; // 冲突：后连节点让位于先连节点
+                }
                 let outbound = Outbound::tunnel(state.node_id.clone());
                 match rule.rule_type.as_str() {
                     "ip-cidr" => {
@@ -258,6 +273,7 @@ impl AgileNetClient {
         Self {
             inner: Arc::new(ClientInner {
                 nodes: DashMap::new(),
+                node_order: std::sync::Mutex::new(Vec::new()),
                 shared_router: Arc::new(ArcSwap::from_pointee(ProxyRouter::new())),
                 proxy_port: ArcSwap::from_pointee(0),
                 http_client: reqwest::Client::new(),
@@ -383,6 +399,11 @@ impl AgileNetClient {
             manage_hosts: params.manage_hosts,
         };
         self.inner.nodes.insert(node_id.clone(), handle);
+        self.inner
+            .node_order
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(node_id.clone());
         self.inner.rebuild_merged_router();
 
         info!(node = %node_id, "node connected");
@@ -397,6 +418,11 @@ impl AgileNetClient {
             }
             handle.tunnel.disconnect().await;
             self.inner.openers.remove(node_id);
+            self.inner
+                .node_order
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .retain(|id| id != node_id);
             self.inner.rebuild_merged_router();
             info!(node = %node_id, "node disconnected");
         }

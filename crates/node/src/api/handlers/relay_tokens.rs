@@ -85,10 +85,10 @@ pub async fn delete_token(
     let token_hash = state.db.get_relay_token_hash(&id).unwrap_or(None);
     match state.db.delete_relay_token(&id) {
         Ok(_) => {
-            if let (Some(listener), Some(hash)) = (&state.runtime.listener, token_hash) {
-                if let Some(node_id) = listener.disconnect_by_token_hash(&hash) {
-                    tracing::info!(node = %node_id, "relay token revoked, peer kicked");
-                }
+            if let (Some(listener), Some(hash)) = (&state.runtime.listener, token_hash)
+                && let Some(node_id) = listener.disconnect_by_token_hash(&hash)
+            {
+                tracing::info!(node = %node_id, "relay token revoked, peer kicked");
             }
             audit(&state, &claims, &ip, "relay_token.delete", Some(&id), "");
             ok(json!(null))

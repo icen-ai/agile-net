@@ -5,7 +5,9 @@
 
 use crate::error::{Error, Result};
 use crate::proto::frame::{Frame, FrameType};
-use crate::proto::message::{AuthKind, AuthRequest, OpenChannel, PROTOCOL_VERSION};
+use crate::proto::message::{
+    AuthKind, AuthRequest, OpenChannel, PROTOCOL_VERSION, PROTOCOL_VERSION_FLOW_CONTROL,
+};
 use crate::relay::bridge::bridge;
 use crate::relay::listener::{AUTH_TIMEOUT, RelayListener};
 use crate::relay::mux::{MuxSession, OpenRequest};
@@ -185,9 +187,16 @@ impl RelayConnector {
 
         // 读取 Auth 回复
         let res_frame = Frame::read_from(&mut tls_stream).await?;
+        let mut server_version = 1u32;
         match res_frame.frame_type {
             FrameType::AuthOk => {
                 info!(upstream = %self.upstream_addr, "authenticated successfully with upstream");
+                // 服务端版本（AuthOk payload {"version":N}，缺省为 1）
+                if !res_frame.payload.is_empty()
+                    && let Ok(v) = serde_json::from_slice::<serde_json::Value>(&res_frame.payload)
+                {
+                    server_version = v["version"].as_u64().unwrap_or(1) as u32;
+                }
             }
             FrameType::AuthFail => {
                 return Err(Error::Auth("upstream rejected authentication token".into()));
@@ -199,8 +208,12 @@ impl RelayConnector {
             }
         }
 
+        // 流控协商：双方都 >= v2 时启用 per-channel 窗口流控
+        let flow_control = server_version >= PROTOCOL_VERSION_FLOW_CONTROL;
+        debug!(server_version, flow_control, "mux session flow control negotiated");
+
         let (open_tx, mut open_rx) = mpsc::channel::<OpenRequest>(64);
-        let (mux, reader_handle) = MuxSession::start(tls_stream, 2, Some(open_tx));
+        let (mux, reader_handle) = MuxSession::start(tls_stream, 2, Some(open_tx), flow_control);
 
         // 后台维护循环：心跳（带抖动）、空闲超时检测、Open 通道请求
         let shutdown_notify = self.shutdown_notify.clone();
