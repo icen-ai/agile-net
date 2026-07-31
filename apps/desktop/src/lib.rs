@@ -169,18 +169,20 @@ async fn list_credentials(state: State<'_, AppState>) -> Result<Vec<(String, Cre
 
 /// 启动本地代理
 #[tauri::command]
-async fn start_proxy(state: State<'_, AppState>, port: u16) -> Result<u16, String> {
+async fn start_proxy(app: tauri::AppHandle, state: State<'_, AppState>, port: u16) -> Result<u16, String> {
     if !state.roles.lock().await.client {
         return Err("客户端角色已停用，请在「设置 → 角色与远程面」开启".into());
     }
     state.client.start_proxy(port).await.map_err(map_err)?;
+    refresh_tray_icon(&app);
     Ok(state.client.proxy_port())
 }
 
 /// 停止本地代理
 #[tauri::command]
-async fn stop_proxy(state: State<'_, AppState>) -> Result<(), String> {
+async fn stop_proxy(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     state.client.stop_proxy().await;
+    refresh_tray_icon(&app);
     Ok(())
 }
 
@@ -759,6 +761,44 @@ fn launch_system_uninstaller() -> Result<(), String> {
     Err("数据已按所选清理；请将应用本体移入废纸篓/删除以完成卸载".into())
 }
 
+// ==================== 托盘图标（zap 开 / zap-off 关，黑白随系统主题自适应） ====================
+
+/// 托盘图标（64px 透明底 PNG；dark=黑色图形用于浅色任务栏，light=白色图形用于深色任务栏）
+const TRAY_ZAP_DARK: &[u8] = include_bytes!("../icons/tray-zap-dark.png");
+const TRAY_ZAP_LIGHT: &[u8] = include_bytes!("../icons/tray-zap-light.png");
+const TRAY_ZAP_OFF_DARK: &[u8] = include_bytes!("../icons/tray-zap-off-dark.png");
+const TRAY_ZAP_OFF_LIGHT: &[u8] = include_bytes!("../icons/tray-zap-off-light.png");
+
+/// 当前系统主题下应使用的托盘图标。
+/// macOS 走模板图标（icon_as_template），系统按菜单栏外观自动反色，固定取黑色版本；
+/// Windows/Linux 按主窗口跟踪的系统主题手动选黑白。
+fn tray_icon(app: &tauri::AppHandle, proxy_on: bool) -> tauri::image::Image<'static> {
+    #[cfg(target_os = "macos")]
+    let dark_taskbar = false;
+    #[cfg(not(target_os = "macos"))]
+    let dark_taskbar = app
+        .get_webview_window("main")
+        .and_then(|w| w.theme().ok())
+        .map(|t| matches!(t, tauri::Theme::Dark))
+        .unwrap_or(false);
+    let bytes = match (proxy_on, dark_taskbar) {
+        (true, true) => TRAY_ZAP_LIGHT,
+        (true, false) => TRAY_ZAP_DARK,
+        (false, true) => TRAY_ZAP_OFF_LIGHT,
+        (false, false) => TRAY_ZAP_OFF_DARK,
+    };
+    tauri::image::Image::from_bytes(bytes).expect("托盘图标 PNG 解码失败")
+}
+
+/// 刷新托盘图标：代理运行=zap / 停止=zap-off，黑白随系统主题。
+fn refresh_tray_icon(app: &tauri::AppHandle) {
+    let Some(tray) = app.tray_by_id("anet-tray") else {
+        return;
+    };
+    let proxy_on = app.state::<AppState>().client.proxy_port() > 0;
+    let _ = tray.set_icon(Some(tray_icon(app, proxy_on)));
+}
+
 /// 构建系统托盘（显示窗口 / 代理开关 / 退出）
 fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     use tauri::menu::{MenuBuilder, MenuItemBuilder};
@@ -771,8 +811,9 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         .items(&[&show_item, &proxy_item, &quit_item])
         .build()?;
 
-    TrayIconBuilder::new()
-        .icon(app.default_window_icon().expect("window icon").clone())
+    TrayIconBuilder::with_id("anet-tray")
+        .icon(tray_icon(app.handle(), false))
+        .icon_as_template(true) // macOS 模板图标：系统按菜单栏深浅自动反色
         .menu(&menu)
         .tooltip("AgileNet 客户端")
         .show_menu_on_left_click(false)
@@ -787,12 +828,14 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
             "toggle_proxy" => {
                 let state = app.state::<AppState>();
                 let client = state.client.clone();
+                let handle = app.clone();
                 tauri::async_runtime::spawn(async move {
                     if client.proxy_port() > 0 {
                         client.stop_proxy().await;
                     } else {
                         let _ = client.start_proxy(57890).await;
                     }
+                    refresh_tray_icon(&handle);
                 });
             }
             "quit" => {
@@ -874,14 +917,17 @@ pub fn run() {
                 restore_web_role(&handle).await;
             });
 
-            // 关闭窗口时最小化到托盘（不退出进程）
+            // 关闭窗口时最小化到托盘（不退出进程）；系统主题变化时刷新托盘图标黑白
             if let Some(window) = app.get_webview_window("main") {
                 let w = window.clone();
-                window.on_window_event(move |event| {
-                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                let handle = app.handle().clone();
+                window.on_window_event(move |event| match event {
+                    tauri::WindowEvent::CloseRequested { api, .. } => {
                         api.prevent_close();
                         let _ = w.hide();
                     }
+                    tauri::WindowEvent::ThemeChanged(_) => refresh_tray_icon(&handle),
+                    _ => {}
                 });
             }
             Ok(())
