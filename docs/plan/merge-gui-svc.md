@@ -88,3 +88,22 @@ EFG 审计只见 D 不见人、另需一套委托权限。保留为二期「有�
 - 客户端 Web API 与服务端同强度鉴权（argon2id + JWT + 限流 + 审计）
 - 凭据导出/接入链接经 Web 暴露需二次确认
 - 暴露控制面开关默认关；管理会话审计必带来源（IP + 账号/令牌）
+
+## 9. 审计日志（管理面新增事件）
+
+现有机制：敏感操作（登录/增删改/启停/重置/吊销）经 `record_audit_log` 落 `audit_log` 表
+（operator / action / target / detail / 来源 IP，90 天留存自动清理），严禁记录任何
+密码/Token 明文。统一与分布式管理面引入的新事件：
+
+| action | 触发 | detail 必含 |
+| --- | --- | --- |
+| `account.issue_admin_link` | 签发管理版接入链接 | 目标账号、操作人、来源 IP |
+| `relay_token.expose_control` | 暴露控制面开关变更 | 令牌前缀、on/off、操作人 |
+| `admin.session_via_relay` | 中继令牌换得管理会话 | 令牌前缀、下游节点名、来源（隧道） |
+| `admin.console_access` | 经控制台通道访问某节点管理面 | 目标节点、访问者身份（账号或令牌）、路径（本机/隧道层级） |
+| `gui.role_toggle` | GUI 三路开关变更 | 角色（client/server/web）、on/off、本机用户 |
+| `web.exposure_change` | Web 面监听地址/启停变更 | 新地址、操作人 |
+
+原则：每条管理操作必须能回答「谁、从哪条路径（本机/隧道第几级/经哪个中继）、
+对哪台设备、做了什么」；令牌级会话与真人账号在 operator 字段明确区分
+（`relay:psk_前缀` vs 用户名）。

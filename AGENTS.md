@@ -1,6 +1,6 @@
 # AGENTS.md - AgileNet 开发与 Agent 协同规范
 
-本文档为 AI Agent（包括 Cindy、Claude Code、Codex 等）在 **AgileNet** 项目中的开发规范、架构约定与行为准则。
+本文档为 AI Agent（Cindy、Claude Code、Kimi Code、Codex 等）在 **AgileNet** 项目中的开发规范、架构约定与行为准则。是唯一维护的 AI 指导文件（CLAUDE.md 仅为指向这里的引用）。
 
 ---
 
@@ -8,15 +8,22 @@
 
 **AgileNet** 是一个高安全、轻量级、Token 优化的 Rust 多节点网络穿透与代理链路由系统。
 
-- **工作区路径**：`C:\Users\thatc\.workspace\icen\agile-net`
-- **语言与版本**：Rust (Edition 2024 / Cargo Workspace)
-- **主要组件**：
-  - `crates/core`：核心网络协议（mux 帧/会话）、TLS 握手（证书固定 pinning）、Relay 穿透（listener/connector）、客户端隧道 (`ClientTunnel`)、代理入站（SOCKS5/HTTP + 认证）与路由器 (`ProxyRouter`)。
-  - `crates/node`：服务端/节点代理服务 (`agile-net-node`)，包含 SQLite 数据库（版本化迁移）、Axum REST API（docs/api 规格）、Web 管理后台 (`ui`)、TUI 终端与内存日志缓冲 (`logs`)。
-  - `crates/cli`：命令行工具 `anet` (基于 Clap Derive)，支持 `login`, `logout`, `status`, `rule`, `group`, `account`, `token`, `audit`, `tui` 等子命令，会话持久化于 `~/.anet/session.json`。
-  - `crates/client`：客户端核心引擎 (`agile-net-client`)，管理多节点连接（登录/配置/隧道/长轮询/心跳）、路由规则合并、本地 SOCKS5/HTTP 代理、hosts 管理及凭据存储 (`CredentialStore`)。
-  - `apps/desktop`：Tauri 2 桌面（Windows）与 Android 客户端（独立 workspace，前端无 Node 构建链）。
-  - `.docker`：深度链路部署测试（四级节点链 compose + 断言脚本）。
+**产品方向（双产物，消灭 frps/frpc 式分裂）**：
+
+- `anet-gui`：全功能图形客户端（Windows / macOS / Android），三路独立开关——客户端角色 / 服务端角色 / Web 远程面，一台有 UI 的机器勾一下即可成为内网转发机或机房留守管理端
+- `anet-svc`：服务器二进制（`serve` 默认 / `tui` / `cli` 子命令），角色全靠配置：relay listener（当上游）、connector（当下游中继）、client（终端下游）、proxy（本地代理）、api（Web 管理面）
+
+统一与分布式管理面的完整设计（带内管理、relay 暴露控制面开关、管理可达自动发现、分期 P1→P3）见 **`docs/plan/merge-gui-svc.md`**，实施以其为准。
+
+**当前仓库结构**（改名收编进行中，见上述计划 P3）：
+
+- `crates/core`：核心网络协议（mux 帧/会话）、TLS 握手（证书固定 pinning）、Relay 穿透（listener/connector）、客户端隧道（`ClientTunnel`）、代理入站（SOCKS5/HTTP + 认证）与路由器（`ProxyRouter`）。
+- `crates/node`：服务端/节点（`agile-net-node`）：SQLite（版本化迁移）、Axum REST API、Web 管理后台（`ui`）、TUI、内存日志缓冲。
+- `crates/client`：客户端核心引擎（`agile-net-client`）：多节点连接（登录/配置/隧道/长轮询/心跳）、规则合并与暂停（`paused_rules`）、本地代理、hosts 管理、凭据存储。
+- `crates/cli`：CLI 工具 `anet`（包名 `agile-net-cli`，Clap Derive），会话持久化于 `~/.anet/session.json`。
+- `apps/desktop`：Tauri 2 桌面/Android（独立 workspace，前端无 Node 构建链）。
+- `.docker`：四级节点链编排测试（`docker-compose.test.yaml`）与常驻演示（`docker-compose.chain.yaml`）。
+- `docs/plan/merge-gui-svc.md`：双产物统一实施计划；`docs/todo/island.md`：移动端系统岛规划。
 
 ---
 
@@ -24,34 +31,38 @@
 
 1. **禁用子 Agent**：严禁直接或间接调用子 Agent 工具（如 `Agent` / `spawn_agent`），所有任务须在当前 Session 中独立高效完成。
 2. **任务结束总结**：每次 Turn 或任务结束时，必须使用**中文**进行清晰、结构化的总结汇报。
-3. **Token 优化**：在 Bash 执行 CLI 命令时，必须优先使用 `rtk` 前缀（如 `rtk cargo test`, `rtk git status`, `rtk cargo check`）以最大化 Token 节约。
-4. **测试驱动与提交**：新增功能或修复 Bug 后，必须运行 `cargo test --workspace` 确保所有单元测试与集成测试通过，测试通过后立即提交 Git。
+3. **Token 优化**：在 Bash 执行 CLI 命令时，必须优先使用 `rtk` 前缀（如 `rtk cargo test`、`rtk git status`）。
+4. **测试驱动与提交**：新增功能或修复 Bug 后，必须运行 `cargo test --workspace` 确保全部通过，通过后立即提交 Git。
+5. **Windows 构建注意**：编译/测试前确认没有正在运行的本项目 exe（`agile-net-node.exe` / `agilenet-desktop.exe` 等），否则链接期文件锁失败（os error 5）；演示进程在跑时可用 `CARGO_TARGET_DIR=target/ci` 换目录跑测试。
 
 ---
 
 ## 架构与编码约定 (Architecture & Coding Idioms)
 
 1. **Rustls 加密提供者**：
-   - 使用 `rustls = "0.23"` 且启用了 `ring` feature。
-   - 所有初始化 TLS 配置（如 `TlsConfigBuilder`）处均须显式安装过程级 Provider：
+   - `rustls = "0.23"` + `ring` feature；所有初始化 TLS 配置处须显式安装过程级 Provider：
      ```rust
      let _ = rustls::crypto::ring::default_provider().install_default();
      ```
 2. **数据库与 API**：
-   - 数据库交互统一封装在 `crates/node/src/db/`（`r2d2_sqlite` 连接池：file 池 8 / memory 池 1，WAL 模式），版本化迁移见 `MIGRATIONS`。
-   - 包含的表：`admin`, `rule`, `group`, `group_rule`, `account`, `relay_token`, `node_config`, `audit_log`, `traffic_log`, `refresh_token`。
-   - API 路由定义在 `crates/node/src/api/`（基于 `axum`，可配内置 HTTPS），管理接口强制 `AdminAuth` 提取器（admin 角色）、客户端接口强制 `ClientAuth`；响应统一 `{code, data}` / `{code, message}` 信封，错误码遵循 `docs/api/overview.md`。
+   - 数据库交互统一封装在 `crates/node/src/db/`（`r2d2_sqlite` 连接池：file 池 8 / memory 池 1，WAL），版本化迁移见 `MIGRATIONS`。
+   - 表：`admin`, `rule`, `group`, `group_rule`, `account`, `relay_token`, `node_config`, `audit_log`, `traffic_log`, `refresh_token`。
+   - API 路由在 `crates/node/src/api/`（axum，可配内置 HTTPS）；管理接口强制 `AdminAuth`、客户端接口强制 `ClientAuth`；响应统一 `{code, data}` / `{code, message}` 信封，错误码遵循 `docs/api/overview.md`。
 3. **安全硬化**：
-   - 用户与客户端账号密码统一采用 `argon2id`（64MB/t=3/p=4）加密哈希，严禁明文存储。
-   - 账号密码/Relay Token 由服务端生成（`sk-`/`psk_`/`tun_` + 48 位），明文仅创建时返回一次，数据库只存 argon2id 或 SHA-256 哈希。
-   - JWT 密钥首次启动生成并持久化于 `node_config.jwt_secret`；refresh token jti 哈希落库，支持吊销与轮换。
+   - 密码统一 argon2id（64MB/t=3/p=4），严禁明文存储。
+   - 账号密码/Relay Token 由服务端生成（`sk-`/`psk_`/`tun_` + 48 位），明文仅创建时返回一次，库中只存 argon2id 或 SHA-256 哈希。
+   - JWT 密钥首启生成并持久化于 `node_config.jwt_secret`；refresh token jti 哈希落库，支持吊销轮换。
    - 数据面 token 比较必须常数时间（`constant_time_eq`）；认证失败按 IP 限流（20 次/分钟）并随机延迟惩罚。
-   - 敏感操作（登录/增删改/启停/重置/吊销）须调用 `record_audit_log` 记录系统审计日志（含 detail 与来源 IP），严禁记录任何密码/Token 明文。
-4. **前端 SPA 与嵌入式 UI**：
-   - `crates/node/src/ui/mod.rs` 嵌入单页 Web Dashboard；`apps/desktop/ui/` 为桌面/Android 共用前端（无 Node 构建链）。
-   - 原生 JavaScript 交互统一经 `api(...)` 封装：自动附带 Bearer Token，401 时用 refresh_token 续期，失败回登录页。
-   - 图标统一使用内置 Lucide 内联 SVG（Web 端 `ic()` / 桌面端 `AgIcon()`，仅收录用到的图标，无构建链下等价 tree-shaking），严禁以文字表情符号充当图标；文档中同样不得出现文字表情。
-   - 视觉设计 token 对齐 Cindy 桌面端（浅色为默认主题），详见 `docs/architecture/ui-design.md`。
+   - 敏感操作须 `record_audit_log`（含 detail 与来源 IP），严禁记录任何密码/Token 明文；管理面新增事件见 `docs/plan/merge-gui-svc.md` §9。
+4. **端口规范**：
+   - 默认端口一律 5 万段，规避 Clash 系常用端口：API `59090`、Relay listener `54430`、客户端代理 `57890`。
+   - 与 Clash/FlClash 共存的组合配置见 `apps/README.md`。
+5. **前端约定（Web 后台 + 桌面/Android 共用前端，均无 Node 构建链）**：
+   - 图标统一内置 Lucide 内联 SVG（Web 端 `ic()` / 桌面端 `AgIcon()` + `data-ic` 占位水合），只收录用到的图标；**严禁文字表情充当图标，文档中同样不得出现文字表情**。
+   - 视觉 token 对齐 Cindy 桌面端（浅色默认），见 `docs/architecture/ui-design.md`。
+   - 桌面端 Tauri CSP 为 `script-src 'self'`：**严禁内联事件属性（onclick 等）**，一律 app.js 显式绑定或事件委托。
+   - 轮询渲染必须做变更检测（签名对比），不变更不重写 DOM，避免频闪。
+   - 灵动岛：显式尺寸形变 + 弹簧缓动，形变全程内容不得溢出岛体（`docs/architecture/ui-design.md` §3）。
 
 ---
 
@@ -64,22 +75,23 @@
 rtk cargo check --workspace
 rtk cargo build --workspace
 
-# 单元与集成测试
+# 单元与集成测试（演示进程占用 exe 时用 CARGO_TARGET_DIR=target/ci）
 rtk cargo test --workspace
 
 # 代码规范检查
 rtk cargo clippy --workspace
 
-# 启动 Node 服务 (默认 59090 端口)
+# 启动 Node 服务（默认 59090 端口）
 rtk cargo run -p agile-net-node
 
-# 使用 CLI 工具 anet
-rtk cargo run -p anet -- --help
+# CLI 工具 anet（包名 agile-net-cli）
+rtk cargo run -p agile-net-cli -- --help
 
-# Docker 深度链路部署测试（四级节点链）
+# Docker 四级链断言测试 / 常驻演示
 docker build -f .docker/Dockerfile -t anet:dev .
 docker compose -f .docker/docker-compose.test.yaml up --abort-on-container-exit --exit-code-from tester
+docker compose -f .docker/docker-compose.chain.yaml up -d
 
-# Tauri 桌面/Android 客户端（独立 workspace）
+# Tauri 桌面/Android（独立 workspace）
 cargo check --manifest-path apps/desktop/Cargo.toml
 ```
