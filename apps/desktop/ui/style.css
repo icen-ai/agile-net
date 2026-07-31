@@ -71,10 +71,10 @@ a { color: var(--link); text-decoration: none; }
 .dot.on { background: var(--ok); }
 .dot.off { background: var(--border2); }
 
-/* ===== 灵动岛（标题栏中央：状态 + 通知 + 异常详情展开） ===== */
-.island { position: fixed; top: 5px; left: 50%; transform: translateX(-50%); z-index: 300;
+/* ===== 灵动岛（内容区上方居中：状态 + 通知 + 异常详情展开） ===== */
+.island { position: fixed; top: 5px; left: calc(50% + 108px); /* 视口中心 + 侧栏宽一半(216px/2) = 内容区中心 */ transform: translateX(-50%); z-index: 300;
   background: var(--accent); color: var(--accent-fg); border-radius: 999px;
-  min-width: 168px; max-width: min(520px, 76vw);
+  min-width: 168px; max-width: min(520px, calc(100vw - 500px));
   box-shadow: 0 6px 20px rgba(0,0,0,.16); overflow: hidden;
   transition: border-radius .32s cubic-bezier(.4,0,.2,1), box-shadow .32s cubic-bezier(.4,0,.2,1); }
 .island.expanded { border-radius: 14px; box-shadow: 0 14px 38px rgba(0,0,0,.24); }
@@ -201,5 +201,5 @@ tr:last-child td { border-bottom: none; }
   .grid2 { grid-template-columns: 1fr; }
   .page-title { font-size: 16px; }
   .table-scroll { max-height: calc(100vh - 300px); }
-  .island { max-width: 86vw; }
+  .island { left: 50%; max-width: 86vw; }
 }
