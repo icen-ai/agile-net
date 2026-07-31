@@ -30,6 +30,13 @@ pub struct Claims {
     pub jti: String,
     /// "access" | "refresh"
     pub typ: String,
+    /// 管理面授权档位：ro（只读）/ rules（只读+规则写）/ full（全权）。既有 token 缺省 full。
+    #[serde(default = "default_scope")]
+    pub scope: String,
+}
+
+fn default_scope() -> String {
+    "full".into()
 }
 
 /// 登录/刷新签发的令牌集合
@@ -61,15 +68,20 @@ impl JwtService {
         Ok(Self { secret, db })
     }
 
-    /// 签发 access + refresh（client 同时轮换 tunnel_token）。
+    /// 签发 access + refresh（client 同时轮换 tunnel_token），scope 默认 full。
     pub fn issue(&self, subject: &str, username: &str, role: &str) -> Result<IssuedTokens> {
+        self.issue_with_scope(subject, username, role, "full")
+    }
+
+    /// 签发 access + refresh（指定管理面 scope 档位）。
+    pub fn issue_with_scope(&self, subject: &str, username: &str, role: &str, scope: &str) -> Result<IssuedTokens> {
         let (access_ttl, refresh_ttl) = match role {
             "admin" => (ADMIN_ACCESS_TTL, ADMIN_REFRESH_TTL),
             _ => (CLIENT_ACCESS_TTL, CLIENT_REFRESH_TTL),
         };
 
-        let access_token = self.sign(subject, username, role, "access", access_ttl)?;
-        let (refresh_token, jti) = self.sign_refresh(subject, username, role, refresh_ttl)?;
+        let access_token = self.sign(subject, username, role, "access", access_ttl, scope)?;
+        let (refresh_token, jti) = self.sign_refresh(subject, username, role, refresh_ttl, scope)?;
 
         // refresh jti 哈希落库（可吊销）
         let expires_at = (chrono::Utc::now() + chrono::Duration::seconds(refresh_ttl))
@@ -105,9 +117,9 @@ impl JwtService {
         if !self.db.is_refresh_token_valid(&jti_hash)? {
             return Err(Error::Auth("refresh token revoked or expired".into()));
         }
-        // 轮换：吊销旧 jti
+        // 轮换：吊销旧 jti（scope 随会话保留）
         self.db.revoke_refresh_token(&jti_hash)?;
-        let issued = self.issue(&claims.sub, &claims.username, &claims.role)?;
+        let issued = self.issue_with_scope(&claims.sub, &claims.username, &claims.role, &claims.scope)?;
         Ok((claims, issued))
     }
 
@@ -138,7 +150,7 @@ impl JwtService {
         Ok(data.claims)
     }
 
-    fn sign(&self, subject: &str, username: &str, role: &str, typ: &str, ttl: i64) -> Result<String> {
+    fn sign(&self, subject: &str, username: &str, role: &str, typ: &str, ttl: i64, scope: &str) -> Result<String> {
         let now = chrono::Utc::now();
         let claims = Claims {
             sub: subject.to_string(),
@@ -148,6 +160,7 @@ impl JwtService {
             iat: now.timestamp() as usize,
             jti: uuid::Uuid::new_v4().to_string(),
             typ: typ.to_string(),
+            scope: scope.to_string(),
         };
         encode(
             &Header::default(),
@@ -157,7 +170,7 @@ impl JwtService {
         .map_err(|e| Error::Auth(e.to_string()))
     }
 
-    fn sign_refresh(&self, subject: &str, username: &str, role: &str, ttl: i64) -> Result<(String, String)> {
+    fn sign_refresh(&self, subject: &str, username: &str, role: &str, ttl: i64, scope: &str) -> Result<(String, String)> {
         let now = chrono::Utc::now();
         let jti = uuid::Uuid::new_v4().to_string();
         let claims = Claims {
@@ -168,6 +181,7 @@ impl JwtService {
             iat: now.timestamp() as usize,
             jti: jti.clone(),
             typ: "refresh".to_string(),
+            scope: scope.to_string(),
         };
         let token = encode(
             &Header::default(),

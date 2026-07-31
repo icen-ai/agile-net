@@ -71,6 +71,9 @@ pub struct NodeState {
     pub status: NodeStatus,
     pub rules: Vec<ClientRule>,
     pub config_version: u64,
+    /// 该账号被授予「管理此节点」权限（管理版接入链接）
+    #[serde(default)]
+    pub admin_console: bool,
 }
 
 /// 单个节点连接的运行时句柄。
@@ -81,6 +84,8 @@ struct NodeHandle {
     manage_hosts: bool,
     /// 原始连接参数（断网降级后重试登录用）
     params: ConnectParams,
+    /// 当前 access token（配置长轮询刷新后同步；控制台票据签发用）
+    access_token: Arc<ArcSwap<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -197,6 +202,9 @@ pub struct ParsedConnect {
     /// 连接成功后是否保存凭据
     #[serde(default)]
     pub save_credential: bool,
+    /// 管理版接入链接标记（admin=1：持链接者可管理该节点，导入时强警示）
+    #[serde(default)]
+    pub admin: Option<String>,
 }
 
 /// 解析 agilenet://connect?... 接入链接。
@@ -210,6 +218,7 @@ pub fn parse_connect_url(url: &str) -> std::result::Result<ParsedConnect, String
     let mut password = String::new();
     let mut fp: Option<String> = None;
     let mut insecure = false;
+    let mut admin: Option<String> = None;
     for pair in rest.split('&') {
         let mut kv = pair.splitn(2, '=');
         let (k, v) = (kv.next().unwrap_or(""), kv.next().unwrap_or(""));
@@ -221,6 +230,7 @@ pub fn parse_connect_url(url: &str) -> std::result::Result<ParsedConnect, String
             "password" => password = v,
             "fp" => fp = Some(v),
             "insecure" => insecure = v == "1" || v.eq_ignore_ascii_case("true"),
+            "admin" => admin = Some(v),
             _ => {}
         }
     }
@@ -242,6 +252,7 @@ pub fn parse_connect_url(url: &str) -> std::result::Result<ParsedConnect, String
         pinned_fingerprint: fp,
         manage_hosts: false,
         save_credential: true,
+        admin,
     })
 }
 
@@ -543,6 +554,7 @@ impl AgileNetClient {
         let tunnel_server = config["tunnel"]["server"].as_str().unwrap_or("").to_string();
         let tunnel_port = config["tunnel"]["port"].as_u64().unwrap_or(443) as u16;
         let version = config["version"].as_u64().unwrap_or(0);
+        let admin_console = config["admin_console"].as_bool().unwrap_or(false);
         let rules = parse_rules(&config);
 
         // 3. 建立数据面隧道
@@ -572,9 +584,11 @@ impl AgileNetClient {
             status: NodeStatus::Connected,
             rules,
             config_version: version,
+            admin_console,
         };
 
         // 4. 后台任务：隧道自动重连 + 心跳 + 配置长轮询
+        let access_shared = Arc::new(ArcSwap::from_pointee(access_token.clone()));
         let mut tasks = Vec::new();
         {
             let t = tunnel.clone();
@@ -593,7 +607,7 @@ impl AgileNetClient {
             self.inner.clone(),
             node_id.clone(),
             base_url.clone(),
-            access_token.clone(),
+            access_shared.clone(),
             refresh_token.clone(),
             version,
         ));
@@ -620,6 +634,7 @@ impl AgileNetClient {
             tasks,
             manage_hosts: params.manage_hosts,
             params: params.clone(),
+            access_token: access_shared,
         };
         self.inner.nodes.insert(node_id.clone(), handle);
         self.inner
@@ -629,7 +644,7 @@ impl AgileNetClient {
             .push(node_id.clone());
         self.inner.rebuild_merged_router();
 
-        info!(node = %node_id, "node connected");
+        info!(node = %node_id, admin_console, "node connected");
         Ok(state)
     }
 
@@ -672,6 +687,7 @@ impl AgileNetClient {
             status: NodeStatus::Reconnecting,
             rules: cached.rules.clone(),
             config_version: cached.config_version,
+            admin_console: false,
         };
 
         let mut tasks = Vec::new();
@@ -690,6 +706,7 @@ impl AgileNetClient {
             tasks,
             manage_hosts: params.manage_hosts,
             params: params.clone(),
+            access_token: Arc::new(ArcSwap::from_pointee(String::new())),
         };
         self.inner.nodes.insert(node_id.clone(), handle);
         self.inner
@@ -846,6 +863,59 @@ impl AgileNetClient {
         self.inner.proxy_stats.store(None);
         self.inner.proxy_port.store(Arc::new(0));
     }
+
+    /// 节点的数据面通道开启器（控制台 loopback 转发器用）。
+    pub fn opener(&self, node_id: &str) -> Option<Arc<dyn ChannelOpener>> {
+        self.inner.openers.get(node_id).map(|r| r.value().clone())
+    }
+
+    /// 申请控制台引导票据（仅被授予「管理此节点」权限的账号可用）。
+    ///
+    /// 返回 (ticket, api_port)：控制台窗口经 loopback 转发器加载节点管理 SPA，
+    /// 以 #boot=ticket 换取管理会话；api_port 即节点 API 端口（隧道对端 loopback 目标）。
+    pub async fn console_ticket(&self, node_id: &str) -> Result<(String, u16)> {
+        let handle = self
+            .inner
+            .nodes
+            .get(node_id)
+            .ok_or_else(|| anyhow!("节点未连接: {node_id}"))?;
+        if !handle.state.admin_console {
+            return Err(anyhow!("该节点未授予管理权限"));
+        }
+        let base_url = api_base_url(&handle.params.addr);
+        let token = handle.access_token.load().as_ref().clone();
+        let api_port = api_port_of(&handle.params.addr);
+        drop(handle);
+
+        let resp = self
+            .inner
+            .http_client
+            .post(format!("{base_url}/api/v1/client/console-ticket"))
+            .bearer_auth(&token)
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            return Err(anyhow!("console-ticket 签发失败: HTTP {}", resp.status()));
+        }
+        let json: serde_json::Value = resp.json().await?;
+        let ticket = json["data"]["ticket"]
+            .as_str()
+            .ok_or_else(|| anyhow!("console-ticket 响应缺少 ticket"))?
+            .to_string();
+        Ok((ticket, api_port))
+    }
+}
+
+/// 从连接地址提取 API 端口（host:port 或 http(s)://host[:port]，缺省 59090）。
+fn api_port_of(addr: &str) -> u16 {
+    let stripped = addr
+        .trim_start_matches("http://")
+        .trim_start_matches("https://")
+        .trim_end_matches('/');
+    match stripped.rsplit_once(':') {
+        Some((_, p)) => p.parse().unwrap_or(59090),
+        None => 59090,
+    }
 }
 
 impl Default for AgileNetClient {
@@ -941,6 +1011,8 @@ async fn offline_relogin_once(
     handle.state.rules = rules.clone();
     handle.state.config_version = version;
     handle.state.status = NodeStatus::Connected;
+    handle.state.admin_console = config["admin_console"].as_bool().unwrap_or(false);
+    handle.access_token.store(Arc::new(access_token.clone()));
     let node_name = handle.state.node_name.clone();
     let (tunnel_server, tunnel_port) = (
         config["tunnel"]["server"].as_str().unwrap_or("").to_string(),
@@ -1031,14 +1103,14 @@ fn spawn_config_watcher(
     inner: Arc<ClientInner>,
     node_id: String,
     base_url: String,
-    access_token: String,
+    access_shared: Arc<ArcSwap<String>>,
     refresh_token: String,
     initial_version: u64,
 ) -> tokio::task::JoinHandle<()> {
     let http = inner.http_client.clone();
     tokio::spawn(async move {
         let mut version = initial_version;
-        let mut access = access_token;
+        let mut access = access_shared.load().as_ref().clone();
         let mut refresh = refresh_token;
         loop {
             // 长轮询等待新版本
@@ -1070,6 +1142,7 @@ fn spawn_config_watcher(
                                 .as_str()
                                 .unwrap_or_default()
                                 .to_string();
+                            access_shared.store(Arc::new(access.clone()));
                             refresh = json["data"]["refresh_token"]
                                 .as_str()
                                 .unwrap_or(refresh.as_str())
@@ -1112,6 +1185,7 @@ fn spawn_config_watcher(
                 if let Some(mut h) = inner.nodes.get_mut(&node_id) {
                     h.state.rules = rules;
                     h.state.config_version = version;
+                    h.state.admin_console = data["admin_console"].as_bool().unwrap_or(false);
                 }
                 inner.rebuild_merged_router();
             }

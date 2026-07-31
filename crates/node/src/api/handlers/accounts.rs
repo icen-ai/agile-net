@@ -75,6 +75,9 @@ pub struct CreateAccountRequest {
     pub group_id: String,
     #[serde(default)]
     pub remark: String,
+    /// 同时授予「管理此节点」权限（管理版接入链接，生成页强警示 + 签发审计）
+    #[serde(default)]
+    pub admin_console: bool,
 }
 
 /// 账号名校验：3-32 字符 [a-zA-Z0-9_-]
@@ -133,10 +136,15 @@ pub async fn create_account(
 
     match state
         .db
-        .create_account(username, &password_hash, &req.group_id, &req.remark)
+        .create_account_with_admin(username, &password_hash, &req.group_id, &req.remark, req.admin_console)
     {
         Ok(account) => {
-            let connect_url = build_connect_url(&state, username, &password);
+            let mut connect_url = build_connect_url(&state, username, &password);
+            if req.admin_console {
+                // 管理版接入链接变体：持链接者可管理本节点（强警示 + 签发审计）
+                connect_url.push_str("&admin=1");
+                audit(&state, &claims, &ip, "account.issue_admin_link", Some(&account.id), username);
+            }
             state.remember_connect_url(&account.id, &connect_url);
             audit(&state, &claims, &ip, "account.create", Some(&account.id), username);
             let group = state.db.get_group(&req.group_id).ok().flatten();
@@ -147,6 +155,7 @@ pub async fn create_account(
                 "group": group.map(|g| json!({ "id": g.id, "name": g.name })),
                 "enabled": true,
                 "remark": account.remark,
+                "admin_console": account.admin_console,
                 "created_at": account.created_at,
                 "connect_url": connect_url,
             }))
@@ -160,6 +169,7 @@ pub struct UpdateAccountRequest {
     pub group_id: Option<String>,
     pub enabled: Option<bool>,
     pub remark: Option<String>,
+    pub admin_console: Option<bool>,
 }
 
 pub async fn update_account(
@@ -181,13 +191,24 @@ pub async fn update_account(
         return err(StatusCode::NOT_FOUND, codes::NOT_FOUND, "group not found");
     }
 
-    if let Err(e) = state.db.update_account(
+    if let Err(e) = state.db.update_account_full(
         &id,
         req.group_id.as_deref(),
         req.enabled,
         req.remark.as_deref(),
+        req.admin_console,
     ) {
         return err(StatusCode::INTERNAL_SERVER_ERROR, codes::INTERNAL, e.to_string());
+    }
+
+    // 管理权限变更：授予记签发审计；收回即断开隧道会话（管理通路立即失效）
+    if req.admin_console == Some(true) && !existing.admin_console {
+        audit(&state, &claims, &ip, "account.issue_admin_link", Some(&id), &existing.username);
+    } else if req.admin_console == Some(false) && existing.admin_console {
+        if let Some(listener) = &state.runtime.listener {
+            listener.disconnect_client(&id);
+        }
+        audit(&state, &claims, &ip, "account.update", Some(&id), &existing.username);
     }
 
     // 禁用：吊销全部 token、清除 tunnel_token，并立即断开活跃隧道会话

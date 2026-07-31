@@ -295,10 +295,12 @@ pub fn create_app(state: ApiState) -> Router {
         .route("/api/v1/auth/refresh", post(handlers::auth::refresh))
         .route("/api/v1/auth/init", post(handlers::auth::init))
         .route("/api/v1/auth/logout", post(handlers::auth::logout))
+        .route("/api/v1/auth/admin-bootstrap", post(handlers::auth::admin_bootstrap))
         .route("/api/v1/auth/me", get(handlers::auth::me))
         // ---- Client API ----
         .route("/api/v1/client/config", get(handlers::client::get_config))
         .route("/api/v1/client/heartbeat", post(handlers::client::heartbeat))
+        .route("/api/v1/client/console-ticket", post(handlers::client::console_ticket))
         // ---- Admin: Rules ----
         .route(
             "/api/v1/admin/rules",

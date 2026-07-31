@@ -38,7 +38,12 @@ impl TokenValidator for DbTokenValidator {
                 }
                 // 装载该账号权限组的全部规则作为数据面 ACL
                 let rules = self.db.rules_of_account(&account.id).ok()?;
-                let acl = rules.into_iter().map(|r| r.value).collect();
+                let mut acl: Vec<String> = rules.into_iter().map(|r| r.value).collect();
+                // 「管理此节点」权限：隐式放开节点自身 loopback API（控制台通道；
+                // 收回权限后下次隧道认证即失去该通路，对应「收回规则即失去管理通路」）
+                if account.admin_console {
+                    acl.push("127.0.0.1/32".to_string());
+                }
                 let _ = self.db.touch_account_seen(&account.id);
                 Some(AuthIdentity::Client {
                     account_id: account.id,

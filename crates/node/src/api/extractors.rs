@@ -55,6 +55,11 @@ fn extract_claims(parts: &Parts) -> Result<Claims, Response> {
 }
 
 /// Admin 角色认证（管理面 API 强制）。
+///
+/// scope 三档强制（管理链接/中继票据换取的受限管理会话）：
+/// - `full`：全部管理端点
+/// - `rules`：GET + 规则端点写（/api/v1/admin/rules*）
+/// - `ro`：仅 GET
 pub struct AdminAuth(pub Claims);
 
 impl FromRequestParts<ApiState> for AdminAuth {
@@ -71,6 +76,23 @@ impl FromRequestParts<ApiState> for AdminAuth {
                 StatusCode::FORBIDDEN,
                 codes::ADMIN_ONLY,
                 "admin role required",
+            ));
+        }
+        let scope_allowed = match claims.scope.as_str() {
+            "full" => true,
+            "rules" => {
+                parts.method == axum::http::Method::GET
+                    || parts.uri.path().starts_with("/api/v1/admin/rules")
+            }
+            "ro" => parts.method == axum::http::Method::GET,
+            // 未知档位按只读收紧（fail-closed）
+            _ => parts.method == axum::http::Method::GET,
+        };
+        if !scope_allowed {
+            return Err(err(
+                StatusCode::FORBIDDEN,
+                codes::FORBIDDEN,
+                "admin scope insufficient for this operation",
             ));
         }
         Ok(AdminAuth(claims))

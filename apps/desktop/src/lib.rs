@@ -28,6 +28,8 @@ pub struct AppState {
     web_api: Arc<tokio::sync::Mutex<Option<agile_net_client::api::ClientApiHandle>>>,
     roles: Arc<tokio::sync::Mutex<RoleSettings>>,
     server: Arc<tokio::sync::Mutex<Option<NodeServer>>>,
+    /// 控制台 loopback 转发器：node_id → 本地环回端口
+    consoles: Arc<tokio::sync::Mutex<std::collections::HashMap<String, u16>>>,
 }
 
 impl AppState {
@@ -38,6 +40,7 @@ impl AppState {
             web_api: Arc::new(tokio::sync::Mutex::new(None)),
             roles: Arc::new(tokio::sync::Mutex::new(RoleSettings::load())),
             server: Arc::new(tokio::sync::Mutex::new(None)),
+            consoles: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         }
     }
 }
@@ -86,6 +89,7 @@ async fn connect_node(state: State<'_, AppState>, input: ConnectInput) -> Result
 #[tauri::command]
 async fn disconnect_node(state: State<'_, AppState>, node_id: String) -> Result<(), String> {
     state.client.disconnect(&node_id).await;
+    state.consoles.lock().await.remove(&node_id);
     Ok(())
 }
 
@@ -422,6 +426,87 @@ async fn open_console(app: tauri::AppHandle, state: State<'_, AppState>) -> Resu
     Ok(())
 }
 
+// ==================== 控制台通道（管理此节点） ====================
+
+/// 打开远端节点控制台：loopback 转发器（本地环回端口 → 客户端隧道 → 节点 API）
+/// + 管理引导票据自举（#boot=ticket），ACL 与真人操作审计全部在节点侧收口。
+#[tauri::command]
+async fn open_node_console(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    node_id: String,
+) -> Result<(), String> {
+    // 1. 申请管理引导票据（10 分钟一次性；节点侧校验 admin_console 授权）
+    let (ticket, api_port) = state.client.console_ticket(&node_id).await.map_err(map_err)?;
+
+    // 2. loopback 转发器（每节点复用；断开重连后由调用方重建）
+    let local_port = {
+        let mut map = state.consoles.lock().await;
+        if let Some(p) = map.get(&node_id) {
+            *p
+        } else {
+            let opener = state.client.opener(&node_id).ok_or("节点未连接")?;
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .map_err(map_err)?;
+            let port = listener.local_addr().map_err(map_err)?.port();
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    let Ok((stream, _)) = listener.accept().await else {
+                        break;
+                    };
+                    let opener = opener.clone();
+                    tauri::async_runtime::spawn(async move {
+                        match opener.open("", "127.0.0.1", api_port).await {
+                            Ok(ch) => {
+                                let _ = agile_net_core::relay::bridge::bridge(stream, ch).await;
+                            }
+                            Err(e) => {
+                                tracing::debug!(error = %e, "console channel open failed");
+                            }
+                        }
+                    });
+                }
+            });
+            map.insert(node_id.clone(), port);
+            port
+        }
+    };
+
+    // 3. 打开/聚焦控制台窗口（复用节点管理 SPA；票据经 URL fragment 传递，不进日志与历史）
+    let label = console_window_label(&node_id);
+    if let Some(w) = app.get_webview_window(&label) {
+        let _ = w.unminimize();
+        let _ = w.show();
+        let _ = w.set_focus();
+        return Ok(());
+    }
+    let url: tauri::Url = format!("http://127.0.0.1:{local_port}/#boot={ticket}")
+        .parse()
+        .map_err(map_err)?;
+    tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::External(url))
+        .title(format!("AgileNet 控制台 — {node_id}"))
+        .inner_size(1180.0, 780.0)
+        .min_inner_size(860.0, 600.0)
+        .build()
+        .map_err(map_err)?;
+
+    roles::audit(
+        "admin.console_access",
+        serde_json::json!({"target": node_id, "path": "本机→客户端隧道", "identity": "管理链接"}),
+    );
+    Ok(())
+}
+
+/// Tauri 窗口标签（仅字母数字-_）。
+fn console_window_label(node_id: &str) -> String {
+    let sanitized: String = node_id
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+        .collect();
+    format!("console-{sanitized}")
+}
+
 /// 启动时恢复服务端角色（上次退出时处于开启状态）。
 async fn restore_server_role(app: &tauri::AppHandle) {
     let state = app.state::<AppState>();
@@ -589,6 +674,7 @@ pub fn run() {
             set_web_password,
             set_web_role,
             open_console,
+            open_node_console,
         ])
         .setup(|app| {
             setup_tray(app)?;

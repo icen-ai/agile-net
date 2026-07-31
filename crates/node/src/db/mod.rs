@@ -22,10 +22,11 @@ pub struct Database {
 }
 
 /// 当前 Schema 版本（递增，新迁移追加到 MIGRATIONS 尾部）。
-const MIGRATIONS: &[(u32, &str, &str)] = &[(
-    1,
-    "initial_schema",
-    r#"
+const MIGRATIONS: &[(u32, &str, &str)] = &[
+    (
+        1,
+        "initial_schema",
+        r#"
     CREATE TABLE admin (
         id         TEXT PRIMARY KEY,
         username   TEXT NOT NULL UNIQUE,
@@ -124,7 +125,31 @@ const MIGRATIONS: &[(u32, &str, &str)] = &[(
         created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
     "#,
-)];
+    ),
+    (
+        2,
+        "admin_console_and_tickets",
+        r#"
+    -- 管理版接入链接：账号可被授予「管理此节点」权限
+    ALTER TABLE account ADD COLUMN admin_console INTEGER NOT NULL DEFAULT 0;
+
+    -- 管理引导票据：控制台通道/中继暴露场景换取管理会话的一次性（或限期）凭据。
+    -- 仅存 SHA-256 哈希，明文随签发返回一次。
+    CREATE TABLE admin_ticket (
+        id          TEXT PRIMARY KEY,
+        ticket_hash TEXT NOT NULL UNIQUE,
+        kind        TEXT NOT NULL CHECK(kind IN ('account','relay')),
+        subject     TEXT NOT NULL,
+        scope       TEXT NOT NULL DEFAULT 'full' CHECK(scope IN ('ro','rules','full')),
+        uses        INTEGER NOT NULL DEFAULT 0,
+        max_uses    INTEGER NOT NULL DEFAULT 1,
+        expires_at  TEXT NOT NULL,
+        created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX idx_admin_ticket_exp ON admin_ticket(expires_at);
+    "#,
+    ),
+];
 
 impl Database {
     /// 打开数据库并执行迁移（WAL 模式 + 读连接池，写操作经 busy_timeout 串行）。
@@ -769,7 +794,7 @@ impl Database {
 
         let offset = (page.saturating_sub(1)) * page_size;
         let sql = format!(
-            "SELECT a.id, a.username, a.group_id, g.name, a.enabled, a.remark, a.last_seen_at, a.created_at, a.updated_at
+            "SELECT a.id, a.username, a.group_id, g.name, a.enabled, a.remark, a.last_seen_at, a.created_at, a.updated_at, a.admin_console
              FROM account a LEFT JOIN \"group\" g ON a.group_id = g.id
              {where_sql} ORDER BY a.created_at DESC LIMIT ? OFFSET ?"
         );
@@ -793,7 +818,7 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn
             .prepare(
-                "SELECT a.id, a.username, a.group_id, g.name, a.enabled, a.remark, a.last_seen_at, a.created_at, a.updated_at
+                "SELECT a.id, a.username, a.group_id, g.name, a.enabled, a.remark, a.last_seen_at, a.created_at, a.updated_at, a.admin_console
                  FROM account a LEFT JOIN \"group\" g ON a.group_id = g.id WHERE a.id = ?1",
             )
             .map_err(db_err)?;
@@ -808,7 +833,7 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn
             .prepare(
-                "SELECT a.id, a.username, a.group_id, g.name, a.enabled, a.remark, a.last_seen_at, a.created_at, a.updated_at, a.password
+                "SELECT a.id, a.username, a.group_id, g.name, a.enabled, a.remark, a.last_seen_at, a.created_at, a.updated_at, a.admin_console, a.password
                  FROM account a LEFT JOIN \"group\" g ON a.group_id = g.id WHERE a.username = ?1",
             )
             .map_err(db_err)?;
@@ -816,7 +841,7 @@ impl Database {
         Ok(match rows.next().map_err(db_err)? {
             Some(r) => {
                 let rec = map_account_row(r).map_err(db_err)?;
-                let password_hash: String = r.get(9).map_err(db_err)?;
+                let password_hash: String = r.get(10).map_err(db_err)?;
                 Some((rec, password_hash))
             }
             None => None,
@@ -842,13 +867,25 @@ impl Database {
         group_id: &str,
         remark: &str,
     ) -> Result<AccountRecord> {
+        self.create_account_with_admin(username, password_hash, group_id, remark, false)
+    }
+
+    /// 创建账号（可授予「管理此节点」权限，对应管理版接入链接）。
+    pub fn create_account_with_admin(
+        &self,
+        username: &str,
+        password_hash: &str,
+        group_id: &str,
+        remark: &str,
+        admin_console: bool,
+    ) -> Result<AccountRecord> {
         let conn = self.conn();
         let id = uuid::Uuid::new_v4().to_string();
         let now = now_rfc3339();
         conn.execute(
-            "INSERT INTO account (id, username, password, group_id, enabled, remark, created_at, updated_at)
-             VALUES (?1,?2,?3,?4,1,?5,?6,?6)",
-            params![id, username, password_hash, group_id, remark, now],
+            "INSERT INTO account (id, username, password, group_id, enabled, remark, admin_console, created_at, updated_at)
+             VALUES (?1,?2,?3,?4,1,?5,?6,?7,?7)",
+            params![id, username, password_hash, group_id, remark, admin_console as i32, now],
         )
         .map_err(db_err)?;
         Ok(AccountRecord {
@@ -862,6 +899,7 @@ impl Database {
             remark: remark.to_string(),
             created_at: now.clone(),
             updated_at: now,
+            admin_console,
         })
     }
 
@@ -871,6 +909,18 @@ impl Database {
         group_id: Option<&str>,
         enabled: Option<bool>,
         remark: Option<&str>,
+    ) -> Result<()> {
+        self.update_account_full(id, group_id, enabled, remark, None)
+    }
+
+    /// 更新账号（含「管理此节点」权限变更）。
+    pub fn update_account_full(
+        &self,
+        id: &str,
+        group_id: Option<&str>,
+        enabled: Option<bool>,
+        remark: Option<&str>,
+        admin_console: Option<bool>,
     ) -> Result<()> {
         let conn = self.conn();
         let now = now_rfc3339();
@@ -892,6 +942,13 @@ impl Database {
             conn.execute(
                 "UPDATE account SET remark = ?1, updated_at = ?2 WHERE id = ?3",
                 params![r, now, id],
+            )
+            .map_err(db_err)?;
+        }
+        if let Some(ac) = admin_console {
+            conn.execute(
+                "UPDATE account SET admin_console = ?1, updated_at = ?2 WHERE id = ?3",
+                params![ac as i32, now, id],
             )
             .map_err(db_err)?;
         }
@@ -923,7 +980,7 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn
             .prepare(
-                "SELECT a.id, a.username, a.group_id, g.name, a.enabled, a.remark, a.last_seen_at, a.created_at, a.updated_at
+                "SELECT a.id, a.username, a.group_id, g.name, a.enabled, a.remark, a.last_seen_at, a.created_at, a.updated_at, a.admin_console
                  FROM account a LEFT JOIN \"group\" g ON a.group_id = g.id
                  WHERE a.tunnel_token_hash = ?1",
             )
@@ -1034,6 +1091,85 @@ impl Database {
     }
 
     /// 按 ID 取 relay token 哈希（删除联动踢会话用）。
+    // ==================== Admin Ticket（管理引导票据） ====================
+
+    /// 签发管理引导票据：明文返回一次，库中只存 SHA-256 哈希。
+    ///
+    /// kind: account（管理版接入链接）/ relay（中继暴露控制面）；
+    /// subject: account_id 或 "psk_前缀@下游节点名"；max_uses > 1 时限期多次用（relay 场景）。
+    pub fn create_admin_ticket(
+        &self,
+        kind: &str,
+        subject: &str,
+        scope: &str,
+        max_uses: i32,
+        ttl_secs: i64,
+    ) -> Result<String> {
+        let ticket = format!("adt_{}", random_alnum(48));
+        let hash = sha256_hex(ticket.as_bytes());
+        let expires = (chrono::Utc::now() + chrono::Duration::seconds(ttl_secs))
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        let conn = self.conn();
+        conn.execute(
+            "INSERT INTO admin_ticket (id, ticket_hash, kind, subject, scope, uses, max_uses, expires_at, created_at)
+             VALUES (?1,?2,?3,?4,?5,0,?6,?7,?8)",
+            params![
+                uuid::Uuid::new_v4().to_string(),
+                hash,
+                kind,
+                subject,
+                scope,
+                max_uses,
+                expires,
+                now_rfc3339()
+            ],
+        )
+        .map_err(db_err)?;
+        Ok(ticket)
+    }
+
+    /// 核销管理引导票据（原子计次防重放；过期/超次返回 None）。
+    pub fn redeem_admin_ticket(&self, ticket: &str) -> Result<Option<AdminTicketRecord>> {
+        let hash = sha256_hex(ticket.as_bytes());
+        let now = now_rfc3339();
+        let conn = self.conn();
+        let changed = conn
+            .execute(
+                "UPDATE admin_ticket SET uses = uses + 1
+                 WHERE ticket_hash = ?1 AND uses < max_uses AND expires_at > ?2",
+                params![hash, now],
+            )
+            .map_err(db_err)?;
+        if changed == 0 {
+            return Ok(None);
+        }
+        let mut stmt = conn
+            .prepare("SELECT kind, subject, scope, expires_at FROM admin_ticket WHERE ticket_hash = ?1")
+            .map_err(db_err)?;
+        let mut rows = stmt.query(params![hash]).map_err(db_err)?;
+        Ok(match rows.next().map_err(db_err)? {
+            Some(r) => Some(AdminTicketRecord {
+                kind: r.get(0).map_err(db_err)?,
+                subject: r.get(1).map_err(db_err)?,
+                scope: r.get(2).map_err(db_err)?,
+                expires_at: r.get(3).map_err(db_err)?,
+            }),
+            None => None,
+        })
+    }
+
+    /// 清理过期票据（随每日留存任务执行）。
+    pub fn cleanup_admin_tickets(&self) -> Result<usize> {
+        let conn = self.conn();
+        let n = conn
+            .execute(
+                "DELETE FROM admin_ticket WHERE expires_at <= ?1",
+                params![now_rfc3339()],
+            )
+            .map_err(db_err)?;
+        Ok(n)
+    }
+
     pub fn get_relay_token_hash(&self, id: &str) -> Result<Option<String>> {
         let conn = self.conn();
         let mut stmt = conn
@@ -1335,6 +1471,7 @@ fn map_account_row(r: &rusqlite::Row) -> rusqlite::Result<AccountRecord> {
         last_seen_at: r.get(6)?,
         created_at: r.get(7)?,
         updated_at: r.get(8)?,
+        admin_console: r.get::<_, i32>(9)? != 0,
         online: false,
     })
 }

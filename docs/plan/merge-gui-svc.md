@@ -22,7 +22,20 @@
   开关C 启停即启停 Web API（默认 127.0.0.1:59291，LAN 暴露为显式配置并告警）。
   `parse_connect_url` / `connect_url_of` 上移至 agile-net-client 供 IPC 与 REST 共用。
   测试：`crates/client/tests/web_api_test.rs`（鉴权信封/限流锁定/导出二次确认+审计/规则暂停/SPA）。
-- P1.6 / P2 / P3：进行中。
+- **P1.6 管理版接入链接（已完成，2026-07-31）**：
+  - 服务端：DB 迁移 v2（`account.admin_console` + `admin_ticket` 表）；
+    创建/更新账号可授予「管理此节点」权限（控制台勾选 + 强警示 + `account.issue_admin_link` 签发审计），
+    管理版 `connect_url` 带 `&admin=1` 变体；配置响应带 `admin_console` 标记；
+    新增 `POST /api/v1/client/console-ticket`（10 分钟一次性票据，库中只存哈希）与
+    `POST /api/v1/auth/admin-bootstrap`（票据换管理会话，原子计次防重放）；
+    JWT 增加 `scope` 声明（ro/rules/full 三档，AdminAuth 强制、未知档位 fail-closed）；
+    `admin_console` 账号数据面隐式放开节点 loopback API（收回即失管理通路）。
+  - 客户端/GUI：引擎保存节点级 access token（watcher 轮换同步）+ `console_ticket()`/`opener()`；
+    桌面 `open_node_console`——loopback 转发器（本地环回端口 → 客户端隧道 → 节点 API）+
+    独立 Tauri 窗口 `#boot=ticket` 自举管理会话；节点卡片「管理此节点」入口与「可管理」徽标；
+    管理链接导入警示；审计 `admin.console_access`（operator 以 `link:`/`relay:` 前缀区分令牌级会话）。
+  - 测试：`crates/node/tests/admin_link_test.rs`（全链路/未授权拒绝/scope 三档/授予与收回）。
+- P2 / P3：进行中。
 ## 1. 终态产物
 
 | 产物 | 内容 | 场景 |

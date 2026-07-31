@@ -517,7 +517,7 @@ async function loadAccounts() {
   try {
     const d = await api('GET', url);
     body.innerHTML = (d.items||[]).map(a =>
-      '<tr><td><b>' + esc(a.username) + '</b><div class="mono" style="color:var(--dim2)">' + shortId(a.id) + '</div></td>' +
+      '<tr><td><b>' + esc(a.username) + '</b>' + (a.admin_console ? ' <span class="badge b-info">可管理</span>' : '') + '<div class="mono" style="color:var(--dim2)">' + shortId(a.id) + '</div></td>' +
       '<td>' + esc(a.group_name || groupName(a.group_id)) + '</td>' +
       '<td><span class="dot ' + (a.online?'on':'off') + '"></span>' + (a.online?'在线':'离线') + '</td>' +
       '<td>' + (a.enabled ? '<span class="badge b-ok">启用</span>' : '<span class="badge b-off">禁用</span>') + '</td>' +
@@ -539,21 +539,26 @@ function openCreateAccount() {
     '<label>权限组</label><select id="na-group" style="width:100%">' +
       S.groups.map(g => '<option value="' + esc(g.id) + '">' + esc(g.name) + '</option>').join('') + '</select>' +
     '<label>备注</label><input id="na-remark" style="width:100%">' +
+    '<label class="chk" style="display:flex;align-items:center;gap:6px;margin-top:8px"><input type="checkbox" id="na-admin"> 同时授予管理权限（生成管理版接入链接）</label>' +
+    '<div class="hint" id="na-admin-warn" style="color:var(--danger);display:none">' + ic('triangle-alert', 13) + ' 持管理版接入链接者可经控制台通道管理本节点（规则/账号/令牌同管理员），签发将记入审计。仅发给可信管理员。</div>' +
     '<div class="hint">密码由服务端自动生成（sk- 48 位强随机），创建后仅展示一次</div>',
     [
       {label:'取消', kind:'ghost', fn: closeModal},
       {label:'创建', fn: async () => {
         const username = $('na-user').value.trim(), group_id = $('na-group').value, remark = $('na-remark').value.trim();
+        const admin_console = $('na-admin').checked;
         try {
-          const d = await api('POST', '/api/v1/admin/accounts', {username, group_id, remark});
-          showAccountSecret('账号创建成功 — 请立即保存凭据', d.username, d.password, d.connect_url, d.id);
+          const d = await api('POST', '/api/v1/admin/accounts', {username, group_id, remark, admin_console});
+          showAccountSecret('账号创建成功 — 请立即保存凭据', d.username, d.password, d.connect_url, d.id, admin_console);
           loadAccounts();
         } catch(e) { toast(e.message, 'err'); }
       }},
     ]);
+  $('na-admin').onchange = (e) => { $('na-admin-warn').style.display = e.target.checked ? 'block' : 'none'; };
 }
-function showAccountSecret(title, username, password, connectUrl, accountId) {
+function showAccountSecret(title, username, password, connectUrl, accountId, isAdminLink) {
   openModal(title,
+    (isAdminLink ? '<div class="hint" style="color:var(--danger);margin-bottom:8px">' + ic('triangle-alert', 13) + ' 这是管理版接入链接：持链接者可管理本节点，请按管理员凭据级别保管与分发</div>' : '') +
     '<div class="kv"><span class="k">账号</span><span><b>' + esc(username) + '</b></span></div>' +
     '<div class="kv"><span class="k">密码</span><span class="mono">' + esc(password) + ' <button class="ghost small" onclick="copyText(\'' + esc(password) + '\')">' + ic('copy', 13) + '复制</button></span></div>' +
     '<div class="secret-box"><div style="color:var(--dim);font-size:12px;margin-bottom:4px">接入链接（客户端导入）</div><span class="mono">' + esc(connectUrl) + '</span></div>' +
@@ -1001,11 +1006,31 @@ function toggleTheme() {
 }
 
 /* ================= 启动 ================= */
-window.addEventListener('DOMContentLoaded', () => {
+window.addEventListener('DOMContentLoaded', async () => {
   hydrateIcons();
   applyTheme();
   $('login-pass').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
   $('login-user').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+  // 控制台通道票据自举：#boot=<ticket> → 换取管理会话（一次性，换取即失效）
+  const boot = location.hash.match(/#boot=([A-Za-z0-9_-]+)/);
+  if (boot) {
+    history.replaceState(null, '', location.pathname);
+    try {
+      const res = await fetch('/api/v1/auth/admin-bootstrap', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ ticket: boot[1] })
+      });
+      const j = await res.json();
+      if (j.code === 0) {
+        S.access = j.data.access_token; S.refresh = j.data.refresh_token || '';
+        localStorage.setItem('ag_access', S.access);
+        localStorage.setItem('ag_refresh', S.refresh);
+        toast('已通过管理票据登录', 'ok');
+      } else {
+        toast(j.message || '管理票据无效或已过期', 'err');
+      }
+    } catch(e) { toast('管理票据换取失败', 'err'); }
+  }
   if (S.access) { enterApp(); }
 });
 </script>

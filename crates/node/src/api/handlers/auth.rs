@@ -237,8 +237,105 @@ pub async fn me(AnyAuth(claims): AnyAuth) -> Response {
         "id": claims.sub,
         "username": claims.username,
         "role": claims.role,
+        "scope": claims.scope,
     }))
     .into_response()
+}
+
+#[derive(Deserialize)]
+pub struct BootstrapRequest {
+    pub ticket: String,
+}
+
+/// 管理引导票据换取管理会话（控制台通道零开通）。
+///
+/// 票据来源：管理版接入链接持有者经 console-ticket 端点签发（kind=account），
+/// 或中继暴露控制面握手下发（kind=relay，P2）。票据一次性（relay 限期多次）、
+/// 短时有效、库中只存哈希；换取即落审计（身份与路径可区分）。
+pub async fn admin_bootstrap(
+    State(state): State<ApiState>,
+    ClientIp(ip): ClientIp,
+    Json(req): Json<BootstrapRequest>,
+) -> Response {
+    if req.ticket.len() > 128 {
+        return err(StatusCode::BAD_REQUEST, codes::BAD_REQUEST, "invalid ticket");
+    }
+    let Some(t) = state.db.redeem_admin_ticket(&req.ticket).unwrap_or(None) else {
+        return err(
+            StatusCode::UNAUTHORIZED,
+            codes::INVALID_CREDENTIALS,
+            "invalid or expired ticket",
+        );
+    };
+
+    match t.kind.as_str() {
+        "account" => {
+            let account = match state.db.get_account(&t.subject) {
+                Ok(Some(a)) if a.enabled && a.admin_console => a,
+                _ => {
+                    return err(
+                        StatusCode::FORBIDDEN,
+                        codes::FORBIDDEN,
+                        "管理权限已被收回",
+                    );
+                }
+            };
+            let tokens = match state
+                .jwt
+                .issue_with_scope(&account.id, &account.username, "admin", &t.scope)
+            {
+                Ok(t) => t,
+                Err(e) => {
+                    return err(StatusCode::INTERNAL_SERVER_ERROR, codes::INTERNAL, e.to_string())
+                }
+            };
+            let _ = state.db.record_audit_log(
+                None,
+                &format!("link:{}", account.username),
+                "admin.console_access",
+                Some(&state.db.get_config("node_name").ok().flatten().unwrap_or_default()),
+                Some(&format!("经管理链接换取管理会话（scope={}）", t.scope)),
+                Some(&ip.to_string()),
+            );
+            ok(json!({
+                "access_token": tokens.access_token,
+                "refresh_token": tokens.refresh_token,
+                "role": "admin",
+                "scope": t.scope,
+                "expires_in": tokens.expires_in,
+            }))
+            .into_response()
+        }
+        "relay" => {
+            // P2：中继令牌换得管理会话。subject = "psk_前缀@下游节点名"。
+            let tokens = match state
+                .jwt
+                .issue_with_scope(&t.subject, &t.subject, "admin", &t.scope)
+            {
+                Ok(t) => t,
+                Err(e) => {
+                    return err(StatusCode::INTERNAL_SERVER_ERROR, codes::INTERNAL, e.to_string())
+                }
+            };
+            let _ = state.db.record_audit_log(
+                None,
+                &format!("relay:{}", t.subject),
+                "admin.session_via_relay",
+                Some(&state.db.get_config("node_name").ok().flatten().unwrap_or_default()),
+                Some(&format!("凭中继会话换取管理会话（scope={}，来源=隧道）", t.scope)),
+                Some(&ip.to_string()),
+            );
+            ok(json!({
+                "access_token": tokens.access_token,
+                "refresh_token": tokens.refresh_token,
+                "role": "admin",
+                "scope": t.scope,
+                "expires_in": tokens.expires_in,
+            }))
+            .into_response()
+        }
+        _ => err(StatusCode::BAD_REQUEST, codes::BAD_REQUEST, "unknown ticket kind"),
+    }
 }
 
 /// 管理员凭据强度校验。

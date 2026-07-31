@@ -52,6 +52,9 @@ pub struct AccountRecord {
     #[serde(default)]
     pub group_name: Option<String>,
     pub enabled: bool,
+    /// 「管理此节点」权限（管理版接入链接）
+    #[serde(default)]
+    pub admin_console: bool,
     #[serde(default)]
     pub online: bool,
     #[serde(default)]
@@ -100,4 +103,13 @@ pub struct TrafficPoint {
     pub time: String,
     pub bytes_tx: i64,
     pub bytes_rx: i64,
+}
+
+/// 管理引导票据核销结果（不含哈希/明文）。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AdminTicketRecord {
+    pub kind: String,
+    pub subject: String,
+    pub scope: String,
+    pub expires_at: String,
 }

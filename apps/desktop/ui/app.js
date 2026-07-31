@@ -305,9 +305,12 @@ function renderNodeList(nodes) {
   }
   list.innerHTML = shown.map(n =>
     '<div class="node-card' + (n.status === 'Connected' || n.status === 'Connecting' || n.status === 'Reconnecting' ? '' : ' down') + '"><div class="info">' +
-    '<div class="name">' + esc(n.node_name) + ' ' + statusBadgeHtml(n.status) + '</div>' +
+    '<div class="name">' + esc(n.node_name) + ' ' + statusBadgeHtml(n.status) + (n.admin_console ? ' <span class="badge b-info">可管理</span>' : '') + '</div>' +
     '<div class="addr mono">' + esc(n.addr) + ' · 规则 ' + (n.rules || []).length + ' 条 · 配置 v' + n.config_version + '</div>' +
-    '</div><button class="danger small" data-act="disconnect" data-id="' + esc(n.node_id) + '">断开</button></div>'
+    '</div><div class="card-actions">' +
+    (n.admin_console && n.status === 'Connected'
+      ? '<button class="ghost small" data-act="console" data-id="' + esc(n.node_id) + '">' + AgIcon('monitor', 13) + ' 管理此节点</button>' : '') +
+    '<button class="danger small" data-act="disconnect" data-id="' + esc(n.node_id) + '">断开</button></div></div>'
   ).join('');
 }
 
@@ -419,6 +422,14 @@ async function connectWith(input, btn) {
   }
 }
 
+/* ================= 控制台通道（管理此节点） ================= */
+async function openNodeConsole(nodeId) {
+  try {
+    await invoke('open_node_console', { nodeId });
+    toast('控制台已在新窗口打开', 'ok');
+  } catch (e) { toast(friendlyError(e), 'err'); }
+}
+
 /* ================= 接入链接导入 ================= */
 async function importUrl(url, btn) {
   url = (url || '').trim();
@@ -426,6 +437,7 @@ async function importUrl(url, btn) {
   if (!url.startsWith('agilenet://connect?')) { toast(T('err-bad-url'), 'err'); return; }
   try {
     const input = await invoke('parse_connect_url', { url });
+    if (input.admin) toast('该链接为管理版：连接后可在节点卡片管理此节点', 'info');
     await connectWith(input, btn);
   } catch (e) { toast(friendlyError(e), 'err'); }
 }
@@ -774,7 +786,9 @@ window.addEventListener('DOMContentLoaded', async () => {
   // 列表动作事件委托（CSP 禁止内联 onclick）
   $('nodes-list').addEventListener('click', (e) => {
     const btn = e.target.closest('button[data-act]');
-    if (btn && btn.dataset.act === 'disconnect') disconnectNode(btn.dataset.id);
+    if (!btn) return;
+    if (btn.dataset.act === 'disconnect') disconnectNode(btn.dataset.id);
+    if (btn.dataset.act === 'console') openNodeConsole(btn.dataset.id);
   });
   $('creds-list').addEventListener('click', (e) => {
     const btn = e.target.closest('button[data-act]');

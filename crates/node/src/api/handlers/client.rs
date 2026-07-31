@@ -3,7 +3,7 @@
 //! 客户端登录后拉取路由配置（支持长轮询），并通过心跳上报在线状态与流量。
 
 use crate::api::extractors::ClientAuth;
-use crate::api::{ApiState, ok};
+use crate::api::{ApiState, codes, err, ok};
 use axum::{
     Json,
     extract::{Query, State},
@@ -78,9 +78,18 @@ fn build_config_response(state: &ApiState, account_id: &str) -> Response {
 
     let (server, port) = state.public_tunnel_endpoint();
 
+    let admin_console = state
+        .db
+        .get_account(account_id)
+        .ok()
+        .flatten()
+        .map(|a| a.admin_console)
+        .unwrap_or(false);
+
     ok(json!({
         "version": version,
         "node_name": node_name,
+        "admin_console": admin_console,
         "rules": rules,
         "tunnel": {
             "server": server,
@@ -146,3 +155,35 @@ pub async fn heartbeat(
 }
 
 use axum::response::IntoResponse;
+
+/// 控制台引导票据签发（管理版接入链接持有者专用）。
+///
+/// 仅当账号被授予「管理此节点」权限（admin_console）时签发；
+/// 票据 10 分钟一次性，凭它在 /api/v1/auth/admin-bootstrap 换取管理会话。
+pub async fn console_ticket(
+    ClientAuth(claims): ClientAuth,
+    State(state): State<ApiState>,
+) -> Response {
+    let account = match state.db.get_account(&claims.sub) {
+        Ok(Some(a)) if a.enabled => a,
+        _ => return err(StatusCode::FORBIDDEN, codes::FORBIDDEN, "account unavailable"),
+    };
+    if !account.admin_console {
+        return err(
+            StatusCode::FORBIDDEN,
+            codes::FORBIDDEN,
+            "管理权限未授予该账号",
+        );
+    }
+    match state
+        .db
+        .create_admin_ticket("account", &account.id, "full", 1, 600)
+    {
+        Ok(ticket) => ok(json!({
+            "ticket": ticket,
+            "expires_in": 600,
+        }))
+        .into_response(),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, codes::INTERNAL, e.to_string()),
+    }
+}
