@@ -58,54 +58,97 @@ function esc(s) {
   }[c]));
 }
 
-/* ================= 灵动岛（状态 + 通知 + 异常详情） ================= */
+/* ================= 灵动岛（状态 + 通知 + 异常详情） =================
+   形变原则：容器显式宽高动画（overflow:hidden 全程包裹内容），
+   旧内容即刻退场、新内容延迟淡入——任何中间帧都不会出现内容溢出岛体。 */
 const Island = {
-  timer: null, canExpand: false, detailNodes: [],
+  timer: null, canExpand: false, detailNodes: [], current: 'bar', _t1: null, _t2: null,
   init() {
     $('island-bar').onclick = () => { if (this.canExpand) this.toggleDetail(); };
+  },
+  _parts() { return { bar: $('island-bar'), msg: $('island-msg'), detail: $('island-detail') }; },
+  /** 显式尺寸形变：先量后动、先形后内容（苹果式弹簧）；bar 在 detail 展开/收起间常显 */
+  morph(showPart) {
+    const el = $('island');
+    const parts = this._parts();
+    const prev = this.current;
+    const same = showPart === prev;
+    // 1. 冻结当前渲染尺寸（可从过渡中任意帧打断续接）
+    const cw = el.offsetWidth, ch = el.offsetHeight;
+    el.style.width = cw + 'px'; el.style.height = ch + 'px';
+    // 2. 切换内容布局：detail 态 = bar + 详情共存；新出现的部分占位但不可见
+    const barPersist = (showPart === 'detail' && prev === 'bar') || (showPart === 'bar' && prev === 'detail');
+    if (!same) {
+      for (const [k, p] of Object.entries(parts)) {
+        const show = k === showPart || (showPart === 'detail' && k === 'bar');
+        p.style.display = show ? (k === 'detail' ? 'block' : 'flex') : 'none';
+        p.style.visibility = (show && k === showPart && !(k === 'bar' && barPersist)) ? 'hidden' : '';
+      }
+    }
+    // 3. 量取目标尺寸（临时 auto，同帧内完成不回绘）
+    el.style.transition = 'none';
+    el.style.width = ''; el.style.height = '';
+    const tw = el.offsetWidth, th = el.offsetHeight;
+    el.style.width = cw + 'px'; el.style.height = ch + 'px';
+    void el.offsetHeight;
+    el.style.transition = '';
+    // 4. 弹性形变至目标尺寸
+    requestAnimationFrame(() => { el.style.width = tw + 'px'; el.style.height = th + 'px'; });
+    el.classList.toggle('expanded', showPart !== 'bar');
+    // 5. 形变过半 → 新内容淡入（模糊+微位移消散）；bar 持续可见的场景无淡出淡入
+    clearTimeout(this._t1); clearTimeout(this._t2);
+    if (!same && !(showPart === 'bar' && barPersist)) {
+      this._t1 = setTimeout(() => {
+        const target = parts[showPart];
+        target.style.visibility = '';
+        target.classList.remove('island-part');
+        void target.offsetWidth;
+        target.classList.add('island-part');
+      }, 200);
+    }
+    // 6. 收尾释放显式尺寸（回到自适应）
+    this._t2 = setTimeout(() => { el.style.width = ''; el.style.height = ''; }, 520);
+    this.current = showPart;
   },
   /** 常态状态条。mode: on | off | warn */
   setStatus(mode, text, detailNodes) {
     const t = $('proxy-text');
-    if (t.textContent !== text) t.textContent = text;
+    const changed = t.textContent !== text;
+    if (changed) t.textContent = text;
     const cls = 'dot ' + (mode === 'warn' ? 'warn' : mode);
     if ($('proxy-dot').className !== cls) $('proxy-dot').className = cls;
     this.detailNodes = detailNodes || [];
     this.canExpand = mode === 'warn' && this.detailNodes.length > 0;
     $('island').classList.toggle('warn', mode === 'warn');
-    if (!this.canExpand) this.hideDetail();
+    if (!this.canExpand && this.current === 'detail') this.morph('bar');
+    else if (this.current === 'detail') this.renderDetail();
+    else if (changed && this.current === 'bar') this.morph('bar');  // 文本变长变短也弹性过渡
   },
-  /** 瞬时通知（自动收回） */
+  /** 瞬时通知（弹性弹出，自动收回） */
   notify(msg, type) {
     clearTimeout(this.timer);
-    this.hideDetail();
     const m = $('island-msg');
-    m.textContent = msg;
-    m.className = 'island-msg show ' + (type || '');
-    $('island-bar').style.display = 'none';
-    $('island').classList.add('expanded');
-    this.timer = setTimeout(() => this.collapse(), 3200);
-  },
-  collapse() {
-    $('island-msg').className = 'island-msg';
-    $('island-bar').style.display = '';
-    $('island').classList.remove('expanded');
+    const ic = type === 'err' ? 'triangle-alert' : (type === 'ok' ? 'check' : 'info');
+    m.innerHTML = '<span class="msg-ic">' + AgIcon(ic, 13) + '</span><span>' + esc(msg) + '</span>';
+    m.className = 'island-msg ' + (type || 'info');
+    this.morph('msg');
+    const el = $('island');
+    el.classList.remove('pop'); void el.offsetWidth; el.classList.add('pop');
+    this.timer = setTimeout(() => this.morph('bar'), 3400);
   },
   toggleDetail() {
-    const d = $('island-detail');
-    if (d.classList.contains('show')) { this.hideDetail(); return; }
-    d.innerHTML = '<div class="dt-title">以下节点当前不可达，其网段流量不会进入隧道：</div>' +
+    if (this.current === 'detail') { this.morph('bar'); return; }
+    this.renderDetail();
+    this.morph('detail');
+  },
+  renderDetail() {
+    $('island-detail').innerHTML = '<div class="dt-title">以下节点当前不可达，其网段流量不会进入隧道：</div>' +
       this.detailNodes.map(n =>
         '<div class="island-row"><span class="dot off"></span><b>' + esc(n.node_name) + '</b>' +
         '<span class="mono">' + esc(n.addr) + '</span><span class="st">' + esc(statusText(n.status)) + '</span></div>'
       ).join('');
-    d.classList.add('show');
-    $('island').classList.add('expanded');
   },
-  hideDetail() {
-    $('island-detail').classList.remove('show');
-    if (!$('island-msg').classList.contains('show')) $('island').classList.remove('expanded');
-  },
+  hideDetail() { if (this.current === 'detail') this.morph('bar'); },
 };
 function toast(msg, type) { Island.notify(msg, type); }
 

@@ -71,33 +71,53 @@ a { color: var(--link); text-decoration: none; }
 .dot.on { background: var(--ok); }
 .dot.off { background: var(--border2); }
 
-/* ===== 灵动岛（内容区上方居中：状态 + 通知 + 异常详情展开） ===== */
-.island { position: fixed; top: 5px; left: calc(50% + 108px); /* 视口中心 + 侧栏宽一半(216px/2) = 内容区中心 */ transform: translateX(-50%); z-index: 300;
-  background: var(--accent); color: var(--accent-fg); border-radius: 999px;
-  min-width: 168px; max-width: min(520px, calc(100vw - 500px));
-  box-shadow: 0 6px 20px rgba(0,0,0,.16); overflow: hidden;
-  transition: border-radius .32s cubic-bezier(.4,0,.2,1), box-shadow .32s cubic-bezier(.4,0,.2,1); }
-.island.expanded { border-radius: 14px; box-shadow: 0 14px 38px rgba(0,0,0,.24); }
-.island-bar { display: flex; align-items: center; justify-content: center; gap: 7px; padding: 6px 14px; font-size: 12px; white-space: nowrap; }
-.island .dot.on { background: #4ADE80; }
-.island .dot.off { background: rgba(140,140,140,.6); }
-.island .dot.warn { background: #FBBF24; animation: pulse 1.2s infinite; }
-.island-chev { display: none; opacity: .65; align-items: center; }
-.island.warn .island-chev { display: inline-flex; }
+/* ===== 灵动岛（内容区上方居中；苹果级形变：显式宽高 + 内容延迟淡入，全程零溢出） ===== */
+:root { --spring: cubic-bezier(0.32, 0.72, 0, 1); }  /* iOS 系统弹簧的公认贝塞尔近似 */
+.island { position: fixed; top: 6px; left: calc(50% + 108px); /* 视口中心 + 侧栏宽一半(216px/2) = 内容区中心 */ transform: translateX(-50%); z-index: 300;
+  background: #1C1C1E; color: #F5F5F7;  /* 岛始终近黑（对标硬件岛），深浅主题一致 */
+  border-radius: 999px;
+  min-width: 172px; max-width: min(520px, calc(100vw - 500px));
+  overflow: hidden;
+  box-shadow: 0 8px 24px rgba(0,0,0,.18), 0 1.5px 5px rgba(0,0,0,.12);
+  transition: width .45s var(--spring), height .45s var(--spring), border-radius .45s var(--spring), box-shadow .3s ease, transform .25s var(--spring);
+  will-change: width, height;
+  -webkit-user-select: none; user-select: none; }
+.island.expanded { border-radius: 18px; box-shadow: 0 18px 48px rgba(0,0,0,.28), 0 2px 8px rgba(0,0,0,.14); }
 .island.warn .island-bar { cursor: pointer; }
-.island-msg { max-height: 0; opacity: 0; overflow: hidden; padding: 0 16px; font-size: 12.5px; text-align: center;
-  transition: max-height .3s cubic-bezier(.4,0,.2,1), opacity .22s, padding .3s; }
-.island-msg.show { max-height: 64px; opacity: 1; padding: 8px 16px; }
-.island-msg.ok { color: #86EFAC; }
-.island-msg.err { color: #FCA5A5; }
-.island-detail { max-height: 0; opacity: 0; overflow: hidden; padding: 0 14px;
-  transition: max-height .32s cubic-bezier(.4,0,.2,1), opacity .22s, padding .3s; }
-.island-detail.show { max-height: 220px; overflow-y: auto; opacity: 1; padding: 6px 14px 10px; }
-.island-detail .dt-title { font-size: 11px; opacity: .65; padding: 2px 0 6px; }
-.island-row { display: flex; align-items: center; gap: 8px; padding: 5px 2px; font-size: 12px; border-top: 1px solid rgba(140,140,140,.18); }
-.island-row b { font-weight: 600; }
-.island-row .mono { opacity: .7; font-size: 11px; }
-.island-row .st { margin-left: auto; font-size: 11px; opacity: .8; flex-shrink: 0; }
+.island.warn:hover { transform: translateX(-50%) scale(1.025); }
+.island.warn:active { transform: translateX(-50%) scale(.985); }
+.island-bar { display: flex; align-items: center; justify-content: center; gap: 7px; padding: 7px 15px; font-size: 12px; white-space: nowrap; }
+.island .dot.on { background: #34D399; }
+.island .dot.off { background: rgba(255,255,255,.32); }
+.island .dot.warn { background: #FBBF24; animation: pulse 1.4s infinite; }
+.island-chev { display: none; opacity: .6; align-items: center; }
+.island.warn .island-chev { display: inline-flex; }
+.island-chev svg { transition: transform .35s var(--spring); }
+.island.expanded .island-chev svg { transform: rotate(180deg); }
+.island-msg { display: none; align-items: center; justify-content: center; gap: 6px; padding: 8px 16px; font-size: 12.5px; }
+.island-msg .msg-ic { display: inline-flex; }
+.island-msg.ok .msg-ic { color: #34D399; }
+.island-msg.err .msg-ic { color: #FF8A80; }
+.island-msg.info .msg-ic { color: #8E8E93; }
+.island-detail { display: none; padding: 2px 14px 10px; font-size: 12px; max-height: 220px; overflow-y: auto; border-top: 1px solid rgba(255,255,255,.10); }
+.island-detail .dt-title { font-size: 11px; color: rgba(245,245,247,.55); padding: 2px 0 6px; }
+.island-row { display: flex; align-items: center; gap: 8px; padding: 6px 2px; border-top: 1px solid rgba(255,255,255,.10); }
+.island-row b { font-weight: 600; color: #F5F5F7; }
+.island-row .mono { color: rgba(245,245,247,.55); font-size: 11px; }
+.island-row .st { margin-left: auto; font-size: 11px; color: rgba(245,245,247,.75); flex-shrink: 0; }
+/* 内容入场：形变过半后由 JS 触发，模糊+微位移消散（先有形、后有内容） */
+.island-part { animation: island-in .3s var(--spring) both; }
+@keyframes island-in { from { opacity: 0; filter: blur(5px); transform: translateY(2px); } to { opacity: 1; filter: blur(0); transform: none; } }
+/* 通知弹出：linear() 真弹簧（轻过冲），不支持的引擎退化为贝塞尔 */
+.island.pop { animation: island-pop .5s var(--spring); }
+@supports (transition-timing-function: linear(0, 1)) {
+  .island.pop { animation: island-pop .55s linear(0, 0.25 8%, 0.62 18%, 0.87 28%, 1.02 40%, 1.055 50%, 1.03 62%, 1.005 74%, 0.998 86%, 1); }
+}
+@keyframes island-pop { from { transform: translateX(-50%) scale(.85); } to { transform: translateX(-50%) scale(1); } }
+@media (prefers-reduced-motion: reduce) {
+  .island, .island-chev svg { transition: none; }
+  .island-part, .island.pop { animation: none; }
+}
 
 /* ===== 应用外壳：侧栏 + 内容区 ===== */
 .shell { flex: 1; display: flex; min-height: 0; }
