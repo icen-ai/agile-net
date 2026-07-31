@@ -231,6 +231,27 @@ fn get_autostart(app: tauri::AppHandle) -> Result<bool, String> {
     app.autolaunch().is_enabled().map_err(map_err)
 }
 
+/// 用系统默认浏览器打开外部链接（仅 http/https）。
+#[tauri::command]
+fn open_url(url: String) -> Result<(), String> {
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return Err("非法链接".into());
+    }
+    #[cfg(windows)]
+    std::process::Command::new("rundll32")
+        .args(["url.dll,FileProtocolHandler", &url])
+        .spawn()
+        .map_err(map_err)?;
+    #[cfg(target_os = "macos")]
+    std::process::Command::new("open").arg(&url).spawn().map_err(map_err)?;
+    #[cfg(all(unix, not(target_os = "macos")))]
+    std::process::Command::new("xdg-open")
+        .arg(&url)
+        .spawn()
+        .map_err(map_err)?;
+    Ok(())
+}
+
 // ==================== 三路角色开关（客户端 / 服务端 / Web 远程面） ====================
 
 #[derive(Debug, Clone, Serialize)]
@@ -704,15 +725,66 @@ async fn list_subscriptions() -> Result<Vec<subscription::Subscription>, String>
     Ok(subscription::list_subscriptions())
 }
 
-/// 添加订阅；角色开启中即重启内核纳入新订阅。
+/// 安装订阅内核（下载钉版本 + 校验；成功后才允许激活订阅功能）。
+#[tauri::command]
+async fn install_kernel(state: State<'_, AppState>) -> Result<subscription::KernelStatus, String> {
+    subscription::ensure_kernel().await?;
+    roles::audit("gui.kernel_install", serde_json::json!({}));
+    Ok(state.kernel.status().await)
+}
+
+/// 激活/停用订阅功能入口（侧栏「订阅/代理」可见性；停用即停机并关角色）。
+#[tauri::command]
+async fn activate_subscription_feature(
+    state: State<'_, AppState>,
+    enabled: bool,
+) -> Result<(), String> {
+    if enabled && !subscription::kernel_bin_exists() {
+        return Err("内核尚未安装".into());
+    }
+    if !enabled {
+        state.kernel.stop().await;
+        state.client.set_proxy_fallback(None);
+    }
+    {
+        let mut roles = state.roles.lock().await;
+        roles.subscription_feature = enabled;
+        if !enabled {
+            roles.subscription = false;
+        }
+        roles.save()?;
+    }
+    roles::audit(
+        "gui.subscription_feature",
+        serde_json::json!({"on": enabled}),
+    );
+    Ok(())
+}
+
+/// 单选激活订阅；角色开启中即重启内核加载新激活项。
+#[tauri::command]
+async fn set_active_subscription(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<subscription::Subscription, String> {
+    let sub = subscription::set_active_subscription(&id)?;
+    if state.roles.lock().await.subscription {
+        state.kernel.stop().await;
+        state.kernel.start().await?;
+        apply_proxy_fallback(&state).await;
+    }
+    Ok(sub)
+}
+
+/// 添加订阅（先拉取校验）；角色开启中且新订阅为激活项时重启内核。
 #[tauri::command]
 async fn add_subscription(
     state: State<'_, AppState>,
     name: String,
     url: String,
 ) -> Result<subscription::Subscription, String> {
-    let sub = subscription::add_subscription(&name, &url)?;
-    if state.roles.lock().await.subscription {
+    let sub = subscription::add_subscription(&name, &url).await?;
+    if state.roles.lock().await.subscription && sub.active {
         state.kernel.stop().await;
         if let Err(e) = state.kernel.start().await {
             return Err(format!("订阅已保存，但内核重启失败: {e}"));
@@ -1027,67 +1099,97 @@ async fn sysproxy_watch(app: tauri::AppHandle) {
     }
 }
 
-/// 构建系统托盘（显示窗口 / 代理开关 / 退出）
+/// 构建系统托盘（点击图标弹出 GUI 风格面板；无系统原生菜单）
 fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
-    use tauri::menu::{MenuBuilder, MenuItemBuilder};
-    use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
-
-    let show_item = MenuItemBuilder::with_id("show", "显示主窗口").build(app)?;
-    let proxy_item = MenuItemBuilder::with_id("toggle_proxy", "启动/停止代理").build(app)?;
-    let quit_item = MenuItemBuilder::with_id("quit", "退出 AgileNet").build(app)?;
-    let menu = MenuBuilder::new(app)
-        .items(&[&show_item, &proxy_item, &quit_item])
-        .build()?;
+    use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 
     TrayIconBuilder::with_id("anet-tray")
         .icon(tray_icon(app.handle(), false))
         .icon_as_template(true) // macOS 模板图标：系统按菜单栏深浅自动反色
-        .menu(&menu)
         .tooltip("AgileNet 客户端")
-        .show_menu_on_left_click(false)
-        .on_menu_event(|app, event| match event.id().as_ref() {
-            "show" => {
-                if let Some(w) = app.get_webview_window("main") {
-                    let _ = w.unminimize();
-                    let _ = w.show();
-                    let _ = w.set_focus();
-                }
-            }
-            "toggle_proxy" => {
-                let state = app.state::<AppState>();
-                let client = state.client.clone();
-                let handle = app.clone();
-                tauri::async_runtime::spawn(async move {
-                    if client.proxy_port() > 0 {
-                        client.stop_proxy().await;
-                    } else {
-                        let _ = client.start_proxy(57890).await;
-                    }
-                    refresh_tray_icon(&handle);
-                });
-            }
-            "quit" => {
-                app.exit(0);
-            }
-            _ => {}
-        })
         .on_tray_icon_event(|tray, event| {
-            // 左键双击显示主窗口
-            if let TrayIconEvent::DoubleClick {
-                button: MouseButton::Left,
+            if let TrayIconEvent::Click {
+                button,
+                button_state,
+                position,
                 ..
             } = event
             {
-                let app = tray.app_handle();
-                if let Some(w) = app.get_webview_window("main") {
-                    let _ = w.unminimize();
-                    let _ = w.show();
-                    let _ = w.set_focus();
+                if button_state != MouseButtonState::Up {
+                    return;
+                }
+                if matches!(button, MouseButton::Left | MouseButton::Right) {
+                    toggle_tray_popup(
+                        tray.app_handle(),
+                        tauri::PhysicalPosition::new(position.x, position.y),
+                    );
                 }
             }
         })
         .build(app)?;
     Ok(())
+}
+
+/// 弹出/收起托盘面板（懒创建；失焦自动隐藏）
+fn toggle_tray_popup(app: &tauri::AppHandle, anchor: tauri::PhysicalPosition<f64>) {
+    const W: f64 = 292.0;
+    const H: f64 = 400.0;
+    let x = (anchor.x - W / 2.0).max(0.0);
+    let y = (anchor.y - H - 10.0).max(0.0);
+    if let Some(w) = app.get_webview_window("tray-popup") {
+        if w.is_visible().unwrap_or(false) {
+            let _ = w.hide();
+            return;
+        }
+        let _ = w.set_position(tauri::PhysicalPosition::new(x as i32, y as i32));
+        let _ = w.show();
+        let _ = w.set_focus();
+        return;
+    }
+    let Ok(window) = tauri::WebviewWindowBuilder::new(
+        app,
+        "tray-popup",
+        tauri::WebviewUrl::App("tray.html".into()),
+    )
+    .title("AgileNet")
+    .inner_size(W, H)
+    .resizable(false)
+    .decorations(false)
+    .transparent(true)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .position(x, y)
+    .build()
+    else {
+        return;
+    };
+    let w = window.clone();
+    window.on_window_event(move |event| {
+        if let tauri::WindowEvent::Focused(false) = event {
+            let _ = w.hide();
+        }
+    });
+    let _ = window.set_focus();
+}
+
+/// 托盘面板：显示主窗口
+#[tauri::command]
+fn tray_show_main(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(w) = app.get_webview_window("tray-popup") {
+        let _ = w.hide();
+    }
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.unminimize();
+        let _ = w.show();
+        let _ = w.set_focus();
+    }
+    Ok(())
+}
+
+/// 托盘面板：退出应用
+#[tauri::command]
+fn tray_quit(app: tauri::AppHandle) {
+    app.exit(0);
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -1119,6 +1221,9 @@ pub fn run() {
             stop_proxy,
             proxy_status,
             parse_connect_url,
+            open_url,
+            tray_show_main,
+            tray_quit,
             set_autostart,
             get_autostart,
             get_role_settings,
@@ -1138,6 +1243,10 @@ pub fn run() {
             add_subscription,
             remove_subscription,
             update_subscription,
+            set_active_subscription,
+            subscription_status,
+            install_kernel,
+            activate_subscription_feature,
             subscription_status,
             proxy_groups,
             select_proxy,
@@ -1162,6 +1271,20 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 sysproxy_watch(handle).await;
             });
+
+            // 窗口尺寸：主屏逻辑宽的 3/5，宽高比 4:3
+            if let Some(window) = app.get_webview_window("main") {
+                if let Ok(Some(monitor)) = window.primary_monitor() {
+                    let scale = monitor.scale_factor();
+                    let logical_w = monitor.size().width as f64 / scale;
+                    let w = (logical_w * 0.6).round().max(860.0);
+                    let h = (w * 0.75).round().max(600.0);
+                    let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize {
+                        width: w,
+                        height: h,
+                    }));
+                }
+            }
 
             // 关闭窗口时最小化到托盘（不退出进程）；系统主题变化时刷新托盘图标黑白
             if let Some(window) = app.get_webview_window("main") {

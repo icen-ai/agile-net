@@ -74,12 +74,25 @@ pub struct Subscription {
     pub id: String,
     pub name: String,
     pub url: String,
-    /// 最近一次内核侧刷新时间（秒）
+    /// 当前激活的订阅（全局单选；内核只加载激活项）
+    #[serde(default)]
+    pub active: bool,
+    /// 最近一次拉取/刷新时间（秒）
     #[serde(default)]
     pub updated_at: Option<u64>,
-    /// 最近一次已知的节点数（状态展示用）
+    /// 节点数（拉取时统计）
     #[serde(default)]
     pub node_count: usize,
+    /// 流量信息（subscription-userinfo 响应头）
+    #[serde(default)]
+    pub upload: u64,
+    #[serde(default)]
+    pub download: u64,
+    #[serde(default)]
+    pub total: u64,
+    /// 到期时间戳（秒；0/None = 长期有效）
+    #[serde(default)]
+    pub expire: Option<u64>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -102,6 +115,11 @@ pub fn kernel_dir() -> PathBuf {
 fn kernel_bin_path() -> PathBuf {
     let name = if cfg!(windows) { "mihomo.exe" } else { "mihomo" };
     kernel_dir().join(name)
+}
+
+/// 内核二进制是否已安装。
+pub fn kernel_bin_exists() -> bool {
+    kernel_bin_path().exists()
 }
 
 fn config_path() -> PathBuf {
@@ -163,8 +181,9 @@ fn yaml_escape(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
-/// 由订阅清单生成 mihomo config.yaml（无订阅时不应启动内核）。
+/// 由订阅清单生成 mihomo config.yaml（仅加载当前激活订阅，单 provider 恒名 main）。
 pub fn render_config(store: &SubStore) -> String {
+    let active = store.subscriptions.iter().find(|s| s.active);
     let mut s = String::new();
     s.push_str("# 本文件由 AgileNet 自动生成，手动修改将在下次启动时被覆盖\n");
     s.push_str(&format!("mixed-port: {MIHOMO_MIXED_PORT}\n"));
@@ -176,9 +195,9 @@ pub fn render_config(store: &SubStore) -> String {
     s.push_str("log-level: warning\n");
     s.push_str("mode: rule\n");
     s.push_str("unified-delay: true\n");
-    s.push_str("proxy-providers:\n");
-    for (i, sub) in store.subscriptions.iter().enumerate() {
-        s.push_str(&format!("  sub{i}:\n"));
+    if let Some(sub) = active {
+        s.push_str("proxy-providers:\n");
+        s.push_str("  main:\n");
         s.push_str("    type: http\n");
         s.push_str(&format!("    url: \"{}\"\n", yaml_escape(&sub.url)));
         s.push_str("    interval: 86400\n");
@@ -191,9 +210,9 @@ pub fn render_config(store: &SubStore) -> String {
     s.push_str("proxy-groups:\n");
     s.push_str("  - name: AGILE-SUB\n");
     s.push_str("    type: select\n");
-    s.push_str("    use:\n");
-    for i in 0..store.subscriptions.len() {
-        s.push_str(&format!("      - sub{i}\n"));
+    if active.is_some() {
+        s.push_str("    use:\n");
+        s.push_str("      - main\n");
     }
     s.push_str("rules:\n");
     s.push_str("  - IP-CIDR,127.0.0.0/8,DIRECT,no-resolve\n");
@@ -578,17 +597,111 @@ pub async fn kernel_api() -> Result<KernelApi, String> {
 
 // ==================== 订阅清单操作 ====================
 
+/// 拉取订阅并解析用户/流量信息（subscription-userinfo 头）与节点数。
+/// 拉取失败或内容不像 Clash 配置即报错——添加/刷新都以拉通为准。
+async fn fetch_subscription(url: &str) -> Result<(u64, u64, u64, Option<u64>, usize), String> {
+    let client = reqwest::Client::builder()
+        .user_agent("clash.meta/v1.19.29")
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let resp = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| format!("订阅拉取失败: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("订阅拉取失败 (HTTP {})", resp.status()));
+    }
+    // subscription-userinfo: upload=..; download=..; total=..; expire=..
+    let mut upload = 0u64;
+    let mut download = 0u64;
+    let mut total = 0u64;
+    let mut expire = None;
+    if let Some(v) = resp
+        .headers()
+        .get("subscription-userinfo")
+        .and_then(|v| v.to_str().ok())
+    {
+        for part in v.split(';') {
+            let part = part.trim();
+            if let Some((k, val)) = part.split_once('=') {
+                let n: u64 = val.trim().parse().unwrap_or(0);
+                match k.trim() {
+                    "upload" => upload = n,
+                    "download" => download = n,
+                    "total" => total = n,
+                    "expire" => {
+                        if n > 0 {
+                            expire = Some(n)
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    let body = resp.text().await.map_err(|e| e.to_string())?;
+    // 节点数估算与格式嗅探：Clash YAML（proxies: 段内 "name:" 行）或 base64/明文分享链接（含 "://"）
+    let node_count = if body.contains("proxies:") {
+        let start = body.find("proxies:").unwrap_or(0);
+        let end = body.find("proxy-groups:").unwrap_or(body.len());
+        let section = &body[start..end.max(start)];
+        section
+            .lines()
+            .filter(|l| l.trim_start().starts_with("name:"))
+            .count()
+    } else {
+        let decoded = base64_decode_loose(&body);
+        let text = decoded.as_deref().unwrap_or(&body);
+        text.lines().filter(|l| l.contains("://")).count()
+    };
+    if node_count == 0 {
+        return Err("订阅内容无法识别（不是 Clash 配置或分享链接）".into());
+    }
+    Ok((upload, download, total, expire, node_count))
+}
+
+/// 宽松 base64 解码（处理未填充/换行的订阅体）
+fn base64_decode_loose(s: &str) -> Option<String> {
+    const TBL: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut map = [255u8; 256];
+    for (i, &c) in TBL.iter().enumerate() {
+        map[c as usize] = i as u8;
+    }
+    let mut out = Vec::with_capacity(s.len() * 3 / 4);
+    let mut buf = 0u32;
+    let mut bits = 0u32;
+    for &b in s.as_bytes() {
+        let v = map[b as usize];
+        if v == 255 {
+            continue;
+        }
+        buf = (buf << 6) | v as u32;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((buf >> bits) as u8);
+        }
+    }
+    String::from_utf8(out).ok().filter(|s| s.contains("://"))
+}
+
 pub fn list_subscriptions() -> Vec<Subscription> {
     load_store().subscriptions
 }
 
-pub fn add_subscription(name: &str, url: &str) -> Result<Subscription, String> {
+/// 添加订阅：先拉取校验（拉不通/不可识别即失败），首个订阅自动激活。
+pub async fn add_subscription(name: &str, url: &str) -> Result<Subscription, String> {
     let url = url.trim();
     if !(url.starts_with("http://") || url.starts_with("https://")) {
         return Err("订阅地址须为 http(s) URL".into());
     }
+    let (upload, download, total, expire, node_count) = fetch_subscription(url).await?;
     let mut store = load_store();
     ensure_secret(&mut store);
+    let first = store.subscriptions.is_empty();
+    let ts = now_ts();
     let sub = Subscription {
         id: uuid::Uuid::new_v4().simple().to_string(),
         name: if name.trim().is_empty() {
@@ -597,14 +710,19 @@ pub fn add_subscription(name: &str, url: &str) -> Result<Subscription, String> {
             name.trim().to_string()
         },
         url: url.to_string(),
-        updated_at: None,
-        node_count: 0,
+        active: first,
+        updated_at: Some(ts),
+        node_count,
+        upload,
+        download,
+        total,
+        expire,
     };
     store.subscriptions.push(sub.clone());
     save_store(&store)?;
     roles::audit(
         "gui.subscription_add",
-        serde_json::json!({"name": sub.name, "url": mask_url(&sub.url)}),
+        serde_json::json!({"name": sub.name, "url": mask_url(&sub.url), "nodes": node_count}),
     );
     Ok(sub)
 }
@@ -612,16 +730,46 @@ pub fn add_subscription(name: &str, url: &str) -> Result<Subscription, String> {
 pub fn remove_subscription(id: &str) -> Result<(), String> {
     let mut store = load_store();
     let before = store.subscriptions.len();
+    let was_active = store.subscriptions.iter().any(|s| s.id == id && s.active);
     store.subscriptions.retain(|s| s.id != id);
     if store.subscriptions.len() == before {
         return Err("订阅不存在".into());
+    }
+    // 激活项被删：顺位激活第一个
+    if was_active {
+        if let Some(first) = store.subscriptions.first_mut() {
+            first.active = true;
+        }
     }
     save_store(&store)?;
     roles::audit("gui.subscription_remove", serde_json::json!({"id": id}));
     Ok(())
 }
 
-/// 手动刷新订阅（内核运行中走控制面，随后回写节点数/时间戳）。
+/// 单选激活：仅一个 active；返回新的激活项。
+pub fn set_active_subscription(id: &str) -> Result<Subscription, String> {
+    let mut store = load_store();
+    if !store.subscriptions.iter().any(|s| s.id == id) {
+        return Err("订阅不存在".into());
+    }
+    for s in store.subscriptions.iter_mut() {
+        s.active = s.id == id;
+    }
+    let sub = store
+        .subscriptions
+        .iter()
+        .find(|s| s.id == id)
+        .cloned()
+        .unwrap();
+    save_store(&store)?;
+    roles::audit(
+        "gui.subscription_activate",
+        serde_json::json!({"name": sub.name}),
+    );
+    Ok(sub)
+}
+
+/// 刷新订阅：重新拉取（更新流量/到期/节点数/时间戳）；激活项同时通知内核更新 provider。
 pub async fn update_subscription(id: &str) -> Result<Subscription, String> {
     let mut store = load_store();
     let idx = store
@@ -629,21 +777,36 @@ pub async fn update_subscription(id: &str) -> Result<Subscription, String> {
         .iter()
         .position(|s| s.id == id)
         .ok_or("订阅不存在")?;
-    let api = kernel_api().await?;
-    api.update_provider(idx).await?;
-    // 回写刷新时间；节点数由前端经 /proxies 聚合展示
-    let ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    store.subscriptions[idx].updated_at = Some(ts);
+    let url = store.subscriptions[idx].url.clone();
+    let (upload, download, total, expire, node_count) = fetch_subscription(&url).await?;
+    {
+        let s = &mut store.subscriptions[idx];
+        s.upload = upload;
+        s.download = download;
+        s.total = total;
+        s.expire = expire;
+        s.node_count = node_count;
+        s.updated_at = Some(now_ts());
+    }
     let sub = store.subscriptions[idx].clone();
     save_store(&store)?;
+    if sub.active {
+        if let Ok(api) = kernel_api().await {
+            let _ = api.update_provider(0).await; // 单 provider 恒为 main（见 render_config）
+        }
+    }
     roles::audit(
         "gui.subscription_update",
         serde_json::json!({"name": sub.name, "url": mask_url(&sub.url)}),
     );
     Ok(sub)
+}
+
+fn now_ts() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 #[cfg(test)]
@@ -654,27 +817,33 @@ mod tests {
     fn config_render_basic() {
         let mut store = SubStore::default();
         store.secret = "s3cret".into();
-        store.subscriptions.push(Subscription {
-            id: "a".into(),
-            name: "机场A".into(),
-            url: "https://example.com/sub?token=abc".into(),
+        let mk = |id: &str, name: &str, url: &str, active: bool| Subscription {
+            id: id.into(),
+            name: name.into(),
+            url: url.into(),
+            active,
             updated_at: None,
             node_count: 0,
-        });
-        store.subscriptions.push(Subscription {
-            id: "b".into(),
-            name: "机场B".into(),
-            url: "https://b.example.com/link".into(),
-            updated_at: None,
-            node_count: 0,
-        });
+            upload: 0,
+            download: 0,
+            total: 0,
+            expire: None,
+        };
+        store
+            .subscriptions
+            .push(mk("a", "机场A", "https://example.com/sub?token=abc", true));
+        store
+            .subscriptions
+            .push(mk("b", "机场B", "https://b.example.com/link", false));
         let cfg = render_config(&store);
         assert!(cfg.contains("mixed-port: 57892"));
         assert!(cfg.contains("external-controller: 127.0.0.1:59292"));
         assert!(cfg.contains("secret: \"s3cret\""));
+        // 仅加载激活订阅（单 provider 恒名 main）
+        assert!(cfg.contains("  main:\n"));
         assert!(cfg.contains("url: \"https://example.com/sub?token=abc\""));
-        assert!(cfg.contains("      - sub0\n"));
-        assert!(cfg.contains("      - sub1\n"));
+        assert!(!cfg.contains("b.example.com"));
+        assert!(cfg.contains("      - main\n"));
         assert!(cfg.contains("  - MATCH,AGILE-SUB\n"));
         assert!(cfg.contains("IP-CIDR,127.0.0.0/8,DIRECT,no-resolve"));
         assert_no_loop(&cfg);
@@ -688,8 +857,13 @@ mod tests {
             id: "a".into(),
             name: "x".into(),
             url: "https://evil.com/\"injected".into(),
+            active: true,
             updated_at: None,
             node_count: 0,
+            upload: 0,
+            download: 0,
+            total: 0,
+            expire: None,
         });
         let cfg = render_config(&store);
         assert!(cfg.contains("\\\"injected"));
@@ -704,6 +878,64 @@ mod tests {
         assert_eq!(mask_url("not-a-url"), "…");
     }
 
+    /// 真实订阅全链路 E2E：AG_E2E_SUB_URL=<订阅地址> cargo test real_sub_e2e -- --ignored --nocapture
+    /// 拉取 → 启动内核 → 选择 AG_E2E_NODE_PREFIX（默认"荷兰-NL-4"）节点 → 经 mixed 出口访问谷歌 204
+    #[tokio::test]
+    #[ignore = "真实订阅联网测试，显式 --ignored 运行"]
+    async fn real_sub_e2e() {
+        let url = std::env::var("AG_E2E_SUB_URL").expect("AG_E2E_SUB_URL 未设置");
+        let prefix = std::env::var("AG_E2E_NODE_PREFIX").unwrap_or_else(|_| "荷兰-NL-4".into());
+
+        // 拉取校验
+        let sub = add_subscription("e2e-real", &url).await.unwrap();
+        eprintln!("订阅拉取成功: {} 节点, 流量 {}/{} 到期 {:?}", sub.node_count, sub.download, sub.total, sub.expire);
+        assert!(sub.node_count > 0);
+
+        // 启动内核
+        let km = KernelManager::default();
+        km.start().await.unwrap();
+        eprintln!("内核已启动并就绪");
+
+        // 找到目标节点并选择
+        let api = kernel_api().await.unwrap();
+        let px = api.proxies().await.unwrap();
+        let mut node = None;
+        let mut group = "AGILE-SUB".to_string();
+        if let Some(groups) = px["proxies"].as_object() {
+            for (gn, g) in groups {
+                if let Some(all) = g["all"].as_array() {
+                    for n in all {
+                        if let Some(name) = n.as_str() {
+                            if name.starts_with(&prefix) {
+                                node = Some(name.to_string());
+                                if g["all"].is_array() && g["type"].as_str() == Some("Selector") {
+                                    group = gn.clone();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let node = node.expect("未找到目标前缀节点");
+        eprintln!("选择节点: {node} @ {group}");
+        api.select(&group, &node).await.unwrap();
+
+        // 经 mixed 出口访问谷歌（204 即通）
+        let proxy = reqwest::Proxy::all(format!("http://127.0.0.1:{MIHOMO_MIXED_PORT}")).unwrap();
+        let client = reqwest::Client::builder().proxy(proxy).build().unwrap();
+        let resp = client
+            .get("https://www.google.com/generate_204")
+            .timeout(std::time::Duration::from_secs(15))
+            .send()
+            .await
+            .unwrap();
+        eprintln!("google generate_204 -> HTTP {}", resp.status());
+        assert_eq!(resp.status().as_u16(), 204, "经订阅节点访问谷歌失败");
+
+        km.stop().await;
+        // 订阅保留在清单中供 GUI 使用（用户随后可自行删除）
+    }
     /// E2E（真实下载内核 + 启动 + REST 握手 + 停止），手动运行：
     /// cargo test --manifest-path apps/desktop/Cargo.toml kernel_e2e -- --ignored --nocapture
     #[tokio::test]
@@ -728,8 +960,13 @@ mod tests {
             id: "e2e".into(),
             name: "e2e-dummy".into(),
             url: "http://127.0.0.1:9/sub".into(),
+            active: true,
             updated_at: None,
             node_count: 0,
+            upload: 0,
+            download: 0,
+            total: 0,
+            expire: None,
         });
         save_store(&store).unwrap();
 

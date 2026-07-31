@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AgileNet 托盘</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%233C3F43' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z'/></svg>">
+<link rel="stylesheet" href="style.css">
+<style>
+/* 托盘弹窗：透明窗口 + 圆角面板（GUI 风格自定义托盘菜单） */
+html, body { background: transparent; overflow: hidden; height: auto; }
+body { display: block; padding: 6px; }
+.tp { background: var(--panel2); border: 1px solid var(--border); border-radius: 13px; box-shadow: 0 16px 44px rgba(0,0,0,.22); padding: 7px; user-select: none; }
+.tp-head { display: flex; align-items: center; gap: 8px; padding: 6px 8px 10px; }
+.tp-head .logo { width: 24px; height: 24px; border-radius: 7px; background: var(--accent); color: var(--accent-fg); display: inline-flex; align-items: center; justify-content: center; }
+.tp-head b { font-size: 13px; color: var(--text-strong); }
+.tp-status { margin-left: auto; font-size: 11px; color: var(--dim2); display: inline-flex; align-items: center; gap: 5px; }
+.tp-row { display: flex; align-items: center; gap: 9px; padding: 8px 9px; border-radius: 8px; font-size: 13px; color: var(--text); cursor: pointer; }
+.tp-row:hover { background: var(--hover); }
+.tp-row .ic { color: var(--dim); }
+.tp-right { margin-left: auto; font-size: 11.5px; color: var(--dim2); max-width: 130px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tp-chev { transition: transform .2s ease; }
+.tp-row.open .tp-chev { transform: rotate(90deg); }
+.tp-sep { height: 1px; background: var(--row-border); margin: 5px 7px; }
+.tp-nodes { max-height: 180px; overflow-y: auto; margin: 0 2px 4px; }
+.tp-node { display: flex; align-items: center; gap: 8px; padding: 7px 9px; border-radius: 7px; font-size: 12.5px; color: var(--text); cursor: pointer; }
+.tp-node:hover { background: var(--hover); }
+.tp-node.current { color: var(--ring); font-weight: 600; }
+.tp-node .dot { width: 6px; height: 6px; }
+.tp-node .st { margin-left: auto; font-size: 11px; color: var(--dim2); font-variant-numeric: tabular-nums; }
+.tp-empty { padding: 10px; font-size: 12px; color: var(--dim2); text-align: center; }
+</style>
+</head>
+<body>
+<div class="tp">
+  <div class="tp-head">
+    <span class="logo"><i data-ic="zap" data-sz="13"></i></span><b>AgileNet</b>
+    <span class="tp-status"><span class="dot off" id="tp-dot"></span><span id="tp-status">代理未启动</span></span>
+  </div>
+  <div class="tp-row" id="tp-proxy"><i data-ic="power" data-sz="15"></i>本地代理<span class="tp-right" id="tp-proxy-state">已停止</span></div>
+  <div class="tp-row" id="tp-nodes-row"><i data-ic="satellite-dish" data-sz="15"></i>订阅节点<span class="tp-right" id="tp-node-cur">-</span><i data-ic="chevron-right" data-sz="13" class="tp-chev"></i></div>
+  <div class="tp-nodes" id="tp-nodes" style="display:none"></div>
+  <div class="tp-sep"></div>
+  <div class="tp-row" id="tp-show"><i data-ic="monitor" data-sz="15"></i>显示主窗口</div>
+  <div class="tp-row" id="tp-quit"><i data-ic="x" data-sz="15"></i>退出 AgileNet</div>
+</div>
+<script src="icons.js"></script>
+<script src="tray.js"></script>
+</body>
+</html>

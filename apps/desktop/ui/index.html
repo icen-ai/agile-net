@@ -11,9 +11,17 @@
 <!-- 一体化标题栏（无边框窗口，左侧拖拽区 + 右侧窗口控制；中央灵动岛） -->
 <header class="titlebar">
   <div class="tb-drag" data-tauri-drag-region>
-    <span class="logo"><i data-ic="zap" data-sz="13"></i></span>
-    <span class="tb-title">AgileNet</span>
+    <button id="btn-collapse" class="tb-icon" title="收起 / 展开菜单"><i data-ic="panel-left" data-sz="16"></i></button>
+    <button id="btn-more" class="tb-icon" title="更多"><i data-ic="menu" data-sz="16"></i></button>
     <span class="tb-spacer"></span>
+  </div>
+  <!-- 更多菜单（文档 / Issue / 检查更新 / 关于） -->
+  <div class="more-menu" id="more-menu" style="display:none">
+    <button data-more="docs"><i data-ic="book-open" data-sz="14"></i>文档</button>
+    <button data-more="issue"><i data-ic="circle-dot" data-sz="14"></i>Issue</button>
+    <button data-more="update"><i data-ic="refresh-cw" data-sz="14"></i>检查更新</button>
+    <div class="more-sep"></div>
+    <button data-more="about"><i data-ic="info" data-sz="14"></i>关于</button>
   </div>
   <!-- 灵动岛：状态摘要 + 通知弹出 + 网络异常可展开详情 -->
   <div class="island" id="island">
@@ -35,7 +43,8 @@
     <div class="nav-item active" data-view="connect"><i data-ic="link"></i><span class="nav-label">连接</span></div>
     <div class="nav-item" data-view="nodes"><i data-ic="globe"></i><span class="nav-label">节点</span></div>
     <div class="nav-item" data-view="routes"><i data-ic="route"></i><span class="nav-label">路由</span></div>
-    <div class="nav-item" data-view="subscription"><i data-ic="satellite-dish"></i><span class="nav-label">订阅</span></div>
+    <div class="nav-item sub-feature" data-view="subscription" style="display:none"><i data-ic="satellite-dish"></i><span class="nav-label">订阅</span></div>
+    <div class="nav-item sub-feature" data-view="proxy" style="display:none"><i data-ic="zap"></i><span class="nav-label">代理</span></div>
     <div class="nav-item" data-view="settings"><i data-ic="settings"></i><span class="nav-label">设置</span></div>
   </aside>
 
@@ -145,13 +154,15 @@
       </div>
     </section>
 
-    <!-- 订阅：Clash 系订阅导入 + mihomo 内核托管 -->
+    <!-- 订阅：订阅列表管理（激活单选） -->
     <section class="view" id="view-subscription" hidden>
       <div class="page-title"><i data-ic="satellite-dish" data-sz="19"></i>订阅</div>
       <div class="page-desc">导入 Clash 系订阅，无需第三方客户端；内核由应用托管（钉版本 SHA-256 校验）</div>
 
       <div class="card">
-        <h3><i data-ic="power"></i>订阅内核 <span class="hint inline" id="sub-status-text">未开启</span></h3>
+        <h3><i data-ic="power"></i>订阅内核 <span class="hint inline" id="sub-status-text">未开启</span>
+          <span class="h3-tools"><label class="switch"><input type="checkbox" id="r-sub"><span class="slider"></span></label></span>
+        </h3>
         <div class="kv"><span class="k">内核版本</span><span class="mono" id="sub-version">-</span></div>
         <div class="kv"><span class="k">本地出口</span><span class="mono">127.0.0.1:57892（mixed）</span></div>
         <label class="chk" style="margin-top:8px"><input type="checkbox" id="s-unified" checked> 未命中 AgileNet 规则的流量经订阅出口（统一 57890 单端口）</label>
@@ -163,13 +174,17 @@
         </h3>
         <div id="subs-list"><div class="empty">尚未添加订阅</div></div>
       </div>
+    </section>
 
-      <div class="card" id="groups-card" style="display:none">
-        <h3><i data-ic="globe"></i>代理节点
-          <span class="h3-tools"><button class="ghost small icon-btn" id="btn-test-all" title="全部测速"><i data-ic="refresh-cw" data-sz="13"></i></button></span>
-        </h3>
-        <div id="groups-list"></div>
+    <!-- 代理：激活订阅的节点组与切换 -->
+    <section class="view" id="view-proxy" hidden>
+      <div class="page-title"><i data-ic="zap" data-sz="19"></i>代理</div>
+      <div class="page-desc" id="proxy-sub-desc">激活订阅的节点列表；点击卡片切换，点闪电图标单点测速</div>
+      <div class="card" id="groups-card">
+        <div class="group-tabs" id="group-tabs"></div>
+        <div class="node-grid" id="node-grid"><div class="empty">订阅内核未运行</div></div>
       </div>
+      <button id="btn-test-all" class="fab"><i data-ic="gauge" data-sz="15"></i>延迟测试</button>
     </section>
 
     <!-- 设置 -->
@@ -213,14 +228,21 @@
             <div class="role-info"><b>Web 远程面</b><span class="hint">把本机管理界面经 HTTP 暴露（默认仅 127.0.0.1，须先设管理密码）</span></div>
             <label class="switch"><input type="checkbox" id="r-web"><span class="slider"></span></label>
           </div>
-          <div class="role-row">
-            <div class="role-info"><b>订阅代理角色</b><span class="hint">mihomo 内核托管（钉版本校验），在「订阅」页管理订阅与节点选择</span></div>
-            <label class="switch"><input type="checkbox" id="r-sub"><span class="slider"></span></label>
-          </div>
           <div id="web-panel" style="display:none">
             <div class="kv"><span class="k">监听地址</span><span><input id="web-listen" class="mono" style="width:170px"> <button id="btn-web-listen-save" class="ghost small">保存</button></span></div>
             <div class="hint" id="web-status"></div>
           </div>
+        </div>
+      </div>
+
+      <!-- 订阅代理：安装内核 → 激活功能（侧栏出现「订阅/代理」） -->
+      <div class="card" id="sub-feature-card">
+        <h3><i data-ic="satellite-dish"></i>订阅代理 <span class="hint inline" id="sub-install-status">未安装</span></h3>
+        <div class="hint" style="margin-bottom:10px">导入 Clash 系订阅的可选附加服务。内核（mihomo）钉版本下载并 SHA-256 校验，仅在本地运行。</div>
+        <div class="row">
+          <button id="btn-install-kernel" class="ghost small"><i data-ic="download" data-sz="13"></i> 下载并安装内核</button>
+          <button id="btn-activate-sub" class="small" disabled>激活订阅功能</button>
+          <button id="btn-deactivate-sub" class="danger small" style="display:none">停用订阅功能</button>
         </div>
       </div>
 
@@ -294,18 +316,47 @@
   </div>
 </div>
 
-<!-- 添加订阅弹窗 -->
-<div class="modal-mask" id="sub-modal" style="display:none">
-  <div class="modal">
-    <h3><i data-ic="rss" data-sz="16"></i> 添加订阅</h3>
-    <div class="hint" style="margin:6px 0 12px">粘贴 Clash 系订阅地址（URL 将视为凭据本地加密级保护，不会出现在日志中）</div>
-    <div class="row col" style="gap:10px">
-      <div><label>备注名（可选）</label><input id="sub-name" placeholder="我的机场"></div>
-      <div><label>订阅地址</label><input id="sub-url" class="mono" placeholder="https://…"></div>
+<!-- 关于弹窗 -->
+<div class="modal-mask" id="about-modal" style="display:none">
+  <div class="modal about-modal">
+    <div class="about-logo"><i data-ic="zap" data-sz="26"></i></div>
+    <h3>AgileNet 客户端</h3>
+    <div class="hint">v<span id="about-ver">-</span></div>
+    <p class="about-desc">高安全、轻量级的企业级网络穿透与代理链路由；双产物 anet-gui / anet-svc。</p>
+    <div class="about-links">
+      <button class="ghost small" data-more="docs"><i data-ic="book-open" data-sz="13"></i> 文档</button>
+      <button class="ghost small" data-more="issue"><i data-ic="circle-dot" data-sz="13"></i> Issue</button>
+      <button class="ghost small" data-more="github"><i data-ic="external-link" data-sz="13"></i> GitHub</button>
     </div>
-    <div class="row" style="justify-content:flex-end;margin-top:14px">
+    <div class="row" style="justify-content:center;margin-top:16px">
+      <button id="about-close" class="ghost">关闭</button>
+    </div>
+  </div>
+</div>
+
+<!-- 添加订阅弹窗（宽版优雅设计） -->
+<div class="modal-mask" id="sub-modal" style="display:none">
+  <div class="modal sub-modal">
+    <div class="sm-head">
+      <span class="sm-logo"><i data-ic="satellite-dish" data-sz="20"></i></span>
+      <div>
+        <h3>添加订阅</h3>
+        <div class="hint">拉取校验通过才会保存；URL 视为凭据，绝不写入日志</div>
+      </div>
+    </div>
+    <div class="sm-body">
+      <label>备注名（可选）</label>
+      <input id="sub-name" placeholder="例如：我的机场">
+      <label>订阅地址</label>
+      <div class="sm-url-row">
+        <input id="sub-url" class="mono" placeholder="https://…（Clash 订阅链接）">
+        <button id="sub-paste" class="ghost small icon-btn" title="从剪贴板粘贴"><i data-ic="clipboard" data-sz="15"></i></button>
+      </div>
+      <div class="hint sm-err" id="sub-err"></div>
+    </div>
+    <div class="row" style="justify-content:flex-end">
       <button id="sub-cancel" class="ghost">取消</button>
-      <button id="sub-ok">添加</button>
+      <button id="sub-ok">拉取并添加</button>
     </div>
   </div>
 </div>

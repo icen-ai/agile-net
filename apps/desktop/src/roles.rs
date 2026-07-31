@@ -34,6 +34,9 @@ pub struct RoleSettings {
     /// 开关D：订阅代理角色（mihomo sidecar，anet-gui 独享附加服务）
     #[serde(default)]
     pub subscription: bool,
+    /// 订阅功能已安装激活（侧栏「订阅/代理」入口可见；安装内核成功后由用户显式激活）
+    #[serde(default)]
+    pub subscription_feature: bool,
     /// 订阅流量经统一出口（ProxyRouter 回落到内核 mixed 入站；默认开）
     #[serde(default = "default_true")]
     pub subscription_unified: bool,
@@ -78,6 +81,7 @@ impl Default for RoleSettings {
             web_listen: default_web_listen(),
             server_connector: None,
             subscription: false,
+            subscription_feature: false,
             subscription_unified: true,
             system_proxy: false,
         }

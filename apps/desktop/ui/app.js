@@ -647,8 +647,8 @@ async function initRoles() {
   $('r-client').checked = settings.client;
   $('r-server').checked = settings.server;
   $('r-web').checked = settings.web;
-  $('r-sub').checked = !!settings.subscription;
   $('s-unified').checked = settings.subscription_unified !== false;
+  applySubFeature(!!settings.subscription_feature);
   $('web-listen').value = settings.web_listen;
   applyClientRole(settings.client);
   refreshServerPanel();
@@ -692,28 +692,6 @@ async function initRoles() {
       e.target.checked = false;
       toast(friendlyError(err), 'err');
       refreshServerPanel();
-    }
-  };
-
-  $('r-sub').onchange = async (e) => {
-    const on = e.target.checked;
-    e.target.disabled = true;
-    try {
-      if (on && !SUBS.length) {
-        e.target.checked = false;
-        toast('请先添加订阅', 'err');
-        switchView('subscription');
-        openSubModal();
-        return;
-      }
-      await invoke('set_subscription_role', { enabled: on });
-      toast(on ? '订阅代理已开启（内核运行中）' : '订阅代理已关闭', 'ok');
-      refreshSubStatus();
-    } catch (err) {
-      e.target.checked = !on;
-      toast(friendlyError(err), 'err');
-    } finally {
-      e.target.disabled = false;
     }
   };
 
@@ -798,32 +776,62 @@ async function initRoles() {
 
 /* ================= 订阅代理（mihomo sidecar） ================= */
 let SUBS = [];
+let PROXY_DATA = null;
+let CUR_GROUP = null;
 
-/** URL 脱敏（与后端 mask_url 同规则）：scheme://host/…路径前 8 位 */
-function maskUrl(url) {
-  const i = url.indexOf('://');
-  if (i < 0) return '…';
-  const rest = url.slice(i + 3);
-  const j = rest.indexOf('/');
-  if (j < 0) return url;
-  return url.slice(0, i) + '://' + rest.slice(0, j) + '/…' + rest.slice(j + 1, j + 9);
+/** 功能入口可见性（安装激活后侧栏出现「订阅/代理」） */
+function applySubFeature(on) {
+  document.querySelectorAll('.nav-item.sub-feature').forEach(n => { n.style.display = on ? '' : 'none'; });
+  $('btn-activate-sub').style.display = on ? 'none' : '';
+  $('btn-deactivate-sub').style.display = on ? '' : 'none';
+}
+
+function fmtBytes(n) {
+  if (!n) return '0B';
+  const u = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let i = 0, v = n;
+  while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
+  return (v >= 100 ? v.toFixed(0) : v.toFixed(1)) + u[i];
+}
+function fmtDate(ts) { return ts ? new Date(ts * 1000).toLocaleDateString() : ''; }
+function fmtAgo(ts) {
+  if (!ts) return '未刷新';
+  const d = Date.now() / 1000 - ts;
+  if (d < 3600) return Math.max(1, Math.floor(d / 60)) + ' 分钟前';
+  if (d < 86400) return Math.floor(d / 3600) + ' 小时前';
+  if (d < 86400 * 30) return Math.floor(d / 86400) + ' 天前';
+  return Math.floor(d / 86400 / 30) + ' 个月前';
 }
 
 async function refreshSubs() {
   try { SUBS = await invoke('list_subscriptions'); } catch (e) { SUBS = []; }
   const list = $('subs-list');
+  const active = SUBS.find(s => s.active);
+  $('proxy-sub-desc').textContent = active
+    ? '当前激活：' + active.name + '（' + active.node_count + ' 节点）— 点击卡片切换，点闪电图标单点测速'
+    : '请先在「订阅」页激活一个订阅';
   if (!SUBS.length) {
     list.innerHTML = '<div class="empty">尚未添加订阅</div>';
     return;
   }
-  list.innerHTML = SUBS.map(s =>
-    '<div class="sub-row"><span class="sub-name">' + esc(s.name) + '</span>' +
-    '<span class="mono dim" title="' + esc(s.url) + '">' + esc(maskUrl(s.url)) + '</span>' +
-    '<span class="hint inline">' + (s.updated_at ? '更新于 ' + new Date(s.updated_at * 1000).toLocaleString() : '未刷新') + '</span>' +
-    '<span class="h3-tools">' +
-    '<button class="ghost small" data-sub-update="' + esc(s.id) + '">刷新</button>' +
-    '<button class="danger small" data-sub-del="' + esc(s.id) + '">删除</button></span></div>'
-  ).join('');
+  list.innerHTML = SUBS.map(s => {
+    const used = (s.upload || 0) + (s.download || 0);
+    const pct = s.total ? Math.min(100, used / s.total * 100) : 0;
+    const cls = pct >= 95 ? 'full' : pct >= 80 ? 'warn' : '';
+    const traffic = s.total ? fmtBytes(used) + ' / ' + fmtBytes(s.total) : fmtBytes(used) + ' 已用';
+    const expire = s.expire ? ' · ' + fmtDate(s.expire) : (s.total ? ' · 长期有效' : '');
+    return '<div class="sub-card' + (s.active ? ' active' : '') + '" data-sub-activate="' + esc(s.id) + '">' +
+      '<div class="sub-card-top"><span class="sub-card-title" title="' + esc(s.name) + '">' + esc(s.name) + '</span>' +
+      (s.active ? '<span class="sub-badge">使用中</span>' : '') +
+      '<span class="sub-card-actions">' +
+      '<button class="ghost small icon-btn" data-sub-update="' + esc(s.id) + '" title="刷新订阅">' + AgIcon('refresh-cw', 13) + '</button>' +
+      '<button class="ghost small icon-btn" data-sub-del="' + esc(s.id) + '" title="删除">' + AgIcon('trash-2', 13) + '</button>' +
+      '</span></div>' +
+      '<div class="sub-progress"><i class="' + cls + '" style="width:' + pct.toFixed(1) + '%"></i></div>' +
+      '<div class="sub-card-meta">' + traffic + expire + '</div>' +
+      '<div class="sub-card-sub">' + fmtAgo(s.updated_at) + '更新 · ' + s.node_count + ' 节点</div>' +
+      '</div>';
+  }).join('');
 }
 
 async function refreshSubStatus() {
@@ -833,31 +841,63 @@ async function refreshSubStatus() {
     ? '运行中'
     : (st.installed ? '已安装，未运行' : (st.supported ? '未开启' : '当前平台不支持'));
   $('sub-version').textContent = st.version || (st.installed ? '已安装' : '-');
+  $('r-sub').checked = st.running;
   if (st.running) refreshGroups();
-  else $('groups-card').style.display = 'none';
 }
 
+/* ---------- 代理页 ---------- */
 async function refreshGroups() {
-  const card = $('groups-card');
   let d;
-  try { d = await invoke('proxy_groups'); } catch (e) { card.style.display = 'none'; return; }
-  const px = (d && d.proxies) || {};
-  const groups = Object.entries(px).filter(([, p]) => p.all && ['Selector', 'URLTest', 'Fallback'].includes(p.type));
-  if (!groups.length) { card.style.display = 'none'; return; }
-  card.style.display = 'block';
-  $('groups-list').innerHTML = groups.map(([gn, g]) =>
-    '<div class="kv"><span class="k">分组</span><span>' + esc(gn) + '（' + esc(g.type) + '，当前 ' + esc(g.now || '-') + '）</span></div>' +
-    '<div class="sub-nodes">' + g.all.map(n => {
-      const p = px[n] || {};
-      const hist = (p.history && p.history.length) ? p.history[p.history.length - 1].delay : 0;
-      const label = esc(n) + (hist ? ' · ' + hist + 'ms' : '');
-      return '<button class="ghost small node-pick' + (g.now === n ? ' active' : '') + '" data-group="' + esc(gn) + '" data-node="' + esc(n) + '">' + label + '</button>';
-    }).join('') + '</div>'
+  try { d = await invoke('proxy_groups'); } catch (e) {
+    $('group-tabs').innerHTML = '';
+    $('node-grid').innerHTML = '<div class="empty">订阅内核未运行</div>';
+    return;
+  }
+  PROXY_DATA = (d && d.proxies) || {};
+  const groups = Object.entries(PROXY_DATA).filter(([, p]) => p.all && ['Selector', 'URLTest', 'Fallback'].includes(p.type));
+  if (!groups.length) {
+    $('group-tabs').innerHTML = '';
+    $('node-grid').innerHTML = '<div class="empty">暂无节点（请到「订阅」页刷新订阅）</div>';
+    return;
+  }
+  if (!CUR_GROUP || !groups.some(([n]) => n === CUR_GROUP)) CUR_GROUP = groups[0][0];
+  $('group-tabs').innerHTML = groups.map(([n]) =>
+    '<button class="group-tab' + (n === CUR_GROUP ? ' active' : '') + '" data-group-tab="' + esc(n) + '">' + esc(n) + '</button>'
   ).join('');
+  renderNodeGrid();
+}
+
+function renderNodeGrid() {
+  const g = PROXY_DATA && PROXY_DATA[CUR_GROUP];
+  if (!g) return;
+  $('node-grid').innerHTML = g.all.map(n => {
+    const p = PROXY_DATA[n] || {};
+    const hist = (p.history && p.history.length) ? p.history[p.history.length - 1].delay : 0;
+    return '<div class="node-card' + (g.now === n ? ' current' : '') + '" data-group="' + esc(CUR_GROUP) + '" data-node="' + esc(n) + '">' +
+      '<div class="node-name" title="' + esc(n) + '">' + esc(n) + '</div>' +
+      '<div class="node-foot"><span class="node-proto">' + esc(p.type || '') + '</span>' +
+      '<span class="node-delay' + (hist ? ' ok' : '') + '">' + (hist ? hist + ' ms' : '') + '</span></div>' +
+      '<button class="node-test" data-test="' + esc(n) + '" title="测速">' + AgIcon('zap', 13) + '</button>' +
+      '</div>';
+  }).join('');
+}
+
+async function testNode(btn) {
+  const card = btn.closest('.node-card');
+  const delayEl = card.querySelector('.node-delay');
+  delayEl.textContent = '…';
+  try {
+    const ms = await invoke('test_delay', { name: btn.dataset.test });
+    delayEl.textContent = ms + ' ms';
+    delayEl.className = 'node-delay ok';
+  } catch (e) {
+    delayEl.textContent = '超时';
+    delayEl.className = 'node-delay bad';
+  }
 }
 
 function openSubModal() {
-  $('sub-name').value = ''; $('sub-url').value = '';
+  $('sub-name').value = ''; $('sub-url').value = ''; $('sub-err').textContent = '';
   $('sub-modal').style.display = 'flex';
   $('sub-url').focus();
 }
@@ -865,60 +905,84 @@ function openSubModal() {
 function initSubscription() {
   $('btn-add-sub').onclick = openSubModal;
   $('sub-cancel').onclick = () => { $('sub-modal').style.display = 'none'; };
+  $('sub-paste').onclick = async () => {
+    try { $('sub-url').value = await navigator.clipboard.readText(); } catch (e) { toast('无法读取剪贴板', 'err'); }
+  };
+  $('sub-url').addEventListener('keydown', e => { if (e.key === 'Enter') $('sub-ok').click(); });
   $('sub-ok').onclick = async () => {
     const url = $('sub-url').value.trim();
-    if (!url) { toast('请粘贴订阅地址', 'err'); return; }
+    if (!url) { $('sub-err').textContent = '请粘贴订阅地址'; return; }
+    const btn = $('sub-ok');
+    btn.disabled = true;
+    btn.textContent = '拉取校验中…';
+    $('sub-err').textContent = '';
     try {
-      await invoke('add_subscription', { name: $('sub-name').value.trim(), url });
+      const sub = await invoke('add_subscription', { name: $('sub-name').value.trim(), url });
       $('sub-modal').style.display = 'none';
-      toast('订阅已添加', 'ok');
+      toast('订阅已添加（' + sub.node_count + ' 节点）', 'ok');
       refreshSubs();
-      refreshSubStatus();
-    } catch (err) { toast(friendlyError(err), 'err'); }
+    } catch (err) {
+      $('sub-err').textContent = friendlyError(err);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = '拉取并添加';
+    }
   };
   $('subs-list').addEventListener('click', async (e) => {
     const btn = e.target.closest('button');
-    if (!btn) return;
-    try {
-      if (btn.dataset.subUpdate) {
-        btn.disabled = true;
-        await invoke('update_subscription', { id: btn.dataset.subUpdate });
-        toast('订阅已刷新', 'ok');
-        refreshSubs(); refreshGroups();
-      } else if (btn.dataset.subDel) {
-        if (btn.dataset.confirm === '1') {
-          await invoke('remove_subscription', { id: btn.dataset.subDel });
-          toast('订阅已删除', 'ok');
-          refreshSubs(); refreshSubStatus();
-          return;
-        }
-        btn.dataset.confirm = '1';
-        const old = btn.innerHTML;
-        btn.innerHTML = '<span style="font-size:11px">确认</span>';
-        setTimeout(() => { if (btn.isConnected) { btn.dataset.confirm = ''; btn.innerHTML = old; } }, 2500);
-      }
-    } catch (err) { toast(friendlyError(err), 'err'); btn.disabled = false; }
-  });
-  $('groups-list').addEventListener('click', async (e) => {
-    const btn = e.target.closest('button.node-pick');
-    if (!btn) return;
-    try {
-      await invoke('select_proxy', { group: btn.dataset.group, name: btn.dataset.node });
-      toast('已切换到 ' + btn.dataset.node, 'ok');
-      refreshGroups();
-    } catch (err) { toast(friendlyError(err), 'err'); }
-  });
-  $('btn-test-all').onclick = async () => {
-    const btns = [...$('groups-list').querySelectorAll('button.node-pick')];
-    if (!btns.length) return;
-    toast('正在测速（' + btns.length + ' 个节点）…', 'ok');
-    for (const btn of btns) {
+    if (btn) {
+      e.stopPropagation();
       try {
-        const ms = await invoke('test_delay', { name: btn.dataset.node });
-        btn.textContent = btn.dataset.node + ' · ' + ms + 'ms';
-      } catch (e) {
-        btn.textContent = btn.dataset.node + ' · 超时';
+        if (btn.dataset.subUpdate) {
+          btn.disabled = true;
+          const sub = await invoke('update_subscription', { id: btn.dataset.subUpdate });
+          toast('订阅已刷新（' + sub.node_count + ' 节点）', 'ok');
+          refreshSubs(); refreshGroups();
+        } else if (btn.dataset.subDel) {
+          if (btn.dataset.confirm === '1') {
+            await invoke('remove_subscription', { id: btn.dataset.subDel });
+            toast('订阅已删除', 'ok');
+            refreshSubs(); refreshSubStatus();
+            return;
+          }
+          btn.dataset.confirm = '1';
+          const old = btn.innerHTML;
+          btn.innerHTML = '<span style="font-size:11px">确认</span>';
+          setTimeout(() => { if (btn.isConnected) { btn.dataset.confirm = ''; btn.innerHTML = old; } }, 2500);
+        }
+      } catch (err) { toast(friendlyError(err), 'err'); btn.disabled = false; }
+      return;
+    }
+    // 卡片主体点击 = 单选激活
+    const card = e.target.closest('[data-sub-activate]');
+    if (card && !card.classList.contains('active')) {
+      try {
+        const sub = await invoke('set_active_subscription', { id: card.dataset.subActivate });
+        toast('已激活 ' + sub.name, 'ok');
+        refreshSubs(); refreshSubStatus();
+      } catch (err) { toast(friendlyError(err), 'err'); }
+    }
+  });
+
+  /* 内核角色开关（订阅页内核卡） */
+  $('r-sub').onchange = async (e) => {
+    const on = e.target.checked;
+    e.target.disabled = true;
+    try {
+      if (on && !SUBS.length) {
+        e.target.checked = false;
+        toast('请先添加订阅', 'err');
+        openSubModal();
+        return;
       }
+      await invoke('set_subscription_role', { enabled: on });
+      toast(on ? '订阅代理已开启（内核运行中）' : '订阅代理已关闭', 'ok');
+      refreshSubStatus();
+    } catch (err) {
+      e.target.checked = !on;
+      toast(friendlyError(err), 'err');
+    } finally {
+      e.target.disabled = false;
     }
   };
   $('s-unified').onchange = async (e) => {
@@ -926,6 +990,83 @@ function initSubscription() {
       await invoke('set_subscription_unified', { enabled: e.target.checked });
       toast(e.target.checked ? '统一出口已开启（57890 单端口）' : '统一出口已关闭', 'ok');
     } catch (err) { e.target.checked = !e.target.checked; toast(friendlyError(err), 'err'); }
+  };
+
+  /* 代理页事件 */
+  $('group-tabs').addEventListener('click', (e) => {
+    const tab = e.target.closest('[data-group-tab]');
+    if (!tab) return;
+    CUR_GROUP = tab.dataset.groupTab;
+    refreshGroups();
+  });
+  $('node-grid').addEventListener('click', async (e) => {
+    const testBtn = e.target.closest('.node-test');
+    if (testBtn) {
+      e.stopPropagation();
+      testNode(testBtn);
+      return;
+    }
+    const card = e.target.closest('.node-card');
+    if (!card) return;
+    try {
+      await invoke('select_proxy', { group: card.dataset.group, name: card.dataset.node });
+      document.querySelectorAll('.node-card').forEach(c => c.classList.toggle('current', c === card));
+      toast('已切换到 ' + card.dataset.node, 'ok');
+    } catch (err) { toast(friendlyError(err), 'err'); }
+  });
+  $('btn-test-all').onclick = async () => {
+    const btns = [...$('node-grid').querySelectorAll('.node-test')];
+    if (!btns.length) return;
+    toast('正在测速（' + btns.length + ' 个节点）…', 'ok');
+    for (const btn of btns) {
+      await testNode(btn);
+    }
+  };
+}
+
+/* ---------- 订阅功能安装/激活（设置页） ---------- */
+async function refreshSubFeature() {
+  let st;
+  try { st = await invoke('subscription_status'); } catch (e) { return; }
+  const statusEl = $('sub-install-status');
+  const installBtn = $('btn-install-kernel');
+  if (!st.supported) {
+    statusEl.textContent = '当前平台不支持';
+    installBtn.disabled = true;
+    $('btn-activate-sub').disabled = true;
+    return;
+  }
+  statusEl.textContent = st.installed ? (st.version ? '已安装（' + st.version + '）' : '已安装') : '未安装';
+  installBtn.innerHTML = AgIcon('download', 13) + (st.installed ? ' 重新下载内核' : ' 下载并安装内核');
+  $('btn-activate-sub').disabled = !st.installed;
+}
+function initSubFeature() {
+  $('btn-install-kernel').onclick = async (e) => {
+    const btn = e.target.closest('button');
+    btn.disabled = true;
+    const old = btn.innerHTML;
+    btn.innerHTML = AgIcon('download', 13) + ' 下载校验中…';
+    try {
+      await invoke('install_kernel');
+      toast('内核安装完成', 'ok');
+      refreshSubFeature();
+    } catch (err) { toast(friendlyError(err), 'err'); }
+    finally { btn.disabled = false; btn.innerHTML = old; }
+  };
+  $('btn-activate-sub').onclick = async () => {
+    try {
+      await invoke('activate_subscription_feature', { enabled: true });
+      applySubFeature(true);
+      toast('订阅功能已激活', 'ok');
+      switchView('subscription');
+    } catch (err) { toast(friendlyError(err), 'err'); }
+  };
+  $('btn-deactivate-sub').onclick = async () => {
+    try {
+      await invoke('activate_subscription_feature', { enabled: false });
+      applySubFeature(false);
+      toast('订阅功能已停用', 'ok');
+    } catch (err) { toast(friendlyError(err), 'err'); }
   };
 }
 
@@ -980,6 +1121,48 @@ async function loadSettings() {
   };
 }
 
+/* ================= 标题栏（折叠 / 更多菜单 / 关于） ================= */
+const LINKS = {
+  docs: 'https://anet.icen.ai',
+  issue: 'https://github.com/icen-ai/agile-net/issues',
+  update: 'https://github.com/icen-ai/agile-net/releases',
+  github: 'https://github.com/icen-ai/agile-net',
+};
+function openLink(url) {
+  if (TAURI) { TAURI.core.invoke('open_url', { url }).catch(() => {}); }
+  else window.open(url, '_blank', 'noopener');
+}
+function initTitlebarExtra() {
+  // 侧栏折叠（记忆）
+  if (localStorage.getItem('ag_sidebar') === 'collapsed') document.body.classList.add('collapsed');
+  $('btn-collapse').onclick = () => {
+    const collapsed = document.body.classList.toggle('collapsed');
+    localStorage.setItem('ag_sidebar', collapsed ? 'collapsed' : '');
+  };
+  // 更多菜单（点外部关闭）
+  const menu = $('more-menu');
+  $('btn-more').onclick = (e) => {
+    e.stopPropagation();
+    menu.style.display = menu.style.display === 'none' ? 'block' : 'none';
+  };
+  document.addEventListener('click', (e) => {
+    if (!e.target.closest('#more-menu') && !e.target.closest('#btn-more')) menu.style.display = 'none';
+  });
+  // 菜单与关于弹窗动作
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-more]');
+    if (!btn) return;
+    const act = btn.dataset.more;
+    menu.style.display = 'none';
+    if (act === 'about') {
+      $('about-modal').style.display = 'flex';
+    } else if (LINKS[act]) {
+      openLink(LINKS[act]);
+    }
+  });
+  $('about-close').onclick = () => { $('about-modal').style.display = 'none'; };
+}
+
 /* ================= 视图导航 & 窗口控制 ================= */
 function switchView(v) {
   document.querySelectorAll('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.view === v));
@@ -987,7 +1170,8 @@ function switchView(v) {
   if (v === 'nodes' || v === 'routes') refreshNodes();
   if (v === 'connect') refreshCreds();
   if (v === 'subscription') { refreshSubs(); refreshSubStatus(); }
-  if (v === 'settings') refreshSysproxy();
+  if (v === 'proxy') { refreshSubs(); refreshGroups(); }
+  if (v === 'settings') { refreshSysproxy(); refreshSubFeature(); }
 }
 function initTitlebar() {
   if (!TAURI || !TAURI.window) return;
@@ -1055,7 +1239,8 @@ window.addEventListener('DOMContentLoaded', async () => {
   }
 
   initTitlebar();
-  if (TAURI && TAURI.app) { TAURI.app.getVersion().then(v => { const el = $('ver'); if (el) el.textContent = v; }).catch(() => {}); }
+  initTitlebarExtra();
+  if (TAURI && TAURI.app) { TAURI.app.getVersion().then(v => { const el = $('ver'); if (el) el.textContent = v; const av = $('about-ver'); if (av) av.textContent = v; }).catch(() => {}); }
   $('btn-import').onclick = (e) => importUrl($('connect-url').value, e.target);
   $('btn-import-hero').onclick = (e) => importUrl($('connect-url-hero').value, e.target);
   $('btn-paste').onclick = pasteFromClipboard;
@@ -1104,6 +1289,8 @@ window.addEventListener('DOMContentLoaded', async () => {
   await loadSettings();
   await initRoles();
   initSubscription();
+  initSubFeature();
+  refreshSubFeature();
   initSysproxy();
   refreshSubs();
   refreshSubStatus();
