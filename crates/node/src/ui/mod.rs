@@ -21,6 +21,7 @@ const ADMIN_HTML: &str = r#"<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AgileNet 控制台</title>
+<script>try{document.documentElement.dataset.theme=localStorage.getItem('ag_theme')||'light'}catch(e){}</script>
 <style>
 :root {
   --bg: #EDEDED; --bg2: #F4F4F4; --panel: #F8F8F8; --panel2: #FFFFFF;
@@ -133,7 +134,8 @@ tr:hover td { background: var(--row-hover); }
 @keyframes slidein { from { transform: translateX(30px); opacity: 0; } to { transform: none; opacity: 1; } }
 
 #login-view { display: flex; height: 100vh; align-items: center; justify-content: center; }
-.login-card { background: var(--panel2); border: 1px solid var(--border); border-radius: 16px; padding: 34px; width: 360px; box-shadow: var(--shadow); }
+.login-card { position: relative; background: var(--panel2); border: 1px solid var(--border); border-radius: 16px; padding: 34px; width: 360px; box-shadow: var(--shadow); }
+#login-theme-btn { position: absolute; top: 12px; right: 12px; padding: 6px 8px; }
 .login-card .logo { width: 40px; height: 40px; border-radius: 11px; margin-bottom: 14px; }
 .login-card h1 { color: var(--text-strong); font-size: 19px; margin-bottom: 4px; }
 .login-card p { color: var(--dim2); font-size: 13px; margin-bottom: 18px; }
@@ -155,6 +157,7 @@ canvas.chart { width: 100%; height: 220px; }
 
 <div id="login-view">
   <div class="login-card">
+    <button class="ghost small" id="login-theme-btn" onclick="toggleTheme()" title="切换主题"></button>
     <div class="logo"><i data-ic="zap" data-sz="22"></i></div>
     <h1>AgileNet</h1>
     <p>企业级网络穿透与代理链路由 · 管理控制台</p>
@@ -1031,6 +1034,8 @@ function applyTheme() {
   document.documentElement.dataset.theme = t;
   const btn = $('theme-btn');
   if (btn) btn.innerHTML = ic(t === 'dark' ? 'sun' : 'moon', 14) + (t === 'dark' ? '浅色' : '深色');
+  const lb = $('login-theme-btn');
+  if (lb) lb.innerHTML = ic(t === 'dark' ? 'sun' : 'moon', 15);
 }
 function toggleTheme() {
   localStorage.setItem('ag_theme', (localStorage.getItem('ag_theme') || 'light') === 'dark' ? 'light' : 'dark');

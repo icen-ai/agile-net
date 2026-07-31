@@ -116,6 +116,8 @@ function applyLanguage() { LANG = localStorage.getItem('ag_lang') || 'zh'; refre
 function applyTheme() {
   document.documentElement.dataset.theme = localStorage.getItem('ag_theme') || 'light';
 }
+// 解析即应用，避免首帧浅色闪烁（与 wiki / 控制台行为一致）
+applyTheme();
 
 function esc(s) {
   return String(s ?? '').replace(/[&<>"'`]/g, c => ({
@@ -800,6 +802,37 @@ window.addEventListener('DOMContentLoaded', async () => {
     $('login-ok').onclick = webLogin;
     $('login-pass').addEventListener('keydown', e => { if (e.key === 'Enter') webLogin(); });
     if (!httpToken) { showLogin(); return; }
+  }
+
+  // 卸载：仅桌面端（Windows 安装版）展示；浏览器远程面与 Android 隐藏
+  const unCard = $('btn-uninstall') && $('btn-uninstall').closest('.card');
+  if (HTTP_MODE || /Android/i.test(navigator.userAgent)) {
+    if (unCard) unCard.style.display = 'none';
+  } else {
+    $('btn-uninstall').onclick = () => { $('uninstall-modal').style.display = 'flex'; };
+    $('un-cancel').onclick = () => { $('uninstall-modal').style.display = 'none'; };
+    $('un-ok').onclick = async () => {
+      const prefs = $('un-prefs').checked;
+      $('un-ok').disabled = true;
+      $('un-ok').textContent = '正在卸载…';
+      if (prefs) localStorage.clear();
+      try {
+        await invoke('uninstall_app', {
+          options: {
+            credentials: $('un-creds').checked,
+            serverData: $('un-server').checked,
+            prefs,
+            audit: $('un-audit').checked,
+          },
+        });
+        // 后端随即退出进程并拉起系统卸载程序，此处无需再处理
+      } catch (err) {
+        $('un-ok').disabled = false;
+        $('un-ok').textContent = '卸载';
+        $('uninstall-modal').style.display = 'none';
+        toast(friendlyError(err), 'err');
+      }
+    };
   }
 
   initTitlebar();

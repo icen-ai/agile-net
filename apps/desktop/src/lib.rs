@@ -667,6 +667,98 @@ async fn restore_web_role(app: &tauri::AppHandle) {
     }
 }
 
+// ==================== 卸载 ====================
+
+/// 卸载清理选项（勾选哪些本地数据随卸载一并删除）
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct UninstallOptions {
+    /// 已保存的节点与凭据（credentials.json）
+    pub credentials: bool,
+    /// 服务端节点数据（embedded-node/：数据库与证书）
+    pub server_data: bool,
+    /// 配置与偏好（gui-settings.json / web-auth.json；主题语言由前端清 localStorage）
+    pub prefs: bool,
+    /// 审计日志（gui-audit.jsonl）
+    pub audit: bool,
+}
+
+/// 卸载应用：记审计 → 停机释放文件锁 → 清理所选数据 → 关闭自启 → 拉起系统卸载程序并退出。
+#[tauri::command]
+async fn uninstall_app(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    options: UninstallOptions,
+) -> Result<(), String> {
+    roles::audit(
+        "gui.uninstall",
+        serde_json::json!({
+            "credentials": options.credentials,
+            "server_data": options.server_data,
+            "prefs": options.prefs,
+            "audit": options.audit,
+        }),
+    );
+
+    // 停掉内嵌节点 / Web 远程面 / 全部隧道（释放 SQLite 与端口占用）
+    if let Some(s) = state.server.lock().await.take() {
+        s.stop().await;
+    }
+    if let Some(h) = state.web_api.lock().await.take() {
+        h.stop().await;
+    }
+    state.client.disconnect_all().await;
+    state.client.stop_proxy().await;
+
+    // 卸载必做：移除开机自启
+    {
+        use tauri_plugin_autostart::ManagerExt;
+        let _ = app.autolaunch().disable();
+    }
+
+    let dir = roles::data_dir();
+    if options.credentials {
+        let _ = std::fs::remove_file(dir.join("credentials.json"));
+    }
+    if options.prefs {
+        let _ = std::fs::remove_file(dir.join("gui-settings.json"));
+        let _ = std::fs::remove_file(dir.join("web-auth.json"));
+    }
+    if options.audit {
+        let _ = std::fs::remove_file(dir.join("gui-audit.jsonl"));
+    }
+    if options.server_data {
+        let _ = std::fs::remove_dir_all(roles::embedded_dir());
+    }
+
+    launch_system_uninstaller()?;
+    app.exit(0);
+    Ok(())
+}
+
+/// 拉起系统卸载程序（Windows NSIS：安装目录 uninstall.exe，自带确认页，
+/// 用户确认时本进程已退出，可正常删除安装目录）。
+#[cfg(windows)]
+fn launch_system_uninstaller() -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(map_err)?;
+    let uninstaller = exe
+        .parent()
+        .map(|p| p.join("uninstall.exe"))
+        .unwrap_or_default();
+    if !uninstaller.exists() {
+        return Err("未找到系统卸载程序（数据已按所选清理；便携版请手动删除应用目录）".into());
+    }
+    std::process::Command::new(uninstaller)
+        .spawn()
+        .map_err(map_err)?;
+    Ok(())
+}
+
+/// 非 Windows 桌面平台无系统卸载程序：数据已清理，提示用户手动移除应用本体。
+#[cfg(not(windows))]
+fn launch_system_uninstaller() -> Result<(), String> {
+    Err("数据已按所选清理；请将应用本体移入废纸篓/删除以完成卸载".into())
+}
+
 /// 构建系统托盘（显示窗口 / 代理开关 / 退出）
 fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     use tauri::menu::{MenuBuilder, MenuItemBuilder};
@@ -770,6 +862,7 @@ pub fn run() {
             open_node_console,
             open_upstream_console,
             set_server_connector,
+            uninstall_app,
         ])
         .setup(|app| {
             setup_tray(app)?;

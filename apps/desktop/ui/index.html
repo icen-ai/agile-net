@@ -210,6 +210,13 @@
         </div>
       </div>
       <div class="card">
+        <h3><i data-ic="trash-2"></i>卸载</h3>
+        <div class="row" style="justify-content:space-between">
+          <span class="hint">从这台电脑移除 AgileNet，可选择保留或清理本地数据</span>
+          <button id="btn-uninstall" class="danger">卸载 AgileNet</button>
+        </div>
+      </div>
+      <div class="card">
         <h3><i data-ic="zap"></i>关于</h3>
         <div class="kv"><span class="k">版本</span><span>v<span id="ver">-</span></span></div>
         <div class="hint">关闭主窗口将最小化到系统托盘，右键托盘图标可退出</div>
@@ -245,6 +252,24 @@
     <div class="row" style="justify-content:flex-end;margin-top:14px">
       <button id="pwd-cancel" class="ghost">取消</button>
       <button id="pwd-ok">确认并继续</button>
+    </div>
+  </div>
+</div>
+
+<!-- 卸载确认弹窗（多选清理项，确认后调系统卸载程序并退出） -->
+<div class="modal-mask" id="uninstall-modal" style="display:none">
+  <div class="modal">
+    <h3><i data-ic="trash-2" data-sz="16"></i> 卸载 AgileNet</h3>
+    <div class="hint" style="margin:6px 0 12px">应用退出后由系统卸载程序完成移除。请选择要一并清理的本地数据：</div>
+    <div class="row col" style="gap:10px">
+      <label class="chk"><input type="checkbox" id="un-creds" checked> 已保存的节点与凭据</label>
+      <label class="chk"><input type="checkbox" id="un-server" checked> 服务端节点数据（数据库与证书）</label>
+      <label class="chk"><input type="checkbox" id="un-prefs" checked> 配置与偏好（角色设置、Web 密码、主题语言）</label>
+      <label class="chk"><input type="checkbox" id="un-audit"> 审计日志</label>
+    </div>
+    <div class="row" style="justify-content:flex-end;margin-top:14px">
+      <button id="un-cancel" class="ghost">取消</button>
+      <button id="un-ok" class="danger">卸载</button>
     </div>
   </div>
 </div>
