@@ -35,7 +35,8 @@ const MAX_BACKOFF: Duration = Duration::from_secs(60);
 pub struct ClientTunnel {
     upstream_addr: SocketAddr,
     account_id: String,
-    tunnel_token: String,
+    /// tunnel_token（登录/刷新时服务端轮换，重连必须用最新值）
+    tunnel_token: std::sync::Arc<std::sync::RwLock<String>>,
     tls_connector: TlsConnector,
     sni_hostname: String,
     session: Arc<Mutex<Option<Arc<MuxSession>>>>,
@@ -56,7 +57,7 @@ impl ClientTunnel {
         Ok(Self {
             upstream_addr,
             account_id: account_id.into(),
-            tunnel_token: tunnel_token.into(),
+            tunnel_token: std::sync::Arc::new(std::sync::RwLock::new(tunnel_token.into())),
             tls_connector: TlsConnector::from(client_config),
             sni_hostname: tls_builder.sni_hostname,
             session: Arc::new(Mutex::new(None)),
@@ -126,7 +127,7 @@ impl ClientTunnel {
 
         let auth_req = AuthRequest {
             node_id: self.account_id.clone(),
-            token: self.tunnel_token.clone(),
+            token: self.tunnel_token.read().unwrap_or_else(|e| e.into_inner()).clone(),
             kind: AuthKind::Client,
             advertise: Vec::new(),
             version: PROTOCOL_VERSION,
@@ -276,6 +277,11 @@ impl ClientTunnel {
 
         self.state
             .store(ConnectionState::Disconnected as u8, Ordering::Relaxed);
+    }
+
+    /// 服务端轮换后的新 tunnel_token（刷新时调用，供下次重连使用）。
+    pub fn update_token(&self, new_token: String) {
+        *self.tunnel_token.write().unwrap_or_else(|e| e.into_inner()) = new_token;
     }
 
     /// 断开隧道。

@@ -62,6 +62,13 @@ connect(params)
 - 服务端按小时聚合到 `traffic_log`（stats API / 控制台图表数据源）
 - 响应 `force_disconnect: true`（账号被禁用/删除）时客户端主动断开该节点
 
+## 离线缓存与断网降级
+
+- 每次成功拉取配置后写入 `~/.agile-net/cache/<节点>.json`（0600）：规则、版本、隧道端点、tunnel_token、refresh_token
+- 节点网络不可达时自动降级：**沿用缓存规则组网**（状态 Reconnecting），隧道自动重连，
+  后台每 30s(+抖动) 重试登录；恢复后无缝升级为完整连接并刷新缓存
+- token 刷新时同步轮换缓存与隧道的 tunnel_token（修复刷新后重连失同步）
+
 ## hosts 管理
 
 `manage_hosts=true` 的节点，其 `resolve=true` 的 host 规则写入系统 hosts

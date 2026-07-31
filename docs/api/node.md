@@ -242,6 +242,28 @@ Token 全文仅创建时返回，列出时只显示前缀。
 
 ---
 
+## GET `/api/v1/admin/node/metrics`
+
+Prometheus 文本格式指标导出（admin 认证）。
+
+### 响应 200
+
+```
+# HELP agilenet_uptime_seconds Node uptime
+agilenet_uptime_seconds 86400
+agilenet_peers 2
+agilenet_online_clients 5
+agilenet_peer_bytes{node_id="node-b",direction="up"} 1048576
+agilenet_proxy_active_connections 15
+agilenet_rules_total 8
+...
+```
+
+指标：`uptime`、`peers`、`online_clients`、`peer_bytes{node_id,direction}`、
+`proxy_active/total_connections`、`proxy_bytes{direction}`、`accounts_total/disabled`、`rules_total`。
+
+---
+
 ## POST `/api/v1/admin/node/kick`
 
 强制断开指定下游节点会话（kick）。被踢节点将按其退避策略自动重连；

@@ -3,7 +3,19 @@
   --border: #1f2c4d; --border2: #2a3c68;
   --text: #e6edf7; --dim: #8b9bb8; --dim2: #5c6c8f;
   --accent: #4f8cff; --accent2: #2563eb; --ok: #22c55e; --warn: #f59e0b; --danger: #ef4444;
+  --gray: #64748b; --gray-bg: rgba(100,116,139,.15);
 }
+html[data-theme="light"] {
+  --bg: #f1f5f9; --bg2: #e2e8f0; --panel: #ffffff;
+  --border: #cbd5e1; --border2: #94a3b8;
+  --text: #0f172a; --dim: #475569; --dim2: #94a3b8;
+  --accent: #2563eb; --accent2: #1d4ed8; --ok: #16a34a; --warn: #d97706; --danger: #dc2626;
+  --gray: #94a3b8; --gray-bg: rgba(100,116,139,.12);
+}
+html[data-theme="light"] body { background: var(--bg); }
+html[data-theme="light"] .node-card { background: var(--bg2); }
+html[data-theme="light"] input { background: var(--bg); }
+html[data-theme="light"] .hero-step { background: var(--panel); }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body { background: var(--bg); color: var(--text); font: 14px/1.55 -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
 button { font: inherit; cursor: pointer; border: none; border-radius: 8px; padding: 8px 14px; background: var(--accent); color: #fff; transition: .15s; }
@@ -58,10 +70,23 @@ main { max-width: 860px; margin: 0 auto; padding: 20px; }
 .node-card .info { flex: 1; }
 .node-card .name { font-weight: 600; }
 .node-card .addr { color: var(--dim); font-size: 12px; }
+/* 断开/不可达：整卡灰色降饱和 */
+.node-card.down { opacity: .55; filter: saturate(.4); border-style: dashed; }
+/* 部分网络不可达告警条 */
+.net-banner { display: flex; align-items: center; gap: 8px; background: rgba(245,158,11,.12); border: 1px solid rgba(245,158,11,.4); color: var(--warn); border-radius: 8px; padding: 10px 14px; margin-bottom: 14px; font-size: 13px; }
 .badge { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 11px; font-weight: 600; }
 .b-ok { background: rgba(34,197,94,.15); color: var(--ok); }
 .b-off { background: rgba(239,68,68,.15); color: var(--danger); }
 .b-warn { background: rgba(245,158,11,.15); color: var(--warn); }
+.b-gray { background: var(--gray-bg); color: var(--gray); }
+/* 路由行状态点 */
+.rdot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+.rdot.ok { background: var(--ok); }
+.rdot.warn { background: var(--warn); animation: pulse 1.2s infinite; }
+.rdot.down { background: var(--gray); }
+/* 语言/主题切换 */
+.lang-theme { display: flex; gap: 10px; margin-top: 8px; }
+.lang-theme select { background: var(--bg2); border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: 6px 10px; }
 
 /* 状态脉冲动画（连接中/重连中） */
 .pulse { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--warn); margin-right: 4px; animation: pulse 1.2s infinite; }

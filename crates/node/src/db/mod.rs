@@ -11,14 +11,14 @@ use argon2::{
     password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
 };
 use models::*;
-use rusqlite::{Connection, params};
+use r2d2_sqlite::SqliteConnectionManager;
+use rusqlite::params;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
 use tracing::info;
 
 #[derive(Clone)]
 pub struct Database {
-    conn: Arc<Mutex<Connection>>,
+    pool: r2d2::Pool<SqliteConnectionManager>,
 }
 
 /// 当前 Schema 版本（递增，新迁移追加到 MIGRATIONS 尾部）。
@@ -127,37 +127,40 @@ const MIGRATIONS: &[(u32, &str, &str)] = &[(
 )];
 
 impl Database {
-    /// 打开数据库并执行迁移
+    /// 打开数据库并执行迁移（WAL 模式 + 读连接池，写操作经 busy_timeout 串行）。
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let conn = Connection::open(path).map_err(db_err)?;
-        conn.pragma_update(None, "journal_mode", "WAL")
-            .map_err(db_err)?;
-        conn.pragma_update(None, "foreign_keys", "ON")
-            .map_err(db_err)?;
-        conn.pragma_update(None, "busy_timeout", 5000)
-            .map_err(db_err)?;
-
-        let db = Self {
-            conn: Arc::new(Mutex::new(conn)),
-        };
+        let manager = SqliteConnectionManager::file(path.as_ref()).with_init(|conn| {
+            conn.pragma_update(None, "journal_mode", "WAL")?;
+            conn.pragma_update(None, "foreign_keys", "ON")?;
+            conn.pragma_update(None, "busy_timeout", 5000)?;
+            Ok(())
+        });
+        let pool = r2d2::Pool::builder()
+            .max_size(8)
+            .build(manager)
+            .map_err(|e| Error::Other(e.to_string()))?;
+        let db = Self { pool };
         db.migrate()?;
         Ok(db)
     }
 
-    /// 内存数据库（测试专用）
+    /// 内存数据库（测试专用，单连接保证共享状态）
     pub fn in_memory() -> Result<Self> {
-        let conn = Connection::open_in_memory().map_err(db_err)?;
-        conn.pragma_update(None, "foreign_keys", "ON")
-            .map_err(db_err)?;
-        let db = Self {
-            conn: Arc::new(Mutex::new(conn)),
-        };
+        let manager = SqliteConnectionManager::memory().with_init(|conn| {
+            conn.pragma_update(None, "foreign_keys", "ON")?;
+            Ok(())
+        });
+        let pool = r2d2::Pool::builder()
+            .max_size(1)
+            .build(manager)
+            .map_err(|e| Error::Other(e.to_string()))?;
+        let db = Self { pool };
         db.migrate()?;
         Ok(db)
     }
 
-    fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
-        self.conn.lock().unwrap_or_else(|e| e.into_inner())
+    fn conn(&self) -> r2d2::PooledConnection<SqliteConnectionManager> {
+        self.pool.get().expect("db pool exhausted")
     }
 
     /// 执行版本化迁移

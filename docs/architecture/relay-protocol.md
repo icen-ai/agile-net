@@ -50,9 +50,19 @@ Length = 1 (type) + 4 (channel) + N (payload)，不含自身 4 字节。
 | 0x12 | OpenFail | 双向 | 空 |
 | 0x20 | Data | 双向 | 原始数据（≤16KB 分片） |
 | 0x21 | DataFin | 双向 | 空（半关闭） |
+| 0x22 | WindowUpdate | 双向 | u32 BE：对端已消费字节数（v2 流控） |
 | 0x30 | Ping | 双向 | 空 |
 | 0x31 | Pong | 双向 | 空 |
 | 0x40 | Close | 双向 | 空 |
+
+## Per-channel 窗口流控（协议 v2）
+
+- 每条通道写方持有额度信号量（初始窗口 **1 MiB**），写数据即扣减
+- 读方每消费 **≥512 KiB** 回发 `WindowUpdate` 补充额度
+- 额度耗尽的通道仅自身挂起——**大流量通道不再队头阻塞同会话其他通道**
+- 会话级 mpsc 背压仍保留为最后防线
+- **版本协商**：`AuthRequest.version` 与 `AuthOk {"version":2}` 双向声明；
+  对端为 v1 时自动降级为无流控模式（行为与旧版一致）
 
 ### 帧大小安全限制
 

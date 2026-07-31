@@ -7,7 +7,7 @@ use axum::{
     Json,
     extract::{Query, State, ws::{Message, WebSocket, WebSocketUpgrade}},
     http::StatusCode,
-    response::Response,
+    response::{IntoResponse, Response},
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -33,6 +33,11 @@ pub async fn status(
                 "tls": true,
                 "connected_connectors": l.peer_count(),
                 "peers": l.list_peers(),
+                "peer_traffic": l.peer_traffic().into_iter().map(|(id, out, inn)| json!({
+                    "node_id": id,
+                    "bytes_up": out,
+                    "bytes_down": inn,
+                })).collect::<Vec<_>>(),
                 "online_clients": l.online_client_count(),
             }),
             l.online_client_count() as i64,
@@ -276,6 +281,56 @@ pub async fn kick_peer(
             format!("peer {} not connected", req.node_id),
         )
     }
+}
+
+/// Prometheus 格式指标导出（admin 认证）。
+pub async fn metrics(AdminAuth(_): AdminAuth, State(state): State<ApiState>) -> Response {
+    let db = &state.db;
+    let mut out = String::new();
+    let uptime = state.runtime.uptime_secs();
+    let rule_count = db.list_rules(1, 1, None, None).map(|(_, t)| t).unwrap_or(0);
+    let (acc_total, acc_disabled) = db.account_stats().unwrap_or((0, 0));
+
+    out.push_str("# HELP agilenet_uptime_seconds Node uptime\n# TYPE agilenet_uptime_seconds gauge\n");
+    out.push_str(&format!("agilenet_uptime_seconds {uptime}\n"));
+    out.push_str("# HELP agilenet_rules_total Configured routing rules\n# TYPE agilenet_rules_total gauge\n");
+    out.push_str(&format!("agilenet_rules_total {rule_count}\n"));
+    out.push_str("# HELP agilenet_accounts_total Client accounts\n# TYPE agilenet_accounts_total gauge\n");
+    out.push_str(&format!("agilenet_accounts_total {acc_total}\nagilenet_accounts_disabled {acc_disabled}\n"));
+
+    if let Some(l) = &state.runtime.listener {
+        out.push_str("# HELP agilenet_peers Connected downstream nodes\n# TYPE agilenet_peers gauge\n");
+        out.push_str(&format!("agilenet_peers {}\n", l.peer_count()));
+        out.push_str("# HELP agilenet_online_clients Online client tunnels\n# TYPE agilenet_online_clients gauge\n");
+        out.push_str(&format!("agilenet_online_clients {}\n", l.online_client_count()));
+        out.push_str("# HELP agilenet_peer_bytes Peer data-plane traffic\n# TYPE agilenet_peer_bytes counter\n");
+        for (id, up, down) in l.peer_traffic() {
+            out.push_str(&format!("agilenet_peer_bytes{{node_id=\"{id}\",direction=\"up\"}} {up}\n"));
+            out.push_str(&format!("agilenet_peer_bytes{{node_id=\"{id}\",direction=\"down\"}} {down}\n"));
+        }
+    }
+    if let Some(stats) = &state.runtime.proxy_stats {
+        use std::sync::atomic::Ordering::Relaxed;
+        out.push_str("# HELP agilenet_proxy_connections Proxy inbound connections\n# TYPE agilenet_proxy_connections gauge\n");
+        out.push_str(&format!(
+            "agilenet_proxy_active_connections {}\nagilenet_proxy_total_connections {}\n",
+            stats.active_connections.load(Relaxed),
+            stats.total_connections.load(Relaxed)
+        ));
+        out.push_str("# HELP agilenet_proxy_bytes Proxy inbound traffic\n# TYPE agilenet_proxy_bytes counter\n");
+        out.push_str(&format!(
+            "agilenet_proxy_bytes{{direction=\"up\"}} {}\nagilenet_proxy_bytes{{direction=\"down\"}} {}\n",
+            stats.bytes_up.load(Relaxed),
+            stats.bytes_down.load(Relaxed)
+        ));
+    }
+
+    (
+        StatusCode::OK,
+        [(axum::http::header::CONTENT_TYPE, "text/plain; version=0.0.4")],
+        out,
+    )
+        .into_response()
 }
 
 /// WebSocket 实时事件流（节点/客户端上下线 + 30s 统计快照）。

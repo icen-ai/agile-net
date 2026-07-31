@@ -27,6 +27,12 @@ const ADMIN_HTML: &str = r#"<!DOCTYPE html>
   --accent: #4f8cff; --accent2: #2563eb; --ok: #22c55e; --warn: #f59e0b; --danger: #ef4444;
   --radius: 10px;
 }
+html[data-theme="light"] {
+  --bg: #f1f5f9; --bg2: #e2e8f0; --panel: #ffffff; --panel2: #f8fafc;
+  --border: #cbd5e1; --border2: #94a3b8;
+  --text: #0f172a; --dim: #475569; --dim2: #94a3b8;
+  --accent: #2563eb; --accent2: #1d4ed8; --ok: #16a34a; --warn: #d97706; --danger: #dc2626;
+}
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html,body { height: 100%; }
 body { background: var(--bg); color: var(--text); font: 14px/1.55 -apple-system, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif; }
@@ -144,7 +150,10 @@ canvas.chart { width: 100%; height: 220px; }
     <div class="nav-item" data-view="settings" onclick="switchView('settings')">⚙️ 节点设置</div>
     <div class="sidebar-footer">
       <div id="me-info">-</div>
-      <div style="margin-top:8px"><button class="ghost small" onclick="doLogout()">退出登录</button></div>
+      <div style="margin-top:8px;display:flex;gap:6px">
+        <button class="ghost small" onclick="toggleTheme()" id="theme-btn">☀️ 浅色</button>
+        <button class="ghost small" onclick="doLogout()">退出登录</button>
+      </div>
     </div>
   </aside>
   <main class="main" id="view"></main>
@@ -916,8 +925,21 @@ async function changePassword() {
   } catch(e) { toast(e.message, 'err'); }
 }
 
+/* ================= 主题切换 ================= */
+function applyTheme() {
+  const t = localStorage.getItem('ag_theme') || 'dark';
+  document.documentElement.dataset.theme = t;
+  const btn = $('theme-btn');
+  if (btn) btn.textContent = t === 'dark' ? '☀️ 浅色' : '🌙 深色';
+}
+function toggleTheme() {
+  localStorage.setItem('ag_theme', (localStorage.getItem('ag_theme') || 'dark') === 'dark' ? 'light' : 'dark');
+  applyTheme();
+}
+
 /* ================= 启动 ================= */
 window.addEventListener('DOMContentLoaded', () => {
+  applyTheme();
   $('login-pass').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
   $('login-user').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
   if (S.access) { enterApp(); }

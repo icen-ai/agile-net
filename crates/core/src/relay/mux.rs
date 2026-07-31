@@ -274,6 +274,9 @@ pub struct MuxSession {
     reader_abort: tokio::task::AbortHandle,
     /// 是否启用 per-channel 流控（对端为协议 v2 时启用）
     flow_control: bool,
+    /// 数据面流量计数（Data 帧 payload 字节）
+    bytes_out: Arc<AtomicU64>,
+    bytes_in: Arc<AtomicU64>,
 }
 
 impl MuxSession {
@@ -295,10 +298,16 @@ impl MuxSession {
         let channels: Arc<DashMap<u32, ChannelEntry>> = Arc::new(DashMap::new());
         let open_waiters: Arc<DashMap<u32, oneshot::Sender<Result<()>>>> = Arc::new(DashMap::new());
         let last_activity = Arc::new(AtomicU64::new(now_millis()));
+        let bytes_out = Arc::new(AtomicU64::new(0));
+        let bytes_in = Arc::new(AtomicU64::new(0));
 
         // 启动后台写任务
+        let bytes_out_task = bytes_out.clone();
         tokio::spawn(async move {
             while let Some(frame) = rx_frames.recv().await {
+                if frame.frame_type == FrameType::Data {
+                    bytes_out_task.fetch_add(frame.payload.len() as u64, Ordering::Relaxed);
+                }
                 if frame.write_to(&mut writer).await.is_err() {
                     break;
                 }
@@ -310,12 +319,16 @@ impl MuxSession {
         let open_waiters_task = open_waiters.clone();
         let last_activity_task = last_activity.clone();
         let tx_frames_task = tx_frames.clone();
+        let bytes_in_task = bytes_in.clone();
 
         let reader_handle = tokio::spawn(async move {
             while let Ok(frame) = Frame::read_from(&mut reader).await {
                 last_activity_task.store(now_millis(), Ordering::Relaxed);
                 match frame.frame_type {
                     FrameType::Data | FrameType::DataFin => {
+                        if frame.frame_type == FrameType::Data {
+                            bytes_in_task.fetch_add(frame.payload.len() as u64, Ordering::Relaxed);
+                        }
                         if let Some(entry) = channels_task.get(&frame.channel_id) {
                             let _ = entry.data_tx.send(frame.payload).await;
                         }
@@ -376,6 +389,8 @@ impl MuxSession {
             last_activity,
             reader_abort,
             flow_control,
+            bytes_out,
+            bytes_in,
         });
 
         (session, reader_handle)
@@ -392,6 +407,14 @@ impl MuxSession {
     /// 是否启用 per-channel 流控。
     pub fn flow_control_enabled(&self) -> bool {
         self.flow_control
+    }
+
+    /// 数据面流量计数（出向字节, 入向字节）。
+    pub fn traffic(&self) -> (u64, u64) {
+        (
+            self.bytes_out.load(Ordering::Relaxed),
+            self.bytes_in.load(Ordering::Relaxed),
+        )
     }
 
     fn new_credit(&self) -> Option<Arc<Semaphore>> {

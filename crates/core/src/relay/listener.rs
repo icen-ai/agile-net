@@ -30,12 +30,12 @@ use tracing::{debug, info, warn};
 
 /// TLS 握手 + 认证必须在该时间内完成。
 pub const AUTH_TIMEOUT: Duration = Duration::from_secs(10);
-/// 最大并发连接数（含未认证）。
-pub const MAX_CONNECTIONS: usize = 1024;
-/// 最大待认证连接数。
-pub const MAX_PENDING_AUTH: usize = 256;
-/// 同一 IP 在 60s 窗口内允许的最大认证失败次数（超限直接丢弃连接）。
-pub const MAX_AUTH_FAILURES_PER_MINUTE: u32 = 20;
+/// 默认最大并发连接数（含未认证）。
+pub const DEFAULT_MAX_CONNECTIONS: usize = 1024;
+/// 默认最大待认证连接数。
+pub const DEFAULT_MAX_PENDING_AUTH: usize = 256;
+/// 默认同一 IP 在 60s 窗口内允许的最大认证失败次数。
+pub const DEFAULT_MAX_AUTH_FAILURES_PER_MINUTE: u32 = 20;
 
 /// 认证通过后的主体身份。
 #[derive(Debug, Clone)]
@@ -151,6 +151,9 @@ pub struct RelayListener {
     active_connections: Arc<AtomicUsize>,
     pending_auth: Arc<AtomicUsize>,
     auth_attempts: Arc<DashMap<IpAddr, (u32, Instant)>>,
+    max_connections: usize,
+    max_pending_auth: usize,
+    max_auth_failures_per_minute: u32,
 }
 
 impl RelayListener {
@@ -197,7 +200,23 @@ impl RelayListener {
             active_connections: Arc::new(AtomicUsize::new(0)),
             pending_auth: Arc::new(AtomicUsize::new(0)),
             auth_attempts: Arc::new(DashMap::new()),
+            max_connections: DEFAULT_MAX_CONNECTIONS,
+            max_pending_auth: DEFAULT_MAX_PENDING_AUTH,
+            max_auth_failures_per_minute: DEFAULT_MAX_AUTH_FAILURES_PER_MINUTE,
         }
+    }
+
+    /// 覆盖默认限流参数（对应 agile-net.toml [limits]）。
+    pub fn with_limits(
+        mut self,
+        max_connections: usize,
+        max_pending_auth: usize,
+        max_auth_failures_per_minute: u32,
+    ) -> Self {
+        self.max_connections = max_connections;
+        self.max_pending_auth = max_pending_auth;
+        self.max_auth_failures_per_minute = max_auth_failures_per_minute;
+        self
     }
 
     pub fn listen_addr(&self) -> SocketAddr {
@@ -258,6 +277,17 @@ impl RelayListener {
         count
     }
 
+    /// 各下游节点的数据面流量统计（node_id, 出向字节, 入向字节）。
+    pub fn peer_traffic(&self) -> Vec<(String, u64, u64)> {
+        self.peers
+            .iter()
+            .map(|p| {
+                let (out, inn) = p.value().mux.traffic();
+                (p.key().clone(), out, inn)
+            })
+            .collect()
+    }
+
     /// 按 token 哈希强制断开下游节点会话（吊销 relay token 时调用）。
     /// 返回被断开的节点 ID（若在线）。
     pub fn disconnect_by_token_hash(&self, token_hash: &str) -> Option<String> {
@@ -306,7 +336,7 @@ impl RelayListener {
 
             // 并发连接上限：超限直接丢弃
             let current = self.active_connections.fetch_add(1, Ordering::Relaxed) + 1;
-            if current > MAX_CONNECTIONS {
+            if current > self.max_connections {
                 self.active_connections.fetch_sub(1, Ordering::Relaxed);
                 warn!(peer = %peer_addr, "connection limit reached, dropping");
                 drop(stream);
@@ -338,7 +368,7 @@ impl RelayListener {
             return false;
         };
         let (count, window_start) = *entry.value();
-        window_start.elapsed() <= Duration::from_secs(60) && count > MAX_AUTH_FAILURES_PER_MINUTE
+        window_start.elapsed() <= Duration::from_secs(60) && count > self.max_auth_failures_per_minute
     }
 
     /// 记录一次认证失败。
@@ -361,7 +391,7 @@ impl RelayListener {
     async fn handle_connection(self: &Arc<Self>, stream: TcpStream, peer_addr: SocketAddr) -> Result<()> {
         // 待认证连接上限
         let pending = self.pending_auth.fetch_add(1, Ordering::Relaxed) + 1;
-        if pending > MAX_PENDING_AUTH {
+        if pending > self.max_pending_auth {
             self.pending_auth.fetch_sub(1, Ordering::Relaxed);
             return Err(Error::Protocol("too many pending auth connections".into()));
         }

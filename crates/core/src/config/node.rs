@@ -32,6 +32,46 @@ pub struct NodeConfig {
 
     /// ACME 自动证书配置（Let's Encrypt，TLS-ALPN-01）
     pub acme: Option<AcmeConfig>,
+
+    /// 文件日志配置
+    pub log: Option<LogConfig>,
+
+    /// 安全限流配置
+    pub limits: Option<LimitsConfig>,
+}
+
+/// 文件日志配置。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LogConfig {
+    /// 日志目录（配置后启用按天滚动文件日志）
+    #[serde(default = "default_log_dir")]
+    pub dir: String,
+    /// 文件名前缀
+    #[serde(default = "default_log_prefix")]
+    pub prefix: String,
+}
+
+/// 安全限流配置（数据面与 API 面）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LimitsConfig {
+    /// Relay 最大并发连接数
+    #[serde(default = "default_max_connections")]
+    pub max_connections: usize,
+    /// Relay 最大待认证连接数
+    #[serde(default = "default_max_pending_auth")]
+    pub max_pending_auth: usize,
+    /// Relay 认证失败限流（次/分钟/IP）
+    #[serde(default = "default_auth_failures")]
+    pub auth_failures_per_minute: u32,
+    /// 登录限流（次/分钟/IP）
+    #[serde(default = "default_login_per_minute")]
+    pub login_per_minute: u32,
+    /// 连续失败锁定阈值
+    #[serde(default = "default_lock_threshold")]
+    pub login_lock_threshold: u32,
+    /// 锁定时长（分钟）
+    #[serde(default = "default_lock_minutes")]
+    pub login_lock_minutes: u32,
 }
 
 /// ACME 自动证书配置。
@@ -152,6 +192,8 @@ impl Default for NodeConfig {
             connector: None,
             proxy: None,
             acme: None,
+            log: None,
+            limits: None,
         }
     }
 }
@@ -204,4 +246,36 @@ fn default_acme_cert_path() -> String {
 
 fn default_acme_key_path() -> String {
     "certs/acme-key.pem".into()
+}
+
+fn default_log_dir() -> String {
+    "logs".into()
+}
+
+fn default_log_prefix() -> String {
+    "agile-net".into()
+}
+
+fn default_max_connections() -> usize {
+    1024
+}
+
+fn default_max_pending_auth() -> usize {
+    256
+}
+
+fn default_auth_failures() -> u32 {
+    20
+}
+
+fn default_login_per_minute() -> u32 {
+    5
+}
+
+fn default_lock_threshold() -> u32 {
+    5
+}
+
+fn default_lock_minutes() -> u32 {
+    15
 }

@@ -54,6 +54,26 @@ addr = "127.0.0.1:1080"
 # renew_days = 30                  # 到期前 30 天自动续期
 # cert_path = "certs/acme-cert.pem"
 # key_path = "certs/acme-key.pem"
+
+# 管理 API HTTPS（可省略；配置后 API 以 HTTPS 提供，可复用 ACME 证书）
+# [api]
+# addr = "0.0.0.0:9090"
+# tls_cert_path = "certs/acme-cert.pem"
+# tls_key_path = "certs/acme-key.pem"
+
+# 文件日志（可省略；按天滚动）
+# [log]
+# dir = "logs"
+# prefix = "agile-net"
+
+# 安全限流（可省略，值为默认值）
+# [limits]
+# max_connections = 1024          # Relay 最大并发连接
+# max_pending_auth = 256          # Relay 最大待认证连接
+# auth_failures_per_minute = 20   # Relay 认证失败限流
+# login_per_minute = 5            # 登录限流
+# login_lock_threshold = 5        # 连续失败锁定阈值
+# login_lock_minutes = 15         # 锁定时长
 ```
 
 ## 环境变量

@@ -38,29 +38,55 @@ async fn main() -> Result<()> {
         return run_tui(db).map_err(Into::into);
     }
 
-    // 日志（同时写入内存环形缓冲，供 /admin/node/logs 查询）
+    // 1. 先加载配置文件（决定文件日志目标；解析失败直接输出到 stderr）
+    let config_path = args
+        .get(1)
+        .cloned()
+        .unwrap_or_else(|| "agile-net.toml".into());
+    let config = match load_config(&config_path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("failed to load config {config_path}: {e}");
+            return Err(e);
+        }
+    };
+
+    // 2. 日志初始化（内存环形缓冲 + stdout + 可选文件日志）
     let log_buffer = LogBuffer::new();
-    tracing_subscriber::registry()
+    let registry = tracing_subscriber::registry()
         .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
         .with(
             tracing_subscriber::fmt::layer()
                 .with_target(false)
                 .compact(),
         )
-        .with(LogBufferLayer::new(log_buffer.clone()))
-        .init();
+        .with(LogBufferLayer::new(log_buffer.clone()));
+
+    let log_dir = std::env::var("AGILE_LOG_DIR")
+        .ok()
+        .or_else(|| config.log.as_ref().map(|l| l.dir.clone()));
+    if let Some(dir) = &log_dir {
+        std::fs::create_dir_all(dir).ok();
+        let prefix = config
+            .log
+            .as_ref()
+            .map(|l| l.prefix.clone())
+            .unwrap_or_else(|| "agile-net".to_string());
+        let file_appender = tracing_appender::rolling::daily(dir, format!("{prefix}.log"));
+        let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
+        std::mem::forget(guard); // 进程生命周期内保持写入器存活
+        registry
+            .with(tracing_subscriber::fmt::layer().with_writer(non_blocking).with_ansi(false))
+            .init();
+        tracing::info!(dir = %dir, "file logging enabled (daily rolling)");
+    } else {
+        registry.init();
+    }
 
     // rustls 过程级 CryptoProvider（ring）——任何 ServerConfig/ClientConfig 构建前必须安装
     agile_net_core::init_crypto_provider();
 
     tracing::info!("agile-net-node v{VERSION} starting");
-
-    // 1. 加载配置文件
-    let config_path = args
-        .get(1)
-        .cloned()
-        .unwrap_or_else(|| "agile-net.toml".into());
-    let config = load_config(&config_path)?;
     tracing::info!(name = %config.name, "node config loaded");
 
     // 2. 初始化数据库
@@ -154,7 +180,17 @@ async fn main() -> Result<()> {
             tokio_rustls::TlsAcceptor::from(Arc::new(server_config))
         };
 
-        let listener = Arc::new(RelayListener::with_validator(addr, validator, tls_acceptor));
+        let listener = {
+            let l = RelayListener::with_validator(addr, validator, tls_acceptor);
+            match &config.limits {
+                Some(lim) => Arc::new(l.with_limits(
+                    lim.max_connections,
+                    lim.max_pending_auth,
+                    lim.auth_failures_per_minute,
+                )),
+                None => Arc::new(l),
+            }
+        };
         let l = listener.clone();
         tokio::spawn(async move {
             if let Err(e) = l.start().await {
@@ -292,7 +328,17 @@ async fn main() -> Result<()> {
         .and_then(|a| a.rsplit(':').next()?.parse().ok())
         .unwrap_or(9090);
 
-    let state = ApiState::new(db.clone(), jwt, runtime, public_host, api_port, relay_port);
+    let state = {
+        let mut st = ApiState::new(db.clone(), jwt, runtime, public_host, api_port, relay_port);
+        if let Some(lim) = &config.limits {
+            st.login_limiter = st.login_limiter.clone().with_config(
+                lim.login_per_minute,
+                lim.login_lock_threshold,
+                lim.login_lock_minutes,
+            );
+        }
+        st
+    };
     let app = create_app(state).merge(create_ui_router());
 
     let api_listen_addr = std::env::var("API_LISTEN").unwrap_or_else(|_| config.api.addr.clone());

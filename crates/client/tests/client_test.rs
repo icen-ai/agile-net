@@ -259,6 +259,40 @@ async fn disconnect_removes_routes() {
     assert!(!router.matches_target("127.0.0.1"));
 }
 
+/// 配置离线缓存：保存/读取/删除
+#[test]
+fn config_cache_roundtrip() {
+    let dir = std::env::temp_dir().join(format!("agile-cache-test-{}", uuid::Uuid::new_v4()));
+    let cache = agile_net_client::ConfigCache::with_dir(dir.clone());
+    let cfg = agile_net_client::CachedNodeConfig {
+        addr: "node-a:9090".into(),
+        username: "user1".into(),
+        node_name: "节点A".into(),
+        rules: vec![agile_net_client::ClientRule {
+            id: "r1".into(),
+            rule_type: "ip-cidr".into(),
+            value: "10.0.0.0/8".into(),
+            resolve: false,
+        }],
+        config_version: 7,
+        tunnel_server: "node-a".into(),
+        tunnel_port: 4430,
+        tunnel_token: "tun_x".into(),
+        refresh_token: "rt_y".into(),
+        insecure: true,
+        pinned_fingerprint: None,
+        updated_at: "now".into(),
+    };
+    cache.save(&cfg);
+    let loaded = cache.load("node-a:9090", "user1").unwrap();
+    assert_eq!(loaded.config_version, 7);
+    assert_eq!(loaded.rules.len(), 1);
+    assert_eq!(loaded.node_name, "节点A");
+    cache.remove("node-a:9090", "user1");
+    assert!(cache.load("node-a:9090", "user1").is_none());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// 凭据持久化与读取（文件权限收紧）
 #[tokio::test]
 async fn credentials_persist() {

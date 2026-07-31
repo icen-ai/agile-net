@@ -15,6 +15,7 @@
 </header>
 
 <main>
+  <div id="net-banner" class="net-banner" style="display:none"></div>
   <!-- 空状态引导（未连接任何节点时显示） -->
   <section id="onboarding" class="hero" style="display:none">
     <div class="hero-logo">⚡</div>
@@ -96,7 +97,17 @@
       <label class="chk"><input type="checkbox" id="s-autostart"> 开机自动启动 AgileNet</label>
       <label class="chk"><input type="checkbox" id="s-autoproxy" checked> 连接节点后自动启动本地代理</label>
       <label class="chk"><input type="checkbox" id="s-autoreconnect" checked> 启动应用时自动重连已保存节点</label>
-      <div class="hint">关闭主窗口将最小化到系统托盘，右键托盘图标可退出</div>
+      <div class="lang-theme">
+        <select id="s-lang">
+          <option value="zh">中文</option>
+          <option value="en">English</option>
+        </select>
+        <select id="s-theme">
+          <option value="dark">🌙 深色</option>
+          <option value="light">☀️ 浅色</option>
+        </select>
+      </div>
+      <div class="hint" data-i18n="hint-tray">关闭主窗口将最小化到系统托盘，右键托盘图标可退出</div>
     </div>
   </section>
 </main>

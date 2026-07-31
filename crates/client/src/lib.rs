@@ -13,7 +13,7 @@ use agile_net_core::tunnel::client_tunnel::ClientTunnel;
 use agile_net_core::tunnel::opener::ChannelOpener;
 use agile_net_core::tunnel::tls::TlsConfigBuilder;
 
-use anyhow::{Context as _, Result, anyhow};
+use anyhow::{Result, anyhow};
 use arc_swap::ArcSwap;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
@@ -77,6 +77,8 @@ struct NodeHandle {
     tunnel: Arc<ClientTunnel>,
     tasks: Vec<tokio::task::JoinHandle<()>>,
     manage_hosts: bool,
+    /// 原始连接参数（断网降级后重试登录用）
+    params: ConnectParams,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -174,6 +176,83 @@ fn home_dir() -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from("."))
 }
 
+// ==================== 配置离线缓存 ====================
+
+/// 节点配置缓存（断网沿用旧规则：docs/architecture/config-file.md 承诺）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CachedNodeConfig {
+    pub addr: String,
+    pub username: String,
+    pub node_name: String,
+    pub rules: Vec<ClientRule>,
+    pub config_version: u64,
+    pub tunnel_server: String,
+    pub tunnel_port: u16,
+    pub tunnel_token: String,
+    pub refresh_token: String,
+    pub insecure: bool,
+    pub pinned_fingerprint: Option<String>,
+    pub updated_at: String,
+}
+
+/// 缓存目录（~/.agile-net/cache/），文件权限 0600。
+pub struct ConfigCache {
+    dir: PathBuf,
+}
+
+impl ConfigCache {
+    pub fn new() -> Result<Self> {
+        let dir = home_dir().join(".agile-net").join("cache");
+        std::fs::create_dir_all(&dir)?;
+        Ok(Self { dir })
+    }
+
+    /// 指定缓存目录（主要用于测试与降级兜底）
+    pub fn with_dir(dir: PathBuf) -> Self {
+        std::fs::create_dir_all(&dir).unwrap();
+        Self { dir }
+    }
+
+    fn key_for(addr: &str, username: &str) -> String {
+        let raw = format!("{addr}|{username}");
+        raw.chars()
+            .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+            .collect()
+    }
+
+    fn path_for(&self, addr: &str, username: &str) -> PathBuf {
+        self.dir.join(format!("{}.json", Self::key_for(addr, username)))
+    }
+
+    pub fn save(&self, cfg: &CachedNodeConfig) {
+        let path = self.path_for(&cfg.addr, &cfg.username);
+        if let Ok(data) = serde_json::to_string_pretty(cfg) {
+            let _ = std::fs::write(&path, data);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+            }
+        }
+    }
+
+    pub fn load(&self, addr: &str, username: &str) -> Option<CachedNodeConfig> {
+        let path = self.path_for(addr, username);
+        let data = std::fs::read_to_string(path).ok()?;
+        serde_json::from_str(&data).ok()
+    }
+
+    pub fn remove(&self, addr: &str, username: &str) {
+        let _ = std::fs::remove_file(self.path_for(addr, username));
+    }
+}
+
+impl Default for ConfigCache {
+    fn default() -> Self {
+        Self::new().expect("create config cache dir")
+    }
+}
+
 // ==================== 客户端引擎 ====================
 
 /// 共享内部状态（后台任务通过 Arc 安全访问）。
@@ -189,6 +268,8 @@ struct ClientInner {
     hosts_manager: HostsManager,
     /// 代理入站统计（代理启动后可用）
     proxy_stats: Arc<arc_swap::ArcSwapOption<agile_net_core::proxy::inbound::ProxyStats>>,
+    /// 节点配置离线缓存
+    cache: Arc<ConfigCache>,
 }
 
 impl ClientInner {
@@ -281,6 +362,7 @@ impl AgileNetClient {
                 openers: Arc::new(DashMap::new()),
                 hosts_manager: HostsManager::new(),
                 proxy_stats: Arc::new(arc_swap::ArcSwapOption::from_pointee(None)),
+                cache: Arc::new(ConfigCache::new().unwrap_or_else(|_| ConfigCache::with_dir(std::env::temp_dir()))),
             }),
         }
     }
@@ -301,8 +383,8 @@ impl AgileNetClient {
     pub async fn connect(&self, params: ConnectParams) -> Result<NodeState> {
         let base_url = api_base_url(&params.addr);
 
-        // 1. 登录
-        let resp = self
+        // 1. 登录（网络不可达时尝试离线缓存降级）
+        let resp = match self
             .inner
             .http_client
             .post(format!("{base_url}/api/v1/auth/login"))
@@ -312,7 +394,13 @@ impl AgileNetClient {
             }))
             .send()
             .await
-            .context("login request failed")?;
+        {
+            Ok(r) => r,
+            Err(e) => {
+                // 网络错误 → 离线缓存降级（断网沿用旧规则 + 后台重试）
+                return self.connect_offline(params, e).await;
+            }
+        };
         if !resp.status().is_success() {
             return Err(anyhow!("login failed: HTTP {}", resp.status()));
         }
@@ -346,7 +434,7 @@ impl AgileNetClient {
         let tunnel = Arc::new(ClientTunnel::with_tls_builder(
             tunnel_addr,
             account_id,
-            tunnel_token,
+            tunnel_token.clone(),
             tls_builder,
         )?);
         tunnel.connect().await?;
@@ -392,11 +480,28 @@ impl AgileNetClient {
             version,
         ));
 
+        // 5. 写入离线缓存（断网时沿用）
+        self.inner.cache.save(&CachedNodeConfig {
+            addr: params.addr.clone(),
+            username: params.username.clone(),
+            node_name: node_name.clone(),
+            rules: state.rules.clone(),
+            config_version: version,
+            tunnel_server,
+            tunnel_port,
+            tunnel_token: tunnel_token.clone(),
+            refresh_token: refresh_token.clone(),
+            insecure: params.insecure,
+            pinned_fingerprint: params.pinned_fingerprint.clone(),
+            updated_at: chrono_now(),
+        });
+
         let handle = NodeHandle {
             state: state.clone(),
             tunnel,
             tasks,
             manage_hosts: params.manage_hosts,
+            params: params.clone(),
         };
         self.inner.nodes.insert(node_id.clone(), handle);
         self.inner
@@ -407,6 +512,75 @@ impl AgileNetClient {
         self.inner.rebuild_merged_router();
 
         info!(node = %node_id, "node connected");
+        Ok(state)
+    }
+
+    /// 离线降级：网络不可达时沿用缓存规则组网，后台周期重试登录。
+    async fn connect_offline(&self, params: ConnectParams, net_err: reqwest::Error) -> Result<NodeState> {
+        let cached = self
+            .inner
+            .cache
+            .load(&params.addr, &params.username)
+            .ok_or_else(|| anyhow!("无法连接节点且无离线缓存: {net_err}"))?;
+
+        warn!(
+            addr = %params.addr,
+            "节点不可达，启用离线缓存（{} 条规则，缓存于 {}）",
+            cached.rules.len(),
+            cached.updated_at
+        );
+
+        let node_id = format!("{}@{}", cached.node_name, params.addr);
+        let tunnel_addr: SocketAddr = resolve_addr(&cached.tunnel_server, cached.tunnel_port).await?;
+        let tls_builder = build_tls(&params)?;
+        let account_id = cached.username.clone();
+        let tunnel = Arc::new(ClientTunnel::with_tls_builder(
+            tunnel_addr,
+            account_id,
+            cached.tunnel_token.clone(),
+            tls_builder,
+        )?);
+        // 隧道重连任务（token 可能已过期，但服务端未轮换前仍可用）
+        tunnel.connect().await.ok();
+
+        self.inner
+            .openers
+            .insert(node_id.clone(), tunnel.clone() as Arc<dyn ChannelOpener>);
+
+        let state = NodeState {
+            node_id: node_id.clone(),
+            addr: params.addr.clone(),
+            node_name: cached.node_name.clone(),
+            status: NodeStatus::Reconnecting,
+            rules: cached.rules.clone(),
+            config_version: cached.config_version,
+        };
+
+        let mut tasks = Vec::new();
+        {
+            let t = tunnel.clone();
+            tasks.push(tokio::spawn(async move {
+                t.run().await;
+            }));
+        }
+        // 后台登录重试：恢复在线后无缝升级
+        tasks.push(spawn_offline_retry(self.inner.clone(), node_id.clone(), params.clone()));
+
+        let handle = NodeHandle {
+            state: state.clone(),
+            tunnel,
+            tasks,
+            manage_hosts: params.manage_hosts,
+            params: params.clone(),
+        };
+        self.inner.nodes.insert(node_id.clone(), handle);
+        self.inner
+            .node_order
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(node_id.clone());
+        self.inner.rebuild_merged_router();
+
         Ok(state)
     }
 
@@ -548,6 +722,97 @@ async fn pull_config(
     Ok(json["data"].clone())
 }
 
+/// 离线降级后的登录重试：恢复在线后无缝升级为完整连接。
+fn spawn_offline_retry(
+    inner: Arc<ClientInner>,
+    node_id: String,
+    params: ConnectParams,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            let jitter = (std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .subsec_millis()
+                % 10000) as u64;
+            tokio::time::sleep(std::time::Duration::from_secs(30) + std::time::Duration::from_millis(jitter)).await;
+
+            match offline_relogin_once(&inner, &node_id, &params).await {
+                Ok(()) => {
+                    info!(node = %node_id, "offline node reconnected, upgraded to full connection");
+                    break;
+                }
+                Err(e) => {
+                    debug!(node = %node_id, error = %e, "offline relogin attempt failed");
+                }
+            }
+        }
+    })
+}
+
+/// 离线状态下的一次完整重登：成功则更新令牌/规则/缓存/状态。
+async fn offline_relogin_once(
+    inner: &Arc<ClientInner>,
+    node_id: &str,
+    params: &ConnectParams,
+) -> Result<()> {
+    let base_url = api_base_url(&params.addr);
+    let http = &inner.http_client;
+
+    let resp = http
+        .post(format!("{base_url}/api/v1/auth/login"))
+        .json(&serde_json::json!({
+            "username": params.username,
+            "password": params.password,
+        }))
+        .send()
+        .await?;
+    if !resp.status().is_success() {
+        return Err(anyhow!("login failed: HTTP {}", resp.status()));
+    }
+    let login_json: serde_json::Value = resp.json().await?;
+    let data = &login_json["data"];
+    let access_token = data["access_token"].as_str().ok_or_else(|| anyhow!("no access_token"))?.to_string();
+    let refresh_token = data["refresh_token"].as_str().unwrap_or_default().to_string();
+    let tunnel_token = data["tunnel_token"].as_str().ok_or_else(|| anyhow!("no tunnel_token"))?.to_string();
+
+    let config = pull_config(http, &base_url, &access_token, 0).await?;
+    let version = config["version"].as_u64().unwrap_or(0);
+    let rules = parse_rules(&config);
+
+    // 更新句柄：令牌轮换 + 规则 + 状态 + 缓存
+    let Some(mut handle) = inner.nodes.get_mut(node_id) else {
+        return Err(anyhow!("node gone"));
+    };
+    handle.tunnel.update_token(tunnel_token.clone());
+    handle.state.rules = rules.clone();
+    handle.state.config_version = version;
+    handle.state.status = NodeStatus::Connected;
+    let node_name = handle.state.node_name.clone();
+    let (tunnel_server, tunnel_port) = (
+        config["tunnel"]["server"].as_str().unwrap_or("").to_string(),
+        config["tunnel"]["port"].as_u64().unwrap_or(443) as u16,
+    );
+    drop(handle);
+
+    inner.cache.save(&CachedNodeConfig {
+        addr: params.addr.clone(),
+        username: params.username.clone(),
+        node_name,
+        rules,
+        config_version: version,
+        tunnel_server,
+        tunnel_port,
+        tunnel_token,
+        refresh_token,
+        insecure: params.insecure,
+        pinned_fingerprint: params.pinned_fingerprint.clone(),
+        updated_at: chrono_now(),
+    });
+    inner.rebuild_merged_router();
+    Ok(())
+}
+
 fn spawn_heartbeat(
     http: reqwest::Client,
     stats_slot: Arc<arc_swap::ArcSwapOption<agile_net_core::proxy::inbound::ProxyStats>>,
@@ -656,6 +921,21 @@ fn spawn_config_watcher(
                                 .as_str()
                                 .unwrap_or(refresh.as_str())
                                 .to_string();
+                            // 服务端轮换了 tunnel_token → 同步给隧道供下次重连
+                            if let Some(new_tun) = json["data"]["tunnel_token"].as_str()
+                                && let Some(h) = inner.nodes.get(&node_id)
+                            {
+                                h.tunnel.update_token(new_tun.to_string());
+                            }
+                            // 刷新缓存中的 refresh_token
+                            if let Some(h) = inner.nodes.get(&node_id) {
+                                let p = &h.params;
+                                if let Some(mut cached) = inner.cache.load(&p.addr, &p.username) {
+                                    cached.refresh_token = refresh.clone();
+                                    cached.updated_at = chrono_now();
+                                    inner.cache.save(&cached);
+                                }
+                            }
                         }
                     }
                     _ => {
@@ -687,6 +967,14 @@ fn spawn_config_watcher(
 }
 
 // ==================== 辅助函数 ====================
+
+fn chrono_now() -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    format!("{now}")
+}
 
 fn api_base_url(addr: &str) -> String {
     if addr.starts_with("http://") || addr.starts_with("https://") {

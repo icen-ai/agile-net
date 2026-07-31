@@ -578,7 +578,10 @@ async fn cmd_login(api: Option<String>, args: LoginArgs) -> Result<()> {
         }
     };
     let password = match args.password {
-        Some(p) => p,
+        Some(p) => {
+            eprintln!("⚠️  提示：通过命令行参数传递密码会留在 shell 历史中，建议使用交互式输入（省略 -p）");
+            p
+        }
         None => rpassword::prompt_password("密码: ").context("读取密码失败")?,
     };
 

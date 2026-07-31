@@ -133,6 +133,9 @@ impl ApiState {
 #[derive(Clone)]
 pub struct LoginRateLimiter {
     inner: Arc<DashMap<IpAddr, LoginAttempts>>,
+    max_per_minute: u32,
+    lock_threshold: u32,
+    lock_duration: Duration,
 }
 
 struct LoginAttempts {
@@ -143,14 +146,21 @@ struct LoginAttempts {
 }
 
 impl LoginRateLimiter {
-    const MAX_PER_MINUTE: u32 = 5;
-    const LOCK_THRESHOLD: u32 = 5;
-    const LOCK_DURATION: Duration = Duration::from_secs(15 * 60);
-
     pub fn new() -> Self {
         Self {
             inner: Arc::new(DashMap::new()),
+            max_per_minute: 5,
+            lock_threshold: 5,
+            lock_duration: Duration::from_secs(15 * 60),
         }
+    }
+
+    /// 覆盖默认限流参数（对应 agile-net.toml [limits]）。
+    pub fn with_config(mut self, max_per_minute: u32, lock_threshold: u32, lock_minutes: u32) -> Self {
+        self.max_per_minute = max_per_minute.max(1);
+        self.lock_threshold = lock_threshold.max(1);
+        self.lock_duration = Duration::from_secs(lock_minutes.max(1) as u64 * 60);
+        self
     }
 
     /// 检查是否允许尝试登录（限流 + 锁定判定）。
@@ -176,7 +186,7 @@ impl LoginRateLimiter {
             e.attempts = 0;
         }
         e.attempts += 1;
-        if e.attempts > Self::MAX_PER_MINUTE {
+        if e.attempts > self.max_per_minute {
             return Err(LoginBlockReason::RateLimited);
         }
         Ok(())
@@ -192,8 +202,8 @@ impl LoginRateLimiter {
         });
         let e = entry.value_mut();
         e.failures += 1;
-        if e.failures >= Self::LOCK_THRESHOLD {
-            e.locked_until = Some(Instant::now() + Self::LOCK_DURATION);
+        if e.failures >= self.lock_threshold {
+            e.locked_until = Some(Instant::now() + self.lock_duration);
         }
     }
 
@@ -339,6 +349,7 @@ pub fn create_app(state: ApiState) -> Router {
         .route("/api/v1/admin/node/stats", get(handlers::node::stats))
         .route("/api/v1/admin/node/logs", get(handlers::node::logs))
         .route("/api/v1/admin/node/settings", put(handlers::node::update_settings))
+        .route("/api/v1/admin/node/metrics", get(handlers::node::metrics))
         .route("/api/v1/admin/node/kick", post(handlers::node::kick_peer))
         .route(
             "/api/v1/admin/node/relay-tokens",

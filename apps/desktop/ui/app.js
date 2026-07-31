@@ -10,6 +10,42 @@ const PREFS = {
   set autoreconnect(v) { localStorage.setItem('ag_autoreconnect', v ? '1' : '0'); },
 };
 
+/* ================= i18n & 主题 ================= */
+const I18N = {
+  zh: {
+    'st-connected': '已连接', 'st-connecting': '连接中', 'st-reconnecting': '重连中', 'st-disconnected': '已断开',
+    'st-unreachable': '不可达', 'st-degraded': '部分网络不可达',
+    'banner-degraded': '节点 {name} 网络不可达，正在自动重连…',
+    'banner-down': '节点 {name} 已离线，其网段当前不可达',
+    'proxy-running': '代理运行中', 'proxy-stopped': '代理未启动',
+    'reconnecting-nodes': '正在自动重连 {n} 个已保存节点…',
+    'connected-toast': '已连接 {name}（下发规则 {n} 条）',
+    'proxy-on': '代理已启动', 'proxy-off': '代理已停止',
+    'err-need-url': '请粘贴接入链接', 'err-bad-url': '链接格式不正确，应以 agilenet://connect? 开头',
+    'clip-ok': '已识别剪贴板中的接入链接', 'clip-none': '剪贴板中没有接入链接', 'clip-fail': '无法读取剪贴板',
+    'disconnected': '已断开', 'no-nodes': '尚未连接节点', 'no-rules': '无生效规则', 'no-creds': '无保存的凭据',
+  },
+  en: {
+    'st-connected': 'Connected', 'st-connecting': 'Connecting', 'st-reconnecting': 'Reconnecting', 'st-disconnected': 'Disconnected',
+    'st-unreachable': 'Unreachable', 'st-degraded': 'Some networks unreachable',
+    'banner-degraded': 'Node {name} unreachable, reconnecting…',
+    'banner-down': 'Node {name} is offline; its networks are unreachable',
+    'proxy-running': 'Proxy running', 'proxy-stopped': 'Proxy stopped',
+    'reconnecting-nodes': 'Reconnecting {n} saved nodes…',
+    'connected-toast': 'Connected {name} ({n} rules)',
+    'proxy-on': 'Proxy started', 'proxy-off': 'Proxy stopped',
+    'err-need-url': 'Please paste a connect URL', 'err-bad-url': 'Invalid URL: must start with agilenet://connect?',
+    'clip-ok': 'Connect URL detected in clipboard', 'clip-none': 'No connect URL in clipboard', 'clip-fail': 'Cannot read clipboard',
+    'disconnected': 'Disconnected', 'no-nodes': 'No nodes connected', 'no-rules': 'No active rules', 'no-creds': 'No saved credentials',
+  },
+};
+let LANG = localStorage.getItem('ag_lang') || 'zh';
+const T = (k) => (I18N[LANG] && I18N[LANG][k]) || I18N.zh[k] || k;
+function applyLanguage() { LANG = localStorage.getItem('ag_lang') || 'zh'; refreshNodes(); refreshProxy(); }
+function applyTheme() {
+  document.documentElement.dataset.theme = localStorage.getItem('ag_theme') || 'dark';
+}
+
 function esc(s) {
   return String(s ?? '').replace(/[&<>"'`]/g, c => ({
     '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;','`':'&#96;'
@@ -75,13 +111,14 @@ function statusBadgeHtml(s) {
 function renderMergedRules(nodes) {
   const rows = [];
   for (const n of nodes) {
+    const dot = n.status === 'Connected' ? 'ok' : (n.status === 'Disconnected' ? 'down' : 'warn');
     for (const r of (n.rules || [])) {
-      rows.push('<tr><td><span class="badge b-ok">' + esc(r.type) + '</span></td>' +
+      rows.push('<tr><td><span class="rdot ' + dot + '"></span><span class="badge b-ok">' + esc(r.type) + '</span></td>' +
         '<td class="mono">' + esc(r.value) + '</td>' +
         '<td style="color:var(--dim)">' + esc(n.node_name) + '</td></tr>');
     }
   }
-  $('rules-body').innerHTML = rows.join('') || '<tr><td colspan="3" class="empty">无生效规则</td></tr>';
+  $('rules-body').innerHTML = rows.join('') || '<tr><td colspan="3" class="empty">' + T('no-rules') + '</td></tr>';
 }
 
 async function disconnectNode(nodeId) {
@@ -103,7 +140,7 @@ async function connectWith(input, btn) {
   }
   try {
     const st = await invoke('connect_node', { input });
-    toast('已连接 ' + st.node_name + '（下发规则 ' + st.rules.length + ' 条）', 'ok');
+    toast(T('connected-toast').replace('{name}', st.node_name).replace('{n}', st.rules.length), 'ok');
     // 连接成功后按需自动启动代理
     if (PREFS.autoproxy) {
       try {
@@ -132,8 +169,8 @@ async function connectWith(input, btn) {
 /* ================= 接入链接导入 ================= */
 async function importUrl(url, btn) {
   url = (url || '').trim();
-  if (!url) { toast('请粘贴接入链接', 'err'); return; }
-  if (!url.startsWith('agilenet://connect?')) { toast('链接格式不正确，应以 agilenet://connect? 开头', 'err'); return; }
+  if (!url) { toast(T('err-need-url'), 'err'); return; }
+  if (!url.startsWith('agilenet://connect?')) { toast(T('err-bad-url'), 'err'); return; }
   try {
     const input = await invoke('parse_connect_url', { url });
     await connectWith(input, btn);
@@ -146,13 +183,13 @@ async function pasteFromClipboard() {
     if (text && text.trim().startsWith('agilenet://connect?')) {
       $('connect-url-hero') && ($('connect-url-hero').value = text.trim());
       $('connect-url') && ($('connect-url').value = text.trim());
-      toast('已识别剪贴板中的接入链接', 'ok');
+      toast(T('clip-ok'), 'ok');
       await importUrl(text, null);
     } else {
-      toast('剪贴板中没有接入链接', 'err');
+      toast(T('clip-none'), 'err');
     }
   } catch (e) {
-    toast('无法读取剪贴板', 'err');
+    toast(T('clip-fail'), 'err');
   }
 }
 
@@ -161,9 +198,19 @@ async function refreshProxy() {
   try {
     const st = await invoke('proxy_status');
     $('proxy-dot').className = 'dot ' + (st.running ? 'on' : 'off');
-    $('proxy-text').textContent = st.running ? ('代理运行中 127.0.0.1:' + st.port) : '代理未启动';
-    $('btn-proxy-toggle').textContent = st.running ? '停止代理' : '启动代理';
+    $('proxy-text').textContent = st.running ? (T('proxy-running') + ' 127.0.0.1:' + st.port) : T('proxy-stopped');
+    $('btn-proxy-toggle').textContent = st.running ? T('proxy-off') : '启动代理';
     $('proxy-hint').textContent = st.running ? '系统/应用代理指向 127.0.0.1:' + st.port + ' 即可' : '';
+    // 顶栏徽章：有节点降级时黄色提示
+    const nodes = await invoke('list_nodes').catch(() => []);
+    const degraded = nodes.some(n => n.status !== 'Connected');
+    if (nodes.length && degraded) {
+      $('proxy-dot').className = 'dot on';
+      $('proxy-dot').style.background = 'var(--warn)';
+      $('proxy-text').textContent = T('st-degraded');
+    } else {
+      $('proxy-dot').style.background = '';
+    }
   } catch (e) {}
 }
 async function toggleProxy() {
@@ -261,6 +308,11 @@ window.addEventListener('DOMContentLoaded', async () => {
   $('btn-refresh').onclick = refreshNodes;
 
   await loadSettings();
+  $('s-lang').value = localStorage.getItem('ag_lang') || 'zh';
+  $('s-theme').value = localStorage.getItem('ag_theme') || 'dark';
+  $('s-lang').onchange = (e) => { localStorage.setItem('ag_lang', e.target.value); applyLanguage(); };
+  $('s-theme').onchange = (e) => { localStorage.setItem('ag_theme', e.target.value); applyTheme(); };
+  applyTheme();
   refreshNodes();
   refreshProxy();
   await refreshCreds();
@@ -269,7 +321,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   if (PREFS.autoreconnect && window._creds) {
     const keys = Object.keys(window._creds);
     if (keys.length) {
-      toast('正在自动重连 ' + keys.length + ' 个已保存节点…', 'ok');
+      toast(T('reconnecting-nodes').replace('{n}', keys.length), 'ok');
       for (const key of keys) {
         await reconnectSaved(key, null);
       }

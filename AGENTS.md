@@ -38,9 +38,9 @@
      let _ = rustls::crypto::ring::default_provider().install_default();
      ```
 2. **数据库与 API**：
-   - 数据库交互统一封装在 `crates/node/src/db/`（基于 `rusqlite`），版本化迁移见 `MIGRATIONS`。
+   - 数据库交互统一封装在 `crates/node/src/db/`（`r2d2_sqlite` 连接池：file 池 8 / memory 池 1，WAL 模式），版本化迁移见 `MIGRATIONS`。
    - 包含的表：`admin`, `rule`, `group`, `group_rule`, `account`, `relay_token`, `node_config`, `audit_log`, `traffic_log`, `refresh_token`。
-   - API 路由定义在 `crates/node/src/api/`（基于 `axum`），管理接口强制 `AdminAuth` 提取器（admin 角色）、客户端接口强制 `ClientAuth`；响应统一 `{code, data}` / `{code, message}` 信封，错误码遵循 `docs/api/overview.md`。
+   - API 路由定义在 `crates/node/src/api/`（基于 `axum`，可配内置 HTTPS），管理接口强制 `AdminAuth` 提取器（admin 角色）、客户端接口强制 `ClientAuth`；响应统一 `{code, data}` / `{code, message}` 信封，错误码遵循 `docs/api/overview.md`。
 3. **安全硬化**：
    - 用户与客户端账号密码统一采用 `argon2id`（64MB/t=3/p=4）加密哈希，严禁明文存储。
    - 账号密码/Relay Token 由服务端生成（`sk-`/`psk_`/`tun_` + 48 位），明文仅创建时返回一次，数据库只存 argon2id 或 SHA-256 哈希。
