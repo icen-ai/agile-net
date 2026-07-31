@@ -33,6 +33,11 @@ html[data-theme="dark"] {
 html, body { height: 100%; overflow: hidden; }
 body { background: var(--bg); color: var(--text); font: 14px/1.55 -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; display: flex; flex-direction: column; }
 
+/* 原生化：全局禁文本选择（输入框与等宽数据除外），禁拖拽 */
+body { user-select: none; -webkit-user-select: none; }
+input, textarea, .mono { user-select: text; -webkit-user-select: text; }
+img, a { -webkit-user-drag: none; }
+
 /* 细滚动条（overlay 风格，轨道透明） */
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-thumb { background: var(--scroll); border: 3px solid transparent; border-radius: 999px; background-clip: content-box; }
@@ -74,37 +79,43 @@ a { color: var(--link); text-decoration: none; }
 /* ===== 灵动岛（内容区上方居中；苹果级形变：显式宽高 + 内容延迟淡入，全程零溢出） ===== */
 :root { --spring: cubic-bezier(0.32, 0.72, 0, 1); }  /* iOS 系统弹簧的公认贝塞尔近似 */
 .island { position: fixed; top: 6px; left: calc(50% + 108px); /* 视口中心 + 侧栏宽一半(216px/2) = 内容区中心 */ transform: translateX(-50%); z-index: 300;
-  background: #1C1C1E; color: #F5F5F7;  /* 岛始终近黑（对标硬件岛），深浅主题一致 */
+  background: transparent; color: var(--dim);  /* 常驻态与标题栏同色，融为原生状态指示 */
+  border: 1px solid transparent;
   border-radius: 999px;
   min-width: 172px; max-width: min(520px, calc(100vw - 500px));
   overflow: hidden;
-  box-shadow: 0 8px 24px rgba(0,0,0,.18), 0 1.5px 5px rgba(0,0,0,.12);
-  transition: width .45s var(--spring), height .45s var(--spring), border-radius .45s var(--spring), box-shadow .3s ease, transform .25s var(--spring);
+  transition: width .45s var(--spring), height .45s var(--spring), border-radius .45s var(--spring), box-shadow .3s ease, transform .25s var(--spring), background .3s ease, border-color .3s ease, color .3s ease;
   will-change: width, height;
   -webkit-user-select: none; user-select: none; }
-.island.expanded { border-radius: 18px; box-shadow: 0 18px 48px rgba(0,0,0,.28), 0 2px 8px rgba(0,0,0,.14); }
+/* 新消息：与标题栏同色系轻梯度区分（提亮而非反色） */
+.island[data-state="msg"] { background: var(--panel2); border-color: var(--border); color: var(--text);
+  box-shadow: 0 4px 14px rgba(0,0,0,.16); }
+/* 展开交互：梯度更强（面板渐变 + 更重投影） */
+.island[data-state="detail"] { background: linear-gradient(180deg, var(--panel2), var(--panel)); border-color: var(--border2); color: var(--text); border-radius: 18px;
+  box-shadow: 0 18px 48px rgba(0,0,0,.24), 0 2px 8px rgba(0,0,0,.12); }
 .island.warn .island-bar { cursor: pointer; }
 .island.warn:hover { transform: translateX(-50%) scale(1.025); }
 .island.warn:active { transform: translateX(-50%) scale(.985); }
-.island-bar { display: flex; align-items: center; justify-content: center; gap: 7px; padding: 7px 15px; font-size: 12px; white-space: nowrap; }
-.island .dot.on { background: #34D399; }
-.island .dot.off { background: rgba(255,255,255,.32); }
-.island .dot.warn { background: #FBBF24; animation: pulse 1.4s infinite; }
+/* 条高固定 26px + 边框 2px = 28px，配合 top:6px 在 40px 标题栏内上下等距垂直居中 */
+.island-bar { display: flex; align-items: center; justify-content: center; gap: 7px; height: 26px; padding: 0 15px; font-size: 12px; white-space: nowrap; }
+.island .dot.on { background: var(--ok); }
+.island .dot.off { background: var(--border2); }
+.island .dot.warn { background: var(--warn); animation: pulse 1.4s infinite; }
 .island-chev { display: none; opacity: .6; align-items: center; }
 .island.warn .island-chev { display: inline-flex; }
 .island-chev svg { transition: transform .35s var(--spring); }
 .island.expanded .island-chev svg { transform: rotate(180deg); }
-.island-msg { display: none; align-items: center; justify-content: center; gap: 6px; padding: 8px 16px; font-size: 12.5px; }
+.island-msg { display: none; align-items: center; justify-content: center; gap: 6px; padding: 8px 16px; font-size: 12.5px; white-space: nowrap; }
 .island-msg .msg-ic { display: inline-flex; }
-.island-msg.ok .msg-ic { color: #34D399; }
-.island-msg.err .msg-ic { color: #FF8A80; }
-.island-msg.info .msg-ic { color: #8E8E93; }
-.island-detail { display: none; padding: 2px 14px 10px; font-size: 12px; max-height: 220px; overflow-y: auto; border-top: 1px solid rgba(255,255,255,.10); }
-.island-detail .dt-title { font-size: 11px; color: rgba(245,245,247,.55); padding: 2px 0 6px; }
-.island-row { display: flex; align-items: center; gap: 8px; padding: 6px 2px; border-top: 1px solid rgba(255,255,255,.10); }
-.island-row b { font-weight: 600; color: #F5F5F7; }
-.island-row .mono { color: rgba(245,245,247,.55); font-size: 11px; }
-.island-row .st { margin-left: auto; font-size: 11px; color: rgba(245,245,247,.75); flex-shrink: 0; }
+.island-msg.ok .msg-ic { color: var(--ok); }
+.island-msg.err .msg-ic { color: var(--danger); }
+.island-msg.info .msg-ic { color: var(--dim); }
+.island-detail { display: none; padding: 2px 14px 10px; font-size: 12px; max-height: 220px; overflow-y: auto; border-top: 1px solid var(--row-border); }
+.island-detail .dt-title { font-size: 11px; color: var(--dim2); padding: 2px 0 6px; }
+.island-row { display: flex; align-items: center; gap: 8px; padding: 6px 2px; border-top: 1px solid var(--row-border); }
+.island-row b { font-weight: 600; color: var(--text-strong); }
+.island-row .mono { color: var(--dim2); font-size: 11px; }
+.island-row .st { margin-left: auto; font-size: 11px; color: var(--dim); flex-shrink: 0; }
 /* 内容入场：形变过半后由 JS 触发，模糊+微位移消散（先有形、后有内容） */
 .island-part { animation: island-in .3s var(--spring) both; }
 @keyframes island-in { from { opacity: 0; filter: blur(5px); transform: translateY(2px); } to { opacity: 1; filter: blur(0); transform: none; } }

@@ -46,6 +46,32 @@ async function httpInvoke(cmd, args) {
 
 const invoke = TAURI ? TAURI.core.invoke : httpInvoke;
 
+/* ================= 原生化：屏蔽 WebView 浏览器行为（仅 Tauri 窗口；浏览器远程面不受影响） ================= */
+if (TAURI) {
+  // 右键菜单 / 拖拽
+  document.addEventListener('contextmenu', e => e.preventDefault());
+  document.addEventListener('dragstart', e => e.preventDefault());
+  // F12 / DevTools / 查看源码 / 刷新 / 打印 / 缩放 等浏览器快捷键
+  document.addEventListener('keydown', e => {
+    const k = e.key.toLowerCase();
+    const devCombo = e.ctrlKey && e.shiftKey && ['i', 'j', 'c'].includes(k);
+    const zoomCombo = e.ctrlKey && ['=', '-', '0', '+'].includes(e.key);
+    if (e.key === 'F12' || e.key === 'F5' || devCombo || zoomCombo ||
+        (e.ctrlKey && ['u', 'r', 'p'].includes(k))) e.preventDefault();
+  });
+  // Ctrl + 滚轮缩放
+  document.addEventListener('wheel', e => { if (e.ctrlKey) e.preventDefault(); }, { passive: false });
+  // 关闭表单自动填充 / 拼写检查等浏览器提示
+  window.addEventListener('DOMContentLoaded', () => {
+    document.querySelectorAll('input, textarea, select').forEach(el => {
+      el.setAttribute('autocomplete', 'off');
+      el.setAttribute('spellcheck', 'false');
+      el.setAttribute('autocorrect', 'off');
+      el.setAttribute('autocapitalize', 'off');
+    });
+  });
+}
+
 /* ---- Web 远程面登录 ---- */
 function showLogin() {
   $('login-modal').style.display = 'flex';
@@ -162,6 +188,7 @@ const Island = {
     // 4. 弹性形变至目标尺寸
     requestAnimationFrame(() => { el.style.width = tw + 'px'; el.style.height = th + 'px'; });
     el.classList.toggle('expanded', showPart !== 'bar');
+    el.dataset.state = showPart;  // 三态梯度配色：bar 常驻 / msg 轻梯度 / detail 强梯度
     // 5. 形变过半 → 新内容淡入（模糊+微位移消散）；bar 持续可见的场景无淡出淡入
     clearTimeout(this._t1); clearTimeout(this._t2);
     if (!same && !(showPart === 'bar' && barPersist)) {
