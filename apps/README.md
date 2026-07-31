@@ -9,11 +9,28 @@
 
 ## 功能
 
+- **空状态引导**：未连接节点时展示三步接入引导，粘贴框自动聚焦
+- **剪贴板识别**：一键识别剪贴板中的 `agilenet://` 接入链接并导入
 - 快速接入：粘贴 `agilenet://connect?...` 链接一键导入连接（含 sk- 强密码）
 - 手动添加：地址 / 账号 / 密码 / 证书固定 PEM / insecure 开关 / hosts 管理
-- 节点管理：多节点连接、实时状态（Connected/Reconnecting）、断开、凭据保存与重连
-- 本地代理：127.0.0.1 端口启停（SOCKS5 / HTTP 自动识别）
+- 节点管理：多节点连接、实时状态徽标（连接中/重连中脉冲动画）、断开、凭据保存与自动重连
+- 本地代理：127.0.0.1 端口启停（SOCKS5 / HTTP 自动识别），可配置连接节点后自动启动
+- **系统托盘**：关闭窗口最小化到托盘，右键菜单（显示主窗口 / 代理开关 / 退出），双击唤起
+- **开机自启**：设置中一键开启/关闭（Windows 注册表 Run 项 / macOS LaunchAgent）
 - 合并路由视图：全部已连接节点规则的实时汇总
+- 错误翻译：底层网络错误自动转为用户友好的中文提示
+
+## Windows 安装包
+
+```bash
+cd apps/desktop
+cargo tauri build
+# 产物：
+#   target/release/bundle/msi/AgileNet_<version>_x64_en-US.msi
+#   target/release/bundle/nsis/AgileNet_<version>_x64-setup.exe
+```
+
+安装包已内嵌 WebView2 Bootstrapper（无 WebView2 的机器自动引导安装）。
 
 ## 构建前置
 

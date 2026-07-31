@@ -138,3 +138,40 @@ Authorization: Bearer <access_token>
 | code | 场景 |
 |------|------|
 | 40300 | 已存在管理员 |
+
+---
+
+## PUT `/api/v1/auth/password`
+
+修改当前管理员自己的密码（仅 admin 角色）。成功后吊销本人全部 refresh_token，需重新登录。
+
+### 请求
+
+```json
+{
+  "old_password": "OldPass123",
+  "new_password": "NewPass12345"
+}
+```
+
+新密码强度要求：≥10 位，含大小写字母与数字。
+
+### 响应 200
+
+```json
+{ "code": 0, "data": { "changed": true, "message": "请使用新密码重新登录" } }
+```
+
+---
+
+## GET `/api/v1/admin/admins`
+
+列出全部管理员（不含哈希）。
+
+## POST `/api/v1/admin/admins`
+
+新建管理员（用户名 `[a-zA-Z0-9_-]` 1-32 位，密码强度同上）。
+
+## DELETE `/api/v1/admin/admins/:id`
+
+删除管理员。禁止删除自己与最后一名管理员；被删管理员的全部会话立即吊销。
