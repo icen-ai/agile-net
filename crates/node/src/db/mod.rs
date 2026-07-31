@@ -1030,6 +1030,19 @@ impl Database {
         Ok(())
     }
 
+    /// 按 ID 取 relay token 哈希（删除联动踢会话用）。
+    pub fn get_relay_token_hash(&self, id: &str) -> Result<Option<String>> {
+        let conn = self.conn();
+        let mut stmt = conn
+            .prepare("SELECT token_hash FROM relay_token WHERE id = ?1")
+            .map_err(db_err)?;
+        let mut rows = stmt.query(params![id]).map_err(db_err)?;
+        Ok(match rows.next().map_err(db_err)? {
+            Some(r) => Some(r.get(0).map_err(db_err)?),
+            None => None,
+        })
+    }
+
     // ==================== Node Config ====================
 
     pub fn get_config(&self, key: &str) -> Result<Option<String>> {

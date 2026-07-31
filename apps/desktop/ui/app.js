@@ -205,7 +205,8 @@ async function reconnectSaved(key, btn) {
   if (!c) return;
   await connectWith({
     addr: c.addr, username: c.username, password: c.password,
-    insecure: c.insecure, pinned_cert_path: null, manage_hosts: false, save_credential: true,
+    insecure: c.insecure, pinned_cert_path: null, pinned_fingerprint: c.pinned_fingerprint || null,
+    manage_hosts: false, save_credential: true,
   }, btn || null);
 }
 

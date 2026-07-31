@@ -190,10 +190,16 @@ pub async fn update_account(
         return err(StatusCode::INTERNAL_SERVER_ERROR, codes::INTERNAL, e.to_string());
     }
 
-    // 禁用：吊销全部 token 并清除 tunnel_token（活跃隧道在心跳时被迫下线）
+    // 禁用：吊销全部 token、清除 tunnel_token，并立即断开活跃隧道会话
     if req.enabled == Some(false) && existing.enabled {
         let _ = state.jwt.revoke_all(&id);
         let _ = state.db.set_account_tunnel_token(&id, None);
+        if let Some(listener) = &state.runtime.listener {
+            let kicked = listener.disconnect_client(&id);
+            if kicked > 0 {
+                tracing::info!(account = %id, sessions = kicked, "disabled account sessions kicked");
+            }
+        }
         audit(&state, &claims, &ip, "account.disable", Some(&id), &existing.username);
     } else if req.enabled == Some(true) && !existing.enabled {
         audit(&state, &claims, &ip, "account.enable", Some(&id), &existing.username);
@@ -231,9 +237,12 @@ pub async fn reset_password(
     if let Err(e) = state.db.set_account_password(&id, &password_hash) {
         return err(StatusCode::INTERNAL_SERVER_ERROR, codes::INTERNAL, e.to_string());
     }
-    // 旧凭据立即失效
+    // 旧凭据立即失效 + 断开活跃隧道会话
     let _ = state.jwt.revoke_all(&id);
     let _ = state.db.set_account_tunnel_token(&id, None);
+    if let Some(listener) = &state.runtime.listener {
+        listener.disconnect_client(&id);
+    }
 
     let connect_url = build_connect_url(&state, &account.username, &password);
     state.remember_connect_url(&id, &connect_url);
@@ -295,6 +304,9 @@ pub async fn delete_account(
     match state.db.delete_account(&id) {
         Ok(_) => {
             let _ = state.jwt.revoke_all(&id);
+            if let Some(listener) = &state.runtime.listener {
+                listener.disconnect_client(&id);
+            }
             audit(&state, &claims, &ip, "account.delete", Some(&id), &account.username);
             ok(json!(null))
         }
@@ -303,9 +315,14 @@ pub async fn delete_account(
 }
 
 /// 生成客户端接入 URL（指向管理 API 端点，数据面端点由 config 下发）。
+/// 携带证书指纹（若静态证书模式），客户端据此一键做证书固定，无需 insecure。
 fn build_connect_url(state: &ApiState, username: &str, password: &str) -> String {
     let (server, port) = state.public_api_endpoint();
-    format!(
+    let mut url = format!(
         "agilenet://connect?server={server}&port={port}&account={username}&password={password}&tls=1"
-    )
+    );
+    if let Some(fp) = &state.runtime.cert_fingerprint {
+        url.push_str(&format!("&fp={fp}"));
+    }
+    url
 }

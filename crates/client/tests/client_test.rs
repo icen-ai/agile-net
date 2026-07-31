@@ -107,6 +107,7 @@ async fn client_connect_and_pull_config() {
             password: "TestPass123".into(),
             insecure: true,
             pinned_cert_path: None,
+            pinned_fingerprint: None,
             manage_hosts: false,
         })
         .await
@@ -136,6 +137,7 @@ async fn client_socks5_through_tunnel_to_echo() {
             password: "TestPass123".into(),
             insecure: true,
             pinned_cert_path: None,
+            pinned_fingerprint: None,
             manage_hosts: false,
         })
         .await
@@ -171,6 +173,65 @@ async fn client_socks5_through_tunnel_to_echo() {
     client.stop_proxy().await;
 }
 
+/// 禁用账号立即断开活跃隧道（P0-2 安全语义）
+#[tokio::test]
+async fn disable_account_kicks_active_tunnel() {
+    let (node_addr, api_addr, _) = start_full_node().await;
+    let client = AgileNetClient::new();
+    let state = client
+        .connect(ConnectParams {
+            addr: node_addr,
+            username: "user1".into(),
+            password: "TestPass123".into(),
+            insecure: true,
+            pinned_cert_path: None,
+            pinned_fingerprint: None,
+            manage_hosts: false,
+        })
+        .await
+        .unwrap();
+    assert_eq!(client.node_status(&state.node_id), NodeStatus::Connected);
+
+    // 管理员登录并禁用该账号
+    let http = reqwest::Client::new();
+    let login = http
+        .post(format!("http://{api_addr}/api/v1/auth/login"))
+        .json(&serde_json::json!({"username":"admin","password":"AdminPass123"}))
+        .send()
+        .await
+        .unwrap();
+    let login_json: serde_json::Value = login.json().await.unwrap();
+    let admin_token = login_json["data"]["access_token"].as_str().unwrap().to_string();
+
+    // 找到账号 ID（admin 列表）
+    let list = http
+        .get(format!("http://{api_addr}/api/v1/admin/accounts"))
+        .bearer_auth(&admin_token)
+        .send()
+        .await
+        .unwrap();
+    let list_json: serde_json::Value = list.json().await.unwrap();
+    let account_id = list_json["data"]["items"][0]["id"].as_str().unwrap().to_string();
+
+    // 禁用
+    let resp = http
+        .put(format!("http://{api_addr}/api/v1/admin/accounts/{account_id}"))
+        .bearer_auth(&admin_token)
+        .json(&serde_json::json!({"enabled": false}))
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success());
+
+    // 活跃隧道应立即被服务端断开
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    assert_ne!(
+        client.node_status(&state.node_id),
+        NodeStatus::Connected,
+        "禁用账号后隧道必须被服务端主动断开"
+    );
+}
+
 /// 断开节点后路由动态移除
 #[tokio::test]
 async fn disconnect_removes_routes() {
@@ -183,6 +244,7 @@ async fn disconnect_removes_routes() {
             password: "TestPass123".into(),
             insecure: true,
             pinned_cert_path: None,
+            pinned_fingerprint: None,
             manage_hosts: false,
         })
         .await
@@ -210,6 +272,7 @@ async fn credentials_persist() {
                 username: "zhangsan".into(),
                 password: "secret".into(),
                 insecure: false,
+                pinned_fingerprint: None,
             },
         )
         .await;

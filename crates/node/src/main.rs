@@ -238,6 +238,29 @@ async fn main() -> Result<()> {
         cert_fingerprint,
     });
 
+    // 路由热更新监视：config_version 变化即重建节点本地代理路由表。
+    // 同时覆盖三种变更来源：API 修改、TUI 直连数据库修改、外部工具修改。
+    {
+        let db = db.clone();
+        let shared_router = shared_router.clone();
+        tokio::spawn(async move {
+            let mut last_version = db.config_version().unwrap_or(0);
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                interval.tick().await;
+                let current = db.config_version().unwrap_or(last_version);
+                if current != last_version {
+                    last_version = current;
+                    let new_router = build_router(&db);
+                    let count = new_router.route_count();
+                    shared_router.store(Arc::new(new_router));
+                    tracing::debug!(version = current, rules = count, "proxy router hot-reloaded");
+                }
+            }
+        });
+    }
+
     // 数据留存清理任务：审计日志 90 天 + 过期 refresh token，每 24h 执行
     {
         let db = db.clone();

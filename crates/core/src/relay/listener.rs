@@ -89,6 +89,15 @@ impl TokenValidator for StaticTokenValidator {
     }
 }
 
+/// 认证 token 的 SHA-256 指纹（用于按哈希踢除会话）。
+fn sha256_hex(data: &[u8]) -> String {
+    use sha2::Digest;
+    sha2::Sha256::digest(data)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
 /// 常数时间字节比较，避免时序侧信道。
 pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
@@ -114,6 +123,8 @@ pub enum PeerEvent {
 pub struct PeerSession {
     pub node_id: String,
     pub mux: Arc<MuxSession>,
+    /// 认证所用 token 的 SHA-256（吊销 token 时按哈希踢除会话）
+    pub token_hash: String,
 }
 
 /// 下游节点通告的路由表（target → peer node_id）。
@@ -134,8 +145,8 @@ pub struct RelayListener {
     peer_advertise: Arc<DashMap<String, Vec<String>>>,
     /// 汇总后的可查询路由表（RCU 热更新）
     routes: Arc<arc_swap::ArcSwap<AdvertisedRoutes>>,
-    /// 在线客户端会话计数（account_id → 会话数）
-    clients: Arc<DashMap<String, usize>>,
+    /// 在线客户端会话（account_id → 会话句柄列表，用于在线判定与强制断开）
+    clients: Arc<DashMap<String, Vec<Arc<MuxSession>>>>,
     events: broadcast::Sender<PeerEvent>,
     active_connections: Arc<AtomicUsize>,
     pending_auth: Arc<AtomicUsize>,
@@ -225,7 +236,41 @@ impl RelayListener {
 
     /// 指定客户端是否在线。
     pub fn is_client_online(&self, account_id: &str) -> bool {
-        self.clients.get(account_id).map(|c| *c > 0).unwrap_or(false)
+        self.clients
+            .get(account_id)
+            .map(|sessions| !sessions.is_empty())
+            .unwrap_or(false)
+    }
+
+    /// 强制断开指定客户端账号的全部会话（禁用/删除/重置密码时调用）。
+    /// 返回断开的会话数。
+    pub fn disconnect_client(&self, account_id: &str) -> usize {
+        let Some((_, sessions)) = self.clients.remove(account_id) else {
+            return 0;
+        };
+        let count = sessions.len();
+        for mux in sessions {
+            mux.shutdown();
+        }
+        let _ = self.events.send(PeerEvent::ClientDisconnected {
+            account_id: account_id.to_string(),
+        });
+        count
+    }
+
+    /// 按 token 哈希强制断开下游节点会话（吊销 relay token 时调用）。
+    /// 返回被断开的节点 ID（若在线）。
+    pub fn disconnect_by_token_hash(&self, token_hash: &str) -> Option<String> {
+        let node_id = self
+            .peers
+            .iter()
+            .find(|p| p.value().token_hash == token_hash)
+            .map(|p| p.key().clone())?;
+        if self.disconnect_peer(&node_id) {
+            Some(node_id)
+        } else {
+            None
+        }
     }
 
     /// 订阅上下线事件。
@@ -327,7 +372,7 @@ impl RelayListener {
             .await
             .map_err(|_| Error::Timeout)??;
 
-        let (tls_stream, identity) = match authed {
+        let (tls_stream, identity, token_hash) = match authed {
             Some(v) => v,
             None => return Err(Error::Auth("authentication failed".into())),
         };
@@ -335,7 +380,7 @@ impl RelayListener {
 
         match identity {
             AuthIdentity::Node { node_id, advertise } => {
-                self.serve_node_session(tls_stream, peer_addr, node_id, advertise).await
+                self.serve_node_session(tls_stream, peer_addr, node_id, advertise, token_hash).await
             }
             AuthIdentity::Client { account_id, acl } => {
                 self.serve_client_session(tls_stream, peer_addr, account_id, acl).await
@@ -348,7 +393,7 @@ impl RelayListener {
         &self,
         stream: TcpStream,
         peer_addr: SocketAddr,
-    ) -> Result<Option<(tokio_rustls::server::TlsStream<TcpStream>, AuthIdentity)>> {
+    ) -> Result<Option<(tokio_rustls::server::TlsStream<TcpStream>, AuthIdentity, String)>> {
         let mut tls_stream = self.tls_acceptor.accept(stream).await?;
         debug!(peer = %peer_addr, "tls handshake completed");
 
@@ -374,10 +419,11 @@ impl RelayListener {
         match self.validator.validate(&auth_req) {
             Some(identity) => {
                 self.clear_auth_failures(&peer_addr.ip());
+                let token_hash = sha256_hex(auth_req.token.as_bytes());
                 Frame::empty(FrameType::AuthOk, 0)
                     .write_to(&mut tls_stream)
                     .await?;
-                Ok(Some((tls_stream, identity)))
+                Ok(Some((tls_stream, identity, token_hash)))
             }
             None => {
                 warn!(peer = %peer_addr, node_id = %auth_req.node_id, "auth failed: bad token");
@@ -400,6 +446,7 @@ impl RelayListener {
         peer_addr: SocketAddr,
         node_id: String,
         advertise: Vec<String>,
+        token_hash: String,
     ) -> Result<()> {
         info!(peer = %peer_addr, node_id = %node_id, "node authenticated successfully");
 
@@ -410,6 +457,7 @@ impl RelayListener {
             PeerSession {
                 node_id: node_id.clone(),
                 mux: mux.clone(),
+                token_hash,
             },
         );
         self.set_peer_routes(&node_id, advertise);
@@ -443,7 +491,10 @@ impl RelayListener {
         let (open_tx, mut open_rx) = tokio::sync::mpsc::channel::<OpenRequest>(64);
         let (mux, reader_handle) = MuxSession::start(tls_stream, 1, Some(open_tx));
 
-        *self.clients.entry(account_id.clone()).or_insert(0) += 1;
+        self.clients
+            .entry(account_id.clone())
+            .or_default()
+            .push(mux.clone());
         let _ = self.events.send(PeerEvent::ClientConnected {
             account_id: account_id.clone(),
         });
@@ -460,10 +511,15 @@ impl RelayListener {
         }
 
         let _ = reader_handle.await;
-        if let Some(mut count) = self.clients.get_mut(&account_id) {
-            *count = count.saturating_sub(1);
+        // 从会话表移除本会话（可能已被 disconnect_client 提前清空）
+        if let Some(mut sessions) = self.clients.get_mut(&account_id) {
+            sessions.retain(|m| !Arc::ptr_eq(m, &mux));
+            let empty = sessions.is_empty();
+            drop(sessions);
+            if empty {
+                self.clients.remove(&account_id);
+            }
         }
-        self.clients.remove_if(&account_id, |_, c| *c == 0);
         let _ = self.events.send(PeerEvent::ClientDisconnected {
             account_id: account_id.clone(),
         });

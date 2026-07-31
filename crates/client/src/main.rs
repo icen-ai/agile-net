@@ -46,6 +46,8 @@ struct NodeEntry {
     insecure: bool,
     #[serde(default)]
     pinned_cert_path: Option<String>,
+    #[serde(default)]
+    pinned_fingerprint: Option<String>,
 }
 
 fn default_proxy_port() -> u16 {
@@ -85,6 +87,7 @@ async fn main() -> Result<()> {
             password: node.password.clone(),
             insecure: node.insecure,
             pinned_cert_path: node.pinned_cert_path.clone(),
+            pinned_fingerprint: node.pinned_fingerprint.clone(),
             manage_hosts: config.manage_hosts,
         };
         match client.connect(params).await {

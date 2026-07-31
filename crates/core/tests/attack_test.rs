@@ -306,6 +306,51 @@ async fn cert_pinning_enforced() -> Result<()> {
     Ok(())
 }
 
+/// A9b: 证书指纹固定 —— 指纹匹配放行，不匹配即拒（connect_url 一键 pinning）
+#[tokio::test]
+async fn cert_fingerprint_pinning() -> Result<()> {
+    let addr = get_free_addr();
+
+    let (certs, key) = generate_self_signed("cdn.cloudflare.com")?;
+    let fp = agile_net_core::tunnel::tls::cert_fingerprint_sha256(&certs[0]);
+    let server_config = rustls::ServerConfig::builder_with_protocol_versions(&[
+        &rustls::version::TLS13,
+    ])
+    .with_no_client_auth()
+    .with_single_cert(certs, key)
+    .map_err(|e| agile_net_core::error::Error::Tls(e.to_string()))?;
+    let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server_config));
+    let listener = Arc::new(RelayListener::with_tls_acceptor(addr, "tok", acceptor));
+    let l = listener.clone();
+    tokio::spawn(async move {
+        let _ = l.start().await;
+    });
+    tokio::time::sleep(Duration::from_millis(60)).await;
+
+    // 正确指纹 → 放行
+    let good = TlsConfigBuilder::new()
+        .pinned_fingerprint(&fp)
+        .sni_hostname("cdn.cloudflare.com");
+    let connector = RelayConnector::with_tls_builder(addr, "node-b", "tok", good)?;
+    connector.connect().await?;
+    assert!(connector.is_connected());
+
+    // 错误指纹 → 拒绝
+    let wrong_fp = "00".repeat(32);
+    let bad = TlsConfigBuilder::new()
+        .pinned_fingerprint(&wrong_fp)
+        .sni_hostname("cdn.cloudflare.com");
+    let attacker = RelayConnector::with_tls_builder(addr, "node-evil", "tok", bad)?;
+    assert!(attacker.connect().await.is_err(), "错误指纹必须被拒绝");
+
+    // 畸形指纹 → 构建即报错
+    assert!(TlsConfigBuilder::new()
+        .pinned_fingerprint("not-hex")
+        .build_client()
+        .is_err());
+    Ok(())
+}
+
 /// A9: kind 强制 —— 节点 PSK 不能用于 client 类型认证
 #[test]
 fn auth_kind_enforced() {

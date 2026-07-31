@@ -42,6 +42,9 @@ pub struct ConnectParams {
     /// 证书固定：节点证书 PEM 路径（生产推荐）
     #[serde(default)]
     pub pinned_cert_path: Option<String>,
+    /// 证书指纹固定：节点证书 SHA-256（connect_url 一键分发，抗 MITM）
+    #[serde(default)]
+    pub pinned_fingerprint: Option<String>,
     /// 是否自动维护系统 hosts（resolve 规则）
     #[serde(default)]
     pub manage_hosts: bool,
@@ -83,6 +86,8 @@ pub struct Credential {
     pub password: String,
     #[serde(default)]
     pub insecure: bool,
+    #[serde(default)]
+    pub pinned_fingerprint: Option<String>,
 }
 
 pub struct CredentialStore {
@@ -685,7 +690,10 @@ fn parse_rules(config: &serde_json::Value) -> Vec<ClientRule> {
 
 fn build_tls(params: &ConnectParams) -> Result<TlsConfigBuilder> {
     let builder = TlsConfigBuilder::new();
-    if let Some(pinned_path) = &params.pinned_cert_path {
+    if let Some(fp) = &params.pinned_fingerprint {
+        // 指纹固定最优先（connect_url 一键分发，抗 MITM）
+        Ok(builder.pinned_fingerprint(fp.clone()))
+    } else if let Some(pinned_path) = &params.pinned_cert_path {
         let data = std::fs::read(pinned_path)?;
         let certs: Vec<_> = rustls_pemfile::certs(&mut data.as_slice())
             .collect::<std::result::Result<Vec<_>, _>>()

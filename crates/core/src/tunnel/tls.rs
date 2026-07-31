@@ -20,6 +20,8 @@ pub struct TlsConfigBuilder {
     ca_cert: Option<Vec<CertificateDer<'static>>>,
     /// 服务端证书固定（pinning）：仅信任列出的证书（connector 模式）
     pinned_certs: Option<Vec<CertificateDer<'static>>>,
+    /// 服务端证书 SHA-256 指纹固定（connector 模式，connect_url 一键分发）
+    pinned_fingerprint: Option<String>,
     /// SNI 域名（connector 模式，伪装用）
     pub sni_hostname: String,
     /// 是否允许自签证书（开发模式）
@@ -33,6 +35,7 @@ impl TlsConfigBuilder {
             key_path: None,
             ca_cert: None,
             pinned_certs: None,
+            pinned_fingerprint: None,
             sni_hostname: "cdn.cloudflare.com".into(),
             allow_self_signed: false,
         }
@@ -60,6 +63,12 @@ impl TlsConfigBuilder {
         if !certs.is_empty() {
             self.pinned_certs = Some(certs);
         }
+        self
+    }
+
+    /// 证书指纹固定（SHA-256 hex，connect_url 分发的轻量 pinning）。
+    pub fn pinned_fingerprint(mut self, fingerprint: impl Into<String>) -> Self {
+        self.pinned_fingerprint = Some(fingerprint.into());
         self
     }
 
@@ -102,7 +111,14 @@ impl TlsConfigBuilder {
     /// 信任策略优先级：证书固定 (pinning) > 自定义 CA > 跳过验证（开发） > 系统 CA。
     pub fn build_client(&self) -> Result<Arc<rustls::ClientConfig>> {
         let _ = rustls::crypto::ring::default_provider().install_default();
-        let config = if let Some(pinned) = &self.pinned_certs {
+        let config = if let Some(fp) = &self.pinned_fingerprint {
+            // 证书指纹固定：哈希比对 + rustls 原生签名校验，抗 MITM 且免分发证书文件
+            let verifier = danger::PinnedFingerprintVerifier::new(fp)?;
+            rustls::ClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
+                .dangerous()
+                .with_custom_certificate_verifier(Arc::new(verifier))
+                .with_no_client_auth()
+        } else if let Some(pinned) = &self.pinned_certs {
             // 证书固定：钉入的证书作为唯一信任根，抗 MITM
             let mut root_store = rustls::RootCertStore::empty();
             for cert in pinned {
@@ -296,6 +312,88 @@ mod danger {
     use rustls::DigitallySignedStruct;
     use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
     use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
+
+    /// 证书 SHA-256 指纹固定验证器。
+    ///
+    /// 安全性论证：哈希比对确认对端出示的即是目标证书（公钥），
+    /// TLS 握手 CertificateVerify 由 rustls 原生验签（证明私钥持有），
+    /// 两者结合等价于证书固定，抗 MITM，且无需分发证书文件。
+    #[derive(Debug)]
+    pub(super) struct PinnedFingerprintVerifier {
+        expected: [u8; 32],
+    }
+
+    impl PinnedFingerprintVerifier {
+        pub(super) fn new(fingerprint_hex: &str) -> crate::error::Result<Self> {
+            let fp = fingerprint_hex.trim().to_lowercase();
+            if fp.len() != 64 || !fp.chars().all(|c| c.is_ascii_hexdigit()) {
+                return Err(crate::error::Error::Tls(
+                    "invalid certificate fingerprint (expect 64 hex chars)".into(),
+                ));
+            }
+            let mut expected = [0u8; 32];
+            for (i, b) in expected.iter_mut().enumerate() {
+                *b = u8::from_str_radix(&fp[i * 2..i * 2 + 2], 16)
+                    .map_err(|e| crate::error::Error::Tls(e.to_string()))?;
+            }
+            Ok(Self { expected })
+        }
+    }
+
+    impl ServerCertVerifier for PinnedFingerprintVerifier {
+        fn verify_server_cert(
+            &self,
+            end_entity: &CertificateDer<'_>,
+            _intermediates: &[CertificateDer<'_>],
+            _server_name: &ServerName<'_>,
+            _ocsp_response: &[u8],
+            _now: UnixTime,
+        ) -> std::result::Result<ServerCertVerified, rustls::Error> {
+            use sha2::Digest;
+            let digest = sha2::Sha256::digest(end_entity.as_ref());
+            if digest.as_slice() == self.expected {
+                Ok(ServerCertVerified::assertion())
+            } else {
+                Err(rustls::Error::InvalidCertificate(
+                    rustls::CertificateError::ApplicationVerificationFailure,
+                ))
+            }
+        }
+
+        fn verify_tls12_signature(
+            &self,
+            message: &[u8],
+            cert: &CertificateDer<'_>,
+            dss: &DigitallySignedStruct,
+        ) -> std::result::Result<HandshakeSignatureValid, rustls::Error> {
+            let algs = &rustls::crypto::ring::default_provider().signature_verification_algorithms;
+            rustls::crypto::verify_tls12_signature(message, cert, dss, algs)
+        }
+
+        fn verify_tls13_signature(
+            &self,
+            message: &[u8],
+            cert: &CertificateDer<'_>,
+            dss: &DigitallySignedStruct,
+        ) -> std::result::Result<HandshakeSignatureValid, rustls::Error> {
+            let algs = &rustls::crypto::ring::default_provider().signature_verification_algorithms;
+            rustls::crypto::verify_tls13_signature(message, cert, dss, algs)
+        }
+
+        fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+            vec![
+                rustls::SignatureScheme::ECDSA_NISTP256_SHA256,
+                rustls::SignatureScheme::ECDSA_NISTP384_SHA384,
+                rustls::SignatureScheme::ED25519,
+                rustls::SignatureScheme::RSA_PSS_SHA256,
+                rustls::SignatureScheme::RSA_PSS_SHA384,
+                rustls::SignatureScheme::RSA_PSS_SHA512,
+                rustls::SignatureScheme::RSA_PKCS1_SHA256,
+                rustls::SignatureScheme::RSA_PKCS1_SHA384,
+                rustls::SignatureScheme::RSA_PKCS1_SHA512,
+            ]
+        }
+    }
 
     #[derive(Debug)]
     pub(super) struct NoCertificateVerification;

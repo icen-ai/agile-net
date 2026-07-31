@@ -81,8 +81,15 @@ pub async fn delete_token(
     ClientIp(ip): ClientIp,
     Path(id): Path<String>,
 ) -> Response {
+    // 先取哈希（删除联动：使用该 token 的在线下游节点立即被踢）
+    let token_hash = state.db.get_relay_token_hash(&id).unwrap_or(None);
     match state.db.delete_relay_token(&id) {
         Ok(_) => {
+            if let (Some(listener), Some(hash)) = (&state.runtime.listener, token_hash) {
+                if let Some(node_id) = listener.disconnect_by_token_hash(&hash) {
+                    tracing::info!(node = %node_id, "relay token revoked, peer kicked");
+                }
+            }
             audit(&state, &claims, &ip, "relay_token.delete", Some(&id), "");
             ok(json!(null))
         }

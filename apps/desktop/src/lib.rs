@@ -19,6 +19,8 @@ pub struct ConnectInput {
     #[serde(default)]
     pub pinned_cert_path: Option<String>,
     #[serde(default)]
+    pub pinned_fingerprint: Option<String>,
+    #[serde(default)]
     pub manage_hosts: bool,
     /// 连接成功后是否保存凭据
     #[serde(default)]
@@ -58,6 +60,7 @@ async fn connect_node(state: State<'_, AppState>, input: ConnectInput) -> Result
         password: input.password.clone(),
         insecure: input.insecure,
         pinned_cert_path: input.pinned_cert_path.clone(),
+        pinned_fingerprint: input.pinned_fingerprint.clone(),
         manage_hosts: input.manage_hosts,
     };
     let node_state = state.client.connect(params).await.map_err(map_err)?;
@@ -73,6 +76,7 @@ async fn connect_node(state: State<'_, AppState>, input: ConnectInput) -> Result
                         username: input.username,
                         password: input.password,
                         insecure: input.insecure,
+                        pinned_fingerprint: input.pinned_fingerprint,
                     },
                 )
                 .await;
@@ -152,6 +156,7 @@ fn parse_connect_url(url: String) -> Result<ConnectInput, String> {
     let mut port: Option<u16> = None;
     let mut account = String::new();
     let mut password = String::new();
+    let mut fp: Option<String> = None;
     for pair in rest.split('&') {
         let mut kv = pair.splitn(2, '=');
         let (k, v) = (kv.next().unwrap_or(""), kv.next().unwrap_or(""));
@@ -161,6 +166,7 @@ fn parse_connect_url(url: String) -> Result<ConnectInput, String> {
             "port" => port = v.parse().ok(),
             "account" => account = v,
             "password" => password = v,
+            "fp" => fp = Some(v),
             _ => {}
         }
     }
@@ -179,6 +185,7 @@ fn parse_connect_url(url: String) -> Result<ConnectInput, String> {
         password,
         insecure: false,
         pinned_cert_path: None,
+        pinned_fingerprint: fp,
         manage_hosts: false,
         save_credential: true,
     })
