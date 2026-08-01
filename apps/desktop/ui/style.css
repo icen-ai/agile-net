@@ -230,13 +230,13 @@ input[type="checkbox"]:disabled { opacity: .5; cursor: not-allowed; }
 .node-check { flex-shrink: 0; display: inline-flex; width: 16px; height: 16px; margin-top: 1px; border-radius: 50%; background: var(--accent); color: var(--accent-fg); align-items: center; justify-content: center; }
 .node-name { display: flex; align-items: flex-start; gap: 6px; font-size: 13px; font-weight: 600; color: var(--text-strong); margin-bottom: 7px; }
 .node-name-text { overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; word-break: break-all; }
-.node-foot { display: flex; align-items: center; gap: 8px; min-height: 20px; }
+.node-foot { display: flex; align-items: center; gap: 8px; min-height: 20px; padding-right: 26px; }
 .node-proto { font-size: 11.5px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .node-delay { font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .node-delay.ok { color: var(--ok-text); }
 .node-delay.bad { color: var(--danger-text); }
-.node-test { margin-left: auto; flex-shrink: 0; display: none; padding: 2px 4px; color: var(--dim); background: none; }
-.node-card:hover .node-test { display: inline-flex; }
+.node-test { position: absolute; right: 9px; bottom: 9px; display: inline-flex; padding: 2px 4px; color: var(--dim); background: none; opacity: 0; pointer-events: none; transition: opacity .15s var(--ease); }
+.node-card:hover .node-test { opacity: 1; pointer-events: auto; }
 .node-test:hover { background: none; color: var(--text-strong); }
 .fab { position: fixed; right: 26px; bottom: 24px; z-index: 50; padding: 10px 18px; border-radius: 999px; box-shadow: 0 10px 28px rgba(0,0,0,.18); font-weight: 600; }
 
