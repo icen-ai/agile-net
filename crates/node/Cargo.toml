@@ -54,6 +54,10 @@ dashmap = { workspace = true }
 ip_network = { workspace = true }
 rcgen = { workspace = true }
 instant-acme = { version = "0.8", default-features = false, features = ["ring", "rcgen", "hyper-rustls"] }
+# 内置网络诊断工具集（anet tool；一律 default-features = false 起步，见 docs/todo/cli-tool.md §5）
+netstat2 = { version = "0.11", default-features = false }
+default-net = { version = "0.22", default-features = false }
+surge-ping = { version = "0.9", default-features = false }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

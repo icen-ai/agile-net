@@ -11,5 +11,6 @@ pub mod logs;
 pub mod relay_auth;
 pub mod service;
 pub mod svc;
+pub mod tool;
 pub mod tui;
 pub mod ui;

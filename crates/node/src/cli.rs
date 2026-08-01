@@ -53,6 +53,8 @@ pub enum Commands {
     Admin(AdminArgs),
     /// 审计日志查询
     Audit(AuditArgs),
+    /// 内置网络诊断工具集（tcping/curl/dns/scan/ping…，本机诊断，无需登录）
+    Tool(crate::tool::ToolArgs),
     /// 启动本地 TUI 控制台（直连数据库）
     Tui,
 }
@@ -655,6 +657,14 @@ pub async fn run_cli(cli: Cli) -> Result<()> {
 /// 顶层命令分派（`anet-svc <rule|group|...>` 与旧式 `anet-svc cli ...` 共用）。
 pub async fn dispatch(command: Commands, api: Option<String>, json_out: bool) -> Result<()> {
     match command {
+        // 诊断工具集在会话校验之前分流：本机诊断，不登录、不读库、不记审计
+        Commands::Tool(args) => {
+            let code = crate::tool::run(args, json_out).await;
+            if code != 0 {
+                std::process::exit(code);
+            }
+            Ok(())
+        }
         Commands::Login(args) => cmd_login(api, args).await,
         Commands::Logout => {
             if let Ok(mut client) = AnetClient::from_session(api) {

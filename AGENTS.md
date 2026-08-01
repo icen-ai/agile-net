@@ -109,6 +109,9 @@ rtk cargo run -p agile-net-node --bin anet -- tui --offline
 # 客户端角色（anet-svc client，原 agile-net-client daemon）
 rtk cargo run -p agile-net-node -- client agile-net-client.toml
 
+# 内置网络诊断工具集（anet tool，本机操作、无需 login；实现 crates/node/src/tool/）
+rtk cargo run -p agile-net-node --bin anet -- tool --help
+
 # Docker 四级链断言测试 / 常驻演示
 docker build -f .docker/Dockerfile -t anet:dev .
 docker compose -f .docker/docker-compose.test.yaml up --abort-on-container-exit --exit-code-from tester
@@ -120,3 +123,6 @@ git tag vX.Y.Z && git push origin vX.Y.Z   # 产物矩阵与签名现状见 docs
 # Tauri 桌面/Android（独立 workspace）
 cargo check --manifest-path apps/desktop/Cargo.toml
 ```
+
+`anet tool` 新增依赖：`netstat2` / `default-net` / `surge-ping`（均纯 Rust、无 C 依赖、musl 静态兼容，
+一律 `default-features = false` 起步；设计见 `docs/todo/cli-tool.md`，用户文档见 wiki「网络工具 anet tool」）。

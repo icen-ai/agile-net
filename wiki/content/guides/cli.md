@@ -108,6 +108,23 @@ anet admin passwd                                   # 修改自己的密码
 anet audit list [--action admin.login] [--json]
 ```
 
+## 网络工具 anet tool
+
+内置本机网络诊断工具集（无需登录、不走会话校验），替代 telnet / nc / curl / ping / netstat / lsof 等常见命令，
+面向无法联网装包的裁剪环境。退出码约定：`0` 可达、`1` 不可达、`2` 用法/环境错误。
+
+```bash
+anet tool selfcheck                 # 巡检 PATH 缺失命令 + 替代方案引导
+anet tool tcping db.internal 5432   # 别名 telnet / nc；-c 多次 min/avg/max
+anet tool curl https://example.com -k
+anet tool dns example.com @223.5.5.5 AAAA    # 别名 nslookup
+anet tool listen --proto tcp        # 别名 netstat / ports；portof / portsof / lsof -i:<port>
+anet tool ping host / anet tool traceroute host   # 无权限自动降级 TCP / 输出授权指引
+anet tool diag example.com 443      # DNS → ping → traceroute → tcping，定位卡在哪一层
+```
+
+完整命令清单、别名、权限需求表与降级链见[网络工具 anet tool](#/guides/tools)。
+
 ## TUI
 
 ```bash

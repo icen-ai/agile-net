@@ -1,0 +1,453 @@
+//! `anet tool` 内置网络诊断工具集（设计见 docs/todo/cli-tool.md）。
+//!
+//! 契约要点（全工具集统一，实现各命令时不得偏离）：
+//! - 每个命令的公开函数返回 [`ToolOutcome`]：human 自渲染文本 + json 结构化数据；
+//!   本模块负责打印（--json 序列化 json 字段）与退出码映射。
+//! - 退出码约定：`0` 成功/可达，`1` 失败/不可达，`2` 用法/环境错误；
+//!   探测失败（超时/拒绝/无权限）是正常输出而非进程错误。
+//! - 全部为本机操作（bandwidth 除外），不走会话校验、不读数据库、不写审计日志。
+
+pub mod bandwidth;
+pub mod diag;
+pub mod dns;
+pub mod fw;
+pub mod http;
+pub mod netif;
+pub mod netstat;
+pub mod ping;
+pub mod selfcheck;
+pub mod sysinfo;
+pub mod tcping;
+pub mod traceroute;
+
+use clap::{Args, Subcommand};
+use serde::Serialize;
+use std::time::Duration;
+
+/// 工具集统一结果：命令实现的唯一返回类型。
+#[derive(Debug, Clone, Serialize)]
+pub struct ToolOutcome {
+    /// 探测是否成功（对应退出码 0/1）
+    pub success: bool,
+    /// 退出码：0 成功/可达，1 失败/不可达，2 用法/环境错误
+    pub exit_code: i32,
+    /// 人类可读输出（各模块自渲染；--json 时不序列化、不打印）
+    #[serde(skip_serializing)]
+    pub human: String,
+    /// 结构化结果（--json 输出载体，与未来 GUI 复用）
+    pub json: serde_json::Value,
+}
+
+impl ToolOutcome {
+    /// 探测成功（exit 0）。
+    pub fn ok(human: impl Into<String>, json: serde_json::Value) -> Self {
+        Self {
+            success: true,
+            exit_code: 0,
+            human: human.into(),
+            json,
+        }
+    }
+
+    /// 探测失败/目标不可达（exit 1，属正常输出而非进程错误）。
+    pub fn fail(human: impl Into<String>, json: serde_json::Value) -> Self {
+        Self {
+            success: false,
+            exit_code: 1,
+            human: human.into(),
+            json,
+        }
+    }
+
+    /// 用法或环境错误（exit 2）。
+    pub fn usage_error(human: impl Into<String>) -> Self {
+        let human = human.into();
+        Self {
+            success: false,
+            exit_code: 2,
+            json: serde_json::json!({ "error": human }),
+            human,
+        }
+    }
+
+    /// 地基阶段占位：命令已接入分派但尚未实现（exit 2，绝不 panic）。
+    pub fn unimplemented(cmd: &str) -> Self {
+        Self {
+            success: false,
+            exit_code: 2,
+            human: format!("`anet tool {cmd}` 尚未实现（地基阶段占位）"),
+            json: serde_json::json!({ "error": "not_implemented", "command": cmd }),
+        }
+    }
+}
+
+/// 统一入口：分派执行 → 打印（human 或 --json）→ 返回退出码。
+pub async fn run(args: ToolArgs, json: bool) -> i32 {
+    let outcome = dispatch(args).await;
+    emit(&outcome, json);
+    outcome.exit_code
+}
+
+/// 打印结果：--json 序列化 ToolOutcome（human 字段跳过），否则打印 human。
+pub fn emit(outcome: &ToolOutcome, json: bool) {
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(outcome).unwrap_or_else(|_| "{}".to_string())
+        );
+    } else {
+        println!("{}", outcome.human);
+    }
+}
+
+/// 子命令分派（参数整形在此集中完成，实现模块只收整形后的强类型参数）。
+pub async fn dispatch(args: ToolArgs) -> ToolOutcome {
+    match args.command {
+        ToolSub::Tcping(a) => {
+            tcping::tcping(&a.host, a.port, a.count, Duration::from_secs(a.timeout)).await
+        }
+        ToolSub::Curl(a) => match parse_headers(&a.headers) {
+            Ok(headers) => {
+                http::curl(
+                    &a.url,
+                    &a.method,
+                    &headers,
+                    a.data.as_deref(),
+                    a.insecure,
+                    Duration::from_secs(a.max_time),
+                )
+                .await
+            }
+            Err(e) => ToolOutcome::usage_error(e),
+        },
+        ToolSub::Dns(a) => match normalize_dns_args(a.server, a.rtype) {
+            Ok((server, rtype)) => dns::dns_query(&a.domain, server.as_deref(), &rtype).await,
+            Err(e) => ToolOutcome::usage_error(e),
+        },
+        ToolSub::Dnsconf => dns::dnsconf(),
+        ToolSub::Scan(a) => match parse_port_range(&a.range) {
+            Ok((start, end)) => {
+                tcping::scan(
+                    &a.host,
+                    start,
+                    end,
+                    a.concurrency,
+                    Duration::from_secs(a.timeout),
+                )
+                .await
+            }
+            Err(e) => ToolOutcome::usage_error(e),
+        },
+        ToolSub::Diag(a) => diag::diag(&a.host, a.port.unwrap_or(443)).await,
+        ToolSub::Selfcheck => selfcheck::selfcheck(),
+        ToolSub::Psinfo(a) => sysinfo::psinfo(a.pid),
+        ToolSub::Killport(a) => sysinfo::killport(a.port, a.force, a.yes),
+        ToolSub::Listen(a) => netstat::listen(a.proto.as_deref()),
+        ToolSub::Portof(a) => netstat::portof(a.port),
+        ToolSub::Portsof(a) => netstat::portsof(a.pid),
+        ToolSub::Lsof(a) => match parse_lsof_args(&a.args) {
+            Ok(port) => netstat::portof(port),
+            Err(e) => ToolOutcome::usage_error(e),
+        },
+        ToolSub::Ifconfig => netif::ifconfig(),
+        ToolSub::Route => netif::route(),
+        ToolSub::Mtu(a) => netif::mtu(a.iface.as_deref()),
+        ToolSub::Ping(a) => {
+            ping::ping(&a.host, a.count, Duration::from_secs(a.timeout), a.port).await
+        }
+        ToolSub::Traceroute(a) => {
+            traceroute::trace(&a.host, a.max_hops, Duration::from_secs(a.timeout)).await
+        }
+        ToolSub::Fwstatus => fw::fwstatus(),
+        ToolSub::Fwcheck(a) => fw::fwcheck(a.port),
+        ToolSub::Bandwidth(a) => bandwidth::bandwidth(a.peer.as_deref()).await,
+    }
+}
+
+// ==================== clap 定义（Wave B 不得改动 cli.rs/app.rs，命令面以此为准） ====================
+
+#[derive(Args, Debug)]
+pub struct ToolArgs {
+    #[command(subcommand)]
+    pub command: ToolSub,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ToolSub {
+    /// TCP 连接探测（等同 telnet/nc 连通性检查；-c 多次输出 min/avg/max）
+    #[command(visible_aliases = ["telnet", "nc"])]
+    Tcping(TcpingArgs),
+    /// HTTP 请求（等同 curl：状态码/响应头/响应体摘要/耗时）
+    Curl(CurlArgs),
+    /// DNS 查询（等同 nslookup/dig；A/AAAA/CNAME/MX/PTR）
+    #[command(visible_alias = "nslookup")]
+    Dns(DnsArgs),
+    /// 查看系统 DNS 配置（/etc/resolv.conf、各网卡 DNS）
+    Dnsconf,
+    /// 端口 connect 扫描（只报开放端口 + 常见服务名猜测）
+    Scan(ScanArgs),
+    /// 组合诊断（DNS → ping → traceroute → tcping，给出「卡在哪一层」结论）
+    Diag(DiagArgs),
+    /// 巡检 PATH 常见网络命令，输出缺失清单与对应 anet tool 替代方案
+    Selfcheck,
+    /// 查看进程信息（等同 ps -p <pid>：命令行/用户/CPU/内存）
+    Psinfo(PsinfoArgs),
+    /// 终止占用指定端口的进程（默认 SIGTERM，-y 确认，--force 才 SIGKILL）
+    Killport(KillportArgs),
+    /// 列出监听/已连接 socket（等同 netstat -tunlp / ss -tulnp）
+    #[command(
+        visible_aliases = ["netstat", "ports"],
+        long_about = "列出本机监听/已连接 socket 及所属进程（等同 netstat -tunlp / ss -tulnp）。\n\n权限：读全量进程 socket 需 root 或 CAP_NET_ADMIN；权限受限时只显示本用户进程，输出中标注「权限受限，列表可能不完整」。"
+    )]
+    Listen(ListenArgs),
+    /// 按端口查进程（等同 lsof -i:<port>）
+    Portof(PortofArgs),
+    /// 按进程查端口（等同 lsof -i | grep <pid>）
+    Portsof(PortsofArgs),
+    /// lsof 兼容入口：`anet tool lsof -i:<port>`（等同 portof，仅此一种形式）
+    #[command(trailing_var_arg = true, allow_hyphen_values = true)]
+    Lsof(LsofArgs),
+    /// 网卡列表（等同 ifconfig / ip a：IP/MAC/网关/MTU）
+    #[command(visible_alias = "ip")]
+    Ifconfig,
+    /// 路由表与默认网关（等同 route print / ip route）
+    Route,
+    /// 查看网卡 MTU（缺省列出全部网卡）
+    Mtu(MtuArgs),
+    /// ping 探测（ICMP 主路径，无权限自动降级 TCP ping）
+    #[command(
+        long_about = "ICMP echo 探测。\n\n权限与降级：Linux 需 root / CAP_NET_RAW（可 `sudo setcap cap_net_raw+ep anet-svc` 授权）或内核开放 net.ipv4.ping_group_range；Windows 无需管理员。ICMP 不可用时自动降级为 TCP ping（--port 指定，默认 443），输出中显式标注 mode=icmp|tcp。"
+    )]
+    Ping(PingArgs),
+    /// 路由追踪（等同 tracert/traceroute：ICMP 逐跳 TTL 探测）
+    #[command(
+        visible_alias = "tracert",
+        long_about = "逐跳 TTL 路由追踪（ICMP）。\n\n需要 raw socket 权限：Linux 请 root 或 `sudo setcap cap_net_raw+ep anet-svc`；无权限时降级为 TCP 逐跳建连或输出明确的权限指引。"
+    )]
+    Traceroute(TracerouteArgs),
+    /// 防火墙状态探测（firewall-cmd/iptables/nft/netsh 哪个存在用哪个）
+    Fwstatus,
+    /// 探测指定端口的防火墙放行状态（探测提示，不解析规则）
+    Fwcheck(FwcheckArgs),
+    /// 穿透链路吞吐测试（经 anet 隧道到指定对端的实际吞吐/RTT；需对端在线）
+    Bandwidth(BandwidthArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct TcpingArgs {
+    /// 目标主机（IP 或域名）
+    pub host: String,
+    /// 目标端口
+    pub port: u16,
+    /// 探测次数
+    #[arg(short = 'c', long, default_value = "4")]
+    pub count: u32,
+    /// 单次连接超时（秒）
+    #[arg(short = 't', long, default_value = "3")]
+    pub timeout: u64,
+}
+
+#[derive(Args, Debug)]
+pub struct CurlArgs {
+    /// 请求 URL
+    pub url: String,
+    /// HTTP 方法
+    #[arg(short = 'X', long, default_value = "GET")]
+    pub method: String,
+    /// 请求头（可重复，形如 "Name: value"）
+    #[arg(short = 'H', long = "header")]
+    pub headers: Vec<String>,
+    /// 请求体
+    #[arg(short = 'd', long = "data")]
+    pub data: Option<String>,
+    /// 跳过 TLS 证书校验（仅调试用）
+    #[arg(short = 'k', long)]
+    pub insecure: bool,
+    /// 整体超时（秒）
+    #[arg(long, default_value = "10")]
+    pub max_time: u64,
+}
+
+#[derive(Args, Debug)]
+pub struct DnsArgs {
+    /// 查询域名
+    pub domain: String,
+    /// DNS 服务器（@ 前缀，如 @223.5.5.5；缺省用系统配置）
+    pub server: Option<String>,
+    /// 记录类型（A/AAAA/CNAME/MX/PTR，默认 A）
+    pub rtype: Option<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct ScanArgs {
+    /// 目标主机（IP 或域名）
+    pub host: String,
+    /// 端口范围（如 1-1024，或单端口 80）
+    pub range: String,
+    /// 并发上限
+    #[arg(long, default_value = "256")]
+    pub concurrency: u32,
+    /// 单端口超时（秒）
+    #[arg(short = 't', long, default_value = "2")]
+    pub timeout: u64,
+}
+
+#[derive(Args, Debug)]
+pub struct DiagArgs {
+    /// 目标主机（IP 或域名）
+    pub host: String,
+    /// 目标端口（tcping 层探测用，默认 443）
+    pub port: Option<u16>,
+}
+
+#[derive(Args, Debug)]
+pub struct PsinfoArgs {
+    /// 进程 PID
+    pub pid: u32,
+}
+
+#[derive(Args, Debug)]
+pub struct KillportArgs {
+    /// 被占用端口
+    pub port: u16,
+    /// 使用 SIGKILL（默认 SIGTERM）
+    #[arg(long)]
+    pub force: bool,
+    /// 确认执行（非交互终端必须显式确认，防误杀）
+    #[arg(short = 'y', long)]
+    pub yes: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct ListenArgs {
+    /// 协议过滤：tcp / udp（缺省全部）
+    #[arg(long, value_parser = ["tcp", "udp"])]
+    pub proto: Option<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct PortofArgs {
+    /// 目标端口
+    pub port: u16,
+}
+
+#[derive(Args, Debug)]
+pub struct PortsofArgs {
+    /// 进程 PID
+    pub pid: u32,
+}
+
+#[derive(Args, Debug)]
+pub struct LsofArgs {
+    /// lsof 参数（仅支持 -i:<port> 形式）
+    pub args: Vec<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct MtuArgs {
+    /// 网卡名（缺省列出全部）
+    pub iface: Option<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct PingArgs {
+    /// 目标主机（IP 或域名）
+    pub host: String,
+    /// 探测次数
+    #[arg(short = 'c', long, default_value = "4")]
+    pub count: u32,
+    /// 单次超时（秒）
+    #[arg(short = 't', long, default_value = "2")]
+    pub timeout: u64,
+    /// ICMP 不可用时 TCP 降级的目标端口
+    #[arg(long, default_value = "443")]
+    pub port: u16,
+}
+
+#[derive(Args, Debug)]
+pub struct TracerouteArgs {
+    /// 目标主机（IP 或域名）
+    pub host: String,
+    /// 最大跳数
+    #[arg(long, default_value = "30")]
+    pub max_hops: u8,
+    /// 单跳超时（秒）
+    #[arg(short = 't', long, default_value = "3")]
+    pub timeout: u64,
+}
+
+#[derive(Args, Debug)]
+pub struct FwcheckArgs {
+    /// 目标端口
+    pub port: u16,
+}
+
+#[derive(Args, Debug)]
+pub struct BandwidthArgs {
+    /// 对端标识（connector 名称或 ID；缺省列出可用对端）
+    pub peer: Option<String>,
+}
+
+// ==================== 参数整形（分派专用） ====================
+
+/// 解析 `-H "Name: value"` 请求头列表。
+fn parse_headers(raw: &[String]) -> Result<Vec<(String, String)>, String> {
+    let mut out = Vec::with_capacity(raw.len());
+    for h in raw {
+        let (name, value) = h
+            .split_once(':')
+            .ok_or_else(|| format!("无效请求头（应为 \"Name: value\"）: {h}"))?;
+        out.push((name.trim().to_string(), value.trim().to_string()));
+    }
+    Ok(out)
+}
+
+/// DNS 位置参数整形：`dns <domain> [@server] [type]`，第二位不带 @ 时视为记录类型。
+fn normalize_dns_args(
+    server: Option<String>,
+    rtype: Option<String>,
+) -> Result<(Option<String>, String), String> {
+    match (server, rtype) {
+        (Some(s), r) if s.starts_with('@') => {
+            let server = s.trim_start_matches('@').to_string();
+            if server.is_empty() {
+                return Err("DNS 服务器不能为空（形如 @223.5.5.5）".into());
+            }
+            Ok((Some(server), r.unwrap_or_else(|| "A".into())))
+        }
+        (Some(t), None) => Ok((None, t)),
+        (Some(_), Some(_)) => Err("DNS 服务器须以 @ 前缀（如 @223.5.5.5）".into()),
+        (None, r) => Ok((None, r.unwrap_or_else(|| "A".into()))),
+    }
+}
+
+/// 端口范围解析：`1-1024` 或单端口 `80`。
+fn parse_port_range(s: &str) -> Result<(u16, u16), String> {
+    let invalid = || format!("无效端口范围（形如 1-1024 或 80）: {s}");
+    if let Some((a, b)) = s.split_once('-') {
+        let start: u16 = a.trim().parse().map_err(|_| invalid())?;
+        let end: u16 = b.trim().parse().map_err(|_| invalid())?;
+        if start == 0 || start > end {
+            return Err(invalid());
+        }
+        Ok((start, end))
+    } else {
+        let port: u16 = s.trim().parse().map_err(|_| invalid())?;
+        if port == 0 {
+            return Err(invalid());
+        }
+        Ok((port, port))
+    }
+}
+
+/// lsof 兼容解析：仅支持 `-i:<port>` 形式。
+fn parse_lsof_args(args: &[String]) -> Result<u16, String> {
+    for a in args {
+        if let Some(rest) = a.strip_prefix("-i:") {
+            return rest
+                .parse()
+                .map_err(|_| format!("无效端口: {rest}"));
+        }
+    }
+    Err("仅支持 `anet tool lsof -i:<port>` 形式（等同 portof）".into())
+}

@@ -6,6 +6,7 @@
 //! - `node status|rename <name>`：节点信息（管理面，需登录）
 //! - `rule|group|account|token|connector|admin|audit`：资源管理（需登录，对齐 Web 管理端）
 //! - `login|logout`：会话管理（~/.anet/session.json，0600）
+//! - `tool <sub>`：内置网络诊断工具集（tcping/curl/dns/scan/ping…，本机诊断，无需登录）
 //! - `client [config.toml]`：客户端角色（连上游 + 本地代理）
 //! - `tui [--db path]`：TUI 控制台（直连数据库兜底查看）
 //!
@@ -28,7 +29,7 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 #[command(
     version,
     about = "AgileNet — init/start/stop/restart/status + 扇入扇出管理 + TUI",
-    long_about = "AgileNet 命令行（anet / anet-svc 同一实现，按 argv[0] 分人格）。\n\n命令分组：\n  服务    start / stop / restart / status / init\n  扇入    client（消费连接：作为客户端引入外部端点）\n  扇出    rule / group / account / token / connector（对外服务：扇入消费者的规则/权限/账号/令牌，主动连出的对端）\n  管理    node / login / logout / admin / audit / tui（端点自身管理与控制台）\n\n所有管理操作经节点 API 并落审计；TUI 默认走 API，--offline 数据库只读兜底。\n双入口：anet = 管理命令（推荐），anet-svc = 服务器进程（裸跑等同 start）。"
+    long_about = "AgileNet 命令行（anet / anet-svc 同一实现，按 argv[0] 分人格）。\n\n命令分组：\n  服务    start / stop / restart / status / init\n  扇入    client（消费连接：作为客户端引入外部端点）\n  扇出    rule / group / account / token / connector（对外服务：扇入消费者的规则/权限/账号/令牌，主动连出的对端）\n  管理    node / login / logout / admin / audit / tui（端点自身管理与控制台）\n  诊断    tool（内置网络诊断工具集，本机诊断，无需登录）\n\n所有管理操作经节点 API 并落审计；TUI 默认走 API，--offline 数据库只读兜底。\n双入口：anet = 管理命令（推荐），anet-svc = 服务器进程（裸跑等同 start）。\n\ntool     内置网络诊断工具集（tcping/curl/dns/scan/ping…），详见文档站「网络工具详解」"
 )]
 struct App {
     #[command(subcommand)]
@@ -79,6 +80,8 @@ enum Cmd {
     Admin(anet_cli::AdminArgs),
     /// 审计日志查询（管理）
     Audit(anet_cli::AuditArgs),
+    /// 内置网络诊断工具集（诊断：tcping/curl/dns/scan/ping…，本机诊断，无需登录）
+    Tool(crate::tool::ToolArgs),
     /// 已废弃：`serve` 等同 `start`（保留兼容）
     #[command(hide = true)]
     Serve(StartArgs),
@@ -140,7 +143,8 @@ struct LegacyArgs {
 fn shim_legacy_config(args: &mut Vec<String>) {
     const KNOWN: &[&str] = &[
         "start", "stop", "restart", "status", "node", "client", "tui", "init", "login", "logout",
-        "rule", "group", "account", "token", "connector", "admin", "audit", "serve", "cli", "help",
+        "rule", "group", "account", "token", "connector", "admin", "audit", "tool", "serve",
+        "cli", "help",
     ];
     if let Some(first) = args.get(1)
         && !first.starts_with('-')
@@ -249,6 +253,10 @@ pub async fn run() -> Result<()> {
         Some(Cmd::Audit(a)) => {
             init_plain_logging();
             anet_cli::dispatch(anet_cli::Commands::Audit(a), app.api, app.json).await
+        }
+        Some(Cmd::Tool(a)) => {
+            // 诊断工具集不走会话校验（dispatch 内部最先分流）
+            anet_cli::dispatch(anet_cli::Commands::Tool(a), app.api, app.json).await
         }
         Some(Cmd::Cli(l)) => {
             eprintln!("提示：`anet cli ...` 已废弃，请直接使用顶层同名命令（如 `anet rule list`）");
