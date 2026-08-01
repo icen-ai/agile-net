@@ -53,7 +53,7 @@ pub enum Commands {
     Admin(AdminArgs),
     /// 审计日志查询
     Audit(AuditArgs),
-    /// 内置网络诊断工具集（tcping/curl/dns/scan/ping…，本机诊断，无需登录）
+    /// 内置网络诊断工具集（tcping/curl/dns/scan/ping…，本机诊断；bandwidth 除外需登录）
     Tool(crate::tool::ToolArgs),
     /// 启动本地 TUI 控制台（直连数据库）
     Tui,
@@ -658,8 +658,9 @@ pub async fn run_cli(cli: Cli) -> Result<()> {
 pub async fn dispatch(command: Commands, api: Option<String>, json_out: bool) -> Result<()> {
     match command {
         // 诊断工具集在会话校验之前分流：本机诊断，不登录、不读库、不记审计
+        // （bandwidth 臂例外：经管理 API 在服务端执行，arm 内自行检查会话）
         Commands::Tool(args) => {
-            let code = crate::tool::run(args, json_out).await;
+            let code = crate::tool::run(args, json_out, api).await;
             if code != 0 {
                 std::process::exit(code);
             }

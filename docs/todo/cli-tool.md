@@ -1,6 +1,6 @@
 # `anet tool` 内置网络诊断工具集实施计划
 
-> 状态：批次一~三已实施（2026-08-01），批次四 bandwidth 待实施
+> 状态：全部已实施（2026-08-01）
 > 来源：运维场景 CSV 调研（麒麟/UOS 等国产化裁剪环境常缺 telnet/nc/curl/ping 等基础工具且无法联网装包）
 > 前置：无（全部为本机诊断能力，不依赖服务端已部署）
 
@@ -17,8 +17,9 @@ anet 的目标部署环境（内网穿透运维现场）恰恰是基础网络工
 - **边际成本优先**：只做边际成本接近零（现有依赖薄封装）或只净增**纯 Rust、
   无 C 依赖、musl 可静态编译**的小 crate 的条目。需要引入 C 库、平台专有 SDK 或
   跨发行版体系差异过大的，不做或降级为探测提示。
-- **诊断不需要登录**：`anet tool` 全部子命令**不走会话校验**——诊断的典型场景
-  就是端点尚未配好的时候。
+- **诊断不需要登录**：`anet tool` 子命令**不走会话校验**——诊断的典型场景
+  就是端点尚未配好的时候（唯一例外：`bandwidth` 的测量必须在服务端执行，
+  经管理 API 触发，需 `anet login`，见 §2 P3）。
 - **权限语义显式化**：凡需特权（raw socket / 读 `/proc`）的命令，必须有无权限
   降级路径，并在输出和 `--help` 中明说当前用的是哪种探测方式。
 
@@ -66,7 +67,7 @@ anet 的目标部署环境（内网穿透运维现场）恰恰是基础网络工
 
 | 命令 | 说明 |
 | --- | --- |
-| `anet tool bandwidth [peer]` | **不做** iperf 式裸网吞吐测试，改做产品差异化能力：**经 anet 穿透链路到指定对端的实际吞吐/RTT 测试**（复用现有隧道/mux 发测速流）。这直接回答运维最关心的问题"这条穿透链路实际能跑多快"，是通用工具给不了的。前提：对端在线，属本计划唯一依赖服务端角色的命令 |
+| `anet tool bandwidth [peer]` | **不做** iperf 式裸网吞吐测试，改做产品差异化能力：**经 anet 穿透链路到指定对端的实际吞吐/RTT 测试**（复用现有隧道/mux 发测速流）。这直接回答运维最关心的问题"这条穿透链路实际能跑多快"，是通用工具给不了的。前提：服务端在线 + 已登录 + 对端已连接，属本计划唯一依赖服务端角色与登录会话的命令。**已实施**：协议级诊断流（保留地址 `anet.bandwidth`，首字节定 echo/sink/source 模式，ACL 之前拦截、无路由能力、非收敛旁路）；CLI 经 `POST /api/v1/admin/tool/bandwidth` 在服务端执行（RTT 10×64B + 上下行各 8MiB）；当前仅支持上游（扇出 connector）对端 |
 | `anet tool fwstatus` / `anet tool fwcheck <port>` | **降级为探测提示**：shell out 依次探测 `firewall-cmd` / `iptables` / `nft` / Windows `netsh advfirewall`，哪个存在用哪个，全部不存在时如实输出"未检测到支持的防火墙工具"并建议人工排查。**不重实现**任何防火墙规则解析——iptables/nftables/firewalld 三套体系差异过大，超出边际成本原则。优先级最低，允许砍 |
 
 ### 明确的非目标
@@ -154,16 +155,20 @@ crates/node/src/
    - 验收：降级链有测试（模拟无 raw socket 权限环境，断言退化为 TCP 模式且
      输出标注 mode）；fw 在无防火墙工具的容器中如实输出"未检测到"。
 4. **批次四（P3）**：bandwidth 链路吞吐（依赖对端，接入 `.docker` 四级链
-   编排做断言）。
-   - 验收：docker-compose 链上跑 bandwidth，输出 RTT/吞吐且数量级合理。
+   编排做断言）。**已实施（2026-08-01）**。
+   - 验收：docker-compose 链上跑 bandwidth，输出 RTT/吞吐且数量级合理；
+     core 集成测试（`crates/core/tests/bandwidth_test.rs`）覆盖两侧应答、
+     收敛节点可测、未知模式关闭；node API 测试（`crates/node/tests/tool_api_test.rs`）
+     覆盖缺省/指定 peer、未知 peer 40400、无可用对端 40401。
 
 测试约定：网络探测类单测一律打本机回环或测试内临时 listener，不依赖外网；
 权限相关路径用依赖注入/特性开关模拟，CI 不申请特权。
 
 ## 8. 文档与权限指引
 
-- `docs/api/overview.md` 不动（tool 不经 API）；新增 `docs/crate/cli-tool.md`
-  或在 CLI 用户文档中登记命令清单、退出码、权限需求表。
+- `docs/api/overview.md` 不动（tool 仅 bandwidth 经 API，端点为
+  `POST /api/v1/admin/tool/bandwidth`，文档见 wiki「网络工具 anet tool」）；
+  新增 `docs/crate/cli-tool.md` 或在 CLI 用户文档中登记命令清单、退出码、权限需求表。
 - Linux 权限指引写入文档（也进 `--help` 长描述）：
   `ping`/`traceroute` 推荐 `sudo setcap cap_net_raw+ep anet-svc`；
   `listen`/`portof` 读全量进程 socket 需 root 或 `CAP_NET_ADMIN`（无权限时

@@ -279,6 +279,27 @@ RC2=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 --socks5-hostname 127
   -d '{"name":"should-deny"}' "http://node-root:59090/api/v1/admin/groups")
 [ "$RC2" = "403" ] && ok "T7f rules 档位组写被拒（403）" || bad "T7f 组写未拒（$RC2）"
 
+# ---------- T8: bandwidth 链路吞吐（mid → root 上游，经扇出隧道） ----------
+log "T8: bandwidth — mid 经扇出隧道测 root（RTT/上下行吞吐）"
+BW=$(curl -sf --max-time 120 -X POST "$MID_API/api/v1/admin/tool/bandwidth" \
+  -H "Authorization: Bearer $MID_TOKEN" -H 'Content-Type: application/json' -d '{}')
+if [ -n "$BW" ] && [ "$(echo "$BW" | jq -r '.code')" = "0" ]; then
+  BW_PEER=$(echo "$BW" | jq -r '.data.peer')
+  RTT_AVG=$(echo "$BW" | jq -r '.data.rtt.avg_ms')
+  UP_MBPS=$(echo "$BW" | jq -r '.data.up.mbps')
+  DOWN_MBPS=$(echo "$BW" | jq -r '.data.down.mbps')
+  log "  bandwidth 结果: peer=$BW_PEER rtt.avg=${RTT_AVG}ms up=${UP_MBPS}Mbps down=${DOWN_MBPS}Mbps"
+  # 量级断言：docker 桥接一跳隧道应远大于 10 Mbps；上下行字节数必须精确（8MiB）
+  BW_OK=$(echo "$BW" | jq -r 'if (.data.up.mbps > 10 and .data.down.mbps > 10 and .data.up.bytes == 8388608 and .data.down.bytes == 8388608 and .data.rtt.avg_ms >= 0) then 1 else 0 end')
+  if [ "$BW_OK" = "1" ]; then
+    ok "T8 bandwidth 链路吞吐量级合理（peer/rtt/up/down 结构化返回）"
+  else
+    bad "T8 bandwidth 返回量级异常: $BW"
+  fi
+else
+  bad "T8 bandwidth API 调用失败: $BW"
+fi
+
 # ---------- 汇总 ----------
 kill $CLIENT_PID 2>/dev/null || true
 echo ""

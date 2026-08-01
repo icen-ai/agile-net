@@ -5,7 +5,8 @@
 //!   本模块负责打印（--json 序列化 json 字段）与退出码映射。
 //! - 退出码约定：`0` 成功/可达，`1` 失败/不可达，`2` 用法/环境错误；
 //!   探测失败（超时/拒绝/无权限）是正常输出而非进程错误。
-//! - 全部为本机操作（bandwidth 除外），不走会话校验、不读数据库、不写审计日志。
+//! - 除 bandwidth 外全部为本机操作：不走会话校验、不读数据库、不写审计日志；
+//!   bandwidth 经管理 API 在服务端执行（需登录会话），属正常诊断流量不落审计。
 
 pub mod bandwidth;
 pub mod diag;
@@ -82,8 +83,9 @@ impl ToolOutcome {
 }
 
 /// 统一入口：分派执行 → 打印（human 或 --json）→ 返回退出码。
-pub async fn run(args: ToolArgs, json: bool) -> i32 {
-    let outcome = dispatch(args).await;
+/// `api` 为全局 --api 覆盖项（仅 bandwidth 臂使用，其余命令为本机操作忽略之）。
+pub async fn run(args: ToolArgs, json: bool, api: Option<String>) -> i32 {
+    let outcome = dispatch(args, api).await;
     emit(&outcome, json);
     outcome.exit_code
 }
@@ -101,7 +103,8 @@ pub fn emit(outcome: &ToolOutcome, json: bool) {
 }
 
 /// 子命令分派（参数整形在此集中完成，实现模块只收整形后的强类型参数）。
-pub async fn dispatch(args: ToolArgs) -> ToolOutcome {
+/// `api` 仅 bandwidth 臂消费（其余命令为本机操作）。
+pub async fn dispatch(args: ToolArgs, api: Option<String>) -> ToolOutcome {
     match args.command {
         ToolSub::Tcping(a) => {
             tcping::tcping(&a.host, a.port, a.count, Duration::from_secs(a.timeout)).await
@@ -160,7 +163,7 @@ pub async fn dispatch(args: ToolArgs) -> ToolOutcome {
         }
         ToolSub::Fwstatus => fw::fwstatus(),
         ToolSub::Fwcheck(a) => fw::fwcheck(a.port),
-        ToolSub::Bandwidth(a) => bandwidth::bandwidth(a.peer.as_deref()).await,
+        ToolSub::Bandwidth(a) => bandwidth::bandwidth(a.peer.as_deref(), api).await,
     }
 }
 
@@ -229,7 +232,10 @@ pub enum ToolSub {
     Fwstatus,
     /// 探测指定端口的防火墙放行状态（探测提示，不解析规则）
     Fwcheck(FwcheckArgs),
-    /// 穿透链路吞吐测试（经 anet 隧道到指定对端的实际吞吐/RTT；需对端在线）
+    /// 穿透链路吞吐测试（经 anet 隧道到指定对端的实际吞吐/RTT；需服务端在线且已登录，对端为扇出 connector）
+    #[command(
+        long_about = "穿透链路吞吐测试：经 anet 隧道到指定对端（扇出 connector）的实际吞吐与 RTT——直接回答「这条穿透链路实际能跑多快」。\n\n前提：服务端在线且已登录（anet login），对端 connector 处于 connected；当前仅支持上游对端。tool 集中唯一需要登录会话的命令（测量在服务端执行，经管理 API 触发）。"
+    )]
     Bandwidth(BandwidthArgs),
 }
 
@@ -384,7 +390,7 @@ pub struct FwcheckArgs {
 
 #[derive(Args, Debug)]
 pub struct BandwidthArgs {
-    /// 对端标识（connector 名称或 ID；缺省列出可用对端）
+    /// 对端标识（connector 名称或上游地址；缺省 = 第一个已连接 connector）
     pub peer: Option<String>,
 }
 

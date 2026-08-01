@@ -2,7 +2,7 @@
 
 `anet tool` 是内置在 anet 二进制里的本机网络诊断工具集，面向**无法联网装包的运维现场**：麒麟 / 统信 UOS 等国产化裁剪系统常未安装 telnet / nc / curl / ping，甚至阉割 ICMP 权限。anet 本身是单文件静态二进制，拷过去即自带整套替代品。
 
-- 全部子命令**本机执行**：不走会话校验（无需 `anet login`）、不读数据库、不写审计日志
+- 除 bandwidth 外全部子命令**本机执行**：不走会话校验（无需 `anet login`）、不读数据库、不写审计日志；bandwidth 经管理 API 在服务端执行，需登录（见下文专节）
 - 探测失败（超时 / 拒绝 / 无权限）是**正常输出**而非进程错误，配合退出码可脚本化
 - 默认人类可读输出，加 `--json` 输出结构化结果（`{success, exit_code, ...}`）
 - 需特权的命令自带降级路径，并在输出中显式标注当前探测方式
@@ -57,7 +57,32 @@ anet tool selfcheck    # 巡检 PATH 常见命令，输出缺失清单 + 对应 
 | --- | --- | --- |
 | `anet tool fwstatus` | firewall-cmd / iptables / nft / netsh | 依次探测系统防火墙工具，哪个在用哪个；不重实现规则解析 |
 | `anet tool fwcheck <port>` | 人工排查 | 探测指定端口的防火墙放行状态（探测提示） |
-| `anet tool bandwidth [peer]` | iperf（差异化） | 经 anet 穿透链路到指定对端的实际吞吐 / RTT——**待实施（批次四）**，唯一依赖对端在线的命令 |
+| `anet tool bandwidth [peer]` | iperf（差异化） | 经 anet 穿透链路到指定对端的实际吞吐 / RTT（需服务端在线 + 登录 + 对端已连接，见下文专节） |
+
+## 穿透链路带宽测试（bandwidth）
+
+`anet tool bandwidth [peer]` 直接回答「这条穿透链路实际能跑多快」：经 anet 隧道向对端发协议级诊断流（echo / sink / source），输出 RTT 与上下行吞吐。不是 iperf 式裸网测试——测的是**含 TLS 加密与 mux 复用开销的隧道实际能力**，是通用工具给不了的差异化能力。
+
+- `peer`：扇出 connector 的名称或上游地址；缺省 = 第一个已连接（connected）的 connector
+- 前提：服务端在线 + 已登录（`anet login`，tool 集中唯一需要会话的命令）+ 对端 connector 处于 connected
+- 限制：当前仅支持**上游对端**（经扇出 connector 发起）；对下游扇入对端暂不支持
+- 对端挂了对端收敛（Peer ACL）同样可测：诊断流在收敛检查之前由对端本地应答，无路由能力，不构成收敛旁路；带宽流属正常诊断流量，不落审计明细
+
+```bash
+anet tool bandwidth            # 测第一个已连接的上游对端
+anet tool bandwidth hk-relay   # 按 connector 名称指定
+anet tool bandwidth --json     # 结构化输出（peer / rtt / up / down）
+```
+
+输出示例：
+
+```text
+穿透链路带宽测试（经 anet 隧道）
+  对端:   hk-relay
+  RTT:    min 0.421ms · avg 0.613ms · max 1.037ms
+  上行:   8.0 MiB / 812 ms — 82.76 Mbps
+  下行:   8.0 MiB / 790 ms — 85.03 Mbps
+```
 
 ## 别名（肌肉记忆兼容）
 

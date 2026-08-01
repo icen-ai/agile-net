@@ -6,7 +6,7 @@ public_host = "node-deep"
 [api]
 addr = "0.0.0.0:59090"
 
-[connector]
+[[connectors]]
 upstream_addr = "node-leaf:54430"
 token = "psk_deeptoken_00000000000000000000000000000000000"
 sni_hostname = "cdn.cloudflare.com"

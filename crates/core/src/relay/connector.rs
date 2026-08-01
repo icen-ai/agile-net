@@ -13,7 +13,7 @@ use crate::proxy::router::{Outbound, ProxyRouter};
 use crate::relay::acl::PeerAcl;
 use crate::relay::bridge::bridge;
 use crate::relay::listener::{AUTH_TIMEOUT, PeerEvent, RelayListener};
-use crate::relay::mux::{MuxSession, OpenRequest};
+use crate::relay::mux::{MuxChannel, MuxSession, OpenRequest};
 use crate::tunnel::opener::ChannelOpener;
 use crate::tunnel::tls::TlsConfigBuilder;
 
@@ -73,6 +73,8 @@ pub struct RelayConnector {
     openers: Option<Arc<dashmap::DashMap<String, Arc<dyn ChannelOpener>>>>,
     /// 扇出收敛：对端反向发起的目标连接允许集合（None = 不收敛，放行一切）
     acl: Option<Arc<PeerAcl>>,
+    /// 当前会话 mux 句柄（connected 期间可用；管理面诊断开流用）
+    current_mux: Arc<arc_swap::ArcSwapOption<MuxSession>>,
     /// 收敛拒绝等可观测事件（供管理面订阅写审计）
     events: broadcast::Sender<PeerEvent>,
     state: Arc<AtomicU8>,
@@ -120,6 +122,7 @@ impl RelayConnector {
             client_router: None,
             openers: None,
             acl: None,
+            current_mux: Arc::new(arc_swap::ArcSwapOption::from_pointee(None)),
             events,
             state: Arc::new(AtomicU8::new(ConnectionState::Disconnected as u8)),
             shutdown_notify: Arc::new(Notify::new()),
@@ -157,6 +160,24 @@ impl RelayConnector {
     /// 握手 v2：上游暴露的控制面端点（未暴露/未连接时为 None）。
     pub fn control_offer(&self) -> Option<ControlOffer> {
         self.control.load_full().map(|a| (*a).clone())
+    }
+
+    /// 当前会话的 mux 句柄（未连接时为 None）。
+    pub fn current_mux(&self) -> Option<Arc<MuxSession>> {
+        self.current_mux.load_full()
+    }
+
+    /// 经当前隧道向对端发起一条到指定目标的流（管理面诊断用；未连接返回 NotFound）。
+    pub async fn open_stream(&self, target_addr: &str, target_port: u16) -> Result<MuxChannel> {
+        let mux = self
+            .current_mux()
+            .ok_or_else(|| Error::NotFound("connector not connected".into()))?;
+        let payload = serde_json::to_vec(&OpenChannel {
+            target_addr: target_addr.to_string(),
+            target_port,
+        })
+        .map_err(|e| Error::Protocol(e.to_string()))?;
+        mux.open_channel(Bytes::from(payload)).await
     }
 
     /// 扇出收敛：设置对端反向发起目标连接的允许集合（None = 不收敛，放行一切）。
@@ -218,6 +239,8 @@ impl RelayConnector {
             }
         };
 
+        // 发布当前会话句柄（管理面诊断开流用），再置 Connected
+        self.current_mux.store(Some(session.clone()));
         self.state
             .store(ConnectionState::Connected as u8, Ordering::Relaxed);
         Ok(session)
@@ -312,6 +335,7 @@ impl RelayConnector {
         let events = self.events.clone();
         let peer_label = self.upstream_addr.to_string();
         let mux_task = mux.clone();
+        let current_mux = self.current_mux.clone();
 
         tokio::spawn(async move {
             let mut ping_timeout = next_ping_delay();
@@ -365,6 +389,12 @@ impl RelayConnector {
             }
 
             reader_handle.abort();
+            // 清空当前会话句柄（仅当仍指向本会话，防误清重连后的新会话）
+            if let Some(cur) = current_mux.load_full()
+                && Arc::ptr_eq(&cur, &mux_task)
+            {
+                current_mux.store(None);
+            }
             state.store(ConnectionState::Disconnected as u8, Ordering::Relaxed);
         });
 
@@ -458,6 +488,12 @@ impl RelayConnector {
 
         let target_addr = format!("{}:{}", open_req.target_addr, open_req.target_port);
         debug!(channel_id = req.channel_id, target = %target_addr, "handling open request");
+
+        // 带宽诊断保留地址：收敛检查之前拦截（协议级诊断服务，与心跳同级，
+        // 本地应答、无任何路由能力，收敛节点同样可测，不构成 ACL 旁路）
+        if crate::relay::bandwidth::intercept(&mux, &req, &open_req.target_addr).await {
+            return Ok(());
+        }
 
         // 扇出收敛：带收敛表时反向来的目标必须命中允许集合（None = 不收敛，放行一切）
         if let Some(acl) = &acl

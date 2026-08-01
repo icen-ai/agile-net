@@ -682,6 +682,12 @@ impl RelayListener {
 
         let target = format!("{}:{}", open_req.target_addr, open_req.target_port);
 
+        // 带宽诊断保留地址：PeerAcl 收敛检查之前拦截（协议级诊断服务，与心跳同级，
+        // 本地应答、无任何路由能力，收敛节点同样可测，不构成 ACL 旁路）
+        if crate::relay::bandwidth::intercept(&mux, &req, &open_req.target_addr).await {
+            return;
+        }
+
         // 扇入收敛：对端带收敛表时目标必须命中允许集合（None = 不收敛，放行一切）
         if let Some(acl) = &acl
             && !acl.allowed(&target)

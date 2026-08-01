@@ -163,6 +163,52 @@ impl ConnectorManager {
         }
     }
 
+    /// 解析带宽测试的发起对端（`anet tool bandwidth` / tool API 用）：
+    /// - `Some(p)`：按 connector 名称或上游地址匹配，且须处于 connected；
+    /// - `None`：取第一个 connected connector。
+    ///
+    /// 返回 (对端显示名, connector 句柄) 或明确错误。
+    pub fn resolve_bandwidth_peer(
+        &self,
+        peer: Option<&str>,
+    ) -> std::result::Result<(String, Arc<RelayConnector>), BandwidthPeerError> {
+        let views = self.db.list_connectors().unwrap_or_default();
+        match peer {
+            Some(p) => {
+                let Some(rec) = views.iter().find(|c| c.name == p || c.upstream_addr == p)
+                else {
+                    return Err(BandwidthPeerError::NotFound(format!(
+                        "connector not found: {p}"
+                    )));
+                };
+                match self.handles.get(&rec.id) {
+                    Some(h) if h.connector.is_connected() => {
+                        Ok((rec.name.clone(), h.connector.clone()))
+                    }
+                    _ => Err(BandwidthPeerError::NotConnected(format!(
+                        "对端未连接: {}（connector 存在但当前非 connected）",
+                        rec.name
+                    ))),
+                }
+            }
+            None => {
+                for h in self.handles.iter() {
+                    if h.connector.is_connected() {
+                        let label = views
+                            .iter()
+                            .find(|c| c.id == *h.key())
+                            .map(|c| c.name.clone())
+                            .unwrap_or_else(|| h.connector.upstream_addr().to_string());
+                        return Ok((label, h.connector.clone()));
+                    }
+                }
+                Err(BandwidthPeerError::NotConnected(
+                    "无已连接的扇出对端（无 connected 状态的 connector）".into(),
+                ))
+            }
+        }
+    }
+
     /// 按 DB 记录构建并拉起一个 connector（None = 记录缺失或已禁用）。
     async fn build(&self, id: &str) -> Result<Option<ConnectorHandle>> {
         let Some(rec) = self.db.get_connector(id)? else {
@@ -324,5 +370,24 @@ fn state_str(state: ConnectionState) -> &'static str {
         ConnectionState::Connecting => "connecting",
         ConnectionState::Reconnecting => "reconnecting",
         ConnectionState::Disconnected => "disconnected",
+    }
+}
+
+/// 带宽测试目标对端解析错误（kind 供 API 映射错误码）。
+#[derive(Debug)]
+pub enum BandwidthPeerError {
+    /// 指定的名称/上游地址无对应 connector 记录
+    NotFound(String),
+    /// connector 存在但未连接（或未指定时无任何 connected connector）
+    NotConnected(String),
+}
+
+impl std::fmt::Display for BandwidthPeerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BandwidthPeerError::NotFound(m) | BandwidthPeerError::NotConnected(m) => {
+                write!(f, "{m}")
+            }
+        }
     }
 }

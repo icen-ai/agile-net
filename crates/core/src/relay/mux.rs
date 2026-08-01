@@ -21,7 +21,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::task::{Context, Poll};
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tokio::sync::{Semaphore, mpsc, oneshot};
 
 /// 单个会话允许的最大并发通道数，防止对端 Open 洪泛导致资源耗尽。
@@ -308,6 +308,11 @@ impl MuxSession {
                     bytes_out_task.fetch_add(frame.payload.len() as u64, Ordering::Relaxed);
                 }
                 if frame.write_to(&mut writer).await.is_err() {
+                    break;
+                }
+                // 队列排空时 flush：rustls 会合并 TLS 记录，不 flush 则会话静默前的
+                // 尾部记录可能滞留在 rustls 缓冲区，要等下次无关流量才被带出去
+                if rx_frames.is_empty() && writer.flush().await.is_err() {
                     break;
                 }
             }

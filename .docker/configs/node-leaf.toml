@@ -12,7 +12,7 @@ cert_path = "/data/certs/leaf-cert.pem"
 key_path = "/data/certs/leaf-key.pem"
 sni_hostname = "cdn.cloudflare.com"
 
-[connector]
+[[connectors]]
 upstream_addr = "node-mid:54430"
 token = "psk_leaftoken_00000000000000000000000000000000000"
 sni_hostname = "cdn.cloudflare.com"

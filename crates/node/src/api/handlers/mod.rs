@@ -10,6 +10,7 @@ pub mod groups;
 pub mod node;
 pub mod relay_tokens;
 pub mod rules;
+pub mod tool;
 
 use crate::api::ApiState;
 use crate::auth::jwt::Claims;

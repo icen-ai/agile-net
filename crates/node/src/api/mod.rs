@@ -279,6 +279,8 @@ pub mod codes {
     pub const FORBIDDEN: u32 = 40300;
     pub const ADMIN_ONLY: u32 = 40301;
     pub const NOT_FOUND: u32 = 40400;
+    /// 对端存在但未连接（或无可用对端），如 bandwidth 目标 connector 非 connected
+    pub const PEER_UNAVAILABLE: u32 = 40401;
     pub const DUPLICATE: u32 = 40900;
     pub const RATE_LIMITED: u32 = 42900;
     pub const INTERNAL: u32 = 50000;
@@ -420,6 +422,11 @@ pub fn create_app(state: ApiState) -> Router {
             post(handlers::connectors::disable_connector),
         )
         .route("/api/v1/admin/node/events", any(handlers::node::events_ws))
+        // ---- Admin: Tool（批次四 bandwidth，tool 集中唯一经 API 的命令） ----
+        .route(
+            "/api/v1/admin/tool/bandwidth",
+            post(handlers::tool::bandwidth_test),
+        )
         // ---- Admin: Audit ----
         .route(
             "/api/v1/admin/audit-logs",

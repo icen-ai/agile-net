@@ -18,8 +18,9 @@ RUN mkdir -p crates/core/src crates/node/src crates/client/src \
     && echo 'fn main(){}' > crates/client/src/lib.rs \
     && cargo build --release -p agile-net-node || true
 
-# 真实源码构建
+# 真实源码构建（apps/desktop/ui/tokens.css 为管理端共享 token，经 include_str! 引用）
 COPY crates ./crates
+COPY apps/desktop/ui/tokens.css ./apps/desktop/ui/tokens.css
 RUN touch crates/core/src/lib.rs crates/node/src/lib.rs crates/client/src/lib.rs \
     && cargo build --release -p agile-net-node
 
