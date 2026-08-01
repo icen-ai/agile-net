@@ -1052,7 +1052,7 @@ function renderNodeGrid() {
     const p = PROXY_DATA[n] || {};
     const hist = (p.history && p.history.length) ? p.history[p.history.length - 1].delay : 0;
     const cur = g.now === n;
-    return '<div class="node-card' + (cur ? ' current' : '') + '" data-group="' + esc(CUR_GROUP) + '" data-node="' + esc(n) + '">' +
+    return '<div class="snode-card' + (cur ? ' current' : '') + '" data-group="' + esc(CUR_GROUP) + '" data-node="' + esc(n) + '">' +
       '<div class="node-name">' + (cur ? '<span class="node-check">' + AgIcon('check', 11) + '</span>' : '') +
       '<span class="node-name-text" title="' + esc(n) + '">' + esc(n) + '</span></div>' +
       '<div class="node-foot"><span class="node-proto">' + esc(p.type || '') + '</span>' +
@@ -1064,7 +1064,7 @@ function renderNodeGrid() {
 
 // provider 节点无单节点测速 API，后端仍是整组并发测（耗时相同），但单点只更新本卡片
 async function testNode(btn) {
-  const card = btn.closest('.node-card');
+  const card = btn.closest('.snode-card');
   const delayEl = card.querySelector('.node-delay');
   delayEl.textContent = '…';
   delayEl.className = 'node-delay';
@@ -1088,7 +1088,7 @@ async function testNode(btn) {
 }
 
 async function testGroup() {
-  const cards = [...$('node-grid').querySelectorAll('.node-card')];
+  const cards = [...$('node-grid').querySelectorAll('.snode-card')];
   if (!cards.length) return;
   cards.forEach(c => {
     const el = c.querySelector('.node-delay');
@@ -1230,12 +1230,12 @@ function initSubscription() {
       testNode(testBtn);
       return;
     }
-    const card = e.target.closest('.node-card');
+    const card = e.target.closest('.snode-card');
     if (!card) return;
     if (PROXY_CACHED) { toast('订阅内核未运行，仅展示缓存节点', 'err'); return; }
     try {
       await invoke('select_proxy', { group: card.dataset.group, name: card.dataset.node });
-      document.querySelectorAll('.node-card').forEach(c => c.classList.toggle('current', c === card));
+      document.querySelectorAll('.snode-card').forEach(c => c.classList.toggle('current', c === card));
       toast('已切换到 ' + card.dataset.node, 'ok');
     } catch (err) { toast(friendlyError(err), 'err'); }
   });
