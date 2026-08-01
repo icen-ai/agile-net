@@ -858,7 +858,7 @@ async function initRoles() {
     try {
       await invoke('set_client_role', { enabled: e.target.checked });
       applyClientRole(e.target.checked);
-      toast(e.target.checked ? '客户端角色已开启' : '客户端角色已停用（已断开全部端点）', 'ok');
+      toast(e.target.checked ? '扇入已开启' : '扇入已停用（已断开全部端点）', 'ok');
       if (e.target.checked) { refreshNodes(true); refreshProxy(); refreshCreds(); }
     } catch (err) {
       e.target.checked = !e.target.checked;
@@ -1440,7 +1440,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   // 浏览器模式（Web 远程面）：隐藏本机专属 UI，未登录先出登录框
   if (HTTP_MODE) {
     document.body.classList.add('http-mode');
-    const rc = $('roles-card'); if (rc) rc.style.display = 'none';
+    const rc = $('quick-roles-card'); if (rc) rc.style.display = 'none';
     const as = $('s-autostart'); if (as) { const l = as.closest('label'); if (l) l.style.display = 'none'; }
     const sp = $('proxy-mode'); if (sp) sp.style.display = 'none';
     const subNav = document.querySelector('.nav-item[data-view="subscription"]');

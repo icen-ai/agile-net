@@ -46,7 +46,7 @@
   <aside class="sidebar">
     <div id="nav-client">
       <div class="nav-item active" data-view="connect"><i data-ic="home"></i><span class="nav-label">首页</span></div>
-      <div class="nav-item" data-view="nodes"><i data-ic="globe"></i><span class="nav-label">端点</span></div>
+      <div class="nav-item" data-view="nodes"><i data-ic="globe"></i><span class="nav-label">扇入</span></div>
       <div class="nav-item" data-view="upstreams"><i data-ic="git-fork"></i><span class="nav-label">扇出</span></div>
       <div class="nav-item" data-view="routes"><i data-ic="route"></i><span class="nav-label">路由</span></div>
       <div class="nav-sep"></div>
@@ -72,7 +72,7 @@
 
   <main class="content">
     <!-- 客户端角色关闭时的全局提示 -->
-    <div id="role-banner" class="net-banner" style="display:none"><i data-ic="info" data-sz="14"></i>客户端角色已停用：端点连接与本地代理均已关闭，可在「设置 → 角色与远程面」重新开启</div>
+    <div id="role-banner" class="net-banner" style="display:none"><i data-ic="info" data-sz="14"></i>扇入已停用：端点连接与本地代理均已关闭，可在首页重新开启</div>
     <!-- 首页：快速接入 / 代理 / 手动添加 / 已保存端点 -->
     <section class="view" id="view-connect">
       <div class="page-title"><i data-ic="home" data-sz="19"></i>首页</div>
@@ -95,7 +95,25 @@
         <div class="hero-alt">或 <a href="javascript:void(0)" id="link-paste">从剪贴板导入</a> · <a href="javascript:void(0)" id="link-manual">手动填写</a></div>
       </div>
 
-      <!-- 快速接入（有节点后的紧凑条） -->
+      <!-- 角色快捷开关：扇入（客户端角色）/ 远程（Web 远程面） -->
+      <div class="card" id="quick-roles-card">
+        <div class="role-list">
+          <div class="role-row">
+            <div class="role-info"><b>扇入</b><span class="hint">作为客户端连接 AgileNet 端点（消费连接；关闭即断开全部端点与本地代理）</span></div>
+            <label class="switch"><input type="checkbox" id="r-client" checked><span class="slider"></span></label>
+          </div>
+          <div class="role-row">
+            <div class="role-info"><b>远程</b><span class="hint">Web 远程面：把本机管理界面经 HTTP 暴露（默认仅 127.0.0.1，须先设管理密码）</span></div>
+            <label class="switch"><input type="checkbox" id="r-web"><span class="slider"></span></label>
+          </div>
+          <div id="web-panel" style="display:none">
+            <div class="kv"><span class="k">监听地址</span><span><input id="web-listen" class="mono" style="width:170px"> <button id="btn-web-listen-save" class="ghost small">保存</button></span></div>
+            <div class="hint" id="web-status"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 快速接入（有端点后的紧凑条） -->
       <div class="card" id="quick-card">
         <div class="row">
           <input id="connect-url" class="grow mono" placeholder="粘贴接入链接添加另一个端点 agilenet://connect?...">
@@ -157,6 +175,23 @@
     <section class="view" id="view-upstreams" hidden>
       <div class="page-title"><i data-ic="git-fork" data-sz="19"></i>扇出</div>
       <div class="page-desc">内嵌端点作为扇出方连接目标端点（多目标扇出/容灾）；客户端隧道规则将转售给扇入端点。需服务端角色开启后生效，变更即热重启内嵌端点</div>
+      <!-- 服务端角色（扇出能力本体）：内嵌完整端点 -->
+      <div class="card">
+        <div class="role-list">
+          <div class="role-row">
+            <div class="role-info"><b>服务端角色</b><span class="hint">内嵌完整端点（Relay / 账号 / 规则 / 审计），本机可作为转发机或留守管理端</span></div>
+            <label class="switch"><input type="checkbox" id="r-server"><span class="slider"></span></label>
+          </div>
+          <div id="server-panel" style="display:none">
+            <div class="kv"><span class="k">管理 API</span><span class="mono" id="sv-api">-</span></div>
+            <div class="kv"><span class="k">Relay 监听</span><span class="mono" id="sv-relay">-</span></div>
+            <div class="row" style="margin-top:8px">
+              <button id="btn-open-console" class="ghost small"><i data-ic="external-link" data-sz="13"></i> 打开控制台</button>
+              <span class="hint inline">控制台在主窗口内嵌管理内嵌端点</span>
+            </div>
+          </div>
+        </div>
+      </div>
       <div class="card">
         <h3><i data-ic="git-fork"></i>扇出连接
           <span class="h3-tools"><button class="ghost small icon-btn" id="btn-fo-refresh" title="刷新"><i data-ic="refresh-cw" data-sz="13"></i></button></span>
@@ -179,10 +214,10 @@
       </div>
     </section>
 
-    <!-- 端点：连接状态一览 -->
+    <!-- 端点（扇入）：连接状态一览 -->
     <section class="view" id="view-nodes" hidden>
-      <div class="page-title"><i data-ic="globe" data-sz="19"></i>端点</div>
-      <div class="page-desc">已连接端点与实时状态；离线端点整卡降饱和标识</div>
+      <div class="page-title"><i data-ic="globe" data-sz="19"></i>扇入</div>
+      <div class="page-desc">作为客户端连接的 AgileNet 端点与实时状态；离线端点整卡降饱和标识</div>
       <div id="net-banner" class="net-banner" style="display:none"></div>
       <div class="card">
         <h3><i data-ic="globe"></i>端点列表
@@ -252,38 +287,7 @@
     <!-- 设置 -->
     <section class="view" id="view-settings" hidden>
       <div class="page-title"><i data-ic="settings" data-sz="19"></i>设置</div>
-      <div class="page-desc">角色开关、启动行为、语言与主题</div>
-
-      <!-- 三路独立开关：客户端 / 服务端 / Web 远程面 -->
-      <div class="card" id="roles-card">
-        <h3><i data-ic="server"></i>角色与远程面</h3>
-        <div class="role-list">
-          <div class="role-row">
-            <div class="role-info"><b>客户端角色</b><span class="hint">连接 AgileNet 端点、本地代理与路由组合（关闭即断开全部端点）</span></div>
-            <label class="switch"><input type="checkbox" id="r-client" checked><span class="slider"></span></label>
-          </div>
-          <div class="role-row">
-            <div class="role-info"><b>服务端角色</b><span class="hint">内嵌完整端点（Relay / 账号 / 规则 / 审计），本机可作为转发机或留守管理端</span></div>
-            <label class="switch"><input type="checkbox" id="r-server"><span class="slider"></span></label>
-          </div>
-          <div id="server-panel" style="display:none">
-            <div class="kv"><span class="k">管理 API</span><span class="mono" id="sv-api">-</span></div>
-            <div class="kv"><span class="k">Relay 监听</span><span class="mono" id="sv-relay">-</span></div>
-            <div class="row" style="margin-top:8px">
-              <button id="btn-open-console" class="ghost small"><i data-ic="external-link" data-sz="13"></i> 打开控制台</button>
-              <span class="hint inline">控制台在主窗口内嵌管理内嵌端点</span>
-            </div>
-          </div>
-          <div class="role-row">
-            <div class="role-info"><b>Web 远程面</b><span class="hint">把本机管理界面经 HTTP 暴露（默认仅 127.0.0.1，须先设管理密码）</span></div>
-            <label class="switch"><input type="checkbox" id="r-web"><span class="slider"></span></label>
-          </div>
-          <div id="web-panel" style="display:none">
-            <div class="kv"><span class="k">监听地址</span><span><input id="web-listen" class="mono" style="width:170px"> <button id="btn-web-listen-save" class="ghost small">保存</button></span></div>
-            <div class="hint" id="web-status"></div>
-          </div>
-        </div>
-      </div>
+      <div class="page-desc">订阅代理、启动行为、语言与主题（角色开关：扇入/远程在首页，服务端在扇出页）</div>
 
       <!-- 订阅代理：安装内核 → 激活功能（侧栏出现「订阅/代理」） -->
       <div class="card" id="sub-feature-card">

@@ -27,8 +27,8 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 #[derive(Parser, Debug)]
 #[command(
     version,
-    about = "AgileNet — start/stop/restart/status + 管理 CLI + TUI",
-    long_about = "AgileNet 服务器二进制（同一内核无 GUI）。\n\n服务管理：start / stop / restart / status（PID 文件 ~/.agile-net/anet-svc.pid）。\n资源管理：rule / group / account / token / admin / audit（需先 login）。\n控制台：tui（直连数据库兜底查看）；Web 管理端默认 http://127.0.0.1:59090/。\n\n双入口：anet = 管理命令（推荐），anet-svc = 服务器进程（裸跑等同 start）。"
+    about = "AgileNet — init/start/stop/restart/status + 扇入扇出管理 + TUI",
+    long_about = "AgileNet 命令行（anet / anet-svc 同一实现，按 argv[0] 分人格）。\n\n命令分组：\n  服务    start / stop / restart / status / init\n  扇入    client（消费连接：作为客户端引入外部端点）\n  扇出    rule / group / account / token（对外服务：扇入消费者的规则/权限/账号/令牌）\n  管理    node / login / logout / admin / audit / tui（端点自身管理与控制台）\n\n所有管理操作经节点 API 并落审计；TUI 默认走 API，--offline 数据库只读兜底。\n双入口：anet = 管理命令（推荐），anet-svc = 服务器进程（裸跑等同 start）。"
 )]
 struct App {
     #[command(subcommand)]
@@ -55,27 +55,27 @@ enum Cmd {
     Status,
     /// 节点信息（管理面）：状态总览 / 端点更名
     Node(NodeArgs),
-    /// 以客户端角色运行（连上游 + 本地代理）
+    /// 以客户端角色运行（扇入：消费外部端点连接 + 本地代理）
     Client(ClientArgs),
-    /// 打开 TUI 控制台（直连数据库兜底查看）
+    /// 打开 TUI 控制台（管理；默认走 API，--offline 数据库只读兜底）
     Tui(TuiArgs),
-    /// 交互式初始化向导（配置/管理员/系统服务/启动，首装推荐）
+    /// 交互式初始化向导（服务；配置/管理员/系统服务/启动，首装推荐）
     Init(crate::init::InitArgs),
-    /// 登录节点并保存会话（~/.anet/session.json，0600）
+    /// 登录节点并保存会话（管理；~/.anet/session.json，0600）
     Login(anet_cli::LoginArgs),
-    /// 登出并清除会话
+    /// 登出并清除会话（管理）
     Logout,
-    /// 路由规则管理
+    /// 路由规则管理（扇出：扇入消费者可访问的网段/域名）
     Rule(anet_cli::RuleArgs),
-    /// 权限组管理
+    /// 权限组管理（扇出：规则的组合授权）
     Group(anet_cli::GroupArgs),
-    /// 客户端账号管理
+    /// 客户端账号管理（扇出：扇入消费者凭据）
     Account(anet_cli::AccountArgs),
-    /// Relay 令牌管理
+    /// Relay 令牌管理（扇出：扇入中继凭据，可暴露控制面）
     Token(anet_cli::TokenArgs),
-    /// 管理员管理
+    /// 管理员管理（管理）
     Admin(anet_cli::AdminArgs),
-    /// 审计日志查询
+    /// 审计日志查询（管理）
     Audit(anet_cli::AuditArgs),
     /// 已废弃：`serve` 等同 `start`（保留兼容）
     #[command(hide = true)]

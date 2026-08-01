@@ -58,7 +58,7 @@ fn map_err<E: std::fmt::Display>(e: E) -> String {
 #[tauri::command]
 async fn connect_node(state: State<'_, AppState>, input: ConnectInput) -> Result<NodeState, String> {
     if !state.roles.lock().await.client {
-        return Err("客户端角色已停用，请在「设置 → 角色与远程面」开启".into());
+        return Err("扇入已停用，请在首页开启".into());
     }
     let params = ConnectParams {
         addr: input.addr.clone(),
@@ -176,7 +176,7 @@ async fn list_credentials(state: State<'_, AppState>) -> Result<Vec<(String, Cre
 #[tauri::command]
 async fn start_proxy(app: tauri::AppHandle, state: State<'_, AppState>, port: u16) -> Result<u16, String> {
     if !state.roles.lock().await.client {
-        return Err("客户端角色已停用，请在「设置 → 角色与远程面」开启".into());
+        return Err("扇入已停用，请在首页开启".into());
     }
     state.client.start_proxy(port).await.map_err(map_err)?;
     refresh_tray_icon(&app);
@@ -980,7 +980,7 @@ async fn set_system_proxy(state: State<'_, AppState>, enabled: bool) -> Result<(
         // 消除"必须先手动启动本地代理"的顺序陷阱
         if state.client.proxy_port() == 0 {
             if !state.roles.lock().await.client {
-                return Err("客户端角色已停用，请在「设置 → 角色与远程面」开启".into());
+                return Err("扇入已停用，请在首页开启".into());
             }
             state.client.start_proxy(57890).await.map_err(map_err)?;
         }
