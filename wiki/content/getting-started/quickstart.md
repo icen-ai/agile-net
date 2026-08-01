@@ -5,7 +5,7 @@
 ## 1. 启动节点（anet-svc）
 
 ```bash
-anet-svc serve
+anet-svc start
 # anet-svc v0.1.0 starting
 # Web Dashboard & API Server started (http://0.0.0.0:59090)
 ```
@@ -96,4 +96,4 @@ curl -x http://127.0.0.1:57890 http://git.internal/
 
 - 多级中继链：`anet-svc serve` 同时配置 `[connector]`（接上游）与 `[listener]`（供下游），见「架构与双产物」
 - 图形化管全网：`anet-gui` 开启服务端角色 + 管理版接入链接，见「带内管理面」
-- 命令行管理：`anet-svc cli`，见「命令行 anet-svc cli」
+- 命令行管理：`anet`，见「命令行 anet」

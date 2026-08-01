@@ -1,6 +1,6 @@
 # 配置文件
 
-## anet-svc serve：`agile-net.toml`
+## anet-svc start：`agile-net.toml`
 
 ```toml
 # 节点显示名称（握手下发与可管理发现用）

@@ -1,68 +1,99 @@
-# 命令行 anet-svc cli
+# 命令行 anet
 
-`anet-svc cli` 是命令行管理工具（原 `anet` 收编），适合脚本化与远程运维。
+`anet` 是管理命令入口（与 `anet-svc` 同一实现，按 argv[0] 自动分人格），适合脚本化与远程运维。
 
 - 会话持久化于 `~/.anet/session.json`（Unix 0600），access_token 过期自动刷新
-- ID 前缀解析：输入前几位即可（如 `anet-svc cli rule delete 3f2a`）
+- ID 前缀解析：输入前几位即可（如 `anet rule delete 3f2a`）
 - `--json` 机器可读输出，默认表格输出
-- `--api <url>` 覆盖节点地址（默认读会话或 `http://127.0.0.1:59090`）
+- `--api <url>` 覆盖端点地址（默认读会话或 `http://127.0.0.1:59090`）
+- 兼容：`anet-svc cli ...` 旧式入口仍可用（已废弃，等同顶层同名命令）
+
+## 首装：初始化向导
+
+```bash
+anet init          # 交互式：配置文件 → 端点名称 → Web 管理/API → Relay → 管理员 → 系统服务 → 启动
+anet init -y       # 非交互（自动化）：密码经 AGILE_ADMIN_PASSWORD 提供
+```
+
+系统服务自动识别发行版（Ubuntu / Rocky / 麒麟 / 统信 UOS 等 systemd 系）注册并启动；
+无 root 降级打印 sudo 指引；Windows 经 sc.exe 注册。
+
+## 服务管理
+
+```bash
+anet start [config.toml] [-d]   # 启动（默认前台；-d 后台守护）
+anet stop                       # 停止（PID 文件 ~/.agile-net/anet-svc.pid）
+anet restart [config.toml]      # 重启
+anet status                     # 运行状态（进程/配置/API 可达性，无需登录）
+```
 
 ## 登录与会话
 
 ```bash
-anet-svc cli login -u admin -p 'AdminPass123'     # 缺省密码则安全提示输入
-anet-svc cli status                                # 节点运行状态总览
-anet-svc cli logout                                # 清除会话
+anet login -u admin -p 'AdminPass123'   # 缺省密码则安全提示输入
+anet logout                              # 清除会话
+```
+
+## 节点信息
+
+```bash
+anet node status        # 端点运行状态总览
+anet node rename 机房A  # 端点更名（立即生效并落审计）
 ```
 
 ## 规则管理
 
 ```bash
-anet-svc cli rule list [--type ip-cidr] [--json]
-anet-svc cli rule add --type ip-cidr --value 10.12.0.0/16 --remark 办公网
-anet-svc cli rule add --type host --value git.internal --resolve
-anet-svc cli rule delete 3f2a                      # ID 前缀
+anet rule list [--type ip-cidr] [--json]
+anet rule add --type ip-cidr --value 10.12.0.0/16 --remark 办公网
+anet rule add --type host --value git.internal --resolve
+anet rule update 3f2a --remark 新备注
+anet rule delete 3f2a [--force]          # ID 前缀；--force 解除引用
+anet rule batch rules.json [--on-conflict skip]
 ```
 
 ## 权限组
 
 ```bash
-anet-svc cli group add --name office
-anet-svc cli group list
-anet-svc cli group bind-rules <group> <rule-id> [<rule-id>...]
+anet group add --name office [--rule-ids 3f2a,9f2e]
+anet group list / anet group show office
+anet group set-rules office 3f2a 9f2e     # 全量设置绑定规则
+anet group update office --name 新名称
+anet group delete office [--force]
 ```
 
 ## 客户端账号
 
 ```bash
-anet-svc cli account add --username zhangsan --group office
+anet account add --username zhangsan --group office
 # 输出 sk- 密码与 connect_url（仅一次）
-anet-svc cli account add --username ops --group office --admin-console   # 管理版接入链接
-anet-svc cli account list [--online]
-anet-svc cli account reset-password 8c1d
-anet-svc cli account disable 8c1d / anet-svc cli account enable 8c1d
-anet-svc cli account delete 8c1d
+anet account add --username ops --group office --admin   # 管理版接入链接（签发记审计）
+anet account list [--group office] [--enabled true]
+anet account update 8c1d --enabled false / --admin true
+anet account reset-password 8c1d
+anet account delete 8c1d
 ```
 
 ## Relay 令牌
 
 ```bash
-anet-svc cli token add --remark 分公司跳板机
-anet-svc cli token add --remark 机房中继 --expose-control --scope rules   # 暴露控制面
-anet-svc cli token list
-anet-svc cli token delete 9f2e
+anet token add --remark 分公司跳板机
+anet token add --remark 机房中继 --expose-control --scope rules   # 暴露控制面（ro/rules/full）
+anet token list                            # 含暴露面/档位列
+anet token delete 9f2e                     # 在线下游立即被踢
 ```
 
 ## 管理员与审计
 
 ```bash
-anet-svc cli admin add --username ops2            # 安全提示输入密码
-anet-svc cli admin passwd                          # 修改自己的密码
-anet-svc cli audit list [--action admin.login] [--json]
+anet admin list / anet admin add --username ops2    # 安全提示输入密码
+anet admin passwd                                   # 修改自己的密码
+anet audit list [--action admin.login] [--json]
 ```
 
-## 子命令 tui
+## TUI
 
 ```bash
-anet-svc cli tui    # 等价于 anet-svc tui（直连数据库的本地控制台）
+anet tui               # 默认走 API（需 login），写操作落审计
+anet tui --offline     # 直连数据库只读兜底（节点未启动时也能查看）
 ```

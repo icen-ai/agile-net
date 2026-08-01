@@ -19,7 +19,7 @@ AgileNet 有两个产物：**anet-svc**（服务器）与 **anet-gui**（图形�
 sha256sum -c anet-svc-linux-x64.sha256
 chmod +x anet-svc-linux-x64
 ./anet-svc --version          # anet-svc 0.1.0
-./anet-svc serve              # 默认子命令，读取 ./agile-net.toml（缺省配置自动可用）
+./anet-svc start              # 读取 ./agile-net.toml（缺省配置自动可用）
 ```
 
 ### systemd（Linux 常驻）
@@ -32,7 +32,7 @@ After=network.target
 
 [Service]
 WorkingDirectory=/opt/agile-net
-ExecStart=/opt/agile-net/anet-svc serve /opt/agile-net/agile-net.toml
+ExecStart=/opt/agile-net/anet-svc start /opt/agile-net/agile-net.toml
 Restart=always
 RestartSec=3
 LimitNOFILE=65535

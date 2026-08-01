@@ -11,14 +11,15 @@
 **产品方向（双产物，消灭 frps/frpc 式分裂）**：
 
 - `anet-gui`：全功能图形客户端（Windows / macOS / Android），三路独立开关——客户端角色 / 服务端角色 / Web 远程面，一台有 UI 的机器勾一下即可成为内网转发机或机房留守管理端
-- `anet-svc`：服务器二进制（`serve` 默认 / `tui` / `cli` 子命令），角色全靠配置：relay listener（当上游）、connector（当下游中继）、client（终端下游）、proxy（本地代理）、api（Web 管理面）
+- `anet-svc`：服务器二进制（`start` 默认 / `stop` / `restart` / `status` / `init` 首装向导 / `client` / `tui` 子命令），角色全靠配置：relay listener（当上游）、connector（当下游中继）、client（终端下游）、proxy（本地代理）、api（Web 管理面）
+- `anet`：管理命令入口（与 anet-svc 同一实现、按 argv[0] 分人格）：`login` / `node` / `rule` / `group` / `account` / `token` / `admin` / `audit` / `tui`
 
 统一与分布式管理面的完整设计（带内管理、relay 暴露控制面开关、管理可达自动发现、分期 P1→P3）见 **`docs/plan/merge-gui-svc.md`**，实施以其为准。
 
 **当前仓库结构**（双产物统一已完成，见上述计划）：
 
 - `crates/core`：核心网络协议（mux 帧/会话）、TLS 握手（证书固定 pinning）、Relay 穿透（listener/connector）、客户端隧道（`ClientTunnel`）、代理入站（SOCKS5/HTTP + 认证）与路由器（`ProxyRouter`）。
-- `crates/node`：服务端/节点库 + 二进制 **`anet-svc`**（`serve` 默认 / `tui` / `client` / `cli` 子命令）：装配根 `service::NodeServer`、SQLite（版本化迁移）、Axum REST API、Web 管理后台（`ui`）、TUI、CLI（原 `anet` 收编为 `cli` 模块）、内存日志缓冲。
+- `crates/node`：服务端/节点库 + 二进制 **`anet-svc` / `anet`**（同一实现双入口：`start` 默认 / `stop` / `restart` / `status` / `init` / `node` / `rule` / `group` / `account` / `token` / `admin` / `audit` / `client` / `tui`）：装配根 `service::NodeServer`、SQLite（版本化迁移）、Axum REST API、Web 管理后台（`ui`）、TUI（API 优先 + DB 只读兜底）、CLI（`cli` 模块）、服务管理（`svc` 模块 PID 文件）、首装向导（`init` 模块）、内存日志缓冲。
 - `crates/client`：客户端核心引擎（库）：多节点连接（登录/配置/隧道/长轮询/心跳）、规则合并与暂停（`paused_rules`）、本地代理、hosts 管理、凭据存储、管理面 Web API（`api` 模块）、客户端角色守护（`daemon` 模块）。
 - `apps/desktop`：**anet-gui**（Tauri 2 桌面/Android，独立 workspace，前端无 Node 构建链）：三路独立开关（客户端/服务端/Web 远程面）+ 控制台窗口 + 订阅代理（mihomo sidecar 内核托管，GUI 独享）+ 系统代理托管（冲突巡检提醒）。
 - `.docker`：四级节点链编排测试（`docker-compose.test.yaml`）与常驻演示（`docker-compose.chain.yaml`）。
@@ -85,11 +86,24 @@ rtk cargo test --workspace
 # 代码规范检查
 rtk cargo clippy --workspace
 
-# 启动 anet-svc（serve 默认子命令，API 59090 端口）
+# 启动 anet-svc（裸跑等同 start，API 59090 端口）
 rtk cargo run -p agile-net-node
 
-# CLI 管理工具（anet-svc cli 子命令，原 anet 收编）
-rtk cargo run -p agile-net-node -- cli --help
+# 首装初始化向导（配置/管理员/系统服务/启动，交互式）
+rtk cargo run -p agile-net-node --bin anet -- init
+
+# 服务管理（PID 文件 ~/.agile-net/anet-svc.pid）
+rtk cargo run -p agile-net-node --bin anet -- start target/tmp/test-node.toml -d
+rtk cargo run -p agile-net-node --bin anet -- status
+rtk cargo run -p agile-net-node --bin anet -- stop
+
+# 管理 CLI（anet 入口；资源管理需先 login）
+rtk cargo run -p agile-net-node --bin anet -- --help
+rtk cargo run -p agile-net-node --bin anet -- login
+rtk cargo run -p agile-net-node --bin anet -- rule list
+
+# TUI 控制台（默认走 API 需 login；--offline 直连数据库只读兜底）
+rtk cargo run -p agile-net-node --bin anet -- tui --offline
 
 # 客户端角色（anet-svc client，原 agile-net-client daemon）
 rtk cargo run -p agile-net-node -- client agile-net-client.toml
