@@ -1,9 +1,9 @@
-//! AgileNet CLI（`anet-svc cli` 子命令）— 企业级命令行管理工具
+//! AgileNet CLI（`anet-svc` 顶层管理命令）— 企业级命令行管理工具
 //!
 //! 特性：
 //! - 会话持久化（~/.anet/session.json，Unix 0600），access_token 过期自动刷新
-//! - 全量管理命令：status / rule / group / account / token / audit / tui
-//! - ID 前缀解析（输入前几位即可，如 `anet-svc cli rule delete 3f2a`）
+//! - 全量管理命令：node / rule / group / account / token / admin / audit
+//! - ID 前缀解析（输入前几位即可，如 `anet-svc rule delete 3f2a`）
 //! - --json 机器可读输出，默认表格输出
 
 use anyhow::{Context as _, Result, anyhow, bail};
@@ -14,7 +14,7 @@ use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "anet-svc cli",
+    name = "anet cli",
     version,
     about = "AgileNet CLI — 网络穿透与代理链路由管理工具"
 )]
@@ -33,11 +33,11 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    /// 登录节点并保存会话
+    /// 登录端点并保存会话
     Login(LoginArgs),
     /// 登出并清除会话
     Logout,
-    /// 节点运行状态总览
+    /// 端点运行状态总览（等同 `node status`）
     Status,
     /// 路由规则管理
     Rule(RuleArgs),
@@ -150,10 +150,15 @@ pub struct GroupArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum GroupSub {
+    /// 列出权限组（支持搜索/分页）
     List(ListArgs),
+    /// 查看权限组详情（含绑定规则）
     Show(IdOnlyArgs),
+    /// 新建权限组（可同时绑定规则）
     Add(GroupAddArgs),
+    /// 更新权限组名称/备注
     Update(GroupUpdateArgs),
+    /// 删除权限组（--force 解除账号引用）
     Delete(IdArgs),
     /// 全量设置绑定规则（传规则 ID 列表）
     SetRules(SetRulesArgs),
@@ -200,10 +205,15 @@ pub struct AccountArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum AccountSub {
+    /// 列出账号（搜索/权限组/状态过滤）
     List(AccountListArgs),
+    /// 新建账号（密码与接入链接仅显示一次；--admin 签发管理版链接）
     Add(AccountAddArgs),
+    /// 更新账号（换组/启停/备注/管理权限收放）
     Update(AccountUpdateArgs),
+    /// 删除账号
     Delete(IdArgs),
+    /// 重置密码（新密码与接入链接仅显示一次）
     ResetPassword(IdOnlyArgs),
 }
 
@@ -230,6 +240,9 @@ pub struct AccountAddArgs {
     pub group: String,
     #[arg(long)]
     pub remark: Option<String>,
+    /// 同时授予管理权限（签发管理版接入链接，签发记审计，仅发给可信管理员）
+    #[arg(long)]
+    pub admin: bool,
 }
 
 #[derive(Args, Debug)]
@@ -241,6 +254,9 @@ pub struct AccountUpdateArgs {
     pub enabled: Option<bool>,
     #[arg(long)]
     pub remark: Option<String>,
+    /// 管理权限收放（true 授予 / false 收回，变更记审计）
+    #[arg(long)]
+    pub admin: Option<bool>,
 }
 
 // ---------- Token ----------
@@ -252,8 +268,11 @@ pub struct TokenArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum TokenSub {
+    /// 列出令牌（前缀/暴露控制面/档位/最近使用）
     List,
+    /// 生成令牌（明文仅显示一次；--expose-control 暴露控制面）
     Add(TokenAddArgs),
+    /// 吊销令牌（在线下游立即被踢）
     Delete(IdOnlyArgs),
 }
 
@@ -261,6 +280,12 @@ pub enum TokenSub {
 pub struct TokenAddArgs {
     #[arg(long)]
     pub remark: Option<String>,
+    /// 允许持该令牌的下游中继管理本端点（暴露控制面，默认关）
+    #[arg(long)]
+    pub expose_control: bool,
+    /// 控制面授权档位：ro（只读）/ rules（可改规则）/ full（全权）
+    #[arg(long, default_value = "full", value_parser = ["ro", "rules", "full"])]
+    pub scope: String,
 }
 
 // ---------- Admin ----------
@@ -533,12 +558,15 @@ async fn resolve_id(client: &mut AnetClient, list_path: &str, prefix: &str) -> R
 // ==================== 命令执行 ====================
 
 pub async fn run_cli(cli: Cli) -> Result<()> {
-    let json_out = cli.json;
+    dispatch(cli.command, cli.api, cli.json).await
+}
 
-    match cli.command {
-        Commands::Login(args) => cmd_login(cli.api, args).await,
+/// 顶层命令分派（`anet-svc <rule|group|...>` 与旧式 `anet-svc cli ...` 共用）。
+pub async fn dispatch(command: Commands, api: Option<String>, json_out: bool) -> Result<()> {
+    match command {
+        Commands::Login(args) => cmd_login(api, args).await,
         Commands::Logout => {
-            if let Ok(mut client) = AnetClient::from_session(cli.api) {
+            if let Ok(mut client) = AnetClient::from_session(api) {
                 let _ = client
                     .api(
                         "POST",
@@ -554,65 +582,84 @@ pub async fn run_cli(cli: Cli) -> Result<()> {
         Commands::Tui => {
             let db_path =
                 std::env::var("DATABASE_PATH").unwrap_or_else(|_| "agile-net.db".to_string());
-            let db = crate::db::Database::open(&db_path)?;
-            crate::tui::run_tui(db)?;
+            crate::tui::run_tui(crate::tui::TuiOptions {
+                offline: false,
+                db_path,
+                api: None,
+            })?;
             Ok(())
         }
-        Commands::Status => {
-            let mut client = AnetClient::from_session(cli.api)?;
-            let d = client.api("GET", "/api/v1/admin/node/status", None).await?;
-            if json_out {
-                print_json(&d);
-            } else {
-                println!("节点状态");
-                println!("  名称:     {}", d["node_name"].as_str().unwrap_or("-"));
-                println!("  版本:     v{}", d["version"].as_str().unwrap_or("-"));
-                println!("  运行时长: {}s", d["uptime"].as_u64().unwrap_or(0));
-                let l = &d["roles"]["listener"];
-                println!(
-                    "  Relay:    {} (下游 {} · 在线客户端 {})",
-                    if l["enabled"].as_bool().unwrap_or(false) {
-                        l["addr"].as_str().unwrap_or("启用")
-                    } else {
-                        "未启用"
-                    },
-                    l["connected_connectors"].as_u64().unwrap_or(0),
-                    l["online_clients"].as_u64().unwrap_or(0)
-                );
-                let c = &d["roles"]["connector"];
-                println!(
-                    "  上游:     {}",
-                    if c["enabled"].as_bool().unwrap_or(false) {
-                        format!(
-                            "{} [{}]",
-                            c["upstream"].as_str().unwrap_or("-"),
-                            c["status"].as_str().unwrap_or("-")
-                        )
-                    } else {
-                        "未启用".to_string()
-                    }
-                );
-                let a = &d["accounts"];
-                println!(
-                    "  账号:     共 {} · 在线 {} · 禁用 {}",
-                    a["total"].as_i64().unwrap_or(0),
-                    a["online"].as_i64().unwrap_or(0),
-                    a["disabled"].as_i64().unwrap_or(0)
-                );
-            }
-            Ok(())
-        }
-        Commands::Rule(args) => cmd_rule(cli.api, args, json_out).await,
-        Commands::Group(args) => cmd_group(cli.api, args, json_out).await,
-        Commands::Account(args) => cmd_account(cli.api, args, json_out).await,
-        Commands::Token(args) => cmd_token(cli.api, args, json_out).await,
-        Commands::Admin(args) => cmd_admin(cli.api, args, json_out).await,
-        Commands::Audit(args) => cmd_audit(cli.api, args, json_out).await,
+        Commands::Status => cmd_node_status(api, json_out).await,
+        Commands::Rule(args) => cmd_rule(api, args, json_out).await,
+        Commands::Group(args) => cmd_group(api, args, json_out).await,
+        Commands::Account(args) => cmd_account(api, args, json_out).await,
+        Commands::Token(args) => cmd_token(api, args, json_out).await,
+        Commands::Admin(args) => cmd_admin(api, args, json_out).await,
+        Commands::Audit(args) => cmd_audit(api, args, json_out).await,
     }
 }
 
-async fn cmd_login(api: Option<String>, args: LoginArgs) -> Result<()> {
-    let base = api
+/// 节点运行状态总览（`anet-svc node status`）。
+pub async fn cmd_node_status(api: Option<String>, json_out: bool) -> Result<()> {
+    let mut client = AnetClient::from_session(api)?;
+    let d = client.api("GET", "/api/v1/admin/node/status", None).await?;
+    if json_out {
+        print_json(&d);
+    } else {
+        println!("端点状态");
+        println!("  名称:     {}", d["node_name"].as_str().unwrap_or("-"));
+        println!("  版本:     v{}", d["version"].as_str().unwrap_or("-"));
+        println!("  运行时长: {}s", d["uptime"].as_u64().unwrap_or(0));
+        let l = &d["roles"]["listener"];
+        println!(
+            "  Relay:    {} (下游 {} · 在线客户端 {})",
+            if l["enabled"].as_bool().unwrap_or(false) {
+                l["addr"].as_str().unwrap_or("启用")
+            } else {
+                "未启用"
+            },
+            l["connected_connectors"].as_u64().unwrap_or(0),
+            l["online_clients"].as_u64().unwrap_or(0)
+        );
+        let c = &d["roles"]["connector"];
+        println!(
+            "  上游:     {}",
+            if c["enabled"].as_bool().unwrap_or(false) {
+                format!(
+                    "{} [{}]",
+                    c["upstream"].as_str().unwrap_or("-"),
+                    c["status"].as_str().unwrap_or("-")
+                )
+            } else {
+                "未启用".to_string()
+            }
+        );
+        let a = &d["accounts"];
+        println!(
+            "  账号:     共 {} · 在线 {} · 禁用 {}",
+            a["total"].as_i64().unwrap_or(0),
+            a["online"].as_i64().unwrap_or(0),
+            a["disabled"].as_i64().unwrap_or(0)
+        );
+    }
+    Ok(())
+}
+
+/// 端点更名（`anet-svc node rename <name>`，写入配置立即生效并落审计）。
+pub async fn cmd_node_rename(api: Option<String>, name: String) -> Result<()> {
+    let mut client = AnetClient::from_session(api)?;
+    client
+        .api(
+            "PUT",
+            "/api/v1/admin/node/settings",
+            Some(json!({ "node_name": name })),
+        )
+        .await?;
+    println!("端点已更名");
+    Ok(())
+}
+
+async fn cmd_login(api: Option<String>, args: LoginArgs) -> Result<()> {    let base = api
         .or_else(|| Session::load().map(|s| s.api))
         .unwrap_or_else(|| "http://127.0.0.1:59090".to_string());
     let base = base.trim_end_matches('/').to_string();
@@ -956,6 +1003,7 @@ async fn cmd_account(api: Option<String>, args: AccountArgs, json_out: bool) -> 
                 resolve_id(&mut client, "/api/v1/admin/groups?page_size=100", &a.group).await?;
             let d = client.api("POST", "/api/v1/admin/accounts", Some(json!({
                 "username": a.username, "group_id": gid, "remark": a.remark.unwrap_or_default(),
+                "admin_console": a.admin,
             }))).await?;
             if json_out {
                 print_json(&d);
@@ -966,6 +1014,9 @@ async fn cmd_account(api: Option<String>, args: AccountArgs, json_out: bool) -> 
                     d["password"].as_str().unwrap_or("-")
                 );
                 println!("   接入链接: {}", d["connect_url"].as_str().unwrap_or("-"));
+                if a.admin {
+                    println!("   已授予管理权限：该链接可登录端点控制台，请按管理员凭据级别保管");
+                }
                 println!("   请立即保存，密码不可找回");
             }
         }
@@ -981,6 +1032,9 @@ async fn cmd_account(api: Option<String>, args: AccountArgs, json_out: bool) -> 
             }
             if let Some(r) = u.remark {
                 body["remark"] = json!(r);
+            }
+            if let Some(adm) = u.admin {
+                body["admin_console"] = json!(adm);
             }
             client
                 .api("PUT", &format!("/api/v1/admin/accounts/{id}"), Some(body))
@@ -1037,13 +1091,18 @@ async fn cmd_token(api: Option<String>, args: TokenArgs, json_out: bool) -> Resu
                         vec![
                             t["id"].as_str().unwrap_or("")[..8].to_string(),
                             t["token_prefix"].as_str().unwrap_or("-").to_string(),
+                            if t["expose_control"].as_bool().unwrap_or(false) {
+                                t["control_scope"].as_str().unwrap_or("开").to_string()
+                            } else {
+                                "关".to_string()
+                            },
                             t["remark"].as_str().unwrap_or("-").to_string(),
                             t["last_used_at"].as_str().unwrap_or("未使用").to_string(),
                             t["created_at"].as_str().unwrap_or("-").to_string(),
                         ]
                     })
                     .collect();
-                print_table(&["ID", "前缀", "备注", "最近使用", "创建时间"], rows);
+                print_table(&["ID", "前缀", "暴露面", "备注", "最近使用", "创建时间"], rows);
             }
         }
         TokenSub::Add(a) => {
@@ -1053,6 +1112,8 @@ async fn cmd_token(api: Option<String>, args: TokenArgs, json_out: bool) -> Resu
                     "/api/v1/admin/node/relay-tokens",
                     Some(json!({
                         "remark": a.remark.unwrap_or_default(),
+                        "expose_control": a.expose_control,
+                        "control_scope": a.scope,
                     })),
                 )
                 .await?;
@@ -1063,6 +1124,9 @@ async fn cmd_token(api: Option<String>, args: TokenArgs, json_out: bool) -> Resu
                     "Relay 令牌已生成（仅此一次）: {}",
                     d["token"].as_str().unwrap_or("-")
                 );
+                if a.expose_control {
+                    println!("   已暴露控制面（档位 {}）：持令牌下游可管理本端点", a.scope);
+                }
                 println!("   服务端只存哈希，请立即保存");
             }
         }
