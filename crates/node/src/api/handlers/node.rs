@@ -3,7 +3,6 @@
 use super::audit;
 use crate::api::extractors::{AdminAuth, ClientIp};
 use crate::api::{ApiState, codes, err, ok};
-use agile_net_core::relay::ConnectionState;
 use axum::{
     Json,
     extract::{
@@ -46,20 +45,16 @@ pub async fn status(AdminAuth(_): AdminAuth, State(state): State<ApiState>) -> R
         None => (json!({ "enabled": false }), 0),
     };
 
-    // 扇出（多目标：地址 + 逐条状态）
+    // 扇出（多目标：地址 + 逐条状态；数据源为 ConnectorManager）
     let connectors_json: Vec<serde_json::Value> = state
         .runtime
-        .connectors
-        .iter()
-        .map(|c| {
+        .connector_manager
+        .states()
+        .into_iter()
+        .map(|(upstream, status)| {
             json!({
-                "upstream": c.upstream_addr().to_string(),
-                "status": match c.state() {
-                    ConnectionState::Connected => "connected",
-                    ConnectionState::Connecting => "connecting",
-                    ConnectionState::Reconnecting => "reconnecting",
-                    ConnectionState::Disconnected => "disconnected",
-                },
+                "upstream": upstream,
+                "status": status,
             })
         })
         .collect();
@@ -469,6 +464,11 @@ async fn handle_ws(mut socket: WebSocket, state: ApiState) {
                         "type": "account.offline",
                         "time": chrono::Utc::now().to_rfc3339(),
                         "data": { "account_id": account_id },
+                    }),
+                    Some(PeerEvent::AclDenied { peer_label, target }) => json!({
+                        "type": "peer.acl_denied",
+                        "time": chrono::Utc::now().to_rfc3339(),
+                        "data": { "peer_label": peer_label, "target": target },
                     }),
                     None => break,
                 }

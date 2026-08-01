@@ -27,7 +27,7 @@ async fn tui_app_state_initialization() {
 async fn tui_key_event_handling() {
     let mut app = db_app(Database::in_memory().unwrap());
 
-    // Tab 键依次切换 6 个页签后回到起点
+    // Tab 键依次切换 7 个页签后回到起点
     app.handle_key(KeyCode::Tab);
     assert_eq!(app.current_tab, Tab::Rules);
     app.handle_key(KeyCode::Tab);
@@ -36,6 +36,8 @@ async fn tui_key_event_handling() {
     assert_eq!(app.current_tab, Tab::Accounts);
     app.handle_key(KeyCode::Tab);
     assert_eq!(app.current_tab, Tab::Tokens);
+    app.handle_key(KeyCode::Tab);
+    assert_eq!(app.current_tab, Tab::Connectors);
     app.handle_key(KeyCode::Tab);
     assert_eq!(app.current_tab, Tab::Audit);
     app.handle_key(KeyCode::Tab);

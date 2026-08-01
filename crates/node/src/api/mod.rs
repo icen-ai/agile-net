@@ -9,9 +9,8 @@ pub mod handlers;
 use crate::auth::jwt::JwtService;
 use crate::db::Database;
 use crate::logs::LogBuffer;
+use crate::service::connectors::ConnectorManager;
 use agile_net_core::proxy::inbound::ProxyStats;
-use agile_net_core::relay::RelayConnector;
-use agile_net_core::relay::connector::ConnectionState;
 use agile_net_core::relay::listener::RelayListener;
 use axum::{
     Router,
@@ -27,8 +26,8 @@ use std::time::{Duration, Instant};
 pub struct NodeRuntime {
     pub started_at: Instant,
     pub listener: Option<Arc<RelayListener>>,
-    /// 全部上游 connector（多上游扇出/容灾）
-    pub connectors: Vec<Arc<RelayConnector>>,
+    /// 扇出 connector 管理器（多目标扇出/容灾；DB 为唯一事实来源）
+    pub connector_manager: Arc<ConnectorManager>,
     pub proxy_stats: Option<Arc<ProxyStats>>,
     pub proxy_listen: Option<String>,
     pub log_buffer: LogBuffer,
@@ -41,25 +40,7 @@ pub struct NodeRuntime {
 impl NodeRuntime {
     /// 扇出汇总状态：任一连通则 connected，全无扇出配置则 disabled。
     pub fn connector_status(&self) -> &'static str {
-        if self.connectors.is_empty() {
-            return "disabled";
-        }
-        let mut any_connected = false;
-        let mut any_active = false;
-        for c in &self.connectors {
-            match c.state() {
-                ConnectionState::Connected => any_connected = true,
-                ConnectionState::Connecting | ConnectionState::Reconnecting => any_active = true,
-                ConnectionState::Disconnected => {}
-            }
-        }
-        if any_connected {
-            "connected"
-        } else if any_active {
-            "connecting"
-        } else {
-            "disconnected"
-        }
+        self.connector_manager.aggregate_status()
     }
 
     pub fn uptime_secs(&self) -> u64 {
@@ -370,6 +351,10 @@ pub fn create_app(state: ApiState) -> Router {
             "/api/v1/admin/groups/{id}/rules",
             put(handlers::groups::set_group_rules),
         )
+        .route(
+            "/api/v1/admin/groups/{id}/detail",
+            get(handlers::groups::get_group_detail),
+        )
         // ---- Admin: Accounts ----
         .route(
             "/api/v1/admin/accounts",
@@ -417,6 +402,22 @@ pub fn create_app(state: ApiState) -> Router {
         .route(
             "/api/v1/admin/node/relay-tokens/{id}",
             put(handlers::relay_tokens::update_token).delete(handlers::relay_tokens::delete_token),
+        )
+        .route(
+            "/api/v1/admin/connectors",
+            get(handlers::connectors::list_connectors).post(handlers::connectors::create_connector),
+        )
+        .route(
+            "/api/v1/admin/connectors/{id}",
+            put(handlers::connectors::update_connector).delete(handlers::connectors::delete_connector),
+        )
+        .route(
+            "/api/v1/admin/connectors/{id}/enable",
+            post(handlers::connectors::enable_connector),
+        )
+        .route(
+            "/api/v1/admin/connectors/{id}/disable",
+            post(handlers::connectors::disable_connector),
         )
         .route("/api/v1/admin/node/events", any(handlers::node::events_ws))
         // ---- Admin: Audit ----

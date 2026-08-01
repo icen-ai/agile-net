@@ -6,7 +6,7 @@
 //! - 开关变更与 Web 面暴露变更写入 `~/.agile-net/gui-audit.jsonl`（审计）
 //! - Web 远程面管理密码以 argon2id 哈希存于 `~/.agile-net/web-auth.json`
 
-use agile_net_core::config::node::{ApiConfig, ConnectorConfig, ListenerConfig};
+use agile_net_core::config::node::{ApiConfig, ListenerConfig};
 use agile_net_core::config::NodeConfig;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -28,9 +28,6 @@ pub struct RoleSettings {
     /// Web 面监听地址（127.0.0.1 / LAN，显式可配）
     #[serde(default = "default_web_listen")]
     pub web_listen: String,
-    /// 服务端角色的扇出连接（路由再发布：客户端隧道规则转售给扇入端点；可多目标扇出/容灾）
-    #[serde(default)]
-    pub server_connectors: Vec<ServerConnectorConfig>,
     /// 开关D：订阅代理角色（mihomo sidecar，anet-gui 独享附加服务）
     #[serde(default)]
     pub subscription: bool,
@@ -50,32 +47,6 @@ fn default_true() -> bool {
     true
 }
 
-/// 内嵌节点的扇出连接配置（token 为敏感凭据，settings 文件本身 0600 保护）。
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ServerConnectorConfig {
-    /// 稳定 ID（增删改寻址；迁移旧配置时生成）
-    #[serde(default = "connector_id")]
-    pub id: String,
-    /// 扇出目标地址（host:port）
-    pub upstream_addr: String,
-    /// Relay Token（psk_）
-    pub token: String,
-    /// TLS SNI 域名
-    #[serde(default = "default_connector_sni")]
-    pub sni_hostname: String,
-    /// 跳过证书校验（仅开发）
-    #[serde(default)]
-    pub insecure: bool,
-}
-
-fn connector_id() -> String {
-    uuid::Uuid::new_v4().simple().to_string()
-}
-
-fn default_connector_sni() -> String {
-    "cdn.cloudflare.com".into()
-}
-
 fn default_web_listen() -> String {
     DEFAULT_WEB_LISTEN.to_string()
 }
@@ -87,7 +58,6 @@ impl Default for RoleSettings {
             server: false,
             web: false,
             web_listen: default_web_listen(),
-            server_connectors: Vec::new(),
             subscription: false,
             subscription_feature: false,
             subscription_unified: true,
@@ -129,24 +99,8 @@ impl RoleSettings {
         let Some(raw) = std::fs::read_to_string(settings_path()).ok() else {
             return Self::default();
         };
-        let mut v: serde_json::Value = match serde_json::from_str(&raw) {
-            Ok(v) => v,
-            Err(_) => return Self::default(),
-        };
-        // 旧单条 server_connector 对象迁移为 server_connectors 数组（保留既有配置）
-        if let Some(obj) = v.get("server_connector").cloned() {
-            if obj.is_object() {
-                let existing = v
-                    .get("server_connectors")
-                    .and_then(|a| a.as_array())
-                    .map(|a| a.len())
-                    .unwrap_or(0);
-                if existing == 0 {
-                    v["server_connectors"] = serde_json::json!([obj]);
-                }
-            }
-        }
-        serde_json::from_value(v).unwrap_or_default()
+        // 旧版 server_connector(s) 字段随 serde 忽略键直接丢弃（扇出已入库管理，不再自存配置）
+        serde_json::from_str(&raw).unwrap_or_default()
     }
 
     pub fn save(&self) -> Result<(), String> {
@@ -191,8 +145,9 @@ pub fn audit(action: &str, detail: serde_json::Value) {
     }
 }
 
-/// 构建内嵌节点配置（默认端口避让本地独立节点与 Docker 演示链；扇出连接可选多目标）。
-pub fn build_embedded_config(connectors: &[ServerConnectorConfig]) -> NodeConfig {
+/// 构建内嵌节点配置（默认端口避让本地独立节点与 Docker 演示链）。
+/// 扇出连接不再自 TOML 生成：以 SQLite connector 表为唯一事实来源（管理面 CRUD + 热操作）。
+pub fn build_embedded_config() -> NodeConfig {
     let dir = embedded_dir();
     let certs = dir.join("certs");
     NodeConfig {
@@ -210,18 +165,7 @@ pub fn build_embedded_config(connectors: &[ServerConnectorConfig]) -> NodeConfig
             key_path: certs.join("relay-key.pem").to_string_lossy().to_string(),
             sni_hostname: "cdn.cloudflare.com".into(),
         }),
-        connectors: connectors
-            .iter()
-            .map(|c| ConnectorConfig {
-                upstream_addr: c.upstream_addr.clone(),
-                token: c.token.clone(),
-                sni_hostname: c.sni_hostname.clone(),
-                advertise: Vec::new(), // 通告集 = 客户端隧道规则（动态再发布）
-                ca_cert_path: None,
-                pinned_cert_path: None,
-                insecure: c.insecure,
-            })
-            .collect(),
+        connectors: Vec::new(),
         proxy: None,
         acme: None,
         log: None,

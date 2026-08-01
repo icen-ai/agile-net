@@ -26,6 +26,9 @@ pub struct CreateTokenRequest {
     /// 管理授权档位：ro / rules / full
     #[serde(default = "default_scope")]
     pub control_scope: String,
+    /// 收敛权限组（缺省/null = 不收敛，放行一切）
+    #[serde(default)]
+    pub group_id: Option<String>,
 }
 
 fn default_scope() -> String {
@@ -56,17 +59,27 @@ pub async fn create_token(
             "control_scope must be one of ro/rules/full",
         );
     }
+    if let Some(gid) = &req.group_id
+        && state.db.get_group(gid).unwrap_or(None).is_none()
+    {
+        return err(
+            StatusCode::NOT_FOUND,
+            codes::NOT_FOUND,
+            format!("group not found: {gid}"),
+        );
+    }
 
     let token = generate_relay_token();
     let token_hash = sha256_hex(token.as_bytes());
     let prefix = format!("{}****", &token[..8]);
 
-    match state.db.create_relay_token_full(
+    match state.db.create_relay_token_with_group(
         &token_hash,
         &prefix,
         &req.remark,
         req.expose_control,
         &req.control_scope,
+        req.group_id.as_deref(),
     ) {
         Ok(record) => {
             audit(
@@ -87,6 +100,16 @@ pub async fn create_token(
                     &format!("on (scope={})", req.control_scope),
                 );
             }
+            if let Some(gid) = &req.group_id {
+                audit(
+                    &state,
+                    &claims,
+                    &ip,
+                    "relay_token.set_group",
+                    Some(&record.id),
+                    &format!("group_id={gid}"),
+                );
+            }
             ok_created(json!({
                 "id": record.id,
                 "token": token,
@@ -94,6 +117,7 @@ pub async fn create_token(
                 "remark": record.remark,
                 "expose_control": record.expose_control,
                 "control_scope": record.control_scope,
+                "group_id": record.group_id,
                 "created_at": record.created_at,
             }))
         }
@@ -110,6 +134,19 @@ pub struct UpdateTokenRequest {
     pub expose_control: bool,
     #[serde(default = "default_scope")]
     pub control_scope: String,
+    /// 收敛组变更三态：缺省 = 不变，null = 不收敛，字符串 = 挂到该组。
+    /// （serde 对 Option 的显式 null 也归为 None，须 deserialize_some 区分缺省与置空）
+    #[serde(default, deserialize_with = "deserialize_some")]
+    pub group_id: Option<serde_json::Value>,
+}
+
+/// 字段出现即包 Some（含显式 null），缺省才走 default None。
+fn deserialize_some<'de, D, T>(de: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    T::deserialize(de).map(Some)
 }
 
 /// 暴露控制面开关变更（默认关；变更即审计 relay_token.expose_control）。
@@ -139,6 +176,28 @@ pub async fn update_token(
             "relay token not found",
         );
     };
+    // 收敛组入参解析：null = 不收敛，字符串 = 挂到该组（其余类型 400）
+    let new_group: Option<Option<String>> = match &req.group_id {
+        None => None,
+        Some(serde_json::Value::Null) => Some(None),
+        Some(serde_json::Value::String(s)) => Some(Some(s.clone())),
+        Some(_) => {
+            return err(
+                StatusCode::BAD_REQUEST,
+                codes::VALIDATION_FAILED,
+                "group_id must be string or null",
+            );
+        }
+    };
+    if let Some(Some(gid)) = &new_group
+        && state.db.get_group(gid).unwrap_or(None).is_none()
+    {
+        return err(
+            StatusCode::NOT_FOUND,
+            codes::NOT_FOUND,
+            format!("group not found: {gid}"),
+        );
+    }
     if let Err(e) = state
         .db
         .update_relay_token_control(&id, req.expose_control, &req.control_scope)
@@ -164,10 +223,45 @@ pub async fn update_token(
             ),
         );
     }
+
+    // 收敛组变更：写库后按哈希踢会话，在线对端重连即按新组收敛（即时生效）
+    let mut group_id_resp = existing.group_id.clone();
+    if let Some(new_group) = new_group
+        && new_group != existing.group_id
+    {
+        if let Err(e) = state.db.set_relay_token_group(&id, new_group.as_deref()) {
+            return err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                codes::INTERNAL,
+                e.to_string(),
+            );
+        }
+        if let (Some(listener), Ok(Some(hash))) = (
+            &state.runtime.listener,
+            state.db.get_relay_token_hash(&id),
+        ) && let Some(node_id) = listener.disconnect_by_token_hash(&hash)
+        {
+            tracing::info!(node = %node_id, "relay token group changed, peer kicked");
+        }
+        audit(
+            &state,
+            &claims,
+            &ip,
+            "relay_token.set_group",
+            Some(&id),
+            &match &new_group {
+                Some(gid) => format!("group_id={gid}"),
+                None => "group cleared (unrestricted)".to_string(),
+            },
+        );
+        group_id_resp = new_group;
+    }
+
     ok(json!({
         "id": id,
         "expose_control": req.expose_control,
         "control_scope": req.control_scope,
+        "group_id": group_id_resp,
     }))
 }
 

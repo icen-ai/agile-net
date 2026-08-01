@@ -78,10 +78,27 @@ anet account delete 8c1d
 
 ```bash
 anet token add --remark 分公司跳板机
+anet token add --remark 机房中继 --group office                    # 收敛到权限组（缺省 = 不收敛）
 anet token add --remark 机房中继 --expose-control --scope rules   # 暴露控制面（ro/rules/full）
-anet token list                            # 含暴露面/档位列
+anet token list                            # 含权限组/暴露面/档位列
 anet token delete 9f2e                     # 在线下游立即被踢
 ```
+
+## 扇出对端（connector）
+
+connector 为一等入库资源（TOML `[[connectors]]` 仅启动导入），增删改与启停即时生效；
+`--group` 挂权限组即对端收敛（缺省 = 不收敛）。
+
+```bash
+anet connector list                        # 含实时状态与所属组
+anet connector add --name 机房B --addr relay-b.example.com:54430 --token psk_... \
+    [--sni cdn.cloudflare.com] [--advertise 10.12.0.0/16,git.internal] [--group office]
+anet connector update 3f2a [--group 新组] [--token psk_新]   # 缺省参数保留原值
+anet connector enable 3f2a / anet connector disable 3f2a    # 启用起连 / 禁用断开
+anet connector remove 3f2a
+```
+
+扇出 token 为对端签发凭据：加密落库，创建后不回显（`update --token` 仅用于重置）。
 
 ## 管理员与审计
 

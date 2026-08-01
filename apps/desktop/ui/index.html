@@ -174,7 +174,7 @@
     <!-- 扇出：服务端角色的扇出连接（路由再发布；多目标扇出/容灾） -->
     <section class="view" id="view-upstreams" hidden>
       <div class="page-title"><i data-ic="git-fork" data-sz="19"></i>扇出</div>
-      <div class="page-desc">内嵌端点作为扇出方连接目标端点（多目标扇出/容灾）；客户端隧道规则将转售给扇入端点。需服务端角色开启后生效，变更即热重启内嵌端点</div>
+      <div class="page-desc">内嵌端点作为扇出方连接目标端点（多目标扇出/容灾）；客户端隧道规则将转售给扇入端点。需服务端角色开启后生效，变更即热生效</div>
       <!-- 服务端角色（扇出能力本体）：内嵌完整端点 -->
       <div class="card">
         <div class="role-list">
@@ -204,6 +204,7 @@
           <div><label>目标地址</label><input id="fo-addr" class="mono" placeholder="root.example.com:54430"></div>
           <div><label>Relay Token <span class="hint inline" id="fo-token-hint" style="display:none">留空保留原 Token</span></label><input id="fo-token" type="password" class="mono" placeholder="psk_..."></div>
           <div><label>SNI 域名</label><input id="fo-sni" class="mono" value="cdn.cloudflare.com"></div>
+          <div><label>权限组 <span class="hint inline">留空 = 不收敛（放行一切）</span></label><select id="fo-group"><option value="">不收敛（放行一切）</option></select></div>
           <div><label class="chk" style="margin-top:22px"><input type="checkbox" id="fo-insecure"> 跳过证书校验（仅开发）</label></div>
         </div>
         <div class="row" style="margin-top:8px">

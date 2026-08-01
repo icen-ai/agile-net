@@ -72,6 +72,25 @@
 
 ---
 
+## GET `/api/v1/admin/groups/:id/detail`
+
+权限组身份总览：返回组下三类身份（账号 + 扇入令牌 + 扇出对端）。
+
+### 响应 200
+
+```json
+{
+  "code": 0,
+  "data": {
+    "accounts": [{ "id": "uuid", "username": "zhangsan", "enabled": true }],
+    "relay_tokens": [{ "id": "uuid", "token_prefix": "psk_xxxx", "remark": "分公司跳板" }],
+    "connectors": [{ "id": "uuid", "name": "机房B", "upstream_addr": "relay-b.example.com:54430", "enabled": true }]
+  }
+}
+```
+
+---
+
 ## POST `/api/v1/admin/groups`
 
 创建权限组。

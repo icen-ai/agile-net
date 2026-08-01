@@ -36,6 +36,7 @@ impl TokenValidator for TestValidator {
                         node_id: auth.node_id.clone(),
                         advertise: auth.advertise.clone(),
                         control: None,
+                        acl: None,
                     })
                 } else {
                     None

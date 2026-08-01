@@ -1,6 +1,6 @@
 //! CLI 命令解析与集成测试
 
-use agile_net_node::cli::{Cli, Commands, RuleSub, TokenSub};
+use agile_net_node::cli::{Cli, Commands, ConnectorSub, RuleSub, TokenSub};
 use clap::Parser;
 
 #[test]
@@ -55,6 +55,70 @@ fn cli_token_add_parsing() {
 }
 
 #[test]
+fn cli_token_add_group_parsing() {
+    for sub in ["add", "create"] {
+        let cli = Cli::parse_from(["anet", "token", sub, "--group", "开发组"]);
+        match cli.command {
+            Commands::Token(ref args) => match args.command {
+                TokenSub::Add(ref a) => assert_eq!(a.group.as_deref(), Some("开发组")),
+                _ => panic!("expected token add"),
+            },
+            _ => panic!("expected token command"),
+        }
+    }
+}
+
+#[test]
+fn cli_connector_add_parsing() {
+    let cli = Cli::parse_from([
+        "anet",
+        "connector",
+        "add",
+        "--name",
+        "上海机房",
+        "--addr",
+        "10.0.0.1:54430",
+        "--token",
+        "psk_abc",
+        "--advertise",
+        "10.1.0.0/16,git.internal",
+        "--group",
+        "dev",
+        "--insecure",
+    ]);
+    match cli.command {
+        Commands::Connector(args) => match args.command {
+            ConnectorSub::Add(a) => {
+                assert_eq!(a.name, "上海机房");
+                assert_eq!(a.addr, "10.0.0.1:54430");
+                assert_eq!(a.token, "psk_abc");
+                assert_eq!(a.advertise.as_deref(), Some("10.1.0.0/16,git.internal"));
+                assert_eq!(a.group.as_deref(), Some("dev"));
+                assert!(a.insecure);
+            }
+            _ => panic!("expected connector add"),
+        },
+        _ => panic!("expected connector command"),
+    }
+}
+
+#[test]
+fn cli_connector_update_parsing() {
+    let cli = Cli::parse_from(["anet", "connector", "update", "上海", "--remark", "新备注"]);
+    match cli.command {
+        Commands::Connector(args) => match args.command {
+            ConnectorSub::Update(u) => {
+                assert_eq!(u.id, "上海");
+                assert_eq!(u.remark.as_deref(), Some("新备注"));
+                assert!(u.token.is_none());
+            }
+            _ => panic!("expected connector update"),
+        },
+        _ => panic!("expected connector command"),
+    }
+}
+
+#[test]
 fn cli_rule_delete_force_parsing() {
     let cli = Cli::parse_from(["anet", "rule", "delete", "abc123", "--force"]);
     match cli.command {
@@ -76,6 +140,7 @@ async fn cli_full_workflow_against_live_api() {
     use agile_net_node::auth::jwt::JwtService;
     use agile_net_node::db::{Database, hash_password};
     use agile_net_node::logs::LogBuffer;
+    use agile_net_node::service::connectors::ConnectorManager;
     use std::sync::Arc;
     use std::time::Instant;
 
@@ -87,7 +152,7 @@ async fn cli_full_workflow_against_live_api() {
     let runtime = Arc::new(NodeRuntime {
         started_at: Instant::now(),
         listener: None,
-        connectors: Vec::new(),
+        connector_manager: Arc::new(ConnectorManager::new(db.clone())),
         proxy_stats: None,
         proxy_listen: None,
         log_buffer: LogBuffer::new(),
@@ -164,6 +229,69 @@ async fn cli_full_workflow_against_live_api() {
     .await
     .unwrap();
     assert_eq!(db.list_relay_tokens().unwrap().len(), 1);
+
+    // token --group 收敛挂组
+    agile_net_node::cli::run_cli(Cli::parse_from([
+        "anet", "token", "add", "--remark", "收敛令牌", "--group", "cli组",
+    ]))
+    .await
+    .unwrap();
+    let tokens = db.list_relay_tokens().unwrap();
+    assert_eq!(tokens.len(), 2);
+    let scoped = tokens.iter().find(|t| t.remark == "收敛令牌").unwrap();
+    let gid = scoped.group_id.clone().expect("令牌应挂组");
+
+    // connector 全链路（add/list/update/disable/enable/remove；上游不可达仅热装配失败，不阻断）
+    agile_net_node::cli::run_cli(Cli::parse_from([
+        "anet",
+        "connector",
+        "add",
+        "--name",
+        "上海机房",
+        "--addr",
+        "127.0.0.1:1",
+        "--token",
+        "psk_test",
+        "--advertise",
+        "10.1.0.0/16,git.internal",
+        "--group",
+        "cli组",
+        "--insecure",
+    ]))
+    .await
+    .unwrap();
+    let connectors = db.list_connectors().unwrap();
+    assert_eq!(connectors.len(), 1);
+    assert_eq!(connectors[0].group_id.as_deref(), Some(gid.as_str()));
+    assert_eq!(connectors[0].advertise, "10.1.0.0/16,git.internal");
+
+    agile_net_node::cli::run_cli(Cli::parse_from(["anet", "connector", "list"]))
+        .await
+        .unwrap();
+
+    // 更新：缺省参数保留原值（组/地址不变），token 留空 = 保留
+    agile_net_node::cli::run_cli(Cli::parse_from([
+        "anet", "connector", "update", "上海机房", "--remark", "更新备注",
+    ]))
+    .await
+    .unwrap();
+    let connectors = db.list_connectors().unwrap();
+    assert_eq!(connectors[0].remark, "更新备注");
+    assert_eq!(connectors[0].upstream_addr, "127.0.0.1:1");
+    assert_eq!(connectors[0].group_id.as_deref(), Some(gid.as_str()));
+
+    agile_net_node::cli::run_cli(Cli::parse_from(["anet", "connector", "disable", "上海机房"]))
+        .await
+        .unwrap();
+    assert!(!db.list_connectors().unwrap()[0].enabled);
+    agile_net_node::cli::run_cli(Cli::parse_from(["anet", "connector", "enable", "上海机房"]))
+        .await
+        .unwrap();
+    assert!(db.list_connectors().unwrap()[0].enabled);
+    agile_net_node::cli::run_cli(Cli::parse_from(["anet", "connector", "remove", "上海机房"]))
+        .await
+        .unwrap();
+    assert!(db.list_connectors().unwrap().is_empty());
 
     let _ = std::fs::remove_dir_all(&tmp);
 }

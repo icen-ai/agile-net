@@ -76,6 +76,12 @@ pub struct RelayTokenRecord {
     /// 管理授权档位：ro / rules / full
     #[serde(default = "default_control_scope")]
     pub control_scope: String,
+    /// 收敛挂载点：权限组 ID（None = 不收敛，放行一切）
+    #[serde(default)]
+    pub group_id: Option<String>,
+    /// 组名（联查展示用）
+    #[serde(default)]
+    pub group_name: Option<String>,
     pub last_used_at: Option<String>,
     pub created_at: String,
 }
@@ -122,4 +128,58 @@ pub struct AdminTicketRecord {
     pub subject: String,
     pub scope: String,
     pub expires_at: String,
+}
+
+/// 扇出 Connector 记录（DB 行；token_enc 为密文，严禁日志/审计输出）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConnectorRecord {
+    pub id: String,
+    /// 对端显示名（管理端列表/审计用）
+    pub name: String,
+    pub upstream_addr: String,
+    /// 扇出 token 密文（`v1:nonce_b64:ct_b64`，见 docs/todo/peer-acl.md §5）
+    #[serde(skip_serializing, default)]
+    pub token_enc: String,
+    pub sni_hostname: String,
+    pub insecure: bool,
+    /// 自定义 CA 证书路径（PEM；空 = 不使用）
+    #[serde(default)]
+    pub ca_cert_path: String,
+    /// 证书固定：上游服务端证书路径（PEM；空 = 不使用）
+    #[serde(default)]
+    pub pinned_cert_path: String,
+    /// 原 ConnectorConfig.advertise 序列化
+    pub advertise: String,
+    /// 收敛挂载点：权限组 ID（None = 不收敛，放行一切）
+    #[serde(default)]
+    pub group_id: Option<String>,
+    pub enabled: bool,
+    pub remark: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// 扇出 Connector 展示视图（含组名联查；绝不含 token 明文/密文）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConnectorView {
+    pub id: String,
+    pub name: String,
+    pub upstream_addr: String,
+    /// token 前缀展示位（仅用于辨认，非完整凭据）
+    pub token_prefix: String,
+    pub sni_hostname: String,
+    pub insecure: bool,
+    #[serde(default)]
+    pub ca_cert_path: String,
+    #[serde(default)]
+    pub pinned_cert_path: String,
+    pub advertise: String,
+    #[serde(default)]
+    pub group_id: Option<String>,
+    #[serde(default)]
+    pub group_name: Option<String>,
+    pub enabled: bool,
+    pub remark: String,
+    pub created_at: String,
+    pub updated_at: String,
 }

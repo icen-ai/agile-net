@@ -5,19 +5,24 @@
 //! 服务对象：`anet-svc` 的 `serve` 子命令与 `anet-gui` 的内嵌节点
 //! 共用同一套装配代码。
 
+pub mod acl;
+pub mod connectors;
+
 use crate::api::{ApiState, NodeRuntime, create_app};
 use crate::auth::jwt::JwtService;
 use crate::db::{Database, hash_password};
 use crate::logs::LogBuffer;
 use crate::relay_auth::DbTokenValidator;
+use crate::service::acl::PeerAclRegistry;
+use crate::service::connectors::ConnectorManager;
 use crate::ui::create_ui_router;
 
 use agile_net_core::config::NodeConfig;
 use agile_net_core::proxy::inbound::ProxyInbound;
 use agile_net_core::proxy::router::{Outbound, ProxyRouter};
-use agile_net_core::relay::{RelayConnector, RelayListener};
+use agile_net_core::relay::RelayListener;
 use agile_net_core::tunnel::opener::{ChannelOpener, PeerAutoOpener};
-use agile_net_core::tunnel::tls::{TlsConfigBuilder, load_or_generate_self_signed};
+use agile_net_core::tunnel::tls::load_or_generate_self_signed;
 
 use anyhow::Result;
 use arc_swap::ArcSwap;
@@ -56,7 +61,7 @@ pub struct NodeServer {
     runtime: Arc<NodeRuntime>,
     state: ApiState,
     api_addr: SocketAddr,
-    relay_connectors: Vec<Arc<RelayConnector>>,
+    connector_manager: Arc<ConnectorManager>,
     tasks: Vec<tokio::task::JoinHandle<()>>,
     api_shutdown: Option<axum_server::Handle>,
     api_stop_tx: Option<tokio::sync::oneshot::Sender<()>>,
@@ -111,6 +116,10 @@ impl NodeServer {
             Arc::new(arc_swap::ArcSwapOption::from_pointee(None));
         let manageable_registry = crate::relay_auth::ManageableRegistry::default();
 
+        // 对端收敛注册表：组规则 → PeerAcl（扇入/扇出共享；热重载循环随 config_version 重建）
+        let acl_registry = Arc::new(PeerAclRegistry::new());
+        acl_registry.rebuild(&db);
+
         // 4. Relay Listener
         let mut relay_listener: Option<Arc<RelayListener>> = None;
         let mut cert_fingerprint: Option<String> = None;
@@ -119,7 +128,8 @@ impl NodeServer {
             let validator = Arc::new(
                 DbTokenValidator::new(db.clone())
                     .with_control_api(control_api_slot.clone())
-                    .with_manageable(manageable_registry.clone()),
+                    .with_manageable(manageable_registry.clone())
+                    .with_acl_registry(acl_registry.clone()),
             );
 
             let tls_acceptor = if let Some(acme_cfg) = &config.acme {
@@ -195,86 +205,50 @@ impl NodeServer {
                 }
             }));
             tracing::info!(addr = %addr, "relay listener started");
+            // 扇入收敛拒绝事件 → 审计（对端身份 = node_id；按 peer+target 每分钟去重）
+            tasks.push(connectors::spawn_acl_audit_task(
+                db.clone(),
+                "listener".to_string(),
+                listener.subscribe_events(),
+            ));
             relay_listener = Some(listener);
         }
 
-        // 5. Relay Connector（扇出角色，多目标扇出/容灾：[[connectors]] 数组，自动重连）
-        let mut relay_connectors: Vec<Arc<RelayConnector>> = Vec::new();
+        // 5. Relay Connector（扇出角色，多目标扇出/容灾；DB 为唯一事实来源，热操作经 ConnectorManager）
+        // TOML `[[connectors]]` 降级为初始导入：同名已存在则跳过（TOML 无 name 字段，以地址为名；
+        // 无组概念 → 不收敛），运行时以 DB 为准
         for connector_cfg in &config.connectors {
-            let upstream: SocketAddr = resolve_upstream(&connector_cfg.upstream_addr).await?;
-            let mut tls_builder = TlsConfigBuilder::new().sni_hostname(&connector_cfg.sni_hostname);
-
-            if let Some(pinned_path) = &connector_cfg.pinned_cert_path {
-                let certs = load_pem_certs(pinned_path)?;
-                tls_builder = tls_builder.pinned_certs(certs);
-                tracing::info!("connector TLS: certificate pinning enabled");
-            } else if let Some(ca_path) = &connector_cfg.ca_cert_path {
-                let certs = load_pem_certs(ca_path)?;
-                tls_builder = tls_builder.ca_certs(certs);
-            } else if connector_cfg.insecure {
-                tracing::warn!(
-                    "connector TLS: INSECURE mode (no certificate verification) — dev only!"
-                );
-                tls_builder = tls_builder.allow_self_signed(true);
-            }
-
-            let mut connector = RelayConnector::with_tls_builder(
-                upstream,
-                &config.name,
+            let advertise = connector_cfg.advertise.join(",");
+            match db.import_connector_if_absent(
+                &connector_cfg.upstream_addr,
+                &connector_cfg.upstream_addr,
                 &connector_cfg.token,
-                tls_builder,
-            )?
-            .with_advertise(connector_cfg.advertise.clone());
-
-            if let Some(l) = &relay_listener {
-                connector = connector.with_peer_router(l.clone());
+                &connector_cfg.sni_hostname,
+                connector_cfg.insecure,
+                connector_cfg.ca_cert_path.as_deref().unwrap_or(""),
+                connector_cfg.pinned_cert_path.as_deref().unwrap_or(""),
+                &advertise,
+                None,
+                "toml import",
+            ) {
+                Ok(true) => {
+                    tracing::info!(upstream = %connector_cfg.upstream_addr, "connector imported from TOML")
+                }
+                Ok(false) => {}
+                Err(e) => {
+                    tracing::error!(upstream = %connector_cfg.upstream_addr, error = %e, "connector import failed")
+                }
             }
-            // 路由再发布：客户端隧道规则转售给下游（GUI 内嵌场景注入）
-            if let Some((cr, ops)) = &opts.client_routes {
-                connector = connector.with_client_routes(cr.clone(), ops.clone());
-            }
-            let connector = Arc::new(connector);
-            let c = connector.clone();
-            tasks.push(tokio::spawn(async move {
-                c.run().await;
-            }));
-            tracing::info!(upstream = %upstream, "relay connector running");
-            // 握手 v2：同步上游暴露的控制端点到可管理注册表
-            {
-                let c = connector.clone();
-                let registry = manageable_registry.clone();
-                tasks.push(tokio::spawn(async move {
-                    let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
-                    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-                    loop {
-                        interval.tick().await;
-                        match c.control_offer() {
-                            Some(offer) => {
-                                let key = if offer.node_name.is_empty() {
-                                    "upstream".to_string()
-                                } else {
-                                    offer.node_name.clone()
-                                };
-                                let stale = registry
-                                    .get(&key)
-                                    .map(|old| old.ticket != offer.ticket)
-                                    .unwrap_or(true);
-                                if stale {
-                                    tracing::info!(upstream = %key, api = %format!("{:?}:{}", offer.api_host, offer.api_port), "manageable upstream discovered");
-                                }
-                                registry.insert(key, offer);
-                            }
-                            None => {
-                                if !registry.is_empty() {
-                                    registry.clear();
-                                }
-                            }
-                        }
-                    }
-                }));
-            }
-            relay_connectors.push(connector);
         }
+        let connector_manager = Arc::new(
+            ConnectorManager::new(db.clone())
+                .with_node_id(config.name.clone())
+                .with_listener(relay_listener.clone())
+                .with_client_routes(opts.client_routes.clone())
+                .with_acl_registry(acl_registry.clone())
+                .with_manageable(manageable_registry.clone()),
+        );
+        connector_manager.start_all().await;
 
         // 6. 本地代理入站（可选）
         let mut proxy_stats = None;
@@ -304,7 +278,7 @@ impl NodeServer {
         let runtime = Arc::new(NodeRuntime {
             started_at: Instant::now(),
             listener: relay_listener.clone(),
-            connectors: relay_connectors.clone(),
+            connector_manager: connector_manager.clone(),
             proxy_stats,
             proxy_listen,
             log_buffer,
@@ -312,10 +286,11 @@ impl NodeServer {
             manageable: manageable_registry.clone(),
         });
 
-        // 路由热更新监视：config_version 变化即重建节点本地代理路由表。
+        // 路由热更新监视：config_version 变化即重建节点本地代理路由表与对端收敛组路由。
         {
             let db = db.clone();
             let shared_router = shared_router.clone();
+            let acl_registry = acl_registry.clone();
             tasks.push(tokio::spawn(async move {
                 let mut last_version = db.config_version().unwrap_or(0);
                 let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
@@ -328,10 +303,11 @@ impl NodeServer {
                         let new_router = build_router(&db);
                         let count = new_router.route_count();
                         shared_router.store(Arc::new(new_router));
+                        acl_registry.rebuild(&db);
                         tracing::debug!(
                             version = current,
                             rules = count,
-                            "proxy router hot-reloaded"
+                            "proxy router & peer acl hot-reloaded"
                         );
                     }
                 }
@@ -465,7 +441,7 @@ impl NodeServer {
             runtime,
             state,
             api_addr: bound_api_addr,
-            relay_connectors,
+            connector_manager,
             tasks,
             api_shutdown: Some(api_shutdown),
             api_stop_tx,
@@ -479,18 +455,12 @@ impl NodeServer {
 
     /// 各上游 connector 的（地址, 状态）（GUI 上游列表展示用）。
     pub fn connector_states(&self) -> Vec<(String, String)> {
-        self.relay_connectors
-            .iter()
-            .map(|c| {
-                let st = match c.state() {
-                    agile_net_core::relay::ConnectionState::Connected => "connected",
-                    agile_net_core::relay::ConnectionState::Connecting => "connecting",
-                    agile_net_core::relay::ConnectionState::Reconnecting => "reconnecting",
-                    agile_net_core::relay::ConnectionState::Disconnected => "disconnected",
-                };
-                (c.upstream_addr().to_string(), st.to_string())
-            })
-            .collect()
+        self.connector_manager.states()
+    }
+
+    /// 扇出 Connector 管理器（GUI 进程内热操作 / 管理 API 共用）。
+    pub fn connector_manager(&self) -> Arc<ConnectorManager> {
+        self.connector_manager.clone()
     }
 
     pub fn db(&self) -> Database {
@@ -518,9 +488,7 @@ impl NodeServer {
         if let Some(handle) = self.api_shutdown.take() {
             handle.graceful_shutdown(Some(std::time::Duration::from_secs(2)));
         }
-        for c in &self.relay_connectors {
-            c.disconnect().await;
-        }
+        self.connector_manager.shutdown().await;
         for t in &self.tasks {
             t.abort();
         }

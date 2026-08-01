@@ -706,12 +706,13 @@ async function deleteCred(key, btn) {
   setTimeout(() => { if (btn.isConnected) { btn.dataset.confirm = ''; btn.innerHTML = old; } }, 2500);
 }
 
-/* ================= 扇出连接（服务端角色路由再发布） ================= */
+/* ================= 扇出连接（内嵌节点 DB 管理，变更热生效） ================= */
 let FO_EDIT_ID = null;
 let FO_ITEMS = [];
-let FO_STATES = {};
 
-function foBadge(st) {
+function foBadge(c) {
+  if (!c.enabled) return '<span class="badge b-off">已禁用</span>';
+  const st = c.state;
   if (st === 'connected') return '<span class="badge b-ok">已连接</span>';
   if (st === 'connecting') return '<span class="badge b-warn"><span class="pulse"></span>连接中</span>';
   if (st === 'reconnecting') return '<span class="badge b-warn"><span class="pulse"></span>重连中</span>';
@@ -719,23 +720,32 @@ function foBadge(st) {
   return '<span class="badge b-gray">未启动</span>';
 }
 
+/** 权限组下拉：拉本机内嵌节点组清单（保留当前选择；失败不阻断列表） */
+async function foLoadGroups() {
+  try {
+    const groups = await invoke('list_embedded_groups');
+    const cur = $('fo-group').value;
+    $('fo-group').innerHTML = '<option value="">不收敛（放行一切）</option>' +
+      groups.map(g => '<option value="' + esc(g.id) + '">' + esc(g.name) + '</option>').join('');
+    if (groups.some(g => g.id === cur)) $('fo-group').value = cur;
+  } catch (e) { /* 组清单加载失败不阻断扇出列表 */ }
+}
+
 async function refreshUpstreams() {
+  foLoadGroups();
   try {
     FO_ITEMS = await invoke('list_server_connectors');
   } catch (e) { $('fo-list').innerHTML = '<div class="empty">加载失败</div>'; return; }
-  try {
-    const st = await invoke('server_status');
-    FO_STATES = Object.fromEntries((st.connectors || []).map(([a, s]) => [a, s]));
-  } catch (e) { FO_STATES = {}; }
   if (!FO_ITEMS.length) {
     $('fo-list').innerHTML = '<div class="empty">尚未配置扇出连接（添加后内嵌端点将扇出到目标端点）</div>';
     return;
   }
   $('fo-list').innerHTML = FO_ITEMS.map(c =>
     '<div class="node-card"><div class="info">' +
-    '<div class="name">' + esc(c.upstream_addr) + ' ' + foBadge(FO_STATES[c.upstream_addr]) + '</div>' +
+    '<div class="name">' + esc(c.upstream_addr) + ' ' + foBadge(c) + '</div>' +
     '<div class="addr mono">' + esc(c.token_prefix) + ' · SNI ' + esc(c.sni_hostname) +
-    (c.insecure ? ' · <span class="badge b-warn">insecure</span>' : '') + '</div>' +
+    (c.insecure ? ' · <span class="badge b-warn">insecure</span>' : '') +
+    ' · 组 ' + (c.group_name ? esc(c.group_name) : '不收敛') + '</div>' +
     '</div><div class="card-actions">' +
     '<button class="ghost small" data-fo-edit="' + esc(c.id) + '">编辑</button>' +
     '<button class="danger small" data-fo-del="' + esc(c.id) + '">删除</button>' +
@@ -751,6 +761,7 @@ function foResetForm() {
   $('btn-fo-cancel').style.display = 'none';
   $('fo-addr').value = ''; $('fo-token').value = '';
   $('fo-sni').value = 'cdn.cloudflare.com'; $('fo-insecure').checked = false;
+  $('fo-group').value = '';
 }
 
 function initUpstreams() {
@@ -761,16 +772,17 @@ function initUpstreams() {
     const token = $('fo-token').value.trim();
     const sni = $('fo-sni').value.trim() || 'cdn.cloudflare.com';
     const insecure = $('fo-insecure').checked;
+    const groupId = $('fo-group').value || null;
     if (!addr) { $('fo-err').textContent = '请填写目标地址'; return; }
     if (!FO_EDIT_ID && !token) { $('fo-err').textContent = '请填写 Relay Token'; return; }
     $('fo-err').textContent = '';
     try {
       if (FO_EDIT_ID) {
-        await invoke('update_server_connector', { id: FO_EDIT_ID, upstreamAddr: addr, token, sniHostname: sni, insecure });
-        toast('扇出连接已更新（内嵌端点热重启）', 'ok');
+        await invoke('update_server_connector', { id: FO_EDIT_ID, upstreamAddr: addr, token, sniHostname: sni, insecure, groupId });
+        toast('扇出连接已更新（热生效）', 'ok');
       } else {
-        await invoke('add_server_connector', { config: { upstream_addr: addr, token, sni_hostname: sni, insecure } });
-        toast('扇出连接已添加（内嵌端点热重启）', 'ok');
+        await invoke('add_server_connector', { upstreamAddr: addr, token, sniHostname: sni, insecure, groupId });
+        toast('扇出连接已添加（热生效）', 'ok');
       }
       foResetForm();
       refreshUpstreams();
@@ -791,13 +803,14 @@ function initUpstreams() {
       $('fo-token').value = '';
       $('fo-sni').value = c.sni_hostname;
       $('fo-insecure').checked = c.insecure;
+      $('fo-group').value = c.group_id || '';
       $('fo-addr').focus();
       return;
     }
     if (delBtn) {
       try {
         await invoke('remove_server_connector', { id: delBtn.dataset.foDel });
-        toast('扇出连接已删除（内嵌端点热重启）', 'ok');
+        toast('扇出连接已删除（热生效）', 'ok');
         if (FO_EDIT_ID === delBtn.dataset.foDel) foResetForm();
         refreshUpstreams();
       } catch (err) { toast(friendlyError(err), 'err'); }

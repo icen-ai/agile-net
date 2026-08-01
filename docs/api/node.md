@@ -190,9 +190,19 @@
 
 ```json
 {
-  "remark": "分公司跳板机"
+  "remark": "分公司跳板机",
+  "expose_control": false,
+  "control_scope": "full",
+  "group_id": "uuid"
 }
 ```
+
+| 字段 | 说明 |
+|------|------|
+| `remark` | 可选，0-256 字符 |
+| `expose_control` | 可选，默认 false：允许持该令牌的下游中继管理本节点 |
+| `control_scope` | 可选，默认 `full`：管理授权档位 `ro` / `rules` / `full` |
+| `group_id` | 可选，收敛权限组（对端粒度 ACL）；缺省/null = 不收敛，ID 不存在返回 40400 |
 
 ### 响应 201
 
@@ -200,8 +210,13 @@
 {
   "code": 0,
   "data": {
+    "id": "uuid",
     "token": "psk_xxxxxxxxxxxxxxxx",
+    "token_prefix": "psk_xxxx****",
     "remark": "分公司跳板机",
+    "expose_control": false,
+    "control_scope": "full",
+    "group_id": "uuid",
     "created_at": "2025-07-30T10:00:00Z"
   }
 }
@@ -224,6 +239,9 @@
         "id": "uuid",
         "token_prefix": "psk_xxxx****",
         "remark": "分公司跳板机",
+        "expose_control": false,
+        "control_scope": "full",
+        "group_id": "uuid",
         "last_used_at": "2025-07-30T14:00:00Z",
         "created_at": "2025-07-30T10:00:00Z"
       }
@@ -233,6 +251,28 @@
 ```
 
 Token 全文仅创建时返回，列出时只显示前缀。
+
+---
+
+## PUT `/api/v1/admin/node/relay-tokens/:id`
+
+更新 relay token 的暴露开关、授权档位与收敛组。
+
+### 请求
+
+```json
+{
+  "expose_control": true,
+  "control_scope": "rules",
+  "group_id": null
+}
+```
+
+`group_id` 为**三态**：缺省 = 不变，`null` = 不收敛，字符串 = 挂到该组（记 `relay_token.set_group` 审计）。
+
+### 响应 200
+
+返回更新后的 token 对象。
 
 ---
 
@@ -317,5 +357,6 @@ ws://node:443/api/v1/admin/node/events?token=<access_token>
 | `account.offline` | 客户端下线 |
 | `connector.connected` | 下游节点连入 |
 | `connector.disconnected` | 下游节点断开 |
+| `peer.acl_denied` | 对端流量被收敛拒绝（data 含对端标识 `peer_label` 与 `target`） |
 | `config.updated` | 规则/权限组变更 |
 | `stats.snapshot` | 每 30s 发送一次流量快照 |

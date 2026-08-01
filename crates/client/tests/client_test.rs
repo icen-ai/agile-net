@@ -10,6 +10,7 @@ use agile_net_node::auth::jwt::JwtService;
 use agile_net_node::db::{Database, hash_password};
 use agile_net_node::logs::LogBuffer;
 use agile_net_node::relay_auth::DbTokenValidator;
+use agile_net_node::service::connectors::ConnectorManager;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -66,7 +67,7 @@ async fn start_full_node() -> (String, SocketAddr, SocketAddr) {
     let runtime = Arc::new(NodeRuntime {
         started_at: Instant::now(),
         listener: Some(listener),
-        connectors: Vec::new(),
+        connector_manager: Arc::new(ConnectorManager::new(db.clone())),
         proxy_stats: None,
         proxy_listen: None,
         log_buffer: LogBuffer::new(),

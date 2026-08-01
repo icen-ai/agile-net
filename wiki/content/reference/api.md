@@ -52,6 +52,7 @@
 | POST | `/api/v1/admin/rules/batch` | 批量导入（JSON/NDJSON） |
 | GET/POST | `/api/v1/admin/groups` | 列表 / 创建 |
 | GET/PUT/DELETE | `/api/v1/admin/groups/{id}` | 详情 / 更新 / 删除（占用需 `force`） |
+| GET | `/api/v1/admin/groups/{id}/detail` | 组详情：名下账号 + 扇入令牌 + 扇出对端三类身份 |
 | PUT | `/api/v1/admin/groups/{id}/rules` | 整组绑定规则 |
 | GET/POST | `/api/v1/admin/accounts` | 列表 / 创建（`admin_console` 授予管理权限） |
 | PUT/DELETE | `/api/v1/admin/accounts/{id}` | 更新（含启停、管理权限授予/收回）/ 删除 |
@@ -69,11 +70,25 @@
 | PUT | `/api/v1/admin/node/settings` | 节点设置（名称/公网地址） |
 | POST | `/api/v1/admin/node/kick` | 踢除下游节点或客户端会话 |
 | GET | `/api/v1/admin/node/events` | WebSocket 实时事件流 |
-| GET/POST | `/api/v1/admin/node/relay-tokens` | 令牌列表 / 创建（`expose_control`+`control_scope`） |
-| PUT/DELETE | `/api/v1/admin/node/relay-tokens/{id}` | 暴露开关与档位变更 / 吊销（踢会话） |
+| GET/POST | `/api/v1/admin/node/relay-tokens` | 令牌列表 / 创建（`group_id` 收敛组、`expose_control`+`control_scope`） |
+| PUT/DELETE | `/api/v1/admin/node/relay-tokens/{id}` | 更新（暴露开关/档位；`group_id` 三态：缺省=不变、`null`=不收敛、字符串=挂组）/ 吊销（踢会话） |
 | GET/POST | `/api/v1/admin/admins` | 管理员列表 / 创建 |
 | DELETE | `/api/v1/admin/admins/{id}` | 删除管理员 |
 | GET | `/api/v1/admin/audit-logs` | 审计日志（动作过滤/分页） |
+
+## 管理：扇出（connector）
+
+扇出对端为一等入库资源：TOML `[[connectors]]` 仅启动导入（name 取 upstream_addr，组 = 不收敛），
+运行时以数据库为准，以下操作均即时生效。`group_id` 挂权限组即对端收敛（缺省 = 不收敛）。
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET/POST | `/api/v1/admin/connectors` | 列表（含实时状态与所属组）/ 创建（`advertise` 为字符串数组） |
+| PUT/DELETE | `/api/v1/admin/connectors/{id}` | 更新（**全量替换**语义；token 留空 = 保留原值）/ 删除 |
+| POST | `/api/v1/admin/connectors/{id}/enable` | 启用（装配起连） |
+| POST | `/api/v1/admin/connectors/{id}/disable` | 禁用（断开连接，记录保留） |
+
+扇出 token 是对端签发的连接凭据：AES-256-GCM 加密落库（全库唯一可逆例外），创建后不回显。
 
 ## 速率与约束
 

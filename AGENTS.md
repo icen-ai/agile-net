@@ -11,19 +11,19 @@
 **产品方向（双产物，消灭 frps/frpc 式分裂）**：
 
 - `anet-gui`：全功能图形客户端（Windows / macOS / Android），三路独立开关——客户端角色 / 服务端角色 / Web 远程面，一台有 UI 的机器勾一下即可成为内网转发机或机房留守管理端
-- `anet-svc`：服务器二进制（`start` 默认 / `stop` / `restart` / `status` / `init` 首装向导 / `client` / `tui` 子命令），角色全靠配置：relay listener（扇入：接受扇入端点连入）、connector（扇出：`[[connectors]]` 多目标扇出/容灾）、client（终端下游）、proxy（本地代理）、api（Web 管理面）
-- `anet`：管理命令入口（与 anet-svc 同一实现、按 argv[0] 分人格）：`login` / `node` / `rule` / `group` / `account` / `token` / `admin` / `audit` / `tui`
+- `anet-svc`：服务器二进制（`start` 默认 / `stop` / `restart` / `status` / `init` 首装向导 / `client` / `tui` 子命令），角色全靠配置：relay listener（扇入：接受扇入端点连入）、connector（扇出：入库一等资源，多目标扇出/容灾，可挂权限组做对端收敛；TOML `[[connectors]]` 仅启动导入）、client（终端下游）、proxy（本地代理）、api（Web 管理面）
+- `anet`：管理命令入口（与 anet-svc 同一实现、按 argv[0] 分人格）：`login` / `node` / `rule` / `group` / `account` / `token` / `connector` / `admin` / `audit` / `tui`
 
 统一与分布式管理面的完整设计（带内管理、relay 暴露控制面开关、管理可达自动发现、分期 P1→P3）见 **`docs/plan/merge-gui-svc.md`**，实施以其为准。
 
 **当前仓库结构**（双产物统一已完成，见上述计划）：
 
-- `crates/core`：核心网络协议（mux 帧/会话）、TLS 握手（证书固定 pinning）、Relay 穿透（listener/connector）、客户端隧道（`ClientTunnel`）、代理入站（SOCKS5/HTTP + 认证）与路由器（`ProxyRouter`）。
-- `crates/node`：服务端/节点库 + 二进制 **`anet-svc` / `anet`**（同一实现双入口：`start` 默认 / `stop` / `restart` / `status` / `init` / `node` / `rule` / `group` / `account` / `token` / `admin` / `audit` / `client` / `tui`）：装配根 `service::NodeServer`、SQLite（版本化迁移）、Axum REST API、Web 管理后台（`ui`）、TUI（API 优先 + DB 只读兜底）、CLI（`cli` 模块）、服务管理（`svc` 模块 PID 文件）、首装向导（`init` 模块）、内存日志缓冲。
+- `crates/core`：核心网络协议（mux 帧/会话）、TLS 握手（证书固定 pinning）、Relay 穿透（listener/connector）、对端收敛（`relay::PeerAcl`，扇入/扇出数据面钩子 + `ProxyRouter::matches` 复用）、客户端隧道（`ClientTunnel`）、代理入站（SOCKS5/HTTP + 认证）与路由器（`ProxyRouter`）。
+- `crates/node`：服务端/节点库 + 二进制 **`anet-svc` / `anet`**（同一实现双入口：`start` 默认 / `stop` / `restart` / `status` / `init` / `node` / `rule` / `group` / `account` / `token` / `connector` / `admin` / `audit` / `client` / `tui`）：装配根 `service::NodeServer`、扇出管理 `service::connectors::ConnectorManager`（DB 为唯一事实来源，热操作）、对端收敛注册表 `service::acl::PeerAclRegistry`、SQLite（版本化迁移）、Axum REST API、Web 管理后台（`ui`）、TUI（API 优先 + DB 只读兜底）、CLI（`cli` 模块）、服务管理（`svc` 模块 PID 文件）、首装向导（`init` 模块）、内存日志缓冲。
 - `crates/client`：客户端核心引擎（库）：多节点连接（登录/配置/隧道/长轮询/心跳）、规则合并与暂停（`paused_rules`）、本地代理、hosts 管理、凭据存储、管理面 Web API（`api` 模块）、客户端角色守护（`daemon` 模块）。
-- `apps/desktop`：**anet-gui**（Tauri 2 桌面/Android，独立 workspace，前端无 Node 构建链）：三路独立开关（客户端/服务端/Web 远程面）+ 扇出管理（`[[connectors]]` 多目标，独立菜单）+ 控制台窗口 + 订阅代理（mihomo sidecar 内核托管，GUI 独享）+ 系统代理托管（冲突巡检提醒）。
+- `apps/desktop`：**anet-gui**（Tauri 2 桌面/Android，独立 workspace，前端无 Node 构建链）：三路独立开关（客户端/服务端/Web 远程面）+ 扇出管理（connector 入库 CRUD + 权限组收敛，独立菜单）+ 控制台窗口 + 订阅代理（mihomo sidecar 内核托管，GUI 独享）+ 系统代理托管（冲突巡检提醒）。
 - `.docker`：四级节点链编排测试（`docker-compose.test.yaml`）与常驻演示（`docker-compose.chain.yaml`）。
-- `docs/plan/merge-gui-svc.md`：双产物统一实施计划；`docs/plan/subscription.md`：GUI 独享订阅代理（mihomo sidecar）实施计划；`docs/plan/tun.md`：TUN 模式（anet 在前、FlClash 在后，Windows 桌面）实施计划；`docs/todo/island.md`：移动端系统岛规划。
+- `docs/plan/merge-gui-svc.md`：双产物统一实施计划；`docs/plan/subscription.md`：GUI 独享订阅代理（mihomo sidecar）实施计划；`docs/plan/tun.md`：TUN 模式（anet 在前、FlClash 在后，Windows 桌面）实施计划；`docs/todo/peer-acl.md`：对端收敛（Peer ACL，已实施）设计与实施记录；`docs/todo/island.md`：移动端系统岛规划。
 
 ---
 
@@ -46,11 +46,12 @@
      ```
 2. **数据库与 API**：
    - 数据库交互统一封装在 `crates/node/src/db/`（`r2d2_sqlite` 连接池：file 池 8 / memory 池 1，WAL），版本化迁移见 `MIGRATIONS`。
-   - 表：`admin`, `rule`, `group`, `group_rule`, `account`, `relay_token`, `node_config`, `audit_log`, `traffic_log`, `refresh_token`。
+   - 表：`admin`, `rule`, `group`, `group_rule`, `account`, `relay_token`, `connector`, `node_config`, `audit_log`, `traffic_log`, `refresh_token`。
    - API 路由在 `crates/node/src/api/`（axum，可配内置 HTTPS）；管理接口强制 `AdminAuth`、客户端接口强制 `ClientAuth`；响应统一 `{code, data}` / `{code, message}` 信封，错误码遵循 `docs/api/overview.md`。
 3. **安全硬化**：
    - 密码统一 argon2id（64MB/t=3/p=4），严禁明文存储。
    - 账号密码/Relay Token 由服务端生成（`sk-`/`psk_`/`tun_` + 48 位），明文仅创建时返回一次，库中只存 argon2id 或 SHA-256 哈希。
+   - 扇出 token 可逆存储（全库唯一例外）：connector 的连接凭据由对端签发、连接时必须使用明文，只能可逆存储——AES-256-GCM 加密落库，格式 `v1:nonce_b64:ct_b64`；机器密钥 `node_config.connector_token_key` 首用生成并持久化（与 `jwt_secret` 同机制）。token 创建后永不回显（PUT 留空 = 保留原值），审计严禁记录明文与密文。
    - JWT 密钥首启生成并持久化于 `node_config.jwt_secret`；refresh token jti 哈希落库，支持吊销轮换。
    - 数据面 token 比较必须常数时间（`constant_time_eq`）；认证失败按 IP 限流（20 次/分钟）并随机延迟惩罚。
    - 敏感操作须 `record_audit_log`（含 detail 与来源 IP），严禁记录任何密码/Token 明文；管理面新增事件见 `docs/plan/merge-gui-svc.md` §9。

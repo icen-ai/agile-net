@@ -1,11 +1,13 @@
 //! Relay 数据面 Token 校验器（桥接数据库与 core::relay::listener）
 //!
 //! - 节点认证：relay_token 表（SHA-256 哈希比对）；令牌带「暴露控制面」标记时
-//!   签发管理引导票据并随 AuthOk 下发控制端点（握手 v2）
+//!   签发管理引导票据并随 AuthOk 下发控制端点（握手 v2）；令牌挂收敛组时
+//!   装载组对应的 `PeerAcl`（扇入对端流量按组规则收敛）
 //! - 客户端认证：account.tunnel_token_hash（SHA-256），并装载权限组规则作为 ACL；
 //!   「管理此节点」账号隐式放开本机 loopback API 与可管理上游端点
 
 use crate::db::{Database, sha256_hex};
+use crate::service::acl::PeerAclRegistry;
 use agile_net_core::proto::message::{AuthKind, AuthRequest, ControlOffer};
 use agile_net_core::relay::listener::{AuthIdentity, TokenValidator};
 use std::sync::Arc;
@@ -26,6 +28,8 @@ pub struct DbTokenValidator {
     control_api: Arc<arc_swap::ArcSwapOption<(String, u16)>>,
     /// 可管理上游注册表（隐式 ACL 用；无 connector 时恒空）
     manageable: ManageableRegistry,
+    /// 对端收敛注册表（relay_token.group_id → PeerAcl；None 组 = 不收敛）
+    acl: Arc<PeerAclRegistry>,
 }
 
 impl DbTokenValidator {
@@ -34,6 +38,7 @@ impl DbTokenValidator {
             db,
             control_api: Arc::new(arc_swap::ArcSwapOption::from_pointee(None)),
             manageable: Arc::new(dashmap::DashMap::new()),
+            acl: Arc::new(PeerAclRegistry::new()),
         }
     }
 
@@ -46,6 +51,12 @@ impl DbTokenValidator {
     /// 注入可管理上游注册表（admin_console 账号隐式 ACL 用）。
     pub fn with_manageable(mut self, registry: ManageableRegistry) -> Self {
         self.manageable = registry;
+        self
+    }
+
+    /// 注入对端收敛注册表（扇入 token 挂组收敛用）。
+    pub fn with_acl_registry(mut self, registry: Arc<PeerAclRegistry>) -> Self {
+        self.acl = registry;
         self
     }
 
@@ -103,10 +114,18 @@ impl TokenValidator for DbTokenValidator {
                     }
                     _ => None,
                 };
+                // 扇入收敛：令牌挂载的权限组 → 共享 PeerAcl（None = 不收敛，放行一切）。
+                // 查询失败/令牌竞态删除均 fail-closed（认证拒绝）。
+                let acl = match self.db.get_relay_token_group(&token_hash) {
+                    Ok(Some(group_id)) => self.acl.handle(group_id.as_deref()),
+                    Ok(None) => return None,
+                    Err(_) => return None,
+                };
                 Some(AuthIdentity::Node {
                     node_id: auth.node_id.clone(),
                     advertise: auth.advertise.clone(),
                     control,
+                    acl,
                 })
             }
             AuthKind::Client => {
@@ -144,5 +163,78 @@ fn acl_rule_for_host(host: &str) -> String {
         format!("{host}/32")
     } else {
         host.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn node_auth(token: &str) -> AuthRequest {
+        AuthRequest {
+            node_id: "peer-a".to_string(),
+            token: token.to_string(),
+            kind: AuthKind::Node,
+            advertise: Vec::new(),
+            version: 1,
+        }
+    }
+
+    /// 建组并挂一条 CIDR 规则，返回组 id
+    fn mk_group_with_rule(db: &Database, name: &str, cidr: &str) -> String {
+        let gid = db.create_group(name, "").unwrap().id;
+        let rid = db.create_rule("ip-cidr", cidr, false, "").unwrap().id;
+        db.set_group_rules(&gid, &[rid]).unwrap();
+        gid
+    }
+
+    #[test]
+    fn node_token_with_group_gets_group_acl() {
+        let db = Database::in_memory().unwrap();
+        let gid = mk_group_with_rule(&db, "peers", "10.12.0.0/16");
+        let token = "psk_test-token-with-group";
+        db.create_relay_token_with_group(
+            &sha256_hex(token.as_bytes()),
+            "psk_test",
+            "",
+            false,
+            "full",
+            Some(&gid),
+        )
+        .unwrap();
+
+        let registry = Arc::new(PeerAclRegistry::new());
+        registry.rebuild(&db);
+        let validator = DbTokenValidator::new(db).with_acl_registry(registry);
+
+        let identity = validator.validate(&node_auth(token)).expect("auth ok");
+        let AuthIdentity::Node { acl, .. } = identity else {
+            panic!("expected node identity");
+        };
+        let acl = acl.expect("group acl mounted");
+        assert!(acl.allowed("10.12.1.1:8080"));
+        assert!(!acl.allowed("8.8.8.8:443"));
+    }
+
+    #[test]
+    fn node_token_without_group_stays_unrestricted() {
+        let db = Database::in_memory().unwrap();
+        let token = "psk_test-token-no-group";
+        db.create_relay_token_full(&sha256_hex(token.as_bytes()), "psk_test", "", false, "full")
+            .unwrap();
+
+        let validator = DbTokenValidator::new(db);
+        let identity = validator.validate(&node_auth(token)).expect("auth ok");
+        let AuthIdentity::Node { acl, .. } = identity else {
+            panic!("expected node identity");
+        };
+        assert!(acl.is_none(), "不挂组 = 不收敛");
+    }
+
+    #[test]
+    fn unknown_token_still_rejected() {
+        let db = Database::in_memory().unwrap();
+        let validator = DbTokenValidator::new(db);
+        assert!(validator.validate(&node_auth("psk_no-such-token")).is_none());
     }
 }

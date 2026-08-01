@@ -79,6 +79,47 @@ pub async fn get_group(
     }))
 }
 
+/// 组详情：名下挂载的三类身份清单（账号 + 扇入令牌 + 扇出对端，各含 id 与名称字段）。
+pub async fn get_group_detail(
+    AdminAuth(_): AdminAuth,
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+) -> Response {
+    if state.db.get_group(&id).unwrap_or(None).is_none() {
+        return err(StatusCode::NOT_FOUND, codes::NOT_FOUND, "group not found");
+    }
+    let (accounts, _) = state
+        .db
+        .list_accounts(1, 1000, Some(&id), None, None)
+        .unwrap_or_default();
+    let accounts: Vec<_> = accounts
+        .into_iter()
+        .map(|a| json!({ "id": a.id, "username": a.username, "enabled": a.enabled }))
+        .collect();
+    let relay_tokens: Vec<_> = state
+        .db
+        .list_relay_tokens()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|t| t.group_id.as_deref() == Some(id.as_str()))
+        .map(|t| json!({ "id": t.id, "token_prefix": t.token_prefix, "remark": t.remark }))
+        .collect();
+    let connectors: Vec<_> = state
+        .db
+        .list_connectors()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|c| c.group_id.as_deref() == Some(id.as_str()))
+        .map(|c| json!({ "id": c.id, "name": c.name, "upstream_addr": c.upstream_addr, "enabled": c.enabled }))
+        .collect();
+
+    ok(json!({
+        "accounts": accounts,
+        "relay_tokens": relay_tokens,
+        "connectors": connectors,
+    }))
+}
+
 #[derive(Deserialize)]
 pub struct CreateGroupRequest {
     pub name: String,

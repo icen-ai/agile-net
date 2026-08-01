@@ -138,16 +138,19 @@ impl ProxyRouter {
         }
     }
 
-    /// 判断目标是否命中任意规则（ACL 判定用，忽略默认出站）。
-    pub fn matches_target(&self, host_or_ip: &str) -> bool {
-        let host_only = if let Ok(addr) = host_or_ip.parse::<SocketAddr>() {
+    /// 判断目标是否命中任意非默认路由（ACL 判定用，忽略默认出站）。
+    ///
+    /// 与 `route_target` 同样的方式剥离端口 / 解析 IP，
+    /// 直接查 longest_match / host_exact / host_suffixes，不比较 Outbound 值。
+    pub fn matches(&self, target: &str) -> bool {
+        let host_only = if let Ok(addr) = target.parse::<SocketAddr>() {
             addr.ip().to_string()
-        } else if let Ok(ip) = host_or_ip.parse::<IpAddr>() {
+        } else if let Ok(ip) = target.parse::<IpAddr>() {
             ip.to_string()
-        } else if let Some((h, _)) = host_or_ip.rsplit_once(':') {
+        } else if let Some((h, _)) = target.rsplit_once(':') {
             h.to_string()
         } else {
-            host_or_ip.to_string()
+            target.to_string()
         };
 
         if let Ok(ip) = host_only.parse::<IpAddr>() {
@@ -155,6 +158,11 @@ impl ProxyRouter {
         } else {
             self.resolve_host(&host_only).is_some()
         }
+    }
+
+    /// 判断目标是否命中任意规则（ACL 判定用，忽略默认出站）。
+    pub fn matches_target(&self, host_or_ip: &str) -> bool {
+        self.matches(host_or_ip)
     }
 
     /// 全部规则值（CIDR 字面值与域名模式）——路由再发布（re-advertise）用。
@@ -251,5 +259,31 @@ mod tests {
             router.resolve_ip("10.13.1.1"),
             Some(&Outbound::tunnel("wide"))
         );
+    }
+
+    #[test]
+    fn matches_non_default_route() {
+        let mut router = ProxyRouter::new();
+        router
+            .add_cidr("10.12.0.0/16", Outbound::tunnel("tunnel-b"))
+            .unwrap();
+        router.add_host_exact("git.internal", Outbound::tunnel("tunnel-b"));
+        router.add_host_suffix("*.dev.internal", Outbound::tunnel("tunnel-b"));
+
+        // IP / 带端口 IP
+        assert!(router.matches("10.12.1.1"));
+        assert!(router.matches("10.12.1.1:8080"));
+        assert!(!router.matches("8.8.8.8"));
+        assert!(!router.matches("8.8.8.8:443"));
+        // 精确域名 / 后缀域名 / 带端口域名
+        assert!(router.matches("git.internal"));
+        assert!(router.matches("git.internal:22"));
+        assert!(router.matches("app.dev.internal"));
+        assert!(router.matches("app.dev.internal:443"));
+        assert!(!router.matches("google.com"));
+        assert!(!router.matches("google.com:443"));
+        // 默认出站不参与判定
+        router.set_default(Outbound::Direct);
+        assert!(!router.matches("8.8.8.8"));
     }
 }

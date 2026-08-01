@@ -4,7 +4,6 @@
 
 use agile_net_core::error::Result;
 use agile_net_core::proxy::inbound::ProxyInbound;
-use agile_net_core::proxy::outbound::DirectOutbound;
 use agile_net_core::proxy::router::{Outbound, ProxyRouter};
 use arc_swap::ArcSwap;
 

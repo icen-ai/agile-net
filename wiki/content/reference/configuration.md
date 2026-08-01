@@ -24,6 +24,9 @@ key_path  = "certs/relay-key.pem"
 sni_hostname = "cdn.cloudflare.com"   # 自签证书 SAN / 对外 SNI
 
 # 扇出角色：扇出到目标 relay（自动重连；[[connectors]] 数组可多目标扇出/容灾）
+# 注意：[[connectors]] 仅启动导入——启动时若 DB 无同名 connector 则导入
+# （name 取 upstream_addr，组 = 不收敛），运行时以数据库为准；
+# 管理端「扇出」页 / anet connector 的增删改与启停即时生效（可挂权限组收敛）。
 [[connectors]]
 upstream_addr = "relay-a.example.com:54430"
 token = "psk_..."

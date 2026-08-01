@@ -71,6 +71,7 @@ Node   ──────── TLS ──────────> Node (Relay 
 | 认证 | [auth.md](auth.md) | 登录、刷新、登出 |
 | 客户端配置 | [config.md](config.md) | 拉取配置、长轮询、心跳 |
 | 规则管理 | [rules.md](rules.md) | CRUD + 批量导入 |
-| 权限组管理 | [groups.md](groups.md) | CRUD + 规则绑定 |
+| 权限组管理 | [groups.md](groups.md) | CRUD + 规则绑定 + 三类身份总览 |
 | 账号管理 | [accounts.md](accounts.md) | CRUD + 密码生成 + 二维码 |
+| 扇出管理 | [connectors.md](connectors.md) | connector CRUD + 启停 + 对端收敛 |
 | 节点状态 | [node.md](node.md) | 状态查询 + 流量统计 + WebSocket 事件 |

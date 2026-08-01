@@ -159,6 +159,41 @@ const MIGRATIONS: &[(u32, &str, &str)] = &[
     ALTER TABLE relay_token ADD COLUMN control_scope TEXT NOT NULL DEFAULT 'full';
     "#,
     ),
+    (
+        4,
+        "peer_acl_connector",
+        r#"
+    -- 扇入对端的收敛挂载点（NULL = 不收敛，放行一切）
+    ALTER TABLE relay_token ADD COLUMN group_id TEXT REFERENCES "group"(id);
+
+    -- 扇出 connector 入库（一等资源；token_enc 加密存储，见 docs/todo/peer-acl.md §4/§5）
+    CREATE TABLE connector (
+        id           TEXT PRIMARY KEY,
+        name         TEXT NOT NULL UNIQUE,
+        upstream_addr TEXT NOT NULL,
+        token_enc    TEXT NOT NULL,
+        sni_hostname TEXT NOT NULL DEFAULT '',
+        insecure     INTEGER NOT NULL DEFAULT 0,
+        advertise    TEXT NOT NULL DEFAULT '',
+        group_id     TEXT REFERENCES "group"(id),
+        enabled      INTEGER NOT NULL DEFAULT 1,
+        remark       TEXT NOT NULL DEFAULT '',
+        created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX idx_connector_group ON connector(group_id);
+    "#,
+    ),
+    (
+        5,
+        "connector_cert_paths",
+        r#"
+    -- 扇出 connector 证书固定能力对齐 core ConnectorConfig（设计文档 §4 遗漏补列；
+    -- 空串 = 不使用，优先级 pinned > ca > insecure 与 TOML 装配逻辑一致）
+    ALTER TABLE connector ADD COLUMN ca_cert_path TEXT NOT NULL DEFAULT '';
+    ALTER TABLE connector ADD COLUMN pinned_cert_path TEXT NOT NULL DEFAULT '';
+    "#,
+    ),
 ];
 
 impl Database {
@@ -1070,13 +1105,33 @@ impl Database {
         expose_control: bool,
         control_scope: &str,
     ) -> Result<RelayTokenRecord> {
+        self.create_relay_token_with_group(
+            token_hash,
+            token_prefix,
+            remark,
+            expose_control,
+            control_scope,
+            None,
+        )
+    }
+
+    /// 创建 Relay Token 并挂载收敛权限组（group_id 为 None = 不收敛）。
+    pub fn create_relay_token_with_group(
+        &self,
+        token_hash: &str,
+        token_prefix: &str,
+        remark: &str,
+        expose_control: bool,
+        control_scope: &str,
+        group_id: Option<&str>,
+    ) -> Result<RelayTokenRecord> {
         let conn = self.conn();
         let id = uuid::Uuid::new_v4().to_string();
         let now = now_rfc3339();
         conn.execute(
-            "INSERT INTO relay_token (id, token_hash, token_prefix, remark, expose_control, control_scope, created_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7)",
-            params![id, token_hash, token_prefix, remark, expose_control as i32, control_scope, now],
+            "INSERT INTO relay_token (id, token_hash, token_prefix, remark, expose_control, control_scope, group_id, created_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+            params![id, token_hash, token_prefix, remark, expose_control as i32, control_scope, group_id, now],
         )
         .map_err(db_err)?;
         Ok(RelayTokenRecord {
@@ -1085,9 +1140,22 @@ impl Database {
             remark: remark.to_string(),
             expose_control,
             control_scope: control_scope.to_string(),
+            group_id: group_id.map(|g| g.to_string()),
+            group_name: None,
             last_used_at: None,
             created_at: now,
         })
+    }
+
+    /// 设置 relay token 的收敛权限组（None = 不收敛，放行一切）。
+    pub fn set_relay_token_group(&self, id: &str, group_id: Option<&str>) -> Result<()> {
+        let conn = self.conn();
+        conn.execute(
+            "UPDATE relay_token SET group_id = ?1 WHERE id = ?2",
+            params![group_id, id],
+        )
+        .map_err(db_err)?;
+        Ok(())
     }
 
     /// 更新暴露控制面开关与授权档位（开关变更走 relay_token.expose_control 审计）。
@@ -1129,26 +1197,43 @@ impl Database {
     pub fn list_relay_tokens(&self) -> Result<Vec<RelayTokenRecord>> {
         let conn = self.conn();
         let mut stmt = conn
-            .prepare("SELECT id, token_prefix, remark, expose_control, control_scope, last_used_at, created_at FROM relay_token ORDER BY created_at DESC")
+            .prepare("SELECT t.id, t.token_prefix, t.remark, t.expose_control, t.control_scope, t.last_used_at, t.created_at, t.group_id, g.name
+                      FROM relay_token t LEFT JOIN \"group\" g ON t.group_id = g.id ORDER BY t.created_at DESC")
             .map_err(db_err)?;
-        let rows = stmt
-            .query_map([], |r| {
-                Ok(RelayTokenRecord {
-                    id: r.get(0)?,
-                    token_prefix: r.get(1)?,
-                    remark: r.get(2)?,
-                    expose_control: r.get::<_, i32>(3)? != 0,
-                    control_scope: r.get(4)?,
-                    last_used_at: r.get(5)?,
-                    created_at: r.get(6)?,
-                })
-            })
-            .map_err(db_err)?;
+        let rows = stmt.query_map([], map_relay_token_row).map_err(db_err)?;
         let mut items = Vec::new();
         for r in rows {
             items.push(r.map_err(db_err)?);
         }
         Ok(items)
+    }
+
+    /// 按 ID 查 relay token 详情（带出收敛组 ID 与组名）
+    pub fn get_relay_token(&self, id: &str) -> Result<Option<RelayTokenRecord>> {
+        let conn = self.conn();
+        let mut stmt = conn
+            .prepare("SELECT t.id, t.token_prefix, t.remark, t.expose_control, t.control_scope, t.last_used_at, t.created_at, t.group_id, g.name
+                      FROM relay_token t LEFT JOIN \"group\" g ON t.group_id = g.id WHERE t.id = ?1")
+            .map_err(db_err)?;
+        let mut rows = stmt.query(params![id]).map_err(db_err)?;
+        Ok(match rows.next().map_err(db_err)? {
+            Some(r) => Some(map_relay_token_row(r).map_err(db_err)?),
+            None => None,
+        })
+    }
+
+    /// 按哈希查 relay token 的收敛权限组（数据面扇入收敛用）。
+    /// 外层 None = token 不存在；内层 None = 不收敛（放行一切）。
+    pub fn get_relay_token_group(&self, token_hash: &str) -> Result<Option<Option<String>>> {
+        let conn = self.conn();
+        let mut stmt = conn
+            .prepare("SELECT group_id FROM relay_token WHERE token_hash = ?1")
+            .map_err(db_err)?;
+        let mut rows = stmt.query(params![token_hash]).map_err(db_err)?;
+        Ok(match rows.next().map_err(db_err)? {
+            Some(r) => Some(r.get(0).map_err(db_err)?),
+            None => None,
+        })
     }
 
     /// 校验 relay token 哈希是否存在；命中时更新 last_used_at
@@ -1176,6 +1261,311 @@ impl Database {
         conn.execute("DELETE FROM relay_token WHERE id = ?1", params![id])
             .map_err(db_err)?;
         Ok(())
+    }
+
+    // ==================== Connector（扇出，一等资源） ====================
+
+    /// 创建扇出 connector（token 加密落库，创建后亦不回显，只允许重置）。
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_connector(
+        &self,
+        name: &str,
+        upstream_addr: &str,
+        token_plain: &str,
+        sni_hostname: &str,
+        insecure: bool,
+        ca_cert_path: &str,
+        pinned_cert_path: &str,
+        advertise: &str,
+        group_id: Option<&str>,
+        remark: &str,
+    ) -> Result<ConnectorRecord> {
+        let token_enc = self.encrypt_secret(token_plain)?;
+        let conn = self.conn();
+        let id = uuid::Uuid::new_v4().to_string();
+        let now = now_rfc3339();
+        conn.execute(
+            "INSERT INTO connector (id, name, upstream_addr, token_enc, sni_hostname, insecure, ca_cert_path, pinned_cert_path, advertise, group_id, enabled, remark, created_at, updated_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,1,?11,?12,?12)",
+            params![id, name, upstream_addr, token_enc, sni_hostname, insecure as i32, ca_cert_path, pinned_cert_path, advertise, group_id, remark, now],
+        )
+        .map_err(db_err)?;
+        Ok(ConnectorRecord {
+            id,
+            name: name.to_string(),
+            upstream_addr: upstream_addr.to_string(),
+            token_enc,
+            sni_hostname: sni_hostname.to_string(),
+            insecure,
+            ca_cert_path: ca_cert_path.to_string(),
+            pinned_cert_path: pinned_cert_path.to_string(),
+            advertise: advertise.to_string(),
+            group_id: group_id.map(|g| g.to_string()),
+            enabled: true,
+            remark: remark.to_string(),
+            created_at: now.clone(),
+            updated_at: now,
+        })
+    }
+
+    /// 列出全部扇出 connector（展示视图，绝不含 token 明文/密文）。
+    pub fn list_connectors(&self) -> Result<Vec<ConnectorView>> {
+        // 先取出全部行并归还连接（内存库连接池为 1，解密需再次取连接）
+        let recs = {
+            let conn = self.conn();
+            let mut stmt = conn
+                .prepare(
+                    "SELECT c.id, c.name, c.upstream_addr, c.token_enc, c.sni_hostname, c.insecure, c.ca_cert_path, c.pinned_cert_path, c.advertise,
+                            c.group_id, g.name, c.enabled, c.remark, c.created_at, c.updated_at
+                     FROM connector c LEFT JOIN \"group\" g ON c.group_id = g.id ORDER BY c.created_at DESC",
+                )
+                .map_err(db_err)?;
+            let mut rows = stmt.query([]).map_err(db_err)?;
+            let mut recs = Vec::new();
+            while let Some(r) = rows.next().map_err(db_err)? {
+                let rec = ConnectorRecord {
+                    id: r.get(0).map_err(db_err)?,
+                    name: r.get(1).map_err(db_err)?,
+                    upstream_addr: r.get(2).map_err(db_err)?,
+                    token_enc: r.get(3).map_err(db_err)?,
+                    sni_hostname: r.get(4).map_err(db_err)?,
+                    insecure: r.get::<_, i32>(5).map_err(db_err)? != 0,
+                    ca_cert_path: r.get(6).map_err(db_err)?,
+                    pinned_cert_path: r.get(7).map_err(db_err)?,
+                    advertise: r.get(8).map_err(db_err)?,
+                    group_id: r.get(9).map_err(db_err)?,
+                    enabled: r.get::<_, i32>(11).map_err(db_err)? != 0,
+                    remark: r.get(12).map_err(db_err)?,
+                    created_at: r.get(13).map_err(db_err)?,
+                    updated_at: r.get(14).map_err(db_err)?,
+                };
+                let group_name: Option<String> = r.get(10).map_err(db_err)?;
+                recs.push((rec, group_name));
+            }
+            recs
+        };
+        let mut items = Vec::new();
+        for (rec, group_name) in recs {
+            // 前缀展示位：解密取前 8 字符仅用于辨认；解密失败（密钥轮换等）留空
+            let token_prefix = self
+                .decrypt_secret(&rec.token_enc)
+                .map(|t| token_prefix_of(&t))
+                .unwrap_or_default();
+            items.push(ConnectorView {
+                id: rec.id,
+                name: rec.name,
+                upstream_addr: rec.upstream_addr,
+                token_prefix,
+                sni_hostname: rec.sni_hostname,
+                insecure: rec.insecure,
+                ca_cert_path: rec.ca_cert_path,
+                pinned_cert_path: rec.pinned_cert_path,
+                advertise: rec.advertise,
+                group_id: rec.group_id,
+                group_name,
+                enabled: rec.enabled,
+                remark: rec.remark,
+                created_at: rec.created_at,
+                updated_at: rec.updated_at,
+            });
+        }
+        Ok(items)
+    }
+
+    /// 按 ID 取 connector 记录（含密文，仅供内部使用，严禁日志/审计输出）。
+    pub fn get_connector(&self, id: &str) -> Result<Option<ConnectorRecord>> {
+        let conn = self.conn();
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, name, upstream_addr, token_enc, sni_hostname, insecure, ca_cert_path, pinned_cert_path, advertise, group_id, enabled, remark, created_at, updated_at
+                 FROM connector WHERE id = ?1",
+            )
+            .map_err(db_err)?;
+        let mut rows = stmt.query(params![id]).map_err(db_err)?;
+        Ok(match rows.next().map_err(db_err)? {
+            Some(r) => Some(ConnectorRecord {
+                id: r.get(0).map_err(db_err)?,
+                name: r.get(1).map_err(db_err)?,
+                upstream_addr: r.get(2).map_err(db_err)?,
+                token_enc: r.get(3).map_err(db_err)?,
+                sni_hostname: r.get(4).map_err(db_err)?,
+                insecure: r.get::<_, i32>(5).map_err(db_err)? != 0,
+                ca_cert_path: r.get(6).map_err(db_err)?,
+                pinned_cert_path: r.get(7).map_err(db_err)?,
+                advertise: r.get(8).map_err(db_err)?,
+                group_id: r.get(9).map_err(db_err)?,
+                enabled: r.get::<_, i32>(10).map_err(db_err)? != 0,
+                remark: r.get(11).map_err(db_err)?,
+                created_at: r.get(12).map_err(db_err)?,
+                updated_at: r.get(13).map_err(db_err)?,
+            }),
+            None => None,
+        })
+    }
+
+    /// 按 ID 取 connector 的扇出 token 明文（解密，仅供运行时连接用；严禁日志/审计输出）。
+    pub fn get_connector_secret(&self, id: &str) -> Result<String> {
+        let rec = self
+            .get_connector(id)?
+            .ok_or_else(|| Error::Other("connector not found".into()))?;
+        self.decrypt_secret(&rec.token_enc)
+    }
+
+    /// 更新 connector（token_plain 为 None = 保留原 token）。
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_connector(
+        &self,
+        id: &str,
+        name: &str,
+        upstream_addr: &str,
+        token_plain: Option<&str>,
+        sni_hostname: &str,
+        insecure: bool,
+        ca_cert_path: &str,
+        pinned_cert_path: &str,
+        advertise: &str,
+        group_id: Option<&str>,
+        remark: &str,
+    ) -> Result<()> {
+        let token_enc = match token_plain {
+            Some(t) => self.encrypt_secret(t)?,
+            None => {
+                self.get_connector(id)?
+                    .ok_or_else(|| Error::Other("connector not found".into()))?
+                    .token_enc
+            }
+        };
+        let conn = self.conn();
+        conn.execute(
+            "UPDATE connector SET name = ?1, upstream_addr = ?2, token_enc = ?3, sni_hostname = ?4,
+                    insecure = ?5, ca_cert_path = ?6, pinned_cert_path = ?7, advertise = ?8, group_id = ?9, remark = ?10, updated_at = ?11
+             WHERE id = ?12",
+            params![name, upstream_addr, token_enc, sni_hostname, insecure as i32, ca_cert_path, pinned_cert_path, advertise, group_id, remark, now_rfc3339(), id],
+        )
+        .map_err(db_err)?;
+        Ok(())
+    }
+
+    pub fn set_connector_enabled(&self, id: &str, enabled: bool) -> Result<()> {
+        let conn = self.conn();
+        conn.execute(
+            "UPDATE connector SET enabled = ?1, updated_at = ?2 WHERE id = ?3",
+            params![enabled as i32, now_rfc3339(), id],
+        )
+        .map_err(db_err)?;
+        Ok(())
+    }
+
+    pub fn delete_connector(&self, id: &str) -> Result<()> {
+        let conn = self.conn();
+        conn.execute("DELETE FROM connector WHERE id = ?1", params![id])
+            .map_err(db_err)?;
+        Ok(())
+    }
+
+    /// TOML `[[connectors]]` 初始导入：同名已存在则跳过（运行时以 DB 为准）。
+    #[allow(clippy::too_many_arguments)]
+    pub fn import_connector_if_absent(
+        &self,
+        name: &str,
+        upstream_addr: &str,
+        token_plain: &str,
+        sni_hostname: &str,
+        insecure: bool,
+        ca_cert_path: &str,
+        pinned_cert_path: &str,
+        advertise: &str,
+        group_id: Option<&str>,
+        remark: &str,
+    ) -> Result<bool> {
+        let conn = self.conn();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM connector WHERE name = ?1",
+                params![name],
+                |r| r.get(0),
+            )
+            .map_err(db_err)?;
+        if count > 0 {
+            return Ok(false);
+        }
+        drop(conn);
+        self.create_connector(
+            name,
+            upstream_addr,
+            token_plain,
+            sni_hostname,
+            insecure,
+            ca_cert_path,
+            pinned_cert_path,
+            advertise,
+            group_id,
+            remark,
+        )?;
+        Ok(true)
+    }
+
+    // ==================== 扇出 token 加密存储（全库唯一可逆例外，§5） ====================
+
+    /// AES-256-GCM 加密敏感凭据，落库格式 `v1:nonce_b64:ct_b64`。
+    /// 机器密钥首用生成（32 随机字节 hex），存 node_config.connector_token_key。
+    pub fn encrypt_secret(&self, plain: &str) -> Result<String> {
+        let key = self.connector_token_key()?;
+        let nonce_bytes: [u8; 12] = rand::random();
+        let mut in_out = plain.as_bytes().to_vec();
+        key.seal_in_place_append_tag(
+            ring::aead::Nonce::assume_unique_for_key(nonce_bytes),
+            ring::aead::Aad::empty(),
+            &mut in_out,
+        )
+        .map_err(|_| Error::Other("encrypt_secret failed".into()))?;
+        Ok(format!(
+            "v1:{}:{}",
+            b64_encode(&nonce_bytes),
+            b64_encode(&in_out)
+        ))
+    }
+
+    /// 解密 `v1:` 格式密文（版本不符/密钥错误均报错；错误信息不含明文/密文）。
+    pub fn decrypt_secret(&self, enc: &str) -> Result<String> {
+        let mut parts = enc.splitn(3, ':');
+        let (ver, nonce_b64, ct_b64) = match (parts.next(), parts.next(), parts.next()) {
+            (Some(v), Some(n), Some(c)) => (v, n, c),
+            _ => return Err(Error::Other("secret format invalid".into())),
+        };
+        if ver != "v1" {
+            return Err(Error::Other("secret version unsupported".into()));
+        }
+        let nonce_raw = b64_decode(nonce_b64)?;
+        let nonce_bytes: [u8; 12] = nonce_raw
+            .try_into()
+            .map_err(|_| Error::Other("secret nonce invalid".into()))?;
+        let mut in_out = b64_decode(ct_b64)?;
+        let key = self.connector_token_key()?;
+        let plain = key
+            .open_in_place(
+                ring::aead::Nonce::assume_unique_for_key(nonce_bytes),
+                ring::aead::Aad::empty(),
+                &mut in_out,
+            )
+            .map_err(|_| Error::Other("secret decrypt failed".into()))?;
+        String::from_utf8(plain.to_vec()).map_err(|e| Error::Other(e.to_string()))
+    }
+
+    /// 装载或生成扇出 token 机器密钥（与 jwt_secret 同机制）。
+    fn connector_token_key(&self) -> Result<ring::aead::LessSafeKey> {
+        let hex_key = match self.get_config("connector_token_key")? {
+            Some(k) if !k.is_empty() => k,
+            _ => {
+                let k = generate_secret_hex();
+                self.set_config("connector_token_key", &k)?;
+                k
+            }
+        };
+        let bytes = hex_decode(&hex_key)?;
+        let unbound = ring::aead::UnboundKey::new(&ring::aead::AES_256_GCM, &bytes)
+            .map_err(|_| Error::Other("connector_token_key invalid".into()))?;
+        Ok(ring::aead::LessSafeKey::new(unbound))
     }
 
     // ==================== Admin Ticket（管理引导票据） ====================
@@ -1566,6 +1956,20 @@ fn map_group_row(r: &rusqlite::Row) -> rusqlite::Result<GroupRecord> {
     })
 }
 
+fn map_relay_token_row(r: &rusqlite::Row) -> rusqlite::Result<RelayTokenRecord> {
+    Ok(RelayTokenRecord {
+        id: r.get(0)?,
+        token_prefix: r.get(1)?,
+        remark: r.get(2)?,
+        expose_control: r.get::<_, i32>(3)? != 0,
+        control_scope: r.get(4)?,
+        last_used_at: r.get(5)?,
+        created_at: r.get(6)?,
+        group_id: r.get(7)?,
+        group_name: r.get(8)?,
+    })
+}
+
 fn map_account_row(r: &rusqlite::Row) -> rusqlite::Result<AccountRecord> {
     Ok(AccountRecord {
         id: r.get(0)?,
@@ -1652,6 +2056,35 @@ pub fn sha256_hex(data: &[u8]) -> String {
     digest.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// hex 解码（connector 机器密钥用）
+fn hex_decode(s: &str) -> Result<Vec<u8>> {
+    if !s.len().is_multiple_of(2) {
+        return Err(Error::Other("hex length invalid".into()));
+    }
+    (0..s.len() / 2)
+        .map(|i| {
+            u8::from_str_radix(&s[2 * i..2 * i + 2], 16).map_err(|e| Error::Other(e.to_string()))
+        })
+        .collect()
+}
+
+fn b64_encode(data: &[u8]) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.encode(data)
+}
+
+fn b64_decode(s: &str) -> Result<Vec<u8>> {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD
+        .decode(s)
+        .map_err(|e| Error::Other(e.to_string()))
+}
+
+/// token 前缀展示位（前 8 字符，仅用于列表辨认）
+fn token_prefix_of(plain: &str) -> String {
+    plain.chars().take(8).collect()
+}
+
 fn random_alnum(len: usize) -> String {
     use rand::Rng;
     const CHARSET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
@@ -1662,4 +2095,340 @@ fn random_alnum(len: usize) -> String {
             CHARSET[idx] as char
         })
         .collect()
+}
+
+// ==================== 测试 ====================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 建一个权限组，返回 id
+    fn mk_group(db: &Database, name: &str) -> String {
+        db.create_group(name, "").expect("create group").id
+    }
+
+    #[test]
+    fn migration_v4_upgrades_old_db() {
+        // 构造一个只应用过 v1~v3 的旧库文件
+        let path = std::env::temp_dir().join(format!("anet-db-mig-test-{}.db", uuid::Uuid::new_v4()));
+        {
+            let conn = rusqlite::Connection::open(&path).expect("open raw conn");
+            conn.execute_batch(
+                "CREATE TABLE _migration (
+                    version INTEGER PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );",
+            )
+            .unwrap();
+            for (version, name, sql) in MIGRATIONS.iter().take(3) {
+                conn.execute_batch(sql).unwrap();
+                conn.execute(
+                    "INSERT INTO _migration (version, name) VALUES (?1, ?2)",
+                    params![version, name],
+                )
+                .unwrap();
+            }
+            // 旧 schema 下插入一条 relay_token（无 group_id 列）
+            conn.execute(
+                "INSERT INTO relay_token (id, token_hash, token_prefix, remark, expose_control, control_scope, created_at)
+                 VALUES ('tok-old', 'hash-old', 'psk_abcd', 'legacy', 0, 'full', '2026-01-01T00:00:00Z')",
+                [],
+            )
+            .unwrap();
+        }
+
+        // 打开即触发 v4 迁移：旧行保留、新列为 NULL（不收敛）、connector 表可用
+        {
+            let db = Database::open(&path).expect("open migrated db");
+            let tok = db
+                .get_relay_token("tok-old")
+                .expect("get")
+                .expect("old token exists");
+            assert_eq!(tok.token_prefix, "psk_abcd");
+            assert_eq!(tok.group_id, None);
+            assert_eq!(tok.group_name, None);
+            assert!(db.list_connectors().expect("connector table").is_empty());
+
+            // 迁移后旧行可直接挂组
+            let gid = mk_group(&db, "g1");
+            db.set_relay_token_group("tok-old", Some(&gid)).expect("set group");
+            let tok = db.get_relay_token("tok-old").expect("get2").unwrap();
+            assert_eq!(tok.group_id.as_deref(), Some(gid.as_str()));
+            assert_eq!(tok.group_name.as_deref(), Some("g1"));
+        }
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    }
+
+    #[test]
+    fn secret_encrypt_decrypt_roundtrip() {
+        let db = Database::in_memory().unwrap();
+        let plain = "psk_0123456789abcdef0123456789abcdef0123456789abcdef";
+        let enc1 = db.encrypt_secret(plain).unwrap();
+        let enc2 = db.encrypt_secret(plain).unwrap();
+        // 随机 nonce：同明文两次密文不同，且带版本前缀
+        assert_ne!(enc1, enc2);
+        assert!(enc1.starts_with("v1:"));
+        assert_eq!(db.decrypt_secret(&enc1).unwrap(), plain);
+        assert_eq!(db.decrypt_secret(&enc2).unwrap(), plain);
+        // 机器密钥已持久化到 node_config
+        assert!(
+            db.get_config("connector_token_key")
+                .unwrap()
+                .is_some_and(|k| k.len() == 64)
+        );
+        // 非法格式/版本/密文均报错
+        assert!(db.decrypt_secret("garbage").is_err());
+        assert!(db.decrypt_secret("v2:AAAA:BBBB").is_err());
+        assert!(db.decrypt_secret("v1:AAAA:BBBB").is_err());
+        // 密钥不同则无法解密（另一库实例）
+        let db2 = Database::in_memory().unwrap();
+        assert!(db2.decrypt_secret(&enc1).is_err());
+    }
+
+    #[test]
+    fn connector_crud_full_path() {
+        let db = Database::in_memory().unwrap();
+        let gid = mk_group(&db, "peers");
+        let token = "psk_connector-token-0123456789abcdef";
+
+        // create
+        let rec = db
+            .create_connector(
+                "site-a",
+                "1.2.3.4:54430",
+                token,
+                "a.example.com",
+                false,
+                "/etc/anet/ca.pem",
+                "",
+                "10.0.0.0/8",
+                Some(&gid),
+                "站点 A",
+            )
+            .expect("create connector");
+        assert!(rec.enabled);
+        assert_eq!(rec.group_id.as_deref(), Some(gid.as_str()));
+        assert_eq!(rec.ca_cert_path, "/etc/anet/ca.pem");
+        assert_eq!(rec.pinned_cert_path, "");
+        // 密文落库：不是明文、带版本前缀
+        assert!(rec.token_enc.starts_with("v1:"));
+        assert!(!rec.token_enc.contains(token));
+
+        // get / get_connector_secret（解密回明文）
+        let got = db.get_connector(&rec.id).unwrap().expect("get connector");
+        assert_eq!(got.name, "site-a");
+        assert_eq!(db.get_connector_secret(&rec.id).unwrap(), token);
+
+        // list（视图带组名与前缀展示位，不含明文/密文）
+        let views = db.list_connectors().unwrap();
+        assert_eq!(views.len(), 1);
+        let v = &views[0];
+        assert_eq!(v.group_name.as_deref(), Some("peers"));
+        assert_eq!(v.token_prefix, "psk_conn");
+        let json = serde_json::to_string(v).unwrap();
+        assert!(!json.contains(token));
+        assert!(!json.contains("token_enc"));
+
+        // update：token None = 保留原 token，其余字段全改
+        db.update_connector(
+            &rec.id,
+            "site-a2",
+            "5.6.7.8:54430",
+            None,
+            "",
+            true,
+            "",
+            "/etc/anet/pinned.pem",
+            "",
+            None,
+            "改名",
+        )
+        .expect("update keep token");
+        let got = db.get_connector(&rec.id).unwrap().unwrap();
+        assert_eq!(got.name, "site-a2");
+        assert!(got.insecure);
+        assert_eq!(got.ca_cert_path, "");
+        assert_eq!(got.pinned_cert_path, "/etc/anet/pinned.pem");
+        assert_eq!(got.group_id, None);
+        assert_eq!(db.get_connector_secret(&rec.id).unwrap(), token);
+
+        // update：显式重置 token
+        let token2 = "psk_rotated-token-abcdef0123456789";
+        db.update_connector(
+            &rec.id,
+            "site-a2",
+            "5.6.7.8:54430",
+            Some(token2),
+            "",
+            true,
+            "",
+            "",
+            "",
+            None,
+            "",
+        )
+        .expect("update rotate token");
+        assert_eq!(db.get_connector_secret(&rec.id).unwrap(), token2);
+
+        // set_enabled / delete
+        db.set_connector_enabled(&rec.id, false).expect("disable");
+        assert!(!db.get_connector(&rec.id).unwrap().unwrap().enabled);
+        db.delete_connector(&rec.id).expect("delete");
+        assert!(db.get_connector(&rec.id).unwrap().is_none());
+        assert!(db.list_connectors().unwrap().is_empty());
+    }
+
+    #[test]
+    fn import_connector_if_absent_skips_existing() {
+        let db = Database::in_memory().unwrap();
+        let first = db
+            .import_connector_if_absent(
+                "site-a",
+                "1.2.3.4:54430",
+                "psk_first",
+                "",
+                false,
+                "",
+                "",
+                "",
+                None,
+                "toml 导入",
+            )
+            .expect("first import");
+        assert!(first);
+        // 同名存在则跳过，且原记录不被覆盖
+        let second = db
+            .import_connector_if_absent(
+                "site-a",
+                "9.9.9.9:54430",
+                "psk_second",
+                "",
+                false,
+                "",
+                "",
+                "",
+                None,
+                "",
+            )
+            .expect("second import");
+        assert!(!second);
+        let views = db.list_connectors().unwrap();
+        assert_eq!(views.len(), 1);
+        assert_eq!(views[0].upstream_addr, "1.2.3.4:54430");
+    }
+
+    #[test]
+    fn relay_token_group_mount() {
+        let db = Database::in_memory().unwrap();
+        let gid = mk_group(&db, "peers");
+        let hash = sha256_hex(b"tok-plain");
+
+        // 带组创建
+        let rec = db
+            .create_relay_token_with_group(&hash, "psk_abcd", "带组", false, "full", Some(&gid))
+            .expect("create with group");
+        assert_eq!(rec.group_id.as_deref(), Some(gid.as_str()));
+
+        // list / 详情带出组 ID 与组名
+        let list = db.list_relay_tokens().unwrap();
+        assert_eq!(list[0].group_id.as_deref(), Some(gid.as_str()));
+        assert_eq!(list[0].group_name.as_deref(), Some("peers"));
+        let detail = db.get_relay_token(&rec.id).unwrap().unwrap();
+        assert_eq!(detail.group_name.as_deref(), Some("peers"));
+
+        // 按哈希查收敛组（数据面）：Some(Some(gid))
+        assert_eq!(
+            db.get_relay_token_group(&hash).unwrap().flatten().as_deref(),
+            Some(gid.as_str())
+        );
+
+        // 改为不收敛：Some(None)
+        db.set_relay_token_group(&rec.id, None).expect("clear group");
+        let g = db.get_relay_token_group(&hash).unwrap();
+        assert!(matches!(g, Some(None)));
+        assert_eq!(db.get_relay_token(&rec.id).unwrap().unwrap().group_id, None);
+
+        // 旧方法委托：默认不收敛
+        let rec2 = db
+            .create_relay_token_full(&sha256_hex(b"tok2"), "psk_efgh", "", false, "full")
+            .expect("create full");
+        assert_eq!(rec2.group_id, None);
+        // 不存在的哈希：None
+        assert_eq!(db.get_relay_token_group("no-such-hash").unwrap(), None);
+    }
+
+    #[test]
+    fn migration_v5_upgrades_old_db() {
+        // 构造一个只应用过 v1~v4 的旧库文件（connector 表无证书路径列）
+        let path = std::env::temp_dir().join(format!("anet-db-mig5-test-{}.db", uuid::Uuid::new_v4()));
+        {
+            let conn = rusqlite::Connection::open(&path).expect("open raw conn");
+            conn.execute_batch(
+                "CREATE TABLE _migration (
+                    version INTEGER PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );",
+            )
+            .unwrap();
+            for (version, name, sql) in MIGRATIONS.iter().take(4) {
+                conn.execute_batch(sql).unwrap();
+                conn.execute(
+                    "INSERT INTO _migration (version, name) VALUES (?1, ?2)",
+                    params![version, name],
+                )
+                .unwrap();
+            }
+            // 旧 schema 下插入一条 connector（无 ca_cert_path / pinned_cert_path 列）
+            conn.execute(
+                "INSERT INTO connector (id, name, upstream_addr, token_enc, sni_hostname, insecure, advertise, group_id, enabled, remark, created_at, updated_at)
+                 VALUES ('conn-old', 'site-old', '1.2.3.4:54430', 'v1:AAAA:BBBB', '', 1, '', NULL, 1, 'legacy', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+                [],
+            )
+            .unwrap();
+        }
+
+        // 打开即触发 v5 迁移：旧行保留、新列默认为空串
+        {
+            let db = Database::open(&path).expect("open migrated db");
+            let rec = db
+                .get_connector("conn-old")
+                .expect("get")
+                .expect("old connector exists");
+            assert_eq!(rec.name, "site-old");
+            assert_eq!(rec.ca_cert_path, "");
+            assert_eq!(rec.pinned_cert_path, "");
+
+            // 迁移后可直接写入证书路径
+            db.update_connector(
+                "conn-old",
+                "site-old",
+                "1.2.3.4:54430",
+                None,
+                "",
+                false,
+                "/etc/anet/ca.pem",
+                "",
+                "",
+                None,
+                "",
+            )
+            .expect("update cert path");
+            let rec = db.get_connector("conn-old").unwrap().unwrap();
+            assert_eq!(rec.ca_cert_path, "/etc/anet/ca.pem");
+            // list 视图同样带出新列
+            let views = db.list_connectors().unwrap();
+            assert_eq!(views.len(), 1);
+            assert_eq!(views[0].ca_cert_path, "/etc/anet/ca.pem");
+        }
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    }
 }

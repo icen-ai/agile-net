@@ -3,14 +3,15 @@
 //! 数据源：`tui::source`——默认经 `anet login` 会话走节点 API（写操作落审计，与管理端一致）；
 //! API 不可达/无会话/`--offline` 时降级数据库直连**只读**兜底（状态栏明示降级原因）。
 //!
-//! 页签：概览 / 规则 / 权限组 / 账号 / 令牌 / 审计
+//! 页签：概览 / 规则 / 权限组 / 账号 / 令牌 / 扇出 / 审计
 //! 操作：Tab/←→ 切换页签，↑↓ 选择行，r 刷新，e 启用/禁用账号（API 模式），
 //!       n 生成 Relay Token（API 模式），d 删除选中行（y 确认，API 模式），q 退出。
 
 pub mod source;
 
 use source::{
-    AccountRow, AuditRow, ConnectOutcome, DashboardRow, GroupRow, RuleRow, Source, TokenRow,
+    AccountRow, AuditRow, ConnectOutcome, ConnectorRow, DashboardRow, GroupRow, RuleRow, Source,
+    TokenRow,
 };
 
 use agile_net_core::error::{Error, Result};
@@ -41,16 +42,18 @@ pub enum Tab {
     Groups,
     Accounts,
     Tokens,
+    Connectors,
     Audit,
 }
 
 impl Tab {
-    const ALL: [Tab; 6] = [
+    const ALL: [Tab; 7] = [
         Tab::Dashboard,
         Tab::Rules,
         Tab::Groups,
         Tab::Accounts,
         Tab::Tokens,
+        Tab::Connectors,
         Tab::Audit,
     ];
 
@@ -61,6 +64,7 @@ impl Tab {
             Tab::Groups => "权限组",
             Tab::Accounts => "账号",
             Tab::Tokens => "令牌",
+            Tab::Connectors => "扇出",
             Tab::Audit => "审计",
         }
     }
@@ -72,7 +76,8 @@ impl Tab {
             Tab::Groups => 2,
             Tab::Accounts => 3,
             Tab::Tokens => 4,
-            Tab::Audit => 5,
+            Tab::Connectors => 5,
+            Tab::Audit => 6,
         }
     }
 
@@ -90,6 +95,7 @@ pub struct TuiApp {
     pub groups: Vec<GroupRow>,
     pub accounts: Vec<AccountRow>,
     pub tokens: Vec<TokenRow>,
+    pub connectors: Vec<ConnectorRow>,
     pub audit_logs: Vec<AuditRow>,
     pub table_state: TableState,
     pub status_msg: String,
@@ -108,6 +114,7 @@ impl TuiApp {
             groups: Vec::new(),
             accounts: Vec::new(),
             tokens: Vec::new(),
+            connectors: Vec::new(),
             audit_logs: Vec::new(),
             table_state: TableState::default(),
             status_msg: outcome
@@ -136,6 +143,9 @@ impl TuiApp {
         if let Ok(items) = self.source.tokens() {
             self.tokens = items;
         }
+        if let Ok(items) = self.source.connectors() {
+            self.connectors = items;
+        }
         if let Ok(items) = self.source.audit_logs() {
             self.audit_logs = items;
         }
@@ -148,6 +158,7 @@ impl TuiApp {
             Tab::Groups => self.groups.len(),
             Tab::Accounts => self.accounts.len(),
             Tab::Tokens => self.tokens.len(),
+            Tab::Connectors => self.connectors.len(),
             Tab::Audit => self.audit_logs.len(),
         }
     }
@@ -193,7 +204,10 @@ impl TuiApp {
             KeyCode::Char('n') => self.create_token_action(),
             KeyCode::Char('d') => {
                 if self.current_row_count() > 0
-                    && !matches!(self.current_tab, Tab::Dashboard | Tab::Audit)
+                    && !matches!(
+                        self.current_tab,
+                        Tab::Dashboard | Tab::Connectors | Tab::Audit
+                    )
                 {
                     if self.source.readonly() {
                         self.status_msg = "只读模式（数据库直连）：删除需 API 管理模式".into();
@@ -335,6 +349,7 @@ impl TuiApp {
             Tab::Groups => self.render_groups(f, chunks[1]),
             Tab::Accounts => self.render_accounts(f, chunks[1]),
             Tab::Tokens => self.render_tokens(f, chunks[1]),
+            Tab::Connectors => self.render_connectors(f, chunks[1]),
             Tab::Audit => self.render_audit(f, chunks[1]),
         }
 
@@ -363,10 +378,11 @@ impl TuiApp {
             text.push_str(&format!("{k}:  {v}\n"));
         }
         text.push_str(&format!(
-            "\n规则 {} · 权限组 {} · 令牌 {} · 审计 {}",
+            "\n规则 {} · 权限组 {} · 令牌 {} · 扇出 {} · 审计 {}",
             self.rules.len(),
             self.groups.len(),
             self.tokens.len(),
+            self.connectors.len(),
             self.audit_logs.len()
         ));
         let p =
@@ -484,6 +500,7 @@ impl TuiApp {
             .map(|t| {
                 Row::new(vec![
                     Cell::from(t.prefix.clone()),
+                    Cell::from(t.group_name.clone()),
                     Cell::from(if t.expose { t.scope.clone() } else { "关".into() }),
                     Cell::from(t.remark.clone()),
                     Cell::from(t.last_used.clone()),
@@ -495,6 +512,7 @@ impl TuiApp {
             rows,
             [
                 Constraint::Length(16),
+                Constraint::Length(12),
                 Constraint::Length(8),
                 Constraint::Min(18),
                 Constraint::Length(22),
@@ -502,7 +520,7 @@ impl TuiApp {
             ],
         )
         .header(
-            Row::new(vec!["Token 前缀", "暴露面", "备注", "最近使用", "创建时间"])
+            Row::new(vec!["Token 前缀", "权限组", "暴露面", "备注", "最近使用", "创建时间"])
                 .style(Style::default().fg(Color::Yellow)),
         )
         .row_highlight_style(Style::default().bg(Color::DarkGray))
@@ -511,6 +529,47 @@ impl TuiApp {
                 .borders(Borders::ALL)
                 .title("Relay 令牌（按 n 生成新令牌）"),
         );
+        f.render_stateful_widget(table, area, &mut self.table_state);
+    }
+
+    fn render_connectors(&mut self, f: &mut Frame, area: ratatui::layout::Rect) {
+        let rows: Vec<Row> = self
+            .connectors
+            .iter()
+            .map(|c| {
+                // 禁用优先展示；DB 只读模式无运行时状态（"-"）
+                let status = if !c.enabled {
+                    "已禁用".into()
+                } else if c.state.is_empty() {
+                    "-".into()
+                } else {
+                    c.state.clone()
+                };
+                Row::new(vec![
+                    Cell::from(c.name.clone()),
+                    Cell::from(c.upstream_addr.clone()),
+                    Cell::from(c.group_name.clone()),
+                    Cell::from(status),
+                    Cell::from(c.remark.clone()),
+                ])
+            })
+            .collect();
+        let table = Table::new(
+            rows,
+            [
+                Constraint::Min(16),
+                Constraint::Min(22),
+                Constraint::Length(12),
+                Constraint::Length(14),
+                Constraint::Min(14),
+            ],
+        )
+        .header(
+            Row::new(vec!["名称", "地址", "权限组", "状态", "备注"])
+                .style(Style::default().fg(Color::Yellow)),
+        )
+        .row_highlight_style(Style::default().bg(Color::DarkGray))
+        .block(Block::default().borders(Borders::ALL).title("扇出对端"));
         f.render_stateful_widget(table, area, &mut self.table_state);
     }
 

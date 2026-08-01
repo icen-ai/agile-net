@@ -10,6 +10,7 @@ AgileNet 的安全设计假设：中继节点不可信、令牌会泄露、管�
 | 证书校验 | 客户端/connector 支持**证书固定（pinning）**：PEM 证书钉入或 SHA-256 指纹钉入（`fp`，随 connect_url 一键分发，抗 MITM）；也支持自定义 CA |
 | 密码存储 | 管理员与客户端账号密码一律 **argon2id**（64MB / t=3 / p=4），严禁明文落库 |
 | 令牌存储 | 客户端密码（`sk-`）、Relay Token（`psk_`）、隧道令牌（`tun_`）、管理引导票据（`adt_`）均由服务端生成 48 位强随机，**库中只存 SHA-256 哈希**，明文仅在创建时返回一次 |
+| 扇出 token | connector 的连接凭据由对端签发、连接时必须使用明文：**全库唯一可逆例外**——AES-256-GCM 加密落库（`v1:nonce_b64:ct_b64`），机器密钥 `node_config.connector_token_key` 首用生成；创建后永不回显，审计不落明文/密文 |
 | 比较方式 | 数据面 token 比较必须**常数时间**（`constant_time_eq`），防时序侧信道 |
 | 会话 | JWT（HS256）：admin access 15min / refresh 7d；client access 1h / refresh 30d；refresh jti 哈希落库，支持吊销与轮换；JWT 密钥首启生成并持久化 |
 
@@ -26,6 +27,23 @@ AgileNet 的安全设计假设：中继节点不可信、令牌会泄露、管�
 规则外目标在隧道入口即被拒绝（docker 断言 T3）。能否管理某节点同样归结为一条规则：
 「有没有到其 API 地址的通路」——收回授权即失去管理通路。
 
+### 对端收敛（Peer ACL）
+
+权限组同时是**节点间流量**的唯一收敛点，三类身份都挂组：
+
+| 身份 | 挂载点 | 缺省 |
+| --- | --- | --- |
+| 账号（本端直连用户） | `account.group_id` | 建号即选组 |
+| 扇入对端 | `relay_token.group_id` | 不收敛（放行一切） |
+| 扇出对端 | `connector.group_id` | 不收敛 |
+
+对端隧道来的流量，目标命中该对端所在组的规则集合才放行，否则在入口拒绝并记审计
+（`peer.acl_denied`：对端身份 + 目标 + 来源，按对端+目标每分钟去重）；组规则热更新、
+吊销令牌、禁用 connector 均实时生效。
+
+身份域分离（主权域原则）：隧道认证只携带对端节点身份，**永不**携带对端域内终端用户身份——
+收敛与审计止于端点边界，问责沿组织链传递。设计与实施记录见 `docs/todo/peer-acl.md`。
+
 ## 审计
 
 敏感操作全部落 `audit_log` 表（operator / action / target / detail / 来源 IP，90 天留存自动清理），
@@ -35,6 +53,9 @@ AgileNet 的安全设计假设：中继节点不可信、令牌会泄露、管�
 | --- | --- |
 | `account.issue_admin_link` | 签发管理版接入链接 |
 | `relay_token.expose_control` | 暴露控制面开关变更 |
+| `relay_token.set_group` | 扇入令牌收敛组变更（含创建挂组） |
+| `connector.create/update/delete/enable/disable` | 扇出对端全生命周期（不落 token 明文/密文） |
+| `peer.acl_denied` | 对端流量被收敛拒绝（对端身份 + 目标 + 来源，每分钟去重） |
 | `admin.session_via_relay` | 中继令牌换得管理会话 |
 | `admin.console_access` | 经控制台通道访问某节点管理面 |
 | `gui.role_toggle` | GUI 三路开关变更（JSONL 落 `~/.agile-net/gui-audit.jsonl`） |

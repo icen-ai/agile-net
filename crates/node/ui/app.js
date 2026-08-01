@@ -7,6 +7,7 @@ const ICONS = {
   'shield': '<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/>',
   'route': '<circle cx="6" cy="19" r="3"/><path d="M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15"/><circle cx="18" cy="5" r="3"/>',
   'key-round': '<path d="M2.586 17.414A2 2 0 0 0 2 18.828V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.172a2 2 0 0 0 1.414-.586l.814-.814a6.5 6.5 0 1 0-4-4z"/><circle cx="16.5" cy="7.5" r=".5" fill="currentColor"/>',
+  'git-fork': '<circle cx="12" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><circle cx="18" cy="6" r="3"/><path d="M18 9v1a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V9"/><path d="M12 12v3"/>',
   'scroll-text': '<path d="M15 12h-5"/><path d="M15 8h-5"/><path d="M19 17V5a2 2 0 0 0-2-2H4"/><path d="M8 21h12a2 2 0 0 0 2-2v-1a1 1 0 0 0-1-1H11a1 1 0 0 0-1 1v1a2 2 0 1 1-4 0V5a2 2 0 1 0-4 0v2a1 1 0 0 0 1 1h3"/>',
   'settings': '<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/>',
   'sun': '<circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/>',
@@ -191,7 +192,7 @@ function switchView(v) {
   S.timers.forEach(clearInterval); S.timers = [];
   document.querySelectorAll('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.view === v));
   const fn = ({dashboard: renderDashboard, accounts: renderAccounts, groups: renderGroups,
-    rules: renderRules, tokens: renderTokens, audit: renderAudit, settings: renderSettings})[v] || renderDashboard;
+    rules: renderRules, tokens: renderTokens, connectors: renderConnectors, audit: renderAudit, settings: renderSettings})[v] || renderDashboard;
   fn();
 }
 async function loadGroupsCache() {
@@ -482,12 +483,19 @@ function openEditGroup(id, name, remark) {
 }
 async function openGroupDetail(id) {
   try {
-    const g = await api('GET', '/api/v1/admin/groups/' + id);
+    const [g, d] = await Promise.all([
+      api('GET', '/api/v1/admin/groups/' + id),
+      api('GET', '/api/v1/admin/groups/' + id + '/detail'),
+    ]);
     openModal('权限组详情 — ' + g.name,
       '<h3 style="margin:10px 0 6px">关联规则（' + (g.rules||[]).length + '）</h3>' +
       ((g.rules||[]).map(r => '<div class="kv"><span class="mono">' + esc(r.value) + '</span><span class="badge b-info">' + esc(r.type) + '</span></div>').join('') || '<div class="empty">无</div>') +
-      '<h3 style="margin:14px 0 6px">组内账号（' + (g.accounts||[]).length + '）</h3>' +
-      ((g.accounts||[]).map(a => '<div class="kv"><span>' + esc(a.username) + '</span><span>' + (a.enabled?'<span class="badge b-ok">启用</span>':'<span class="badge b-off">禁用</span>') + '</span></div>').join('') || '<div class="empty">无</div>'));
+      '<h3 style="margin:14px 0 6px">组内账号（' + (d.accounts||[]).length + '）</h3>' +
+      ((d.accounts||[]).map(a => '<div class="kv"><span>' + esc(a.username) + '</span><span>' + (a.enabled?'<span class="badge b-ok">启用</span>':'<span class="badge b-off">禁用</span>') + '</span></div>').join('') || '<div class="empty">无</div>') +
+      '<h3 style="margin:14px 0 6px">扇入令牌（' + (d.relay_tokens||[]).length + '）</h3>' +
+      ((d.relay_tokens||[]).map(t => '<div class="kv"><span class="mono">' + esc(t.token_prefix) + '</span><span style="color:var(--dim)">' + esc(t.remark || '-') + '</span></div>').join('') || '<div class="empty">无</div>') +
+      '<h3 style="margin:14px 0 6px">扇出对端（' + (d.connectors||[]).length + '）</h3>' +
+      ((d.connectors||[]).map(c => '<div class="kv"><span><b>' + esc(c.name) + '</b> <span class="mono" style="color:var(--dim);font-size:12px">' + esc(c.upstream_addr) + '</span></span><span>' + (c.enabled?'<span class="badge b-ok">启用</span>':'<span class="badge b-off">禁用</span>') + '</span></div>').join('') || '<div class="empty">无</div>'));
   } catch(e) { toast(e.message, 'err'); }
 }
 async function openBindRules(id, name) {
@@ -663,7 +671,7 @@ function openBatchImport() {
 async function renderTokens() {
   $('view').innerHTML = '<div class="page-title">' + ic('key-round', 20) + 'Relay 令牌</div><div class="page-desc">扇入端点连入本端点的预共享密钥（psk_ 48 位），服务端只存哈希，全文仅创建时展示一次</div>' +
     '<div class="toolbar"><div class="spacer"></div><button onclick="openCreateToken()">' + ic('plus', 15) + '生成令牌</button></div>' +
-    '<div class="card table-wrap"><table><thead><tr><th>前缀</th><th>备注</th><th>暴露控制面</th><th>最近使用</th><th>创建时间</th><th>操作</th></tr></thead><tbody id="tok-body"></tbody></table></div>';
+    '<div class="card table-wrap"><table><thead><tr><th>前缀</th><th>权限组</th><th>备注</th><th>暴露控制面</th><th>最近使用</th><th>创建时间</th><th>操作</th></tr></thead><tbody id="tok-body"></tbody></table></div>';
   await loadTokens();
 }
 async function loadTokens() {
@@ -672,6 +680,7 @@ async function loadTokens() {
     const d = await api('GET', '/api/v1/admin/node/relay-tokens');
     body.innerHTML = (d.items||[]).map(t =>
       '<tr><td class="mono">' + esc(t.token_prefix) + '</td>' +
+      '<td>' + (t.group_id ? esc(t.group_name || groupName(t.group_id)) : '<span style="color:var(--dim2)">不收敛</span>') + '</td>' +
       '<td>' + esc(t.remark || '-') + '</td>' +
       '<td><label class="chk" style="display:flex;align-items:center;gap:5px"><input type="checkbox" ' + (t.expose_control ? 'checked' : '') +
         ' onchange="toggleExpose(\'' + esc(t.id) + '\', this.checked)"><span style="font-size:12px">允许管理</span></label>' +
@@ -679,8 +688,9 @@ async function loadTokens() {
           ['ro','rules','full'].map(sc => '<option value="' + sc + '" ' + (t.control_scope === sc ? 'selected' : '') + '>' + ({ro:'只读',rules:'规则',full:'全权'})[sc] + '</option>').join('') + '</select>' : '') + '</td>' +
       '<td style="color:var(--dim)">' + esc(t.last_used_at || '未使用') + '</td>' +
       '<td style="color:var(--dim)">' + esc(t.created_at) + '</td>' +
-      '<td><button class="danger small" onclick="delToken(\'' + esc(t.id) + '\')">吊销</button></td></tr>'
-    ).join('') || '<tr><td colspan="6" class="empty">暂无令牌</td></tr>';
+      '<td style="white-space:nowrap"><button class="ghost small" onclick="openEditToken(\'' + esc(t.id) + '\',\'' + esc(t.group_id||'') + '\',' + t.expose_control + ',\'' + esc(t.control_scope) + '\')">编辑</button> ' +
+      '<button class="danger small" onclick="delToken(\'' + esc(t.id) + '\')">吊销</button></td></tr>'
+    ).join('') || '<tr><td colspan="7" class="empty">暂无令牌</td></tr>';
   } catch(e) { toast(e.message, 'err'); }
 }
 async function toggleExpose(id, on) {
@@ -700,6 +710,9 @@ async function setScope(id, scope) {
 function openCreateToken() {
   openModal('生成 Relay 令牌',
     '<label>备注（如：分公司跳板机）</label><input id="nt-remark" style="width:100%">' +
+    '<label>权限组（留空 = 不收敛，放行一切）</label><select id="nt-group" style="width:100%">' +
+      '<option value="">不收敛（放行一切）</option>' +
+      S.groups.map(g => '<option value="' + esc(g.id) + '">' + esc(g.name) + '</option>').join('') + '</select>' +
     '<label class="chk" style="display:flex;align-items:center;gap:6px;margin-top:8px"><input type="checkbox" id="nt-expose"> 允许该扇入中继管理本端点（暴露控制面，默认关）</label>' +
     '<div id="nt-expose-opts" style="display:none;margin:6px 0">' +
       '<label>授权档位</label><select id="nt-scope" style="width:100%">' +
@@ -717,6 +730,7 @@ function openCreateToken() {
             remark: $('nt-remark').value.trim(),
             expose_control: $('nt-expose').checked,
             control_scope: $('nt-scope').value,
+            group_id: $('nt-group').value || null,
           });
           openModal('令牌已生成 — 仅此一次展示',
             '<div class="secret-box"><span class="mono">' + esc(d.token) + '</span></div>' +
@@ -734,6 +748,139 @@ async function delToken(id) {
     catch(e) { toast(e.message, 'err'); }
   });
 }
+/* 编辑收敛组：PUT 三态语义（缺省=不变 / null=不收敛 / 字符串=挂组），
+   编辑为用户显式选择故总是送出；暴露控制面在列表直接改（不送 group_id=不变） */
+function openEditToken(id, groupId, exposeControl, controlScope) {
+  openModal('编辑 Relay 令牌',
+    '<label>权限组（选「不收敛」= 放行一切）</label><select id="et-group" style="width:100%">' +
+      '<option value="">不收敛（放行一切）</option>' +
+      S.groups.map(g => '<option value="' + esc(g.id) + '" ' + (groupId===g.id?'selected':'') + '>' + esc(g.name) + '</option>').join('') + '</select>' +
+    '<div class="hint">变更收敛组后在线对端将被踢断，重连即按新组收敛（即时生效，记审计）</div>',
+    [
+      {label:'取消', kind:'ghost', fn: closeModal},
+      {label:'保存', fn: async () => {
+        try {
+          await api('PUT', '/api/v1/admin/node/relay-tokens/' + id, {
+            expose_control: exposeControl, control_scope: controlScope,
+            group_id: $('et-group').value || null,
+          });
+          closeModal(); toast('已保存', 'ok'); loadTokens();
+        } catch(e) { toast(e.message, 'err'); }
+      }},
+    ]);
+}
+
+/* ================= 扇出（对端连接） ================= */
+const CONN_STATUS = { connected: '已连接', connecting: '连接中', reconnecting: '重连中', disconnected: '已断开' };
+function connStatusBadge(st) {
+  return '<span class="badge ' + (st === 'connected' ? 'b-ok' : (st === 'disconnected' ? 'b-off' : 'b-warn')) + '">' +
+    esc(CONN_STATUS[st] || st || '未知') + '</span>';
+}
+async function renderConnectors() {
+  $('view').innerHTML = '<div class="page-title">' + ic('git-fork', 20) + '扇出</div><div class="page-desc">本端点主动连出的对端隧道；扇出 token 为对端签发的连接凭据，加密落库、创建后不回显（仅可重置）</div>' +
+    '<div class="toolbar"><div class="spacer"></div><button onclick="openCreateConnector()">' + ic('plus', 15) + '新建扇出</button></div>' +
+    '<div class="card table-wrap"><table><thead><tr><th>名称</th><th>上游地址</th><th>权限组</th><th>状态</th><th>启用</th><th>备注</th><th>操作</th></tr></thead><tbody id="conn-body"></tbody></table></div>';
+  await loadConnectors();
+  S.timers.push(setInterval(loadConnectors, 5000));
+}
+async function loadConnectors() {
+  const body = $('conn-body'); if (!body) return;
+  try {
+    const d = await api('GET', '/api/v1/admin/connectors');
+    const items = d.items || [];
+    // 轮询变更检测：签名一致不重写 DOM（避免频闪）
+    const sig = JSON.stringify(items);
+    if (sig === body.dataset.sig) return;
+    body.dataset.sig = sig;
+    body.innerHTML = items.map(c => {
+      const adv = (c.advertise || '').split(',').filter(Boolean).join(' · ');
+      return '<tr><td><b>' + esc(c.name) + '</b><div class="mono" style="color:var(--dim2)">' + (c.token_prefix ? esc(c.token_prefix) : shortId(c.id)) + '</div></td>' +
+      '<td class="mono">' + esc(c.upstream_addr) + (adv ? '<div style="color:var(--dim2);font-size:12px">' + esc(adv) + '</div>' : '') + '</td>' +
+      '<td>' + (c.group_id ? esc(c.group_name || groupName(c.group_id)) : '<span style="color:var(--dim2)">不收敛</span>') + '</td>' +
+      '<td>' + connStatusBadge(c.state) + '</td>' +
+      '<td>' + (c.enabled ? '<span class="badge b-ok">启用</span>' : '<span class="badge b-off">禁用</span>') + '</td>' +
+      '<td style="color:var(--dim)">' + esc(c.remark || '-') + '</td>' +
+      '<td style="white-space:nowrap">' +
+        '<button class="ghost small" onclick="openEditConnector(\'' + esc(c.id) + '\')">编辑</button> ' +
+        '<button class="ghost small" onclick="toggleConnector(\'' + esc(c.id) + '\',' + !c.enabled + ')">' + (c.enabled ? '禁用' : '启用') + '</button> ' +
+        '<button class="danger small" onclick="delConnector(\'' + esc(c.id) + '\',\'' + esc(c.name) + '\')">删除</button>' +
+      '</td></tr>';
+    }).join('') || '<tr><td colspan="7" class="empty">暂无扇出对端</td></tr>';
+  } catch(e) { toast(e.message, 'err'); }
+}
+function connectorFormHtml(c) {
+  c = c || {};
+  return '<label>名称（1-64 字符，唯一）</label><input id="cf-name" style="width:100%" value="' + esc(c.name||'') + '">' +
+    '<label>上游地址（host:port）</label><input id="cf-addr" class="mono" style="width:100%" value="' + esc(c.upstream_addr||'') + '" placeholder="peer.example.com:54430">' +
+    '<label>扇出 token（对端签发，加密落库不回显）</label><input id="cf-token" type="password" class="mono" style="width:100%" autocomplete="off" placeholder="' + (c.id ? '留空 = 保留原 token' : '对端签发的 psk_ 令牌') + '">' +
+    '<label>SNI 主机名（可选）</label><input id="cf-sni" class="mono" style="width:100%" value="' + esc(c.sni_hostname||'') + '">' +
+    '<label class="chk" style="display:flex;align-items:center;gap:6px;margin-top:8px"><input type="checkbox" id="cf-insecure" ' + (c.insecure?'checked':'') + '> 跳过 TLS 证书校验（insecure，仅调试用）</label>' +
+    '<label>路由再发布 advertise（每行一条 CIDR/域名，可空）</label><textarea id="cf-advertise" class="mono" style="width:100%;height:90px" placeholder="10.12.0.0/16&#10;git.internal">' + esc((c.advertise||'').split(',').filter(Boolean).join('\n')) + '</textarea>' +
+    '<label>权限组（留空 = 不收敛，放行一切）</label><select id="cf-group" style="width:100%">' +
+      '<option value="">不收敛（放行一切）</option>' +
+      S.groups.map(g => '<option value="' + esc(g.id) + '" ' + (c.group_id===g.id?'selected':'') + '>' + esc(g.name) + '</option>').join('') + '</select>' +
+    '<label>备注</label><input id="cf-remark" style="width:100%" value="' + esc(c.remark||'') + '">';
+}
+function connectorFormBody() {
+  return {
+    name: $('cf-name').value.trim(),
+    upstream_addr: $('cf-addr').value.trim(),
+    sni_hostname: $('cf-sni').value.trim(),
+    insecure: $('cf-insecure').checked,
+    advertise: $('cf-advertise').value.split('\n').map(s => s.trim()).filter(Boolean),
+    group_id: $('cf-group').value || null,
+    remark: $('cf-remark').value.trim(),
+  };
+}
+function openCreateConnector() {
+  openModal('新建扇出', connectorFormHtml(), [
+    {label:'取消', kind:'ghost', fn: closeModal},
+    {label:'创建', fn: async () => {
+      const body = connectorFormBody();
+      const token = $('cf-token').value.trim();
+      if (!body.name || !body.upstream_addr || !token) { toast('名称、上游地址与 token 必填', 'err'); return; }
+      try {
+        await api('POST', '/api/v1/admin/connectors', { ...body, token });
+        closeModal(); toast('已创建（隧道开始连接）', 'ok'); loadConnectors();
+      } catch(e) { toast(e.message, 'err'); }
+    }},
+  ]);
+}
+async function openEditConnector(id) {
+  let c;
+  try { c = ((await api('GET', '/api/v1/admin/connectors')).items||[]).find(x => x.id === id); }
+  catch(e) { toast(e.message, 'err'); return; }
+  if (!c) { toast('扇出对端不存在', 'err'); return; }
+  openModal('编辑扇出', connectorFormHtml(c), [
+    {label:'取消', kind:'ghost', fn: closeModal},
+    {label:'保存', fn: async () => {
+      const body = connectorFormBody();
+      const token = $('cf-token').value.trim();
+      if (!body.name || !body.upstream_addr) { toast('名称与上游地址必填', 'err'); return; }
+      try {
+        // PUT 为全量替换：token 留空=保留原值；证书路径表单不暴露，透传原值防被清空
+        await api('PUT', '/api/v1/admin/connectors/' + id, {
+          ...body, token: token || null,
+          ca_cert_path: c.ca_cert_path || '', pinned_cert_path: c.pinned_cert_path || '',
+        });
+        closeModal(); toast('已保存（隧道已按新配置重建）', 'ok'); loadConnectors();
+      } catch(e) { toast(e.message, 'err'); }
+    }},
+  ]);
+}
+async function toggleConnector(id, enabled) {
+  try {
+    await api('POST', '/api/v1/admin/connectors/' + id + (enabled ? '/enable' : '/disable'));
+    toast(enabled ? '已启用（开始连接）' : '已禁用（隧道已断开）', 'ok');
+    loadConnectors();
+  } catch(e) { toast(e.message, 'err'); }
+}
+async function delConnector(id, name) {
+  confirmAction('确定删除扇出 ' + name + '？隧道将立即断开且配置不再保留。', async () => {
+    try { await api('DELETE', '/api/v1/admin/connectors/' + id); toast('已删除', 'ok'); loadConnectors(); }
+    catch(e) { toast(e.message, 'err'); }
+  });
+}
 
 /* ================= 审计日志 ================= */
 async function renderAudit() {
@@ -744,7 +891,9 @@ async function renderAudit() {
         ['admin.login','admin.init','rule.create','rule.update','rule.delete','rule.batch_import',
          'group.create','group.update','group.delete','group.update_rules',
          'account.create','account.update','account.delete','account.reset_password','account.enable','account.disable',
-         'relay_token.create','relay_token.delete','relay_token.expose_control','account.issue_admin_link','admin.console_access','admin.session_via_relay','node.update_settings'].map(a =>
+         'relay_token.create','relay_token.delete','relay_token.expose_control','relay_token.set_group',
+         'connector.create','connector.update','connector.delete','connector.enable','connector.disable',
+         'account.issue_admin_link','admin.console_access','admin.session_via_relay','node.update_settings'].map(a =>
           '<option value="' + a + '" ' + (S.filter.auditAction===a?'selected':'') + '>' + a + '</option>').join('') +
       '</select>' +
     '</div>' +
@@ -901,7 +1050,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     if (d.type === 'ag-theme' && (d.theme === 'dark' || d.theme === 'light')) {
       try { localStorage.setItem('ag_theme', d.theme); applyTheme(); } catch(_) {}
     }
-    if (d.type === 'ag-nav' && {dashboard:1,accounts:1,groups:1,rules:1,tokens:1,audit:1,settings:1}[d.view]) {
+    if (d.type === 'ag-nav' && {dashboard:1,accounts:1,groups:1,rules:1,tokens:1,connectors:1,audit:1,settings:1}[d.view]) {
       switchView(d.view);
     }
   });

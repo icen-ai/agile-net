@@ -13,6 +13,7 @@ use crate::proto::message::{
     AuthKind, AuthRequest, OpenChannel, PROTOCOL_VERSION, PROTOCOL_VERSION_FLOW_CONTROL,
 };
 use crate::proxy::router::{Outbound, ProxyRouter};
+use crate::relay::acl::PeerAcl;
 use crate::relay::mux::{MuxChannel, MuxSession, OpenRequest};
 use crate::tunnel::tls::TlsConfigBuilder;
 
@@ -49,6 +50,8 @@ pub enum AuthIdentity {
         advertise: Vec<String>,
         /// 握手 v2：暴露控制面时向该下游下发的管理端点（AuthOk 携带）
         control: Option<crate::proto::message::ControlOffer>,
+        /// 扇入收敛：该对端发起的目标连接允许集合（None = 不收敛，放行一切）
+        acl: Option<Arc<PeerAcl>>,
     },
     /// 客户端账号，附带目标访问控制规则
     Client {
@@ -87,6 +90,7 @@ impl TokenValidator for StaticTokenValidator {
                 node_id: auth.node_id.clone(),
                 advertise: auth.advertise.clone(),
                 control: None,
+                acl: None,
             })
         } else {
             None
@@ -122,6 +126,9 @@ pub enum PeerEvent {
     NodeDisconnected { node_id: String },
     ClientConnected { account_id: String },
     ClientDisconnected { account_id: String },
+    /// 收敛拒绝：对端发起的目标连接被 PeerAcl 拦截（供管理面写审计）。
+    /// `peer_label` 为对端标识（扇入=node_id，扇出=upstream_addr）。
+    AclDenied { peer_label: String, target: String },
 }
 
 /// 已连入的节点会话
@@ -422,7 +429,10 @@ impl RelayListener {
         let flow_control = peer_version >= PROTOCOL_VERSION_FLOW_CONTROL;
         match identity {
             AuthIdentity::Node {
-                node_id, advertise, ..
+                node_id,
+                advertise,
+                acl,
+                ..
             } => {
                 self.serve_node_session(
                     tls_stream,
@@ -431,6 +441,7 @@ impl RelayListener {
                     advertise,
                     token_hash,
                     flow_control,
+                    acl,
                 )
                 .await
             }
@@ -514,7 +525,8 @@ impl RelayListener {
         }
     }
 
-    /// 节点会话：注册 peer、装载通告路由，等待断开。
+    /// 节点会话：注册 peer、装载通告路由，处理对端发起的 Open 请求直到断开。
+    #[allow(clippy::too_many_arguments)]
     async fn serve_node_session(
         self: &Arc<Self>,
         tls_stream: tokio_rustls::server::TlsStream<TcpStream>,
@@ -523,10 +535,12 @@ impl RelayListener {
         advertise: Vec<String>,
         token_hash: String,
         flow_control: bool,
+        acl: Option<Arc<PeerAcl>>,
     ) -> Result<()> {
         info!(peer = %peer_addr, node_id = %node_id, "node authenticated successfully");
 
-        let (mux, reader_handle) = MuxSession::start(tls_stream, 1, None, flow_control);
+        let (open_tx, mut open_rx) = tokio::sync::mpsc::channel::<OpenRequest>(64);
+        let (mux, reader_handle) = MuxSession::start(tls_stream, 1, Some(open_tx), flow_control);
 
         self.peers.insert(
             node_id.clone(),
@@ -541,7 +555,18 @@ impl RelayListener {
             node_id: node_id.clone(),
         });
 
-        // 等待 reader 结束（连接断开）
+        // 处理该对端发起的 Open 请求直到连接断开
+        // （reader 任务结束时 open_tx 被释放，recv 返回 None）
+        while let Some(req) = open_rx.recv().await {
+            let this = self.clone();
+            let mux = mux.clone();
+            let node_id = node_id.clone();
+            let acl = acl.clone();
+            tokio::spawn(async move {
+                this.handle_node_open(mux, req, node_id, acl).await;
+            });
+        }
+
         let _ = reader_handle.await;
 
         self.peers.remove(&node_id);
@@ -633,6 +658,56 @@ impl RelayListener {
             return;
         }
 
+        self.route_open(mux, req, open_req, target).await;
+    }
+
+    /// 处理扇入对端 Open：PeerAcl 收敛 → 下游路由 → 直连，随后桥接。
+    async fn handle_node_open(
+        self: &Arc<Self>,
+        mux: Arc<MuxSession>,
+        req: OpenRequest,
+        node_id: String,
+        acl: Option<Arc<PeerAcl>>,
+    ) {
+        let open_req: OpenChannel = match serde_json::from_slice(&req.payload) {
+            Ok(v) => v,
+            Err(e) => {
+                warn!(node = %node_id, error = %e, "invalid open payload from peer");
+                let _ = mux
+                    .send_frame(Frame::empty(FrameType::OpenFail, req.channel_id))
+                    .await;
+                return;
+            }
+        };
+
+        let target = format!("{}:{}", open_req.target_addr, open_req.target_port);
+
+        // 扇入收敛：对端带收敛表时目标必须命中允许集合（None = 不收敛，放行一切）
+        if let Some(acl) = &acl
+            && !acl.allowed(&target)
+        {
+            warn!(node = %node_id, target = %target, "peer open denied by ACL");
+            let _ = self.events.send(PeerEvent::AclDenied {
+                peer_label: node_id.clone(),
+                target: target.clone(),
+            });
+            let _ = mux
+                .send_frame(Frame::empty(FrameType::OpenFail, req.channel_id))
+                .await;
+            return;
+        }
+
+        self.route_open(mux, req, open_req, target).await;
+    }
+
+    /// Open 路由与桥接：优先走下游节点通告路由，否则本机直连。
+    async fn route_open(
+        self: &Arc<Self>,
+        mux: Arc<MuxSession>,
+        req: OpenRequest,
+        open_req: OpenChannel,
+        target: String,
+    ) {
         let channel = mux.accept_channel(req.channel_id);
 
         // 优先走下游节点通告路由，否则本机直连

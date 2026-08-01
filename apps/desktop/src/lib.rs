@@ -328,9 +328,8 @@ async fn init_server_admin(username: String, password: String) -> Result<(), Str
 
 /// 启动内嵌节点（读当前角色配置；注入客户端引擎路由再发布）。
 async fn start_embedded_node(state: &State<'_, AppState>) -> Result<NodeServer, String> {
-    let connectors = state.roles.lock().await.server_connectors.clone();
     NodeServer::start_with(
-        roles::build_embedded_config(&connectors),
+        roles::build_embedded_config(),
         agile_net_node::service::NodeServerOptions {
             db_path: Some(roles::embedded_db_path().to_string_lossy().to_string()),
             api_listen: Some(roles::EMBEDDED_API_ADDR.into()),
@@ -625,39 +624,60 @@ async fn restore_server_role(app: &tauri::AppHandle) {
     }
 }
 
-// ==================== 扇出连接管理（路由再发布；运行中变更即重启内嵌节点） ====================
+// ==================== 扇出连接管理（DB 为唯一事实来源；运行中经 ConnectorManager 热操作，无需重启） ====================
 
-/// 扇出列表视图（token 脱敏仅前缀；编辑需重新输入或留空保留）。
+/// 扇出列表视图（token 脱敏仅前缀，绝不回显；编辑需重新输入或留空保留）。
 #[derive(Debug, Clone, Serialize)]
 pub struct ServerConnectorView {
     pub id: String,
+    pub name: String,
     pub upstream_addr: String,
     pub token_prefix: String,
     pub sni_hostname: String,
     pub insecure: bool,
+    /// 收敛权限组（None = 不收敛，放行一切）
+    pub group_id: Option<String>,
+    pub group_name: Option<String>,
+    pub enabled: bool,
+    /// 实时状态（connected/connecting/reconnecting/disconnected；内嵌节点未运行恒 disconnected）
+    pub state: String,
 }
 
-fn validate_connector(c: &roles::ServerConnectorConfig) -> Result<(), String> {
-    if c.upstream_addr.trim().is_empty() || c.token.trim().is_empty() {
-        return Err("扇出目标地址与 Relay Token 不能为空".into());
-    }
-    Ok(())
+/// 权限组下拉选项（扇出表单用）
+#[derive(Debug, Clone, Serialize)]
+pub struct GroupOption {
+    pub id: String,
+    pub name: String,
 }
 
-async fn apply_connectors_change(state: &State<'_, AppState>, action: &str) -> Result<(), String> {
-    {
-        let roles = state.roles.lock().await;
-        roles.save()?;
-    }
-    roles::audit("gui.fanout_change", serde_json::json!({"action": action}));
-    // 运行中的内嵌节点：重启以应用新扇出配置
-    let running = state.server.lock().await.is_some();
-    if running {
-        if let Some(s) = state.server.lock().await.take() {
-            s.stop().await;
+/// 本机内嵌节点的权限组清单（扇出表单「权限组」下拉；留空 = 不收敛）。
+#[tauri::command]
+async fn list_embedded_groups() -> Result<Vec<GroupOption>, String> {
+    let db = roles::open_embedded_db()?;
+    let (groups, _) = db.list_groups(1, 1000, None).map_err(map_err)?;
+    Ok(groups
+        .into_iter()
+        .map(|g| GroupOption { id: g.id, name: g.name })
+        .collect())
+}
+
+/// 运行中的内嵌节点热应用单条扇出变更（先断旧再起新；未运行则跳过，启动时自 DB 装配）。
+async fn hot_upsert_connector(state: &State<'_, AppState>, id: &str, name: &str) {
+    // 先取 ConnectorManager 句柄即放锁，避免持锁跨 await（upsert 内含 DNS 解析）
+    let manager = state.server.lock().await.as_ref().map(|s| s.connector_manager());
+    if let Some(m) = manager {
+        if let Err(e) = m.upsert_from_db(id).await {
+            tracing::error!(connector = %name, error = %e, "connector hot-upsert failed");
         }
-        let server = start_embedded_node(state).await?;
-        *state.server.lock().await = Some(server);
+    }
+}
+
+/// 校验收敛组存在（Some 时），给前端友好报错（DB 外键报错不易读）。
+fn validate_group(db: &agile_net_node::db::Database, group_id: Option<&str>) -> Result<(), String> {
+    if let Some(gid) = group_id {
+        if db.get_group(gid).map_err(map_err)?.is_none() {
+            return Err("权限组不存在".into());
+        }
     }
     Ok(())
 }
@@ -666,16 +686,28 @@ async fn apply_connectors_change(state: &State<'_, AppState>, action: &str) -> R
 async fn list_server_connectors(
     state: State<'_, AppState>,
 ) -> Result<Vec<ServerConnectorView>, String> {
-    let roles = state.roles.lock().await;
-    Ok(roles
-        .server_connectors
-        .iter()
-        .map(|c| ServerConnectorView {
-            id: c.id.clone(),
-            upstream_addr: c.upstream_addr.clone(),
-            token_prefix: c.token.chars().take(8).collect::<String>() + "****",
-            sni_hostname: c.sni_hostname.clone(),
-            insecure: c.insecure,
+    let db = roles::open_embedded_db()?;
+    let items = db.list_connectors().map_err(map_err)?;
+    let slot = state.server.lock().await;
+    Ok(items
+        .into_iter()
+        .map(|v| {
+            let state_str = slot
+                .as_ref()
+                .and_then(|s| s.connector_manager().state_of(&v.id))
+                .unwrap_or("disconnected");
+            ServerConnectorView {
+                id: v.id,
+                name: v.name,
+                upstream_addr: v.upstream_addr,
+                token_prefix: v.token_prefix,
+                sni_hostname: v.sni_hostname,
+                insecure: v.insecure,
+                group_id: v.group_id,
+                group_name: v.group_name,
+                enabled: v.enabled,
+                state: state_str.into(),
+            }
         })
         .collect())
 }
@@ -683,21 +715,45 @@ async fn list_server_connectors(
 #[tauri::command]
 async fn add_server_connector(
     state: State<'_, AppState>,
-    config: roles::ServerConnectorConfig,
+    upstream_addr: String,
+    token: String,
+    sni_hostname: String,
+    insecure: bool,
+    group_id: Option<String>,
 ) -> Result<(), String> {
-    validate_connector(&config)?;
-    {
-        let mut roles = state.roles.lock().await;
-        if roles
-            .server_connectors
-            .iter()
-            .any(|c| c.upstream_addr == config.upstream_addr)
-        {
-            return Err("该扇出目标已存在".into());
-        }
-        roles.server_connectors.push(config);
+    let addr = upstream_addr.trim();
+    if addr.is_empty() || token.trim().is_empty() {
+        return Err("扇出目标地址与 Relay Token 不能为空".into());
     }
-    apply_connectors_change(&state, "add").await
+    let group_id = group_id.filter(|g| !g.trim().is_empty());
+    let db = roles::open_embedded_db()?;
+    validate_group(&db, group_id.as_deref())?;
+    // 显示名沿用 TOML 导入惯例 = 目标地址（connector.name 唯一约束；GUI 无独立名称字段）
+    if db
+        .list_connectors()
+        .map_err(map_err)?
+        .iter()
+        .any(|c| c.name == addr)
+    {
+        return Err("该扇出目标已存在".into());
+    }
+    let rec = db
+        .create_connector(
+            addr,
+            addr,
+            token.trim(),
+            sni_hostname.trim(),
+            insecure,
+            "",
+            "",
+            "",
+            group_id.as_deref(),
+            "",
+        )
+        .map_err(map_err)?;
+    roles::audit("gui.fanout_change", serde_json::json!({"action": "add", "name": addr}));
+    hot_upsert_connector(&state, &rec.id, addr).await;
+    Ok(())
 }
 
 #[tauri::command]
@@ -708,36 +764,65 @@ async fn update_server_connector(
     token: String,
     sni_hostname: String,
     insecure: bool,
+    group_id: Option<String>,
 ) -> Result<(), String> {
-    {
-        let mut roles = state.roles.lock().await;
-        let Some(c) = roles.server_connectors.iter_mut().find(|c| c.id == id) else {
-            return Err("扇出连接不存在".into());
-        };
-        if upstream_addr.trim().is_empty() {
-            return Err("扇出目标地址不能为空".into());
-        }
-        c.upstream_addr = upstream_addr;
-        if !token.trim().is_empty() {
-            c.token = token; // 留空 = 保留原 Token
-        }
-        c.sni_hostname = sni_hostname;
-        c.insecure = insecure;
+    let addr = upstream_addr.trim();
+    if addr.is_empty() {
+        return Err("扇出目标地址不能为空".into());
     }
-    apply_connectors_change(&state, "update").await
+    let group_id = group_id.filter(|g| !g.trim().is_empty());
+    let db = roles::open_embedded_db()?;
+    let Some(old) = db.get_connector(&id).map_err(map_err)? else {
+        return Err("扇出连接不存在".into());
+    };
+    validate_group(&db, group_id.as_deref())?;
+    if db
+        .list_connectors()
+        .map_err(map_err)?
+        .iter()
+        .any(|c| c.name == addr && c.id != id)
+    {
+        return Err("该扇出目标已存在".into());
+    }
+    // token 留空 = 保留原值；advertise / 证书路径 / 备注 GUI 不编辑，原样保留；
+    // 名称同步跟随目标地址（GUI 无独立名称字段，与 add 同惯例）
+    let token_reset = if token.trim().is_empty() {
+        None
+    } else {
+        Some(token.trim().to_string())
+    };
+    db.update_connector(
+        &id,
+        addr,
+        addr,
+        token_reset.as_deref(),
+        sni_hostname.trim(),
+        insecure,
+        &old.ca_cert_path,
+        &old.pinned_cert_path,
+        &old.advertise,
+        group_id.as_deref(),
+        &old.remark,
+    )
+    .map_err(map_err)?;
+    roles::audit("gui.fanout_change", serde_json::json!({"action": "update", "name": addr}));
+    hot_upsert_connector(&state, &id, addr).await;
+    Ok(())
 }
 
 #[tauri::command]
 async fn remove_server_connector(state: State<'_, AppState>, id: String) -> Result<(), String> {
-    {
-        let mut roles = state.roles.lock().await;
-        let before = roles.server_connectors.len();
-        roles.server_connectors.retain(|c| c.id != id);
-        if roles.server_connectors.len() == before {
-            return Err("扇出连接不存在".into());
-        }
+    let db = roles::open_embedded_db()?;
+    let Some(rec) = db.get_connector(&id).map_err(map_err)? else {
+        return Err("扇出连接不存在".into());
+    };
+    db.delete_connector(&id).map_err(map_err)?;
+    roles::audit("gui.fanout_change", serde_json::json!({"action": "remove", "name": rec.name}));
+    let manager = state.server.lock().await.as_ref().map(|s| s.connector_manager());
+    if let Some(m) = manager {
+        m.remove(&id).await;
     }
-    apply_connectors_change(&state, "remove").await
+    Ok(())
 }
 
 /// 启动时恢复 Web 远程面（上次退出时处于开启状态且已设管理密码）。
@@ -1360,6 +1445,7 @@ pub fn run() {
             add_server_connector,
             update_server_connector,
             remove_server_connector,
+            list_embedded_groups,
             uninstall_app,
             list_subscriptions,
             add_subscription,

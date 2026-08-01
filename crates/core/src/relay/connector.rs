@@ -10,8 +10,9 @@ use crate::proto::message::{
     PROTOCOL_VERSION_FLOW_CONTROL,
 };
 use crate::proxy::router::{Outbound, ProxyRouter};
+use crate::relay::acl::PeerAcl;
 use crate::relay::bridge::bridge;
-use crate::relay::listener::{AUTH_TIMEOUT, RelayListener};
+use crate::relay::listener::{AUTH_TIMEOUT, PeerEvent, RelayListener};
 use crate::relay::mux::{MuxSession, OpenRequest};
 use crate::tunnel::opener::ChannelOpener;
 use crate::tunnel::tls::TlsConfigBuilder;
@@ -22,7 +23,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::time::Duration;
 use tokio::net::TcpStream;
-use tokio::sync::{Notify, mpsc};
+use tokio::sync::{Notify, broadcast, mpsc};
 use tokio_rustls::TlsConnector;
 use tracing::{debug, info, warn};
 
@@ -70,6 +71,10 @@ pub struct RelayConnector {
     client_router: Option<Arc<arc_swap::ArcSwap<ProxyRouter>>>,
     /// 路由再发布：node_id → 客户端隧道开启器
     openers: Option<Arc<dashmap::DashMap<String, Arc<dyn ChannelOpener>>>>,
+    /// 扇出收敛：对端反向发起的目标连接允许集合（None = 不收敛，放行一切）
+    acl: Option<Arc<PeerAcl>>,
+    /// 收敛拒绝等可观测事件（供管理面订阅写审计）
+    events: broadcast::Sender<PeerEvent>,
     state: Arc<AtomicU8>,
     shutdown_notify: Arc<Notify>,
     shutdown_flag: Arc<AtomicBool>,
@@ -101,6 +106,7 @@ impl RelayConnector {
     ) -> Result<Self> {
         let client_config = tls_builder.build_client()?;
         let tls_connector = TlsConnector::from(client_config);
+        let (events, _) = broadcast::channel(256);
 
         Ok(Self {
             upstream_addr,
@@ -113,6 +119,8 @@ impl RelayConnector {
             control: Arc::new(arc_swap::ArcSwapOption::from_pointee(None)),
             client_router: None,
             openers: None,
+            acl: None,
+            events,
             state: Arc::new(AtomicU8::new(ConnectionState::Disconnected as u8)),
             shutdown_notify: Arc::new(Notify::new()),
             shutdown_flag: Arc::new(AtomicBool::new(false)),
@@ -149,6 +157,17 @@ impl RelayConnector {
     /// 握手 v2：上游暴露的控制面端点（未暴露/未连接时为 None）。
     pub fn control_offer(&self) -> Option<ControlOffer> {
         self.control.load_full().map(|a| (*a).clone())
+    }
+
+    /// 扇出收敛：设置对端反向发起目标连接的允许集合（None = 不收敛，放行一切）。
+    pub fn with_acl(mut self, acl: Option<Arc<PeerAcl>>) -> Self {
+        self.acl = acl;
+        self
+    }
+
+    /// 订阅收敛拒绝等可观测事件（供管理面写审计）。
+    pub fn subscribe_events(&self) -> broadcast::Receiver<PeerEvent> {
+        self.events.subscribe()
     }
 
     /// 当前有效通告集 = 静态配置 + 客户端隧道规则值（路由再发布）。
@@ -289,6 +308,9 @@ impl RelayConnector {
         let peer_router = self.peer_router.clone();
         let client_router = self.client_router.clone();
         let openers = self.openers.clone();
+        let acl = self.acl.clone();
+        let events = self.events.clone();
+        let peer_label = self.upstream_addr.to_string();
         let mux_task = mux.clone();
 
         tokio::spawn(async move {
@@ -330,8 +352,11 @@ impl RelayConnector {
                         let peer_router = peer_router.clone();
                         let client_router = client_router.clone();
                         let openers = openers.clone();
+                        let acl = acl.clone();
+                        let events = events.clone();
+                        let peer_label = peer_label.clone();
                         tokio::spawn(async move {
-                            if let Err(e) = Self::handle_open(mux_inner, req, peer_router, client_router, openers).await {
+                            if let Err(e) = Self::handle_open(mux_inner, req, peer_router, client_router, openers, acl, events, peer_label).await {
                                 debug!(error = %e, "open channel handling finished with error");
                             }
                         });
@@ -416,19 +441,37 @@ impl RelayConnector {
             .store(ConnectionState::Disconnected as u8, Ordering::Relaxed);
     }
 
-    /// 收到 Open 帧后：下游路由（多级串联）→ 客户端隧道路由（再发布）→ 本机直连。
+    /// 收到 Open 帧后：扇出收敛 → 下游路由（多级串联）→ 客户端隧道路由（再发布）→ 本机直连。
+    #[allow(clippy::too_many_arguments)]
     async fn handle_open(
         mux: Arc<MuxSession>,
         req: OpenRequest,
         peer_router: Option<Arc<RelayListener>>,
         client_router: Option<Arc<arc_swap::ArcSwap<ProxyRouter>>>,
         openers: Option<Arc<dashmap::DashMap<String, Arc<dyn ChannelOpener>>>>,
+        acl: Option<Arc<PeerAcl>>,
+        events: broadcast::Sender<PeerEvent>,
+        peer_label: String,
     ) -> Result<()> {
         let open_req: OpenChannel = serde_json::from_slice(&req.payload)
             .map_err(|e| Error::Protocol(format!("invalid open channel payload: {e}")))?;
 
         let target_addr = format!("{}:{}", open_req.target_addr, open_req.target_port);
         debug!(channel_id = req.channel_id, target = %target_addr, "handling open request");
+
+        // 扇出收敛：带收敛表时反向来的目标必须命中允许集合（None = 不收敛，放行一切）
+        if let Some(acl) = &acl
+            && !acl.allowed(&target_addr)
+        {
+            warn!(upstream = %peer_label, target = %target_addr, "connector open denied by ACL");
+            let _ = events.send(PeerEvent::AclDenied {
+                peer_label,
+                target: target_addr,
+            });
+            mux.send_frame(Frame::empty(FrameType::OpenFail, req.channel_id))
+                .await?;
+            return Ok(());
+        }
 
         let channel = mux.accept_channel(req.channel_id);
 

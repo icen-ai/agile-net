@@ -1,6 +1,6 @@
 # 对端收敛（Peer ACL）实施计划
 
-> 状态：待实施（设计已定稿，2026-08-01 讨论确认）
+> 状态：已实施（2026-08-01 全部落地；实现与本文的偏差逐条见文末「实施记录」）
 > 前置：多扇出 `[[connectors]]` 已落地（见 git 历史 `feat(core): 多扇出`）
 
 ## 1. 背景与动机
@@ -163,3 +163,25 @@ CREATE TABLE connector (
 - 组规则热更新实时生效；吊销令牌/禁用 connector 即断流。
 - 审计日志只出现对端身份，无任何终端用户身份信息、无 token 明文/密文。
 - 管理端可对被管端点的令牌/扇出做上述全部操作（带内管理面一致可用）。
+
+---
+
+## 11. 实施记录（2026-08-01）
+
+设计全部落地。实现与上文设计的偏差逐条登记如下（以代码为准）：
+
+- **migration 拆为两步**：v4 `peer_acl_connector`（`relay_token.group_id` + `connector` 表）；v5 补 `connector.ca_cert_path` / `connector.pinned_cert_path` 两列——§4 表结构遗漏，对齐 core `ConnectorConfig` 的证书固定能力（空串 = 不使用，优先级 pinned > ca > insecure，与 TOML 装配逻辑一致）。
+- **扇出 token 加密落库格式**定为 `v1:nonce_b64:ct_b64`（AES-256-GCM，ring）；机器密钥 `node_config.connector_token_key` **首用**生成（32 随机字节 hex，与 `jwt_secret` 同机制）。token 创建后不回显，PUT 留空 = 保留原值。
+- **HTTP API**：
+  - connector 路由：`GET/POST /api/v1/admin/connectors`、`PUT/DELETE /api/v1/admin/connectors/{id}`、`POST /api/v1/admin/connectors/{id}/enable|disable`；PUT 为**全量替换**语义。
+  - `advertise` 入参为**字符串数组**（非逗号拼接字符串）。
+  - relay-tokens 创建带 `group_id`；PUT 三态 `group_id`（缺省 = 不变 / `null` = 不收敛 / 字符串 = 挂组）。
+  - 新增 `GET /api/v1/admin/groups/{id}/detail`：返回组下账号 + 扇入令牌 + 扇出对端三类身份。
+- **TOML `[[connectors]]` 启动导入**：`name` 取 `upstream_addr`（TOML 无 name 字段），`advertise` 逗号拼接入库，组为 None（不收敛）；运行时以 DB 为准。
+- **core**：收敛实现为 `relay::PeerAcl` + `ProxyRouter::matches` + `AuthIdentity::Node.acl`（`None` = 不收敛）+ `PeerEvent::AclDenied{peer_label, target}`，扇入/扇出数据面钩子各一。
+- **node**：装配为 `service::acl::PeerAclRegistry` + `service::connectors::ConnectorManager`；热重载循环同时 rebuild 组路由；收敛拒绝审计按 peer+target 每分钟去重。
+- **CLI**：`anet connector list/add/update/remove/enable/disable`（`--group` 接受名称或 id；`remove` 无 `--force` 参数）；`anet token add --group`（`add` 为 `create` 别名）；`--help` 扇出组含 rule/group/account/token/connector。
+- **TUI**：令牌页加组列 + 新「扇出」页签（共 7 页签）；离线模式 LEFT JOIN 展示组名。
+- **管理端 SPA**：菜单位于 令牌 与 审计 之间；令牌页组下拉 + 组列 + 编辑模态；扇出页 CRUD + 状态徽标（5s 轮询变更检测）+ 启停；权限组详情展示三类身份。
+- **GUI（anet-gui）**：扇出页改进程内 DB CRUD + `ConnectorManager` 热操作；删除 `roles.rs` `server_connectors` 自存（旧配置直接丢弃不迁移），`build_embedded_config` 不再输出 connectors；表单无独立名称字段，显示名 = 目标地址（沿用 TOML 导入惯例）；表单「权限组」下拉默认不收敛；新增 Tauri 命令 `list_embedded_groups`。
+- **审计口径落实**：收敛拒绝记对端身份（node_id / connector name）+ 目标 + 来源，永不含对端域内终端用户身份；connector / relay-token 敏感操作审计不落 token 明文与密文。

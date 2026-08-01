@@ -48,9 +48,24 @@ pub struct TokenRow {
     pub prefix: String,
     pub expose: bool,
     pub scope: String,
+    /// 收敛权限组名（"-" = 不收敛）
+    pub group_name: String,
     pub remark: String,
     pub last_used: String,
     pub created_at: String,
+}
+
+#[derive(Default, Clone)]
+pub struct ConnectorRow {
+    pub id: String,
+    pub name: String,
+    pub upstream_addr: String,
+    /// 收敛权限组名（"-" = 不收敛）
+    pub group_name: String,
+    pub enabled: bool,
+    /// 实时状态（connected/connecting/reconnecting/disconnected）；DB 只读模式无运行时，置空
+    pub state: String,
+    pub remark: String,
 }
 
 #[derive(Default, Clone)]
@@ -294,6 +309,7 @@ impl Source {
                         prefix: t["token_prefix"].as_str().unwrap_or("-").into(),
                         expose: t["expose_control"].as_bool().unwrap_or(false),
                         scope: t["control_scope"].as_str().unwrap_or("full").into(),
+                        group_name: t["group_name"].as_str().unwrap_or("-").into(),
                         remark: t["remark"].as_str().unwrap_or("").into(),
                         last_used: t["last_used_at"].as_str().unwrap_or("未使用").into(),
                         created_at: t["created_at"].as_str().unwrap_or("-").into(),
@@ -308,9 +324,47 @@ impl Source {
                     prefix: t.token_prefix,
                     expose: t.expose_control,
                     scope: t.control_scope,
+                    group_name: t.group_name.unwrap_or_else(|| "-".into()),
                     remark: t.remark,
                     last_used: t.last_used_at.unwrap_or_else(|| "未使用".into()),
                     created_at: t.created_at,
+                })
+                .collect()),
+        }
+    }
+
+    pub fn connectors(&mut self) -> Result<Vec<ConnectorRow>> {
+        match self {
+            Source::Api(s) => {
+                // 列表项由服务端合并 ConnectorManager 实时状态（state 字段）
+                let d = s.call("GET", "/api/v1/admin/connectors", None)?;
+                Ok(d["items"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|c| ConnectorRow {
+                        id: c["id"].as_str().unwrap_or_default().into(),
+                        name: c["name"].as_str().unwrap_or("-").into(),
+                        upstream_addr: c["upstream_addr"].as_str().unwrap_or("-").into(),
+                        group_name: c["group_name"].as_str().unwrap_or("-").into(),
+                        enabled: c["enabled"].as_bool().unwrap_or(false),
+                        state: c["state"].as_str().unwrap_or("disconnected").into(),
+                        remark: c["remark"].as_str().unwrap_or("").into(),
+                    })
+                    .collect())
+            }
+            Source::Db(db) => Ok(db
+                .list_connectors()?
+                .into_iter()
+                .map(|c| ConnectorRow {
+                    id: c.id,
+                    name: c.name,
+                    upstream_addr: c.upstream_addr,
+                    group_name: c.group_name.unwrap_or_else(|| "-".into()),
+                    enabled: c.enabled,
+                    state: String::new(),
+                    remark: c.remark,
                 })
                 .collect()),
         }
@@ -507,5 +561,48 @@ mod tests {
         let out = connect(Some("http://127.0.0.1:9".into()), false, &db).unwrap();
         assert!(out.source.readonly());
         assert!(out.degraded_note.is_some());
+    }
+
+    #[test]
+    fn db_rows_carry_group_name() {
+        let db = Database::open(tmp_db("group")).unwrap();
+        let g = db.create_group("G1", "").unwrap();
+        db.create_relay_token_with_group("hash-t1", "tun_t1", "", false, "full", Some(&g.id))
+            .unwrap();
+        db.create_relay_token_with_group("hash-t2", "tun_t2", "", false, "full", None)
+            .unwrap();
+        db.create_connector(
+            "peer-a",
+            "127.0.0.1:54430",
+            "psk_secret",
+            "",
+            false,
+            "",
+            "",
+            "10.0.0.0/8",
+            Some(&g.id),
+            "",
+        )
+        .unwrap();
+        let mut src = Source::Db(db);
+
+        let tokens = src.tokens().unwrap();
+        assert_eq!(tokens.len(), 2);
+        // 同秒创建 created_at 相同，不按位置断言
+        let group_of = |prefix: &str| {
+            tokens
+                .iter()
+                .find(|t| t.prefix == prefix)
+                .map(|t| t.group_name.clone())
+        };
+        assert_eq!(group_of("tun_t1").as_deref(), Some("G1"));
+        assert_eq!(group_of("tun_t2").as_deref(), Some("-")); // 不收敛
+
+        let conns = src.connectors().unwrap();
+        assert_eq!(conns.len(), 1);
+        assert_eq!(conns[0].name, "peer-a");
+        assert_eq!(conns[0].group_name, "G1");
+        assert!(conns[0].enabled);
+        assert!(conns[0].state.is_empty()); // DB 只读无运行时状态
     }
 }
