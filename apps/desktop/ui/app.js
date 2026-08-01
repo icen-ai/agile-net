@@ -110,16 +110,16 @@ const I18N = {
   zh: {
     'st-connected': '已连接', 'st-connecting': '连接中', 'st-reconnecting': '重连中', 'st-disconnected': '已断开',
     'st-unreachable': '不可达', 'st-degraded': '部分网络不可达',
-    'banner-degraded': '节点 {name} 网络不可达，正在自动重连…',
-    'banner-down': '节点 {name} 已离线，其网段当前不可达',
+    'banner-degraded': '端点 {name} 网络不可达，正在自动重连…',
+    'banner-down': '端点 {name} 已离线，其网段当前不可达',
     'proxy-running': '代理运行中', 'proxy-stopped': '代理未启动',
-    'reconnecting-nodes': '正在自动重连 {n} 个已保存节点…',
+    'reconnecting-nodes': '正在自动重连 {n} 个已保存端点…',
     'connected-toast': '已连接 {name}（下发规则 {n} 条）',
     'proxy-on': '代理已启动', 'proxy-off': '代理已停止',
     'btn-start-proxy': '启动代理', 'btn-stop-proxy': '停止代理',
     'err-need-url': '请粘贴接入链接', 'err-bad-url': '链接格式不正确，应以 agilenet://connect? 开头',
     'clip-ok': '已识别剪贴板中的接入链接', 'clip-none': '剪贴板中没有接入链接', 'clip-fail': '无法读取剪贴板',
-    'disconnected': '已断开', 'no-nodes': '尚未连接节点', 'no-rules': '无生效规则', 'no-creds': '无保存的凭据',
+    'disconnected': '已断开', 'no-nodes': '尚未连接端点', 'no-rules': '无生效规则', 'no-creds': '无保存的凭据',
   },
   en: {
     'st-connected': 'Connected', 'st-connecting': 'Connecting', 'st-reconnecting': 'Reconnecting', 'st-disconnected': 'Disconnected',
@@ -236,7 +236,7 @@ const Island = {
     this.morph('detail');
   },
   renderDetail() {
-    $('island-detail').innerHTML = '<div class="dt-title">以下节点当前不可达，其网段流量不会进入隧道：</div>' +
+    $('island-detail').innerHTML = '<div class="dt-title">以下端点当前不可达，其网段流量不会进入隧道：</div>' +
       this.detailNodes.map(n =>
         '<div class="island-row"><span class="dot off"></span><b>' + esc(n.node_name) + '</b>' +
         '<span class="mono">' + esc(n.addr) + '</span><span class="st">' + esc(statusText(n.status)) + '</span></div>'
@@ -252,9 +252,9 @@ function friendlyError(e) {
   if (/login failed|401|invalid username|invalid_credentials/i.test(s)) return '账号或密码错误，请核对接入信息';
   if (/tunnel_token|not a client/i.test(s)) return '该账号不是客户端账号，请向管理员确认';
   if (/certificate|tls|TLS|certificate verify/i.test(s)) return '证书校验失败：请检查证书固定配置，或仅在受信网络开启 insecure';
-  if (/timed out|timeout|deadline/i.test(s)) return '连接超时：节点不可达或网络受限';
-  if (/ConnectionRefused|refused|10061/i.test(s)) return '无法连接节点：地址/端口错误或节点未启动';
-  if (/dns|resolve|lookup/i.test(s)) return '域名解析失败：请检查节点地址';
+  if (/timed out|timeout|deadline/i.test(s)) return '连接超时：端点不可达或网络受限';
+  if (/ConnectionRefused|refused|10061/i.test(s)) return '无法连接端点：地址/端口错误或端点未启动';
+  if (/dns|resolve|lookup/i.test(s)) return '域名解析失败：请检查端点地址';
   if (/account disabled/i.test(s)) return '账号已被禁用，请联系管理员';
   return s.length > 120 ? s.slice(0, 120) + '…' : s;
 }
@@ -301,6 +301,7 @@ async function refreshNodes(force) {
   } catch (e) { toast(friendlyError(e), 'err'); updateOnboarding([]); return; }
   window._nodes = nodes;
   window._nodeStatus = Object.fromEntries(nodes.map(n => [n.node_id, n.status]));
+  refreshAdminEntry();
   await restorePaused(nodes);
   const sig = JSON.stringify(nodes);
   if (force || sig !== lastNodesSig) {
@@ -334,7 +335,7 @@ function renderNodeList(nodes) {
   }
   list.innerHTML = shown.map(n =>
     '<div class="node-card' + (n.status === 'Connected' || n.status === 'Connecting' || n.status === 'Reconnecting' ? '' : ' down') + '"><div class="info">' +
-    '<div class="name">' + esc(n.node_name) + ' ' + statusBadgeHtml(n.status) + (n.admin_console ? ' <span class="badge b-info">可管理</span>' : '') + '</div>' +
+    '<div class="name">' + esc(n.node_name) + (n.username ? ' <span class="dim">· ' + esc(n.username) + '</span>' : '') + ' ' + statusBadgeHtml(n.status) + (n.admin_console ? ' <span class="badge b-info">可管理</span>' : '') + '</div>' +
     '<div class="addr mono">' + esc(n.addr) + ' · 规则 ' + (n.rules || []).length + ' 条 · 配置 v' + n.config_version + '</div>' +
     ((n.manageable || []).length
       ? '<div class="addr" style="margin-top:4px">可管理上游：' + n.manageable.map(m =>
@@ -344,7 +345,7 @@ function renderNodeList(nodes) {
       : '') +
     '</div><div class="card-actions">' +
     (n.admin_console && n.status === 'Connected' && !HTTP_MODE
-      ? '<button class="ghost small" data-act="console" data-id="' + esc(n.node_id) + '">' + AgIcon('monitor', 13) + ' 管理此节点</button>' : '') +
+      ? '<button class="ghost small" data-act="console" data-id="' + esc(n.node_id) + '">' + AgIcon('monitor', 13) + ' 管理此端点</button>' : '') +
     '<button class="danger small" data-act="disconnect" data-id="' + esc(n.node_id) + '">断开</button></div></div>'
   ).join('');
 }
@@ -457,18 +458,109 @@ async function connectWith(input, btn) {
   }
 }
 
-/* ================= 控制台通道（管理此节点 / 可管理上游） ================= */
-async function openNodeConsole(nodeId) {
+/* ================= 管理端模式（内嵌 iframe 承载管理 SPA；不开子窗口） ================= */
+let ADMIN = null; // { label, url, origin }
+
+const curTheme = () => localStorage.getItem('ag_theme') || 'light';
+
+async function enterAdmin(nodeId, upstream, label) {
+  let url;
   try {
-    await invoke('open_node_console', { nodeId });
-    toast('控制台已在新窗口打开', 'ok');
-  } catch (e) { toast(friendlyError(e), 'err'); }
+    url = await invoke('console_url', { nodeId: nodeId || null, upstream: upstream || null, theme: curTheme() });
+  } catch (e) { toast(friendlyError(e), 'err'); return; }
+  ADMIN = { label, url, origin: new URL(url).origin };
+  $('admin-frame').src = url;
+  document.querySelector('.content').classList.add('admin-mode');
+  $('nav-client').style.display = 'none';
+  $('nav-admin').style.display = 'flex';
+  document.querySelectorAll('.view').forEach(s => { s.hidden = s.id !== 'view-admin'; });
+  adminNavActivate('dashboard');
+  toast('已进入管理端：' + label, 'ok');
+}
+
+function exitAdmin() {
+  if (!ADMIN) return;
+  $('admin-frame').src = 'about:blank';
+  ADMIN = null;
+  document.querySelector('.content').classList.remove('admin-mode');
+  $('nav-admin').style.display = 'none';
+  $('nav-client').style.display = 'flex';
+  switchView('connect');
+}
+
+function adminNavActivate(v) {
+  document.querySelectorAll('#nav-admin .nav-item[data-aview]').forEach(n =>
+    n.classList.toggle('active', n.dataset.aview === v));
+  if (ADMIN) {
+    const f = $('admin-frame');
+    if (f && f.contentWindow) f.contentWindow.postMessage({ type: 'ag-nav', view: v }, ADMIN.origin);
+  }
+}
+
+/** 标题栏管理端入口：本机服务端恒第一，可管理端点/上游按名称排序；无项置灰 */
+async function refreshAdminEntry() {
+  const items = [];
+  try {
+    const st = await invoke('server_status');
+    if (st && st.running) items.push({ kind: 'local', label: '本机服务端', sub: '内嵌端点' });
+  } catch (e) {}
+  const nodes = window._nodes || [];
+  const remotes = [];
+  for (const n of nodes) {
+    if (n.admin_console && n.status === 'Connected') {
+      remotes.push({ kind: 'node', id: n.node_id, label: n.node_name + (n.username ? ' · ' + n.username : ''), sub: n.addr });
+    }
+    for (const m of (n.manageable || [])) {
+      if (n.status === 'Connected') {
+        remotes.push({ kind: 'up', id: n.node_id, up: m.node_name, label: m.node_name, sub: '上游 · 经 ' + n.node_name });
+      }
+    }
+  }
+  remotes.sort((a, b) => a.label.localeCompare(b.label, 'zh'));
+  items.push(...remotes);
+  const btn = $('btn-admin');
+  btn.classList.toggle('disabled', !items.length);
+  const menu = $('admin-menu');
+  menu.innerHTML = items.length
+    ? items.map((it, i) =>
+        '<button data-aitem="' + i + '">' + AgIcon('fingerprint', 13) + '<span class="aitem-label">' + esc(it.label) + '</span><span class="aitem-sub">' + esc(it.sub) + '</span></button>'
+      ).join('')
+    : '<button disabled>暂无可管理端点</button>';
+  menu._items = items;
+}
+
+function initAdminMode() {
+  $('nav-admin-back').onclick = exitAdmin;
+  document.querySelectorAll('#nav-admin .nav-item[data-aview]').forEach(n => {
+    n.onclick = () => adminNavActivate(n.dataset.aview);
+  });
+  const menu = $('admin-menu');
+  $('btn-admin').onclick = (e) => {
+    e.stopPropagation();
+    if ($('btn-admin').classList.contains('disabled')) return;
+    menu.style.display = menu.style.display === 'none' ? 'block' : 'none';
+  };
+  document.addEventListener('click', (e) => {
+    if (!e.target.closest('#admin-menu') && !e.target.closest('#btn-admin')) menu.style.display = 'none';
+    const btn = e.target.closest('#admin-menu [data-aitem]');
+    if (!btn) return;
+    menu.style.display = 'none';
+    const it = (menu._items || [])[+btn.dataset.aitem];
+    if (!it) return;
+    if (it.kind === 'local') enterAdmin(null, null, it.label);
+    else if (it.kind === 'node') enterAdmin(it.id, null, it.label);
+    else enterAdmin(it.id, it.up, it.label);
+  });
+}
+
+/* ================= 控制台通道（管理此端点 / 可管理上游；内嵌进主窗口） ================= */
+async function openNodeConsole(nodeId) {
+  const n = (window._nodes || []).find(x => x.node_id === nodeId);
+  const label = n ? n.node_name + (n.username ? ' · ' + n.username : '') : nodeId;
+  await enterAdmin(nodeId, null, label);
 }
 async function openUpstreamConsole(nodeId, upstream) {
-  try {
-    await invoke('open_upstream_console', { nodeId, upstream });
-    toast('上游控制台已在新窗口打开', 'ok');
-  } catch (e) { toast(friendlyError(e), 'err'); }
+  await enterAdmin(nodeId, upstream, upstream);
 }
 
 /* ================= 接入链接导入 ================= */
@@ -478,7 +570,7 @@ async function importUrl(url, btn) {
   if (!url.startsWith('agilenet://connect?')) { toast(T('err-bad-url'), 'err'); return; }
   try {
     const input = await invoke('parse_connect_url', { url });
-    if (input.admin) toast('该链接为管理版：连接后可在节点卡片管理此节点', 'info');
+    if (input.admin) toast('该链接为管理版：连接后可在端点卡片管理此端点', 'info');
     await connectWith(input, btn);
   } catch (e) { toast(friendlyError(e), 'err'); }
 }
@@ -519,7 +611,11 @@ async function refreshProxy() {
     Island.setStatus(mode, text, degraded);
     const btnText = st.running ? T('btn-stop-proxy') : T('btn-start-proxy');
     if ($('btn-proxy-toggle').textContent !== btnText) $('btn-proxy-toggle').textContent = btnText;
-    const hint = st.running ? '系统/应用代理指向 127.0.0.1:' + st.port + ' 即可' : '';
+    const hint = st.running
+      ? (CUR_PROXY_MODE === 'system'
+        ? '已接管系统代理 127.0.0.1:' + st.port + '，浏览器即开即用'
+        : '本地代理运行中，应用手动指向 127.0.0.1:' + st.port + ' 即可')
+      : '';
     if ($('proxy-hint').textContent !== hint) $('proxy-hint').textContent = hint;
   } catch (e) {}
 }
@@ -563,8 +659,9 @@ function renderCredList(creds, statusMap) {
     const mainBtn = st === 'Connected'
       ? '<button class="ghost small" data-act="disconnect" data-key="' + esc(key) + '">断开</button>'
       : '<button class="ghost small" data-act="reconnect" data-key="' + esc(key) + '">' + (st ? '重连' : '连接') + '</button>';
+    const epName = key.includes('@') ? key.slice(0, key.indexOf('@')) : key;
     return '<div class="node-card"><div class="info">' +
-      '<div class="name">' + esc(c.username) + ' ' + badge + '</div>' +
+      '<div class="name">' + esc(epName) + ' <span class="dim">· ' + esc(c.username) + '</span> ' + badge + '</div>' +
       '<div class="addr mono">' + esc(c.addr) + (c.insecure ? ' · <span class="badge b-warn">insecure</span>' : '') + '</div>' +
       '</div><div class="card-actions">' + mainBtn +
       '<button class="ghost small icon-btn" title="导出接入链接（复制到剪贴板）" data-act="export" data-key="' + esc(key) + '">' + AgIcon('share-2', 13) + '</button>' +
@@ -594,7 +691,7 @@ async function deleteCred(key, btn) {
   if (btn.dataset.confirm === '1') {
     try {
       await invoke('delete_credential', { key });
-      toast('已删除保存的节点', 'ok');
+      toast('已删除保存的端点', 'ok');
       refreshCreds();
     } catch (e) { toast(friendlyError(e), 'err'); }
     return;
@@ -658,7 +755,7 @@ async function initRoles() {
     try {
       await invoke('set_client_role', { enabled: e.target.checked });
       applyClientRole(e.target.checked);
-      toast(e.target.checked ? '客户端角色已开启' : '客户端角色已停用（已断开全部节点）', 'ok');
+      toast(e.target.checked ? '客户端角色已开启' : '客户端角色已停用（已断开全部端点）', 'ok');
       if (e.target.checked) { refreshNodes(true); refreshProxy(); refreshCreds(); }
     } catch (err) {
       e.target.checked = !e.target.checked;
@@ -676,7 +773,7 @@ async function initRoles() {
           e.target.checked = false;
           const cred = await askPassword({
             title: '设置服务端管理密码',
-            desc: '首开服务端角色须先设置内嵌节点管理员，该密码用于登录控制台。',
+            desc: '首开服务端角色须先设置内嵌端点管理员，该密码用于登录控制台。',
             showUser: true,
           });
           if (!cred) return;
@@ -687,7 +784,8 @@ async function initRoles() {
       }
       await invoke('set_server_role', { enabled: on });
       await refreshServerPanel();
-      toast(on ? '服务端角色已开启（内嵌节点运行中）' : '服务端角色已关闭', 'ok');
+      refreshAdminEntry();
+      toast(on ? '服务端角色已开启（内嵌端点运行中）' : '服务端角色已关闭', 'ok');
     } catch (err) {
       e.target.checked = false;
       toast(friendlyError(err), 'err');
@@ -726,10 +824,7 @@ async function initRoles() {
     } catch (err) { toast(friendlyError(err), 'err'); }
   };
 
-  $('btn-open-console').onclick = async () => {
-    try { await invoke('open_console'); }
-    catch (err) { toast(friendlyError(err), 'err'); }
-  };
+  $('btn-open-console').onclick = () => enterAdmin(null, null, '本机服务端');
 
   // 上游中继（路由再发布）配置
   const sc = settings.server_connector || null;
@@ -738,7 +833,7 @@ async function initRoles() {
     $('sc-token').value = sc.token || '';
     $('sc-sni').value = sc.sni_hostname || 'cdn.cloudflare.com';
     $('sc-insecure').checked = !!sc.insecure;
-    $('sc-status').textContent = '已配置，内嵌节点将作为下游接入 ' + sc.upstream_addr;
+    $('sc-status').textContent = '已配置，内嵌端点将作为下游接入 ' + sc.upstream_addr;
   }
   $('btn-sc-save').onclick = async () => {
     const cfg = {
@@ -750,7 +845,7 @@ async function initRoles() {
     if (!cfg.upstream_addr || !cfg.token) { toast('请填写上游地址与 Relay Token', 'err'); return; }
     try {
       await invoke('set_server_connector', { config: cfg });
-      $('sc-status').textContent = '已配置，内嵌节点将作为下游接入 ' + cfg.upstream_addr;
+      $('sc-status').textContent = '已配置，内嵌端点将作为下游接入 ' + cfg.upstream_addr;
       toast('上游中继已保存（客户端隧道规则将转售给下游）', 'ok');
     } catch (err) { toast(friendlyError(err), 'err'); }
   };
@@ -777,6 +872,7 @@ async function initRoles() {
 /* ================= 订阅代理（mihomo sidecar） ================= */
 let SUBS = [];
 let PROXY_DATA = null;
+let PROXY_CACHED = false; // true = 内核未运行，展示缓存快照（只读）
 let CUR_GROUP = null;
 
 /** 功能入口可见性（安装激活后侧栏出现「订阅/代理」） */
@@ -842,17 +938,20 @@ async function refreshSubStatus() {
     : (st.installed ? '已安装，未运行' : (st.supported ? '未开启' : '当前平台不支持'));
   $('sub-version').textContent = st.version || (st.installed ? '已安装' : '-');
   $('r-sub').checked = st.running;
-  if (st.running) refreshGroups();
+  // 无论内核是否运行都刷新代理页（未运行时回落缓存快照，方便查看节点情况）
+  refreshGroups();
 }
 
 /* ---------- 代理页 ---------- */
 async function refreshGroups() {
   let d;
   try { d = await invoke('proxy_groups'); } catch (e) {
+    PROXY_CACHED = false;
     $('group-tabs').innerHTML = '';
-    $('node-grid').innerHTML = '<div class="empty">订阅内核未运行</div>';
+    $('node-grid').innerHTML = '<div class="empty">订阅内核未运行，且暂无节点缓存</div>';
     return;
   }
+  PROXY_CACHED = !!d.cached;
   PROXY_DATA = (d && d.proxies) || {};
   // 隐藏 mihomo 内置 GLOBAL 组；技术名映射为友好名
   const GROUP_LABELS = { 'AGILE-SUB': '订阅节点' };
@@ -867,6 +966,11 @@ async function refreshGroups() {
   $('group-tabs').innerHTML = groups.map(([n]) =>
     '<button class="group-tab' + (n === CUR_GROUP ? ' active' : '') + '" data-group-tab="' + esc(n) + '">' + esc(GROUP_LABELS[n] || n) + '</button>'
   ).join('');
+  // 缓存态：只读展示，隐藏测速入口并给出说明
+  if (PROXY_CACHED) {
+    $('proxy-sub-desc').textContent = '订阅内核未运行，以下为最近缓存节点（测速与切换不可用）';
+  }
+  $('btn-test-all').style.display = PROXY_CACHED ? 'none' : '';
   renderNodeGrid();
 }
 
@@ -878,27 +982,71 @@ function renderNodeGrid() {
     const hist = (p.history && p.history.length) ? p.history[p.history.length - 1].delay : 0;
     const cur = g.now === n;
     return '<div class="node-card' + (cur ? ' current' : '') + '" data-group="' + esc(CUR_GROUP) + '" data-node="' + esc(n) + '">' +
-      (cur ? '<span class="node-check">' + AgIcon('check', 13) + '</span>' : '') +
-      '<div class="node-name" title="' + esc(n) + '">' + esc(n) + '</div>' +
+      '<div class="node-name">' + (cur ? '<span class="node-check">' + AgIcon('check', 11) + '</span>' : '') +
+      '<span class="node-name-text" title="' + esc(n) + '">' + esc(n) + '</span></div>' +
       '<div class="node-foot"><span class="node-proto">' + esc(p.type || '') + '</span>' +
-      '<span class="node-delay' + (hist ? ' ok' : '') + '">' + (hist ? hist + ' ms' : '') + '</span></div>' +
-      '<button class="node-test" data-test="' + esc(n) + '" title="测速">' + AgIcon('zap', 13) + '</button>' +
-      '</div>';
+      '<span class="node-delay' + (hist ? ' ok' : '') + '">' + (hist ? hist + ' ms' : '') + '</span>' +
+      (PROXY_CACHED ? '' : '<button class="node-test" data-test="' + esc(n) + '" title="测速">' + AgIcon('zap', 13) + '</button>') +
+      '</div></div>';
   }).join('');
 }
 
+// provider 节点无单节点测速 API，后端仍是整组并发测（耗时相同），但单点只更新本卡片
 async function testNode(btn) {
   const card = btn.closest('.node-card');
   const delayEl = card.querySelector('.node-delay');
   delayEl.textContent = '…';
+  delayEl.className = 'node-delay';
+  let map;
   try {
-    const ms = await invoke('test_delay', { name: btn.dataset.test });
-    delayEl.textContent = ms + ' ms';
-    delayEl.className = 'node-delay ok';
+    map = await invoke('test_delay', { group: CUR_GROUP });
   } catch (e) {
     delayEl.textContent = '超时';
     delayEl.className = 'node-delay bad';
+    toast(friendlyError(e), 'err');
+    return;
   }
+  const ms = map[card.dataset.node];
+  if (ms) {
+    delayEl.textContent = ms + ' ms';
+    delayEl.className = 'node-delay ok';
+  } else {
+    delayEl.textContent = '超时';
+    delayEl.className = 'node-delay bad';
+  }
+}
+
+async function testGroup() {
+  const cards = [...$('node-grid').querySelectorAll('.node-card')];
+  if (!cards.length) return;
+  cards.forEach(c => {
+    const el = c.querySelector('.node-delay');
+    el.textContent = '…';
+    el.className = 'node-delay';
+  });
+  let map;
+  try {
+    map = await invoke('test_delay', { group: CUR_GROUP });
+  } catch (e) {
+    cards.forEach(c => {
+      const el = c.querySelector('.node-delay');
+      el.textContent = '超时';
+      el.className = 'node-delay bad';
+    });
+    toast(friendlyError(e), 'err');
+    return;
+  }
+  cards.forEach(c => {
+    const el = c.querySelector('.node-delay');
+    const ms = map[c.dataset.node];
+    if (ms) {
+      el.textContent = ms + ' ms';
+      el.className = 'node-delay ok';
+    } else {
+      el.textContent = '超时';
+      el.className = 'node-delay bad';
+    }
+  });
 }
 
 function openSubModal() {
@@ -1013,6 +1161,7 @@ function initSubscription() {
     }
     const card = e.target.closest('.node-card');
     if (!card) return;
+    if (PROXY_CACHED) { toast('订阅内核未运行，仅展示缓存节点', 'err'); return; }
     try {
       await invoke('select_proxy', { group: card.dataset.group, name: card.dataset.node });
       document.querySelectorAll('.node-card').forEach(c => c.classList.toggle('current', c === card));
@@ -1023,9 +1172,7 @@ function initSubscription() {
     const btns = [...$('node-grid').querySelectorAll('.node-test')];
     if (!btns.length) return;
     toast('正在测速（' + btns.length + ' 个节点）…', 'ok');
-    for (const btn of btns) {
-      await testNode(btn);
-    }
+    await testGroup();
   };
 }
 
@@ -1077,28 +1224,45 @@ function initSubFeature() {
 
 /* ================= 系统代理托管 ================= */
 let _spConflict = false;
+let CUR_PROXY_MODE = 'system'; // system=接管系统代理（默认） / local=仅监听端口
 async function refreshSysproxy() {
   let st;
   try { st = await invoke('sysproxy_status'); } catch (e) { return; }
-  $('s-sysproxy').checked = st.managed;
+  CUR_PROXY_MODE = st.managed ? 'system' : 'local';
+  document.querySelectorAll('#proxy-mode .group-tab').forEach(b =>
+    b.classList.toggle('active', b.dataset.proxyMode === CUR_PROXY_MODE));
   const banner = $('sysproxy-banner');
   if (st.managed && st.conflict) {
     banner.style.display = 'flex';
     $('sysproxy-banner-text').textContent = '系统代理已被外部修改（当前 ' + (st.current || '未启用') + '，期望 ' + st.expected + '）';
-    if (!_spConflict) { _spConflict = true; toast('系统代理已被外部修改，可在「设置 → 偏好」收回', 'err'); }
+    if (!_spConflict) { _spConflict = true; toast('系统代理已被外部修改，可在「连接」页收回', 'err'); }
   } else {
     banner.style.display = 'none';
     _spConflict = false;
   }
 }
 function initSysproxy() {
-  $('s-sysproxy').onchange = async (e) => {
+  $('proxy-mode').addEventListener('click', async (e) => {
+    const btn = e.target.closest('[data-proxy-mode]');
+    if (!btn || btn.classList.contains('active')) return;
     try {
-      await invoke('set_system_proxy', { enabled: e.target.checked });
-      toast(e.target.checked ? '已托管系统代理' : '已还原系统代理', 'ok');
+      if (btn.dataset.proxyMode === 'system') {
+        // 代理未启动则先按当前端口启动（后端 set_system_proxy 亦会兜底拉起）
+        const st = await invoke('proxy_status');
+        if (!st.running) {
+          const port = parseInt($('proxy-port').value || '57890', 10);
+          await invoke('start_proxy', { port });
+        }
+        await invoke('set_system_proxy', { enabled: true });
+        toast('已切换到系统代理（自动接管系统流量）', 'ok');
+      } else {
+        await invoke('set_system_proxy', { enabled: false });
+        toast('已切换到本地代理（手动指向 127.0.0.1:' + ($('proxy-port').value || '57890') + '）', 'ok');
+      }
       refreshSysproxy();
-    } catch (err) { e.target.checked = !e.target.checked; toast(friendlyError(err), 'err'); }
-  };
+      refreshProxy();
+    } catch (err) { toast(friendlyError(err), 'err'); }
+  });
   $('btn-sysproxy-reclaim').onclick = async () => {
     try { await invoke('reclaim_sysproxy'); toast('已收回系统代理', 'ok'); refreshSysproxy(); }
     catch (err) { toast(friendlyError(err), 'err'); }
@@ -1197,16 +1361,19 @@ function toggleManual(open) {
 window.addEventListener('DOMContentLoaded', async () => {
   Island.init();
   bindSearch();
-  document.querySelectorAll('.nav-item').forEach(n => n.onclick = () => switchView(n.dataset.view));
+  document.querySelectorAll('#nav-client .nav-item').forEach(n => n.onclick = () => switchView(n.dataset.view));
+  initAdminMode();
 
   // 浏览器模式（Web 远程面）：隐藏本机专属 UI，未登录先出登录框
   if (HTTP_MODE) {
     document.body.classList.add('http-mode');
     const rc = $('roles-card'); if (rc) rc.style.display = 'none';
     const as = $('s-autostart'); if (as) { const l = as.closest('label'); if (l) l.style.display = 'none'; }
-    const sp = $('s-sysproxy'); if (sp) { const l = sp.closest('label'); if (l) l.style.display = 'none'; }
+    const sp = $('proxy-mode'); if (sp) sp.style.display = 'none';
     const subNav = document.querySelector('.nav-item[data-view="subscription"]');
     if (subNav) subNav.style.display = 'none';
+    // 管理端控制台为本机专属能力（票据/转发器仅 loopback），Web 远程面隐藏入口
+    $('btn-admin').style.display = 'none';
     $('login-ok').onclick = webLogin;
     $('login-pass').addEventListener('keydown', e => { if (e.key === 'Enter') webLogin(); });
     if (!httpToken) { showLogin(); return; }
@@ -1303,7 +1470,16 @@ window.addEventListener('DOMContentLoaded', async () => {
   $('s-lang').value = localStorage.getItem('ag_lang') || 'zh';
   $('s-theme').value = localStorage.getItem('ag_theme') || 'light';
   $('s-lang').onchange = (e) => { localStorage.setItem('ag_lang', e.target.value); applyLanguage(); };
-  $('s-theme').onchange = (e) => { localStorage.setItem('ag_theme', e.target.value); applyTheme(); };
+  $('s-theme').onchange = (e) => {
+    localStorage.setItem('ag_theme', e.target.value);
+    applyTheme();
+    invoke('broadcast_theme', { theme: e.target.value }).catch(() => {});
+    // 管理端 iframe 同步（跨源 postMessage）
+    if (ADMIN) {
+      const f = $('admin-frame');
+      if (f && f.contentWindow) f.contentWindow.postMessage({ type: 'ag-theme', theme: e.target.value }, ADMIN.origin);
+    }
+  };
   applyTheme();
   refreshNodes(true);
   refreshProxy();

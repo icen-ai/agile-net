@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AgileNet 客户端</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%233C3F43' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z'/></svg>">
+<link rel="stylesheet" href="tokens.css">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -13,8 +14,11 @@
   <div class="tb-drag" data-tauri-drag-region>
     <button id="btn-collapse" class="tb-icon" title="收起 / 展开菜单"><i data-ic="panel-left" data-sz="16"></i></button>
     <button id="btn-more" class="tb-icon" title="更多"><i data-ic="menu" data-sz="16"></i></button>
+    <button id="btn-admin" class="tb-icon disabled" title="管理端点"><i data-ic="fingerprint" data-sz="16"></i></button>
     <span class="tb-spacer"></span>
   </div>
+  <!-- 管理端入口（本机服务端恒第一，其余按名称排序；无可管理端点时图标置灰） -->
+  <div class="more-menu" id="admin-menu" style="display:none;left:80px"></div>
   <!-- 更多菜单（文档 / Issue / 检查更新 / 关于） -->
   <div class="more-menu" id="more-menu" style="display:none">
     <button data-more="docs"><i data-ic="book-open" data-sz="14"></i>文档</button>
@@ -40,21 +44,38 @@
 
 <div class="shell">
   <aside class="sidebar">
-    <div class="nav-item active" data-view="connect"><i data-ic="link"></i><span class="nav-label">连接</span></div>
-    <div class="nav-item" data-view="nodes"><i data-ic="globe"></i><span class="nav-label">节点</span></div>
-    <div class="nav-item" data-view="routes"><i data-ic="route"></i><span class="nav-label">路由</span></div>
-    <div class="nav-item sub-feature" data-view="subscription" style="display:none"><i data-ic="satellite-dish"></i><span class="nav-label">订阅</span></div>
-    <div class="nav-item sub-feature" data-view="proxy" style="display:none"><i data-ic="zap"></i><span class="nav-label">代理</span></div>
-    <div class="nav-item" data-view="settings"><i data-ic="settings"></i><span class="nav-label">设置</span></div>
+    <div id="nav-client">
+      <div class="nav-item active" data-view="connect"><i data-ic="home"></i><span class="nav-label">首页</span></div>
+      <div class="nav-item" data-view="nodes"><i data-ic="globe"></i><span class="nav-label">端点</span></div>
+      <div class="nav-item" data-view="routes"><i data-ic="route"></i><span class="nav-label">路由</span></div>
+      <div class="nav-sep"></div>
+      <div class="nav-item sub-feature" data-view="subscription" style="display:none"><i data-ic="satellite-dish"></i><span class="nav-label">订阅</span></div>
+      <div class="nav-item sub-feature" data-view="proxy" style="display:none"><i data-ic="zap"></i><span class="nav-label">节点</span></div>
+      <div class="nav-sep"></div>
+      <div class="nav-item" data-view="settings"><i data-ic="settings"></i><span class="nav-label">设置</span></div>
+    </div>
+    <div id="nav-admin" style="display:none">
+      <div class="nav-item" id="nav-admin-back"><i data-ic="user"></i><span class="nav-label">返回客户端</span></div>
+      <div class="nav-sep"></div>
+      <div class="nav-item active" data-aview="dashboard"><i data-ic="layout-dashboard"></i><span class="nav-label">首页</span></div>
+      <div class="nav-item" data-aview="accounts"><i data-ic="users"></i><span class="nav-label">账号</span></div>
+      <div class="nav-item" data-aview="groups"><i data-ic="shield"></i><span class="nav-label">权限</span></div>
+      <div class="nav-item" data-aview="rules"><i data-ic="route"></i><span class="nav-label">规则</span></div>
+      <div class="nav-sep"></div>
+      <div class="nav-item" data-aview="tokens"><i data-ic="key-round"></i><span class="nav-label">令牌</span></div>
+      <div class="nav-item" data-aview="audit"><i data-ic="scroll-text"></i><span class="nav-label">审计</span></div>
+      <div class="nav-sep"></div>
+      <div class="nav-item" data-aview="settings"><i data-ic="settings"></i><span class="nav-label">设置</span></div>
+    </div>
   </aside>
 
   <main class="content">
     <!-- 客户端角色关闭时的全局提示 -->
-    <div id="role-banner" class="net-banner" style="display:none"><i data-ic="info" data-sz="14"></i>客户端角色已停用：节点连接与本地代理均已关闭，可在「设置 → 角色与远程面」重新开启</div>
-    <!-- 连接：快速接入 / 本地代理 / 手动添加 / 已保存节点 -->
+    <div id="role-banner" class="net-banner" style="display:none"><i data-ic="info" data-sz="14"></i>客户端角色已停用：端点连接与本地代理均已关闭，可在「设置 → 角色与远程面」重新开启</div>
+    <!-- 首页：快速接入 / 代理 / 手动添加 / 已保存端点 -->
     <section class="view" id="view-connect">
-      <div class="page-title"><i data-ic="link" data-sz="19"></i>连接</div>
-      <div class="page-desc">粘贴接入链接一键接入内网，启动本地代理即可使用</div>
+      <div class="page-title"><i data-ic="home" data-sz="19"></i>首页</div>
+      <div class="page-desc">粘贴接入链接一键接入内网，启动代理即可使用（默认自动接管系统代理）</div>
 
       <!-- 空状态引导（未连接任何节点时显示） -->
       <div id="onboarding" class="hero" style="display:none">
@@ -64,7 +85,7 @@
         <div class="hero-steps">
           <div class="hero-step"><span class="num">1</span>向管理员索取<b>接入链接</b><br><span class="dim">(agilenet://connect?...)</span></div>
           <div class="hero-step"><span class="num">2</span>粘贴到下方<b>一键连接</b></div>
-          <div class="hero-step"><span class="num">3</span>启动<b>本地代理</b>即可访问内网</div>
+          <div class="hero-step"><span class="num">3</span>启动<b>代理</b>即可访问内网</div>
         </div>
         <div class="hero-input">
           <input id="connect-url-hero" class="mono" placeholder="粘贴接入链接 agilenet://connect?...">
@@ -76,29 +97,38 @@
       <!-- 快速接入（有节点后的紧凑条） -->
       <div class="card" id="quick-card">
         <div class="row">
-          <input id="connect-url" class="grow mono" placeholder="粘贴接入链接添加另一个节点 agilenet://connect?...">
+          <input id="connect-url" class="grow mono" placeholder="粘贴接入链接添加另一个端点 agilenet://connect?...">
           <button id="btn-import">导入并连接</button>
           <button id="btn-paste" class="ghost icon-btn" title="从剪贴板导入"><i data-ic="clipboard" data-sz="15"></i></button>
         </div>
       </div>
 
-      <!-- 本地代理 -->
+      <!-- 代理 -->
       <div class="card">
-        <h3><i data-ic="power"></i>本地代理 <span class="hint inline">SOCKS5 / HTTP 自动识别，仅监听 127.0.0.1</span></h3>
+        <h3><i data-ic="power"></i>代理 <span class="hint inline">SOCKS5 / HTTP 自动识别，仅监听 127.0.0.1</span></h3>
         <div class="row">
+          <div class="group-tabs" id="proxy-mode" style="margin-bottom:0">
+            <button class="group-tab" data-proxy-mode="system">系统代理</button>
+            <button class="group-tab" data-proxy-mode="local">本地代理</button>
+          </div>
           <label>端口</label>
           <input id="proxy-port" type="number" value="57890" style="width:100px">
           <button id="btn-proxy-toggle" class="ghost">启动代理</button>
           <span class="hint" id="proxy-hint"></span>
         </div>
+        <div class="hint" style="margin-top:6px">系统代理：自动接管系统流量，浏览器即开即用（推荐）；本地代理：仅监听端口，需手动配置应用</div>
+        <div class="net-banner" id="sysproxy-banner" style="display:none;margin-top:8px">
+          <i data-ic="triangle-alert" data-sz="14"></i><span id="sysproxy-banner-text">系统代理已被外部修改</span>
+          <button class="ghost small" id="btn-sysproxy-reclaim" style="margin-left:auto">收回</button>
+        </div>
       </div>
 
       <!-- 手动添加（折叠） -->
       <div class="card">
-        <h3 id="manual-toggle" style="cursor:pointer"><i data-ic="plus"></i>手动添加节点 <span class="hint" id="manual-arrow"><i data-ic="chevron-right" data-sz="13"></i></span></h3>
+        <h3 id="manual-toggle" style="cursor:pointer"><i data-ic="plus"></i>手动添加端点 <span class="hint" id="manual-arrow"><i data-ic="chevron-right" data-sz="13"></i></span></h3>
         <div id="manual-form" style="display:none">
           <div class="grid2">
-            <div><label>节点 API 地址（host:port 或 https://…）</label><input id="m-addr" placeholder="cdn.example.com:59090"></div>
+            <div><label>端点 API 地址（host:port 或 https://…）</label><input id="m-addr" placeholder="cdn.example.com:59090"></div>
             <div><label>账号</label><input id="m-user" placeholder="zhangsan"></div>
             <div><label>密码</label><input id="m-pass" type="password" placeholder="sk-..."></div>
             <div><label>证书固定 PEM 路径（可选，生产推荐）</label><input id="m-pin" placeholder="certs/node.pem"></div>
@@ -112,9 +142,9 @@
         </div>
       </div>
 
-      <!-- 已保存节点（管理：连接/断开/导出/删除） -->
+      <!-- 已保存端点（管理：连接/断开/导出/删除） -->
       <div class="card" id="creds-card" style="display:none">
-        <h3><i data-ic="hard-drive"></i>已保存节点
+        <h3><i data-ic="hard-drive"></i>已保存端点
           <span class="h3-tools"><button class="ghost small icon-btn search-toggle" data-search="creds" title="搜索"><i data-ic="search" data-sz="13"></i></button></span>
         </h3>
         <div class="list-search" id="search-creds" hidden><input placeholder="搜索账号 / 地址" ></div>
@@ -122,34 +152,34 @@
       </div>
     </section>
 
-    <!-- 节点：连接状态一览 -->
+    <!-- 端点：连接状态一览 -->
     <section class="view" id="view-nodes" hidden>
-      <div class="page-title"><i data-ic="globe" data-sz="19"></i>节点</div>
-      <div class="page-desc">已连接节点与实时状态；离线节点整卡降饱和标识</div>
+      <div class="page-title"><i data-ic="globe" data-sz="19"></i>端点</div>
+      <div class="page-desc">已连接端点与实时状态；离线端点整卡降饱和标识</div>
       <div id="net-banner" class="net-banner" style="display:none"></div>
       <div class="card">
-        <h3><i data-ic="globe"></i>节点列表
+        <h3><i data-ic="globe"></i>端点列表
           <span class="h3-tools">
             <button class="ghost small icon-btn" id="btn-refresh" title="刷新"><i data-ic="refresh-cw" data-sz="13"></i></button>
             <button class="ghost small icon-btn search-toggle" data-search="nodes" title="搜索"><i data-ic="search" data-sz="13"></i></button>
           </span>
         </h3>
         <div class="list-search" id="search-nodes" hidden><input placeholder="搜索名称 / 地址 / 状态"></div>
-        <div id="nodes-list"><div class="empty">尚未连接节点</div></div>
+        <div id="nodes-list"><div class="empty">尚未连接端点</div></div>
       </div>
     </section>
 
     <!-- 路由：合并视图（可暂停单条规则自由组合；长表粘性表头 + 内部滚动） -->
     <section class="view" id="view-routes" hidden>
       <div class="page-title"><i data-ic="route" data-sz="19"></i>路由</div>
-      <div class="page-desc">全部节点下发规则的合并视图；关闭开关可暂停单条规则（立即生效并本地记忆）</div>
+      <div class="page-desc">全部端点下发规则的合并视图；关闭开关可暂停单条规则（立即生效并本地记忆）</div>
       <div class="card" id="rules-card">
         <h3><i data-ic="route"></i>生效路由（合并视图）
           <span class="h3-tools"><button class="ghost small icon-btn search-toggle" data-search="rules" title="搜索"><i data-ic="search" data-sz="13"></i></button></span>
         </h3>
-        <div class="list-search" id="search-rules" hidden><input placeholder="搜索类型 / 匹配值 / 节点"></div>
+        <div class="list-search" id="search-rules" hidden><input placeholder="搜索类型 / 匹配值 / 端点"></div>
         <div class="table-scroll">
-          <table><thead><tr><th>类型</th><th>匹配值</th><th>节点</th><th>启用</th></tr></thead><tbody id="rules-body"></tbody></table>
+          <table><thead><tr><th>类型</th><th>匹配值</th><th>端点</th><th>启用</th></tr></thead><tbody id="rules-body"></tbody></table>
         </div>
       </div>
     </section>
@@ -172,19 +202,24 @@
         <h3><i data-ic="rss"></i>订阅列表
           <span class="h3-tools"><button class="ghost small icon-btn" id="btn-add-sub" title="添加订阅"><i data-ic="plus" data-sz="14"></i></button></span>
         </h3>
-        <div id="subs-list"><div class="empty">尚未添加订阅</div></div>
+        <div id="subs-list" class="sub-grid"><div class="empty">尚未添加订阅</div></div>
       </div>
     </section>
 
     <!-- 代理：激活订阅的节点组与切换 -->
     <section class="view" id="view-proxy" hidden>
-      <div class="page-title"><i data-ic="zap" data-sz="19"></i>代理</div>
+      <div class="page-title"><i data-ic="zap" data-sz="19"></i>节点</div>
       <div class="page-desc" id="proxy-sub-desc">激活订阅的节点列表；点击卡片切换，点闪电图标单点测速</div>
       <div class="card" id="groups-card">
         <div class="group-tabs" id="group-tabs"></div>
         <div class="node-grid" id="node-grid"><div class="empty">订阅内核未运行</div></div>
       </div>
       <button id="btn-test-all" class="fab"><i data-ic="gauge" data-sz="15"></i>延迟测试</button>
+    </section>
+
+    <!-- 管理端：内嵌 iframe（本机服务端 / 远端端点 / 可管理上游），导航经 postMessage 驱动 -->
+    <section class="view admin-view" id="view-admin" hidden>
+      <iframe id="admin-frame" title="管理端"></iframe>
     </section>
 
     <!-- 设置 -->
@@ -197,11 +232,11 @@
         <h3><i data-ic="server"></i>角色与远程面</h3>
         <div class="role-list">
           <div class="role-row">
-            <div class="role-info"><b>客户端角色</b><span class="hint">连接上游节点、本地代理与路由组合（关闭即断开全部节点）</span></div>
+            <div class="role-info"><b>客户端角色</b><span class="hint">连接上游端点、本地代理与路由组合（关闭即断开全部端点）</span></div>
             <label class="switch"><input type="checkbox" id="r-client" checked><span class="slider"></span></label>
           </div>
           <div class="role-row">
-            <div class="role-info"><b>服务端角色</b><span class="hint">内嵌完整节点（Relay / 账号 / 规则 / 审计），本机可作为转发机或留守管理端</span></div>
+            <div class="role-info"><b>服务端角色</b><span class="hint">内嵌完整端点（Relay / 账号 / 规则 / 审计），本机可作为转发机或留守管理端</span></div>
             <label class="switch"><input type="checkbox" id="r-server"><span class="slider"></span></label>
           </div>
           <div id="server-panel" style="display:none">
@@ -209,7 +244,7 @@
             <div class="kv"><span class="k">Relay 监听</span><span class="mono" id="sv-relay">-</span></div>
             <div class="row" style="margin-top:8px">
               <button id="btn-open-console" class="ghost small"><i data-ic="external-link" data-sz="13"></i> 打开控制台</button>
-              <span class="hint inline">控制台在独立窗口中管理内嵌节点</span>
+              <span class="hint inline">控制台在主窗口内嵌管理内嵌端点</span>
             </div>
             <div class="kv" style="margin-top:6px"><span class="k">上游中继（路由再发布）</span><span class="hint inline">可选：接入上游后，本机客户端隧道的规则将转售给下游</span></div>
             <div class="grid2" style="margin-top:6px">
@@ -250,13 +285,8 @@
         <h3><i data-ic="settings"></i>偏好</h3>
         <div class="row col">
           <label class="chk"><input type="checkbox" id="s-autostart"> 开机自动启动 AgileNet</label>
-          <label class="chk"><input type="checkbox" id="s-autoproxy" checked> 连接节点后自动启动本地代理</label>
-          <label class="chk"><input type="checkbox" id="s-autoreconnect" checked> 启动应用时自动重连已保存节点</label>
-          <label class="chk"><input type="checkbox" id="s-sysproxy"> 托管系统代理（指向本地代理端口，被外部抢占时提醒）</label>
-          <div class="net-banner" id="sysproxy-banner" style="display:none;width:100%">
-            <i data-ic="triangle-alert" data-sz="14"></i><span id="sysproxy-banner-text">系统代理已被外部修改</span>
-            <button class="ghost small" id="btn-sysproxy-reclaim" style="margin-left:auto">收回</button>
-          </div>
+          <label class="chk"><input type="checkbox" id="s-autoproxy" checked> 连接端点后自动启动本地代理</label>
+          <label class="chk"><input type="checkbox" id="s-autoreconnect" checked> 启动应用时自动重连已保存端点</label>
           <div class="lang-theme">
             <select id="s-lang">
               <option value="zh">中文</option>
@@ -367,8 +397,8 @@
     <h3><i data-ic="trash-2" data-sz="16"></i> 卸载 AgileNet</h3>
     <div class="hint" style="margin:6px 0 12px">应用退出后由系统卸载程序完成移除。请选择要一并清理的本地数据：</div>
     <div class="row col" style="gap:10px">
-      <label class="chk"><input type="checkbox" id="un-creds" checked> 已保存的节点与凭据</label>
-      <label class="chk"><input type="checkbox" id="un-server" checked> 服务端节点数据与订阅内核（数据库、证书、mihomo）</label>
+      <label class="chk"><input type="checkbox" id="un-creds" checked> 已保存的端点与凭据</label>
+      <label class="chk"><input type="checkbox" id="un-server" checked> 服务端端点数据与订阅内核（数据库、证书、mihomo）</label>
       <label class="chk"><input type="checkbox" id="un-prefs" checked> 配置与偏好（角色设置、Web 密码、主题语言）</label>
       <label class="chk"><input type="checkbox" id="un-audit"> 审计日志</label>
     </div>

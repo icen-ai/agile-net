@@ -22,7 +22,7 @@
 - `crates/client`：客户端核心引擎（库）：多节点连接（登录/配置/隧道/长轮询/心跳）、规则合并与暂停（`paused_rules`）、本地代理、hosts 管理、凭据存储、管理面 Web API（`api` 模块）、客户端角色守护（`daemon` 模块）。
 - `apps/desktop`：**anet-gui**（Tauri 2 桌面/Android，独立 workspace，前端无 Node 构建链）：三路独立开关（客户端/服务端/Web 远程面）+ 控制台窗口 + 订阅代理（mihomo sidecar 内核托管，GUI 独享）+ 系统代理托管（冲突巡检提醒）。
 - `.docker`：四级节点链编排测试（`docker-compose.test.yaml`）与常驻演示（`docker-compose.chain.yaml`）。
-- `docs/plan/merge-gui-svc.md`：双产物统一实施计划；`docs/plan/subscription.md`：GUI 独享订阅代理（mihomo sidecar）实施计划；`docs/todo/island.md`：移动端系统岛规划。
+- `docs/plan/merge-gui-svc.md`：双产物统一实施计划；`docs/plan/subscription.md`：GUI 独享订阅代理（mihomo sidecar）实施计划；`docs/plan/tun.md`：TUN 模式（anet 在前、FlClash 在后，Windows 桌面）实施计划；`docs/todo/island.md`：移动端系统岛规划。
 
 ---
 
@@ -62,6 +62,11 @@
    - 桌面端 Tauri CSP 为 `script-src 'self'`：**严禁内联事件属性（onclick 等）**，一律 app.js 显式绑定或事件委托。
    - 轮询渲染必须做变更检测（签名对比），不变更不重写 DOM，避免频闪。
    - 灵动岛：显式尺寸形变 + 弹簧缓动，形变全程内容不得溢出岛体（`docs/architecture/ui-design.md` §3）。
+6. **前端共享与组件沉淀（两端一致性唯一来源）**：
+   - **共享 token**：`apps/desktop/ui/tokens.css` 是设计 token 的唯一权威文件（颜色/语义色/边框/文字梯度，深浅两套）。桌面端 `<link>` 引入；管理端经 `include_str!` 内嵌服务（`crates/node/src/ui/mod.rs` 引用相对路径）。**严禁在任一端的 style.css 里另起同名 token 或硬编码色值**，新增 token 一律进 tokens.css 并在 `docs/architecture/ui-design.md` 登记。
+   - **管理端 SPA 文件布局**：`crates/node/ui/`（`index.html` / `app.js` / `style.css`），`mod.rs` 只做路由与内嵌（`include_str!`），**严禁再把界面代码写进 Rust 字符串**。
+   - **组件沉淀流程**：新组件先在本端页面内实现并验证；第二次需要（或明确两端共用）时，先**泛化**（class 命名语义化、尺寸/状态走修饰类、色值只吃 token）再沉淀到共享层（tokens.css / 共享组件样式 / icons.js），随后各端改为引用共享实现。禁止把页面级一次性样式直接拷给另一端。
+   - 端文案：AgileNet 上下游一律称「端点」；「节点」仅指订阅代理节点。
 
 ---
 

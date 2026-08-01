@@ -1,0 +1,33 @@
+/* AgileNet 共享设计 token（唯一权威来源，AGENTS.md §6）
+   桌面端 <link> 引入；管理端经 include_str! 服务于 /ui/tokens.css。
+   新增/修改 token 必须同步登记 docs/architecture/ui-design.md；严禁在各端另起同名 token。 */
+:root {
+  --bg: #EDEDED; --bg2: #F4F4F4; --panel: #F8F8F8; --panel2: #FFFFFF;
+  --border: #DCDFE3; --border2: #C9CDD3;
+  --text: #3C3F43; --text-strong: #2E3237; --dim: #686B72; --dim2: #8C8E94;
+  --accent: #3C3F43; --accent2: #2E3237; --accent-fg: #FCFCFC;
+  --accent-bg: rgba(60,63,67,.05); --ring-bg: rgba(60,63,67,.14);
+  --link: #2E3237; --ring: #2E3237;
+  /* 语义色 = macOS 红绿灯基准（填充/圆点/进度/开关）；文本级用加深变体保对比度 */
+  --ok: #61C555; --warn: #F6BE50; --danger: #ED6A5F;
+  --ok-text: #3E8E2E; --warn-text: #9A7414; --danger-text: #CE3F34;
+  --ok-bg: rgba(97,197,85,.14); --warn-bg: rgba(246,190,80,.20); --danger-bg: rgba(237,106,95,.12);
+  --danger-border: rgba(237,106,95,.45);
+  --chip: #F1F1F1; --hover: #E2E2E2;
+  --row-border: #E7E8EA;
+  --radius: 12px;
+}
+html[data-theme="dark"] {
+  --bg: #2A2828; --bg2: #2F2D2D; --panel: #312F2F; --panel2: #3A3838;
+  --border: #434343; --border2: #504F4F;
+  --text: #D4D4D4; --text-strong: #EEEEEE; --dim: #9A9DA3; --dim2: #6F6F6F;
+  --accent: #EEEEEE; --accent2: #E2E2E2; --accent-fg: #252222;
+  --accent-bg: rgba(238,238,238,.08); --ring-bg: rgba(238,238,238,.16);
+  --link: #EEEEEE; --ring: #EEEEEE;
+  --ok: #5FCF65; --warn: #F8CE52; --danger: #F96057;
+  --ok-text: #5FCF65; --warn-text: #F8CE52; --danger-text: #F96057;
+  --ok-bg: rgba(95,207,101,.14); --warn-bg: rgba(248,206,82,.16); --danger-bg: rgba(249,96,87,.14);
+  --danger-border: rgba(249,96,87,.40);
+  --chip: #2F2D2D; --hover: #3A3838;
+  --row-border: #3B3939;
+}
