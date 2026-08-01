@@ -27,3 +27,6 @@ dist/
 *.key
 .env
 .build/
+
+# Cindy worktrees (agent tooling, never commit)
+.cindy-worktrees/
