@@ -69,6 +69,9 @@ pub struct NodeState {
     pub node_id: String,
     pub addr: String,
     pub node_name: String,
+    /// 登录账号（端点列表展示「端点名称 · 用户名」）
+    #[serde(default)]
+    pub username: String,
     pub status: NodeStatus,
     pub rules: Vec<ClientRule>,
     pub config_version: u64,
@@ -657,6 +660,7 @@ impl AgileNetClient {
             node_id: node_id.clone(),
             addr: params.addr.clone(),
             node_name: node_name.clone(),
+            username: params.username.clone(),
             status: NodeStatus::Connected,
             rules,
             config_version: version,
@@ -766,6 +770,7 @@ impl AgileNetClient {
             node_id: node_id.clone(),
             addr: params.addr.clone(),
             node_name: cached.node_name.clone(),
+            username: cached.username.clone(),
             status: NodeStatus::Reconnecting,
             rules: cached.rules.clone(),
             config_version: cached.config_version,
@@ -837,7 +842,29 @@ impl AgileNetClient {
     }
 
     pub async fn list_nodes(&self) -> Vec<NodeState> {
-        self.inner.nodes.iter().map(|r| r.state.clone()).collect()
+        self.inner
+            .nodes
+            .iter_mut()
+            .map(|mut r| {
+                // 以隧道实时状态为准修正缓存状态：
+                // 对端关闭/断网时缓存的 Connected 不会自动回写（管理面按钮据此显隐）
+                let live = if r.tunnel.is_connected() {
+                    NodeStatus::Connected
+                } else {
+                    match r.tunnel.state() {
+                        agile_net_core::relay::ConnectionState::Reconnecting => {
+                            NodeStatus::Reconnecting
+                        }
+                        agile_net_core::relay::ConnectionState::Connecting => NodeStatus::Connecting,
+                        _ => NodeStatus::Disconnected,
+                    }
+                };
+                if r.state.status != live {
+                    r.state.status = live;
+                }
+                r.state.clone()
+            })
+            .collect()
     }
 
     pub fn node_status(&self, node_id: &str) -> NodeStatus {
