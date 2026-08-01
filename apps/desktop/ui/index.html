@@ -47,6 +47,7 @@
     <div id="nav-client">
       <div class="nav-item active" data-view="connect"><i data-ic="home"></i><span class="nav-label">首页</span></div>
       <div class="nav-item" data-view="nodes"><i data-ic="globe"></i><span class="nav-label">端点</span></div>
+      <div class="nav-item" data-view="upstreams"><i data-ic="git-fork"></i><span class="nav-label">扇出</span></div>
       <div class="nav-item" data-view="routes"><i data-ic="route"></i><span class="nav-label">路由</span></div>
       <div class="nav-sep"></div>
       <div class="nav-item sub-feature" data-view="subscription" style="display:none"><i data-ic="satellite-dish"></i><span class="nav-label">订阅</span></div>
@@ -152,6 +153,32 @@
       </div>
     </section>
 
+    <!-- 扇出：服务端角色的扇出连接（路由再发布；多目标扇出/容灾） -->
+    <section class="view" id="view-upstreams" hidden>
+      <div class="page-title"><i data-ic="git-fork" data-sz="19"></i>扇出</div>
+      <div class="page-desc">内嵌端点作为扇出方连接目标端点（多目标扇出/容灾）；客户端隧道规则将转售给扇入端点。需服务端角色开启后生效，变更即热重启内嵌端点</div>
+      <div class="card">
+        <h3><i data-ic="git-fork"></i>扇出连接
+          <span class="h3-tools"><button class="ghost small icon-btn" id="btn-fo-refresh" title="刷新"><i data-ic="refresh-cw" data-sz="13"></i></button></span>
+        </h3>
+        <div id="fo-list"><div class="empty">尚未配置扇出连接</div></div>
+      </div>
+      <div class="card">
+        <h3><i data-ic="plus"></i><span id="fo-form-title">添加扇出连接</span></h3>
+        <div class="grid2">
+          <div><label>目标地址</label><input id="fo-addr" class="mono" placeholder="root.example.com:54430"></div>
+          <div><label>Relay Token <span class="hint inline" id="fo-token-hint" style="display:none">留空保留原 Token</span></label><input id="fo-token" type="password" class="mono" placeholder="psk_..."></div>
+          <div><label>SNI 域名</label><input id="fo-sni" class="mono" value="cdn.cloudflare.com"></div>
+          <div><label class="chk" style="margin-top:22px"><input type="checkbox" id="fo-insecure"> 跳过证书校验（仅开发）</label></div>
+        </div>
+        <div class="row" style="margin-top:8px">
+          <button id="btn-fo-add" class="ghost small">添加</button>
+          <button id="btn-fo-cancel" class="ghost small" style="display:none">取消编辑</button>
+          <span class="hint" id="fo-err"></span>
+        </div>
+      </div>
+    </section>
+
     <!-- 端点：连接状态一览 -->
     <section class="view" id="view-nodes" hidden>
       <div class="page-title"><i data-ic="globe" data-sz="19"></i>端点</div>
@@ -217,7 +244,7 @@
       <button id="btn-test-all" class="fab"><i data-ic="gauge" data-sz="15"></i>延迟测试</button>
     </section>
 
-    <!-- 管理端：内嵌 iframe（本机服务端 / 远端端点 / 可管理上游），导航经 postMessage 驱动 -->
+    <!-- 管理端：内嵌 iframe（本机服务端 / 远端端点 / 可管理扇出），导航经 postMessage 驱动 -->
     <section class="view admin-view" id="view-admin" hidden>
       <iframe id="admin-frame" title="管理端"></iframe>
     </section>
@@ -232,7 +259,7 @@
         <h3><i data-ic="server"></i>角色与远程面</h3>
         <div class="role-list">
           <div class="role-row">
-            <div class="role-info"><b>客户端角色</b><span class="hint">连接上游端点、本地代理与路由组合（关闭即断开全部端点）</span></div>
+            <div class="role-info"><b>客户端角色</b><span class="hint">连接 AgileNet 端点、本地代理与路由组合（关闭即断开全部端点）</span></div>
             <label class="switch"><input type="checkbox" id="r-client" checked><span class="slider"></span></label>
           </div>
           <div class="role-row">
@@ -245,18 +272,6 @@
             <div class="row" style="margin-top:8px">
               <button id="btn-open-console" class="ghost small"><i data-ic="external-link" data-sz="13"></i> 打开控制台</button>
               <span class="hint inline">控制台在主窗口内嵌管理内嵌端点</span>
-            </div>
-            <div class="kv" style="margin-top:6px"><span class="k">上游中继（路由再发布）</span><span class="hint inline">可选：接入上游后，本机客户端隧道的规则将转售给下游</span></div>
-            <div class="grid2" style="margin-top:6px">
-              <div><label>上游地址</label><input id="sc-upstream" class="mono" placeholder="root.example.com:54430"></div>
-              <div><label>Relay Token</label><input id="sc-token" type="password" class="mono" placeholder="psk_..."></div>
-              <div><label>SNI 域名</label><input id="sc-sni" class="mono" value="cdn.cloudflare.com"></div>
-              <div><label class="chk" style="margin-top:22px"><input type="checkbox" id="sc-insecure"> 跳过证书校验（仅开发）</label></div>
-            </div>
-            <div class="row" style="margin-top:8px">
-              <button id="btn-sc-save" class="ghost small">保存并重连</button>
-              <button id="btn-sc-clear" class="ghost small">清除</button>
-              <span class="hint" id="sc-status"></span>
             </div>
           </div>
           <div class="role-row">

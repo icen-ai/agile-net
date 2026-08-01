@@ -28,9 +28,9 @@ pub struct RoleSettings {
     /// Web 面监听地址（127.0.0.1 / LAN，显式可配）
     #[serde(default = "default_web_listen")]
     pub web_listen: String,
-    /// 服务端角色作为下游中继接入上游（路由再发布：客户端隧道规则转售给下游）
+    /// 服务端角色的扇出连接（路由再发布：客户端隧道规则转售给扇入端点；可多目标扇出/容灾）
     #[serde(default)]
-    pub server_connector: Option<ServerConnectorConfig>,
+    pub server_connectors: Vec<ServerConnectorConfig>,
     /// 开关D：订阅代理角色（mihomo sidecar，anet-gui 独享附加服务）
     #[serde(default)]
     pub subscription: bool,
@@ -50,10 +50,13 @@ fn default_true() -> bool {
     true
 }
 
-/// 内嵌节点的上游中继配置（token 为敏感凭据，settings 文件本身 0600 保护）。
+/// 内嵌节点的扇出连接配置（token 为敏感凭据，settings 文件本身 0600 保护）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerConnectorConfig {
-    /// 上游地址（host:port）
+    /// 稳定 ID（增删改寻址；迁移旧配置时生成）
+    #[serde(default = "connector_id")]
+    pub id: String,
+    /// 扇出目标地址（host:port）
     pub upstream_addr: String,
     /// Relay Token（psk_）
     pub token: String,
@@ -63,6 +66,10 @@ pub struct ServerConnectorConfig {
     /// 跳过证书校验（仅开发）
     #[serde(default)]
     pub insecure: bool,
+}
+
+fn connector_id() -> String {
+    uuid::Uuid::new_v4().simple().to_string()
 }
 
 fn default_connector_sni() -> String {
@@ -80,7 +87,7 @@ impl Default for RoleSettings {
             server: false,
             web: false,
             web_listen: default_web_listen(),
-            server_connector: None,
+            server_connectors: Vec::new(),
             subscription: false,
             subscription_feature: false,
             subscription_unified: true,
@@ -119,10 +126,27 @@ fn web_auth_path() -> PathBuf {
 
 impl RoleSettings {
     pub fn load() -> Self {
-        std::fs::read_to_string(settings_path())
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default()
+        let Some(raw) = std::fs::read_to_string(settings_path()).ok() else {
+            return Self::default();
+        };
+        let mut v: serde_json::Value = match serde_json::from_str(&raw) {
+            Ok(v) => v,
+            Err(_) => return Self::default(),
+        };
+        // 旧单条 server_connector 对象迁移为 server_connectors 数组（保留既有配置）
+        if let Some(obj) = v.get("server_connector").cloned() {
+            if obj.is_object() {
+                let existing = v
+                    .get("server_connectors")
+                    .and_then(|a| a.as_array())
+                    .map(|a| a.len())
+                    .unwrap_or(0);
+                if existing == 0 {
+                    v["server_connectors"] = serde_json::json!([obj]);
+                }
+            }
+        }
+        serde_json::from_value(v).unwrap_or_default()
     }
 
     pub fn save(&self) -> Result<(), String> {
@@ -167,12 +191,12 @@ pub fn audit(action: &str, detail: serde_json::Value) {
     }
 }
 
-/// 构建内嵌节点配置（默认端口避让本地独立节点；可选接入上游做路由再发布）。
-pub fn build_embedded_config(connector: Option<&ServerConnectorConfig>) -> NodeConfig {
+/// 构建内嵌节点配置（默认端口避让本地独立节点与 Docker 演示链；扇出连接可选多目标）。
+pub fn build_embedded_config(connectors: &[ServerConnectorConfig]) -> NodeConfig {
     let dir = embedded_dir();
     let certs = dir.join("certs");
     NodeConfig {
-        name: "AgileNet 内嵌节点".into(),
+        name: "AgileNet 内嵌端点".into(),
         db_path: embedded_db_path().to_string_lossy().to_string(),
         public_host: None,
         api: ApiConfig {
@@ -186,15 +210,18 @@ pub fn build_embedded_config(connector: Option<&ServerConnectorConfig>) -> NodeC
             key_path: certs.join("relay-key.pem").to_string_lossy().to_string(),
             sni_hostname: "cdn.cloudflare.com".into(),
         }),
-        connector: connector.map(|c| ConnectorConfig {
-            upstream_addr: c.upstream_addr.clone(),
-            token: c.token.clone(),
-            sni_hostname: c.sni_hostname.clone(),
-            advertise: Vec::new(), // 通告集 = 客户端隧道规则（动态再发布）
-            ca_cert_path: None,
-            pinned_cert_path: None,
-            insecure: c.insecure,
-        }),
+        connectors: connectors
+            .iter()
+            .map(|c| ConnectorConfig {
+                upstream_addr: c.upstream_addr.clone(),
+                token: c.token.clone(),
+                sni_hostname: c.sni_hostname.clone(),
+                advertise: Vec::new(), // 通告集 = 客户端隧道规则（动态再发布）
+                ca_cert_path: None,
+                pinned_cert_path: None,
+                insecure: c.insecure,
+            })
+            .collect(),
         proxy: None,
         acme: None,
         log: None,
