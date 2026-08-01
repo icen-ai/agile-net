@@ -311,6 +311,7 @@ async fn spa_assets_served() {
             app_js: "app",
             icons_js: "icons",
             style_css: "css",
+            tokens_css: "tokens",
         }),
     )
     .await
@@ -322,5 +323,7 @@ async fn spa_assets_served() {
     assert_eq!(r.text().await.unwrap(), "<html>spa</html>");
     let r = http.get(format!("{base}/app.js")).send().await.unwrap();
     assert_eq!(r.text().await.unwrap(), "app");
+    let r = http.get(format!("{base}/tokens.css")).send().await.unwrap();
+    assert_eq!(r.text().await.unwrap(), "tokens");
     handle.stop().await;
 }

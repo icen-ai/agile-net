@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AgileNet 控制台</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%233C3F43' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z'/></svg>">
+<script>try{const _p=new URLSearchParams(location.search);const _q=_p.get('theme');if(_q)localStorage.setItem('ag_theme',_q);document.documentElement.dataset.theme=localStorage.getItem('ag_theme')||'light';if(_p.get('embed'))document.documentElement.classList.add('embed')}catch(e){}</script>
+<link rel="stylesheet" href="/ui/tokens.css">
+<link rel="stylesheet" href="/ui/style.css">
+</head>
+<body>
+<header id="titlebar">
+  <button class="tb-icon" id="btn-collapse" title="收起 / 展开菜单"><i data-ic="panel-left" data-sz="16"></i></button>
+  <div class="tb-drag" data-tauri-drag-region><span class="tb-title" data-tauri-drag-region>AgileNet 控制台</span></div>
+  <div class="tb-controls">
+    <button id="tb-min" title="最小化"><i data-ic="minus" data-sz="15"></i></button>
+    <button id="tb-max" title="最大化 / 还原"><i data-ic="square" data-sz="12"></i></button>
+    <button id="tb-close" class="close" title="关闭"><i data-ic="x" data-sz="16"></i></button>
+  </div>
+</header>
+<div id="toasts"></div>
+<div id="modal-root"></div>
+
+<div id="login-view">
+  <div class="login-card">
+    <button class="ghost small" id="login-theme-btn" onclick="toggleTheme()" title="切换主题"></button>
+    <div class="logo"><i data-ic="zap" data-sz="22"></i></div>
+    <h1>AgileNet</h1>
+    <p>企业级网络穿透与代理链路由 · 管理控制台</p>
+    <input id="login-user" type="text" placeholder="用户名" autocomplete="username">
+    <input id="login-pass" type="password" placeholder="密码" autocomplete="current-password">
+    <button id="login-btn" onclick="doLogin()">登 录</button>
+    <div class="login-err" id="login-err"></div>
+  </div>
+</div>
+
+<div id="app">
+<div class="shell">
+  <aside class="sidebar">
+    <div class="brand"><span class="logo"><i data-ic="zap" data-sz="15"></i></span><span class="brand-text">AgileNet</span></div>
+    <div class="nav-item" data-view="dashboard" onclick="switchView('dashboard')"><i data-ic="layout-dashboard"></i><span class="nav-label">概览</span></div>
+    <div class="nav-item" data-view="accounts" onclick="switchView('accounts')"><i data-ic="users"></i><span class="nav-label">客户端账号</span></div>
+    <div class="nav-item" data-view="groups" onclick="switchView('groups')"><i data-ic="shield"></i><span class="nav-label">权限组</span></div>
+    <div class="nav-item" data-view="rules" onclick="switchView('rules')"><i data-ic="route"></i><span class="nav-label">路由规则</span></div>
+    <div class="nav-item" data-view="tokens" onclick="switchView('tokens')"><i data-ic="key-round"></i><span class="nav-label">Relay 令牌</span></div>
+    <div class="nav-item" data-view="audit" onclick="switchView('audit')"><i data-ic="scroll-text"></i><span class="nav-label">审计日志</span></div>
+    <div class="nav-item" data-view="settings" onclick="switchView('settings')"><i data-ic="settings"></i><span class="nav-label">端点设置</span></div>
+    <div class="sidebar-footer">
+      <div id="me-info">-</div>
+      <div style="margin-top:8px;display:flex;gap:6px">
+        <button class="ghost small" onclick="toggleTheme()" id="theme-btn"></button>
+        <button class="ghost small" onclick="doLogout()"><i data-ic="log-out" data-sz="13"></i>退出登录</button>
+      </div>
+    </div>
+  </aside>
+  <main class="main" id="view"></main>
+</div>
+</div>
+
+<script src="/ui/app.js"></script>
+</body>
+</html>

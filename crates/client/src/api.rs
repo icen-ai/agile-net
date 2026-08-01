@@ -44,6 +44,8 @@ pub struct SpaAssets {
     pub app_js: &'static str,
     pub icons_js: &'static str,
     pub style_css: &'static str,
+    /// 共享设计 token（AGENTS.md §6；桌面 index.html 引用，缺失则全站变量失效）
+    pub tokens_css: &'static str,
 }
 
 #[derive(Clone)]
@@ -168,6 +170,7 @@ fn spa_router(spa: SpaAssets) -> Router {
     let app_js = spa.app_js;
     let icons_js = spa.icons_js;
     let style_css = spa.style_css;
+    let tokens_css = spa.tokens_css;
     Router::new()
         .route("/", get(move || serve(index, "text/html; charset=utf-8")))
         .route(
@@ -185,6 +188,10 @@ fn spa_router(spa: SpaAssets) -> Router {
         .route(
             "/style.css",
             get(move || serve(style_css, "text/css; charset=utf-8")),
+        )
+        .route(
+            "/tokens.css",
+            get(move || serve(tokens_css, "text/css; charset=utf-8")),
         )
 }
 
