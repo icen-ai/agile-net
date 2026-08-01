@@ -223,18 +223,24 @@ async function renderDashboard() {
       // 标题栏跟随端点名称（Tauri 控制台窗口）
       const tbt = document.querySelector('.tb-title');
       if (tbt && st.node_name) tbt.textContent = st.node_name;
-      const L = st.roles.listener, C = st.roles.connector, P = st.proxy, A = st.accounts;
+      const L = st.roles.listener, CS = st.roles.connectors || [], P = st.proxy, A = st.accounts;
+      const statusText = { connected: '已连接', connecting: '连接中', reconnecting: '重连中', disconnected: '已断开' };
+      const fanoutSub = CS.length
+        ? CS.map(c => '<div class="mono">' + esc(c.upstream) + ' <span class="badge ' +
+            (c.status === 'connected' ? 'b-ok' : (c.status === 'disconnected' ? 'b-off' : 'b-warn')) + '">' +
+            esc(statusText[c.status] || c.status) + '</span></div>').join('')
+        : '-';
       $('dash-stats').innerHTML =
         statCard('端点名称', esc(st.node_name), 'v' + esc(st.version) + ' · 运行 ' + fmtUptime(st.uptime)) +
-        statCard('Relay 监听', L.enabled ? '<span class="badge b-ok">启用</span>' : '<span class="badge b-off">未启用</span>',
-          L.enabled ? esc(L.addr) + ' · 下游 ' + (L.connected_connectors||0) + ' 端点 · 在线客户端 ' + (L.online_clients||0) : '-') +
-        statCard('上游连接', C.enabled ? esc(C.status) : '<span class="badge b-off">未启用</span>', C.enabled ? esc(C.upstream) : '-') +
+        statCard('Relay 监听（扇入）', L.enabled ? '<span class="badge b-ok">启用</span>' : '<span class="badge b-off">未启用</span>',
+          L.enabled ? esc(L.addr) + ' · 扇入 ' + (L.connected_connectors||0) + ' 端点 · 在线客户端 ' + (L.online_clients||0) : '-') +
+        statCard('扇出连接', CS.length ? '<span class="badge b-ok">' + CS.length + ' 条</span>' : '<span class="badge b-off">未配置</span>', fanoutSub) +
         statCard('本地代理', P.enabled ? '<span class="badge b-ok">启用</span>' : '<span class="badge b-off">未启用</span>',
           P.enabled ? esc(P.listen) + ' · 活跃 ' + (P.active_connections||0) + ' · 规则 ' + (P.rule_count||0) : '规则 ' + (P.rule_count||0)) +
         statCard('客户端账号', (A.total||0) + ' 个', '在线 ' + (A.online||0) + ' · 禁用 ' + (A.disabled||0)) +
         statCard('系统资源', (st.system.memory_mb||0) + ' MB', 'CPU ' + (st.system.cpu_usage||0).toFixed(1) + '% · 总内存 ' + (st.system.total_memory_mb||0) + ' MB');
       if (L.enabled && (L.peers||[]).length) {
-        $('dash-stats').innerHTML += statCard('在线下游端点', (L.peers||[]).map(p => '<div class="mono"><span class="dot on"></span>' + esc(p) + '</div>').join(''), '');
+        $('dash-stats').innerHTML += statCard('在线扇入端点', (L.peers||[]).map(p => '<div class="mono"><span class="dot on"></span>' + esc(p) + '</div>').join(''), '');
       }
     } catch(e) { toast(e.message, 'err'); }
 
@@ -655,7 +661,7 @@ function openBatchImport() {
 
 /* ================= Relay 令牌 ================= */
 async function renderTokens() {
-  $('view').innerHTML = '<div class="page-title">' + ic('key-round', 20) + 'Relay 令牌</div><div class="page-desc">下游端点连入本端点的预共享密钥（psk_ 48 位），服务端只存哈希，全文仅创建时展示一次</div>' +
+  $('view').innerHTML = '<div class="page-title">' + ic('key-round', 20) + 'Relay 令牌</div><div class="page-desc">扇入端点连入本端点的预共享密钥（psk_ 48 位），服务端只存哈希，全文仅创建时展示一次</div>' +
     '<div class="toolbar"><div class="spacer"></div><button onclick="openCreateToken()">' + ic('plus', 15) + '生成令牌</button></div>' +
     '<div class="card table-wrap"><table><thead><tr><th>前缀</th><th>备注</th><th>暴露控制面</th><th>最近使用</th><th>创建时间</th><th>操作</th></tr></thead><tbody id="tok-body"></tbody></table></div>';
   await loadTokens();
@@ -681,7 +687,7 @@ async function toggleExpose(id, on) {
   try {
     const cur = (await api('GET', '/api/v1/admin/node/relay-tokens')).items.find(t => t.id === id);
     await api('PUT', '/api/v1/admin/node/relay-tokens/' + id, { expose_control: on, control_scope: (cur && cur.control_scope) || 'full' });
-    toast(on ? '已允许该下游中继管理本端点（变更已记审计）' : '已关闭控制面暴露', 'ok');
+    toast(on ? '已允许该扇入中继管理本端点（变更已记审计）' : '已关闭控制面暴露', 'ok');
     loadTokens();
   } catch(e) { toast(e.message, 'err'); loadTokens(); }
 }
@@ -694,14 +700,14 @@ async function setScope(id, scope) {
 function openCreateToken() {
   openModal('生成 Relay 令牌',
     '<label>备注（如：分公司跳板机）</label><input id="nt-remark" style="width:100%">' +
-    '<label class="chk" style="display:flex;align-items:center;gap:6px;margin-top:8px"><input type="checkbox" id="nt-expose"> 允许该下游中继管理本端点（暴露控制面，默认关）</label>' +
+    '<label class="chk" style="display:flex;align-items:center;gap:6px;margin-top:8px"><input type="checkbox" id="nt-expose"> 允许该扇入中继管理本端点（暴露控制面，默认关）</label>' +
     '<div id="nt-expose-opts" style="display:none;margin:6px 0">' +
       '<label>授权档位</label><select id="nt-scope" style="width:100%">' +
         '<option value="ro">只读（仅查看状态/配置）</option>' +
         '<option value="rules">可改规则（只读 + 规则增删改）</option>' +
         '<option value="full" selected>全权（等同管理员）</option>' +
       '</select>' +
-      '<div class="hint" style="color:var(--danger-text)">' + ic('triangle-alert', 13) + ' 下游持该令牌即可换取本端点管理会话（零开通），签发与换取均记审计；吊销令牌即全线回收。</div>' +
+      '<div class="hint" style="color:var(--danger-text)">' + ic('triangle-alert', 13) + ' 扇入端点持该令牌即可换取本端点管理会话（零开通），签发与换取均记审计；吊销令牌即全线回收。</div>' +
     '</div>',
     [
       {label:'取消', kind:'ghost', fn: closeModal},
@@ -723,7 +729,7 @@ function openCreateToken() {
   $('nt-expose').onchange = (e) => { $('nt-expose-opts').style.display = e.target.checked ? 'block' : 'none'; };
 }
 async function delToken(id) {
-  confirmAction('确定吊销该令牌？使用它的下游端点将在断开后无法重连。', async () => {
+  confirmAction('确定吊销该令牌？使用它的扇入端点将在断开后无法重连。', async () => {
     try { await api('DELETE', '/api/v1/admin/node/relay-tokens/' + id); toast('已吊销', 'ok'); loadTokens(); }
     catch(e) { toast(e.message, 'err'); }
   });
@@ -786,8 +792,10 @@ async function renderSettings() {
     $('set-name').value = st.node_name || '';
     $('set-info').innerHTML =
       kv('版本', 'v' + st.version) + kv('运行时长', fmtUptime(st.uptime)) +
-      kv('Relay 监听', st.roles.listener.enabled ? st.roles.listener.addr : '未启用') +
-      kv('上游连接', st.roles.connector.enabled ? st.roles.connector.upstream + '（' + st.roles.connector.status + '）' : '未启用') +
+      kv('Relay 监听（扇入）', st.roles.listener.enabled ? st.roles.listener.addr : '未启用') +
+      kv('扇出连接', (st.roles.connectors || []).length
+        ? st.roles.connectors.map(c => esc(c.upstream) + '（' + esc(c.status) + '）').join(' · ')
+        : '未配置') +
       kv('本地代理', st.proxy.enabled ? st.proxy.listen : '未启用') +
       (st.cert_fingerprint
         ? '<div class="kv"><span class="k">证书指纹 (SHA-256)</span><span class="mono" style="font-size:11px;word-break:break-all">' + esc(st.cert_fingerprint) +

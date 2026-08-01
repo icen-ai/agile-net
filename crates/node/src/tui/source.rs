@@ -103,7 +103,7 @@ impl Source {
             Source::Api(s) => {
                 let d: Value = s.call("GET", "/api/v1/admin/node/status", None)?;
                 let l = &d["roles"]["listener"];
-                let c = &d["roles"]["connector"];
+                let cs_summary = d["roles"]["connector_status"].as_str().unwrap_or("disabled");
                 let a = &d["accounts"];
                 Ok(DashboardRow {
                     name: d["node_name"].as_str().unwrap_or("-").into(),
@@ -115,7 +115,7 @@ impl Source {
                             "Relay".into(),
                             if l["enabled"].as_bool().unwrap_or(false) {
                                 format!(
-                                    "{}（下游 {} · 在线客户端 {}）",
+                                    "{}（扇入 {} · 在线客户端 {}）",
                                     l["addr"].as_str().unwrap_or("-"),
                                     l["connected_connectors"].as_u64().unwrap_or(0),
                                     l["online_clients"].as_u64().unwrap_or(0)
@@ -125,15 +125,25 @@ impl Source {
                             },
                         ),
                         (
-                            "上游".into(),
-                            if c["enabled"].as_bool().unwrap_or(false) {
-                                format!(
-                                    "{} [{}]",
-                                    c["upstream"].as_str().unwrap_or("-"),
-                                    c["status"].as_str().unwrap_or("-")
-                                )
+                            "扇出".into(),
+                            if cs_summary == "disabled" {
+                                "未配置".into()
                             } else {
-                                "未启用".into()
+                                d["roles"]["connectors"]
+                                    .as_array()
+                                    .map(|arr| {
+                                        arr.iter()
+                                            .map(|c| {
+                                                format!(
+                                                    "{} [{}]",
+                                                    c["upstream"].as_str().unwrap_or("-"),
+                                                    c["status"].as_str().unwrap_or("-")
+                                                )
+                                            })
+                                            .collect::<Vec<_>>()
+                                            .join(" · ")
+                                    })
+                                    .unwrap_or_else(|| "-".into())
                             },
                         ),
                         (

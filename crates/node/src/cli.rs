@@ -612,7 +612,7 @@ pub async fn cmd_node_status(api: Option<String>, json_out: bool) -> Result<()> 
         println!("  运行时长: {}s", d["uptime"].as_u64().unwrap_or(0));
         let l = &d["roles"]["listener"];
         println!(
-            "  Relay:    {} (下游 {} · 在线客户端 {})",
+            "  Relay:    {} (扇入 {} · 在线客户端 {})",
             if l["enabled"].as_bool().unwrap_or(false) {
                 l["addr"].as_str().unwrap_or("启用")
             } else {
@@ -621,17 +621,27 @@ pub async fn cmd_node_status(api: Option<String>, json_out: bool) -> Result<()> 
             l["connected_connectors"].as_u64().unwrap_or(0),
             l["online_clients"].as_u64().unwrap_or(0)
         );
-        let c = &d["roles"]["connector"];
+        let cs_summary = d["roles"]["connector_status"].as_str().unwrap_or("disabled");
         println!(
-            "  上游:     {}",
-            if c["enabled"].as_bool().unwrap_or(false) {
-                format!(
-                    "{} [{}]",
-                    c["upstream"].as_str().unwrap_or("-"),
-                    c["status"].as_str().unwrap_or("-")
-                )
+            "  扇出:     {}",
+            if cs_summary == "disabled" {
+                "未配置".to_string()
             } else {
-                "未启用".to_string()
+                d["roles"]["connectors"]
+                    .as_array()
+                    .map(|arr| {
+                        arr.iter()
+                            .map(|c| {
+                                format!(
+                                    "{} [{}]",
+                                    c["upstream"].as_str().unwrap_or("-"),
+                                    c["status"].as_str().unwrap_or("-")
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                            .join(" · ")
+                    })
+                    .unwrap_or_else(|| "-".into())
             }
         );
         let a = &d["accounts"];
