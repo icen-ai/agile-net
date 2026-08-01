@@ -1,11 +1,18 @@
 //! Node TUI 控制台（企业级终端管理界面）
 //!
-//! 页签：Dashboard / Rules / Groups / Accounts / Relay Tokens / Audit Logs
-//! 操作：Tab/←→ 切换页签，↑↓ 选择行，r 刷新，e 启用/禁用账号，
-//!       n 生成 Relay Token，d 删除选中行（y 确认），q 退出。
+//! 数据源：`tui::source`——默认经 `anet login` 会话走节点 API（写操作落审计，与管理端一致）；
+//! API 不可达/无会话/`--offline` 时降级数据库直连**只读**兜底（状态栏明示降级原因）。
+//!
+//! 页签：概览 / 规则 / 权限组 / 账号 / 令牌 / 审计
+//! 操作：Tab/←→ 切换页签，↑↓ 选择行，r 刷新，e 启用/禁用账号（API 模式），
+//!       n 生成 Relay Token（API 模式），d 删除选中行（y 确认，API 模式），q 退出。
 
-use crate::db::models::{AccountRecord, AuditLogRecord, GroupRecord, RelayTokenRecord, RuleRecord};
-use crate::db::{Database, generate_relay_token, sha256_hex};
+pub mod source;
+
+use source::{
+    AccountRow, AuditRow, ConnectOutcome, DashboardRow, GroupRow, RuleRow, Source, TokenRow,
+};
+
 use agile_net_core::error::{Error, Result};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::{
@@ -15,6 +22,17 @@ use ratatui::{
     style::{Color, Modifier, Style},
     widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState, Tabs},
 };
+
+/// TUI 启动参数（`anet tui`）。
+#[derive(Debug, Clone, Default)]
+pub struct TuiOptions {
+    /// 强制数据库直连只读模式
+    pub offline: bool,
+    /// 数据库路径（--offline 或 API 降级时使用）
+    pub db_path: String,
+    /// 节点 API 覆盖地址（默认取会话）
+    pub api: Option<String>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
@@ -36,7 +54,7 @@ impl Tab {
         Tab::Audit,
     ];
 
-    pub fn title(self) -> &'static str {
+    fn title(&self) -> &'static str {
         match self {
             Tab::Dashboard => "概览",
             Tab::Rules => "规则",
@@ -47,24 +65,32 @@ impl Tab {
         }
     }
 
-    fn index(self) -> usize {
-        Self::ALL.iter().position(|t| *t == self).unwrap_or(0)
+    fn index(&self) -> usize {
+        match self {
+            Tab::Dashboard => 0,
+            Tab::Rules => 1,
+            Tab::Groups => 2,
+            Tab::Accounts => 3,
+            Tab::Tokens => 4,
+            Tab::Audit => 5,
+        }
     }
 
-    fn from_index(i: usize) -> Self {
-        Self::ALL[i % Self::ALL.len()]
+    fn from_index(i: usize) -> Tab {
+        Tab::ALL[i % Tab::ALL.len()]
     }
 }
 
 pub struct TuiApp {
-    pub db: Database,
+    pub source: Source,
     pub current_tab: Tab,
     pub should_quit: bool,
-    pub rules: Vec<RuleRecord>,
-    pub groups: Vec<GroupRecord>,
-    pub accounts: Vec<AccountRecord>,
-    pub tokens: Vec<RelayTokenRecord>,
-    pub audit_logs: Vec<AuditLogRecord>,
+    pub dashboard: DashboardRow,
+    pub rules: Vec<RuleRow>,
+    pub groups: Vec<GroupRow>,
+    pub accounts: Vec<AccountRow>,
+    pub tokens: Vec<TokenRow>,
+    pub audit_logs: Vec<AuditRow>,
     pub table_state: TableState,
     pub status_msg: String,
     /// 等待删除确认的目标行
@@ -72,18 +98,21 @@ pub struct TuiApp {
 }
 
 impl TuiApp {
-    pub fn new(db: Database) -> Self {
+    pub fn new(outcome: ConnectOutcome) -> Self {
         let mut app = Self {
-            db,
+            source: outcome.source,
             current_tab: Tab::Dashboard,
             should_quit: false,
+            dashboard: DashboardRow::default(),
             rules: Vec::new(),
             groups: Vec::new(),
             accounts: Vec::new(),
             tokens: Vec::new(),
             audit_logs: Vec::new(),
             table_state: TableState::default(),
-            status_msg: "就绪".to_string(),
+            status_msg: outcome
+                .degraded_note
+                .unwrap_or_else(|| "就绪".to_string()),
             pending_delete: false,
         };
         app.refresh();
@@ -92,19 +121,22 @@ impl TuiApp {
     }
 
     pub fn refresh(&mut self) {
-        if let Ok((items, _)) = self.db.list_rules(1, 500, None, None) {
+        if let Ok(d) = self.source.dashboard() {
+            self.dashboard = d;
+        }
+        if let Ok(items) = self.source.rules() {
             self.rules = items;
         }
-        if let Ok((items, _)) = self.db.list_groups(1, 500, None) {
+        if let Ok(items) = self.source.groups() {
             self.groups = items;
         }
-        if let Ok((items, _)) = self.db.list_accounts(1, 500, None, None, None) {
+        if let Ok(items) = self.source.accounts() {
             self.accounts = items;
         }
-        if let Ok(items) = self.db.list_relay_tokens() {
+        if let Ok(items) = self.source.tokens() {
             self.tokens = items;
         }
-        if let Ok((items, _)) = self.db.list_audit_logs(1, 100, None) {
+        if let Ok(items) = self.source.audit_logs() {
             self.audit_logs = items;
         }
     }
@@ -163,8 +195,12 @@ impl TuiApp {
                 if self.current_row_count() > 0
                     && !matches!(self.current_tab, Tab::Dashboard | Tab::Audit)
                 {
-                    self.pending_delete = true;
-                    self.status_msg = "确认删除选中行？按 y 确认，其他键取消".into();
+                    if self.source.readonly() {
+                        self.status_msg = "只读模式（数据库直连）：删除需 API 管理模式".into();
+                    } else {
+                        self.pending_delete = true;
+                        self.status_msg = "确认删除选中行？按 y 确认，其他键取消".into();
+                    }
                 }
             }
             _ => {}
@@ -185,18 +221,17 @@ impl TuiApp {
         if self.current_tab != Tab::Accounts {
             return;
         }
-        if let Some(idx) = self.selected_index()
-            && let Some(account) = self.accounts.get(idx)
-        {
+        if self.source.readonly() {
+            self.status_msg = "只读模式（数据库直连）：启停需 API 管理模式".into();
+            return;
+        }
+        if let Some(account) = self.selected_index().and_then(|i| self.accounts.get(i)).cloned() {
             let new_enabled = !account.enabled;
-            let id = account.id.clone();
-            let username = account.username.clone();
-            match self.db.update_account(&id, None, Some(new_enabled), None) {
+            match self.source.set_account_enabled(&account.id, new_enabled) {
                 Ok(_) => {
-                    let _ = self.db.bump_config_version();
                     self.status_msg = format!(
-                        "账号 {} 已{}",
-                        username,
+                        "账号 {} 已{}（已落审计）",
+                        account.username,
                         if new_enabled { "启用" } else { "禁用" }
                     );
                     self.refresh();
@@ -210,14 +245,12 @@ impl TuiApp {
         if self.current_tab != Tab::Tokens {
             return;
         }
-        let token = generate_relay_token();
-        let hash = sha256_hex(token.as_bytes());
-        let prefix = format!("{}****", &token[..8]);
-        match self
-            .db
-            .create_relay_token(&hash, &prefix, "created via TUI")
-        {
-            Ok(_) => {
+        if self.source.readonly() {
+            self.status_msg = "只读模式（数据库直连）：生成令牌需 API 管理模式".into();
+            return;
+        }
+        match self.source.create_token("created via TUI") {
+            Ok(token) => {
                 // 明文令牌仅在此显示一次
                 self.status_msg = format!("新 Token（仅此一次显示）: {token}");
                 self.refresh();
@@ -234,26 +267,27 @@ impl TuiApp {
             Tab::Rules => self
                 .rules
                 .get(idx)
-                .map(|r| self.db.delete_rule(&r.id, false)),
+                .map(|r| r.id.clone())
+                .map(|id| self.source.delete_rule(&id)),
             Tab::Groups => self
                 .groups
                 .get(idx)
-                .map(|g| self.db.delete_group(&g.id, false)),
+                .map(|g| g.id.clone())
+                .map(|id| self.source.delete_group(&id)),
             Tab::Accounts => self
                 .accounts
                 .get(idx)
-                .map(|a| self.db.delete_account(&a.id)),
+                .map(|a| a.id.clone())
+                .map(|id| self.source.delete_account(&id)),
             Tab::Tokens => self
                 .tokens
                 .get(idx)
-                .map(|t| self.db.delete_relay_token(&t.id)),
+                .map(|t| t.id.clone())
+                .map(|id| self.source.delete_token(&id)),
             _ => None,
         };
         match result {
-            Some(Ok(_)) => {
-                let _ = self.db.bump_config_version();
-                self.status_msg = "已删除".into();
-            }
+            Some(Ok(_)) => self.status_msg = "已删除（已落审计）".into(),
             Some(Err(e)) => self.status_msg = format!("删除失败: {e}"),
             None => self.status_msg = "无可删除项".into(),
         }
@@ -290,7 +324,7 @@ impl TuiApp {
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .title("AgileNet Node"),
+                    .title("AgileNet TUI"),
             );
         f.render_widget(tabs, chunks[0]);
 
@@ -304,12 +338,13 @@ impl TuiApp {
             Tab::Audit => self.render_audit(f, chunks[1]),
         }
 
-        // 状态栏
+        // 状态栏（数据源标签常驻：模式与降级原因一目了然）
         let footer = Paragraph::new(format!(
-            "{} | [Tab/←→] 切换  [↑↓] 选择  [r] 刷新  [e] 启停账号  [n] 新令牌  [d] 删除  [q] 退出",
+            "{} | {} | [Tab]切换 [↑↓]选择 [r]刷新 [e]启停 [n]令牌 [d]删除 [q]退出",
+            self.source.label(),
             self.status_msg
         ))
-        .style(Style::default().fg(if self.pending_delete {
+        .style(Style::default().fg(if self.pending_delete || self.source.readonly() {
             Color::Yellow
         } else {
             Color::Gray
@@ -319,34 +354,23 @@ impl TuiApp {
     }
 
     fn render_dashboard(&self, f: &mut Frame, area: ratatui::layout::Rect) {
-        let node_name = self
-            .db
-            .get_config("node_name")
-            .ok()
-            .flatten()
-            .unwrap_or_else(|| "AgileNet Node".into());
-        let version = self.db.config_version().unwrap_or(0);
-        let (total_accounts, disabled_accounts) = self.db.account_stats().unwrap_or((0, 0));
-
-        let text = format!(
-            "节点名称:  {node_name}\n\
-             程序版本:  v{}\n\
-             配置版本:  v{version}\n\n\
-             规则数量:  {}\n\
-             权限组:    {}\n\
-             客户端账号: {} (禁用 {})\n\
-             Relay 令牌: {}\n\
-             审计日志:  {} 条\n",
-            env!("CARGO_PKG_VERSION"),
+        let d = &self.dashboard;
+        let mut text = format!(
+            "端点名称:  {}\n程序版本:  {}\n配置版本:  v{}\n",
+            d.name, d.version, d.config_version
+        );
+        for (k, v) in &d.extra {
+            text.push_str(&format!("{k}:  {v}\n"));
+        }
+        text.push_str(&format!(
+            "\n规则 {} · 权限组 {} · 令牌 {} · 审计 {}",
             self.rules.len(),
             self.groups.len(),
-            total_accounts,
-            disabled_accounts,
             self.tokens.len(),
-            self.audit_logs.len(),
-        );
+            self.audit_logs.len()
+        ));
         let p =
-            Paragraph::new(text).block(Block::default().borders(Borders::ALL).title("节点概览"));
+            Paragraph::new(text).block(Block::default().borders(Borders::ALL).title("端点概览"));
         f.render_widget(p, area);
     }
 
@@ -420,11 +444,12 @@ impl TuiApp {
             .iter()
             .map(|a| {
                 let status = if a.enabled { "启用" } else { "禁用" };
+                let online = if a.online { "在线" } else { "离线" };
                 Row::new(vec![
                     Cell::from(a.username.clone()),
-                    Cell::from(a.group_name.clone().unwrap_or_else(|| "-".into())),
-                    Cell::from(status),
-                    Cell::from(a.last_seen_at.clone().unwrap_or_else(|| "从未".into())),
+                    Cell::from(a.group_name.clone()),
+                    Cell::from(format!("{status}/{online}")),
+                    Cell::from(a.last_seen.clone()),
                     Cell::from(a.remark.clone()),
                 ])
             })
@@ -434,7 +459,7 @@ impl TuiApp {
             [
                 Constraint::Min(14),
                 Constraint::Length(12),
-                Constraint::Length(6),
+                Constraint::Length(10),
                 Constraint::Length(22),
                 Constraint::Min(14),
             ],
@@ -458,9 +483,10 @@ impl TuiApp {
             .iter()
             .map(|t| {
                 Row::new(vec![
-                    Cell::from(t.token_prefix.clone()),
+                    Cell::from(t.prefix.clone()),
+                    Cell::from(if t.expose { t.scope.clone() } else { "关".into() }),
                     Cell::from(t.remark.clone()),
-                    Cell::from(t.last_used_at.clone().unwrap_or_else(|| "未使用".into())),
+                    Cell::from(t.last_used.clone()),
                     Cell::from(t.created_at.clone()),
                 ])
             })
@@ -469,13 +495,14 @@ impl TuiApp {
             rows,
             [
                 Constraint::Length(16),
-                Constraint::Min(20),
+                Constraint::Length(8),
+                Constraint::Min(18),
                 Constraint::Length(22),
                 Constraint::Length(22),
             ],
         )
         .header(
-            Row::new(vec!["Token 前缀", "备注", "最近使用", "创建时间"])
+            Row::new(vec!["Token 前缀", "暴露面", "备注", "最近使用", "创建时间"])
                 .style(Style::default().fg(Color::Yellow)),
         )
         .row_highlight_style(Style::default().bg(Color::DarkGray))
@@ -496,8 +523,8 @@ impl TuiApp {
                     Cell::from(l.created_at.clone()),
                     Cell::from(l.operator.clone()),
                     Cell::from(l.action.clone()),
-                    Cell::from(l.target.clone().unwrap_or_else(|| "-".into())),
-                    Cell::from(l.ip.clone().unwrap_or_else(|| "-".into())),
+                    Cell::from(l.target.clone()),
+                    Cell::from(l.ip.clone()),
                 ])
             })
             .collect();
@@ -521,8 +548,14 @@ impl TuiApp {
     }
 }
 
-/// 运行 TUI 交互式循环
-pub fn run_tui(db: Database) -> Result<()> {
+/// 运行 TUI 交互式循环（API 优先，数据库直连兜底只读）。
+pub fn run_tui(opts: TuiOptions) -> Result<()> {
+    let outcome = source::connect(opts.api, opts.offline, &opts.db_path)
+        .map_err(|e| Error::Other(e.to_string()))?;
+    if let Some(note) = &outcome.degraded_note {
+        eprintln!("{note}");
+    }
+
     crossterm::terminal::enable_raw_mode().map_err(|e| Error::Other(e.to_string()))?;
     let mut stdout = std::io::stdout();
     crossterm::execute!(stdout, crossterm::terminal::EnterAlternateScreen)
@@ -530,7 +563,7 @@ pub fn run_tui(db: Database) -> Result<()> {
     let backend = ratatui::backend::CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend).map_err(|e| Error::Other(e.to_string()))?;
 
-    let mut app = TuiApp::new(db);
+    let mut app = TuiApp::new(outcome);
 
     loop {
         app.draw(&mut terminal)?;
