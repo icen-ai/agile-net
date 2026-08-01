@@ -1,6 +1,6 @@
 <div class="hero">
   <div class="hero-title">AgileNet 文档</div>
-  <div class="hero-sub">高安全、轻量级的 Rust 多节点网络穿透与代理链路由系统。<b>上下游同体</b>——没有 frps/frpc 式的分裂，最终只有两个产物：anet-gui 与 anet-svc。</div>
+  <div class="hero-sub">高安全、轻量级的 Rust 多节点网络穿透与代理链路由系统。<b>扇入扇出同体</b>——没有 frps/frpc 式的分裂，最终只有两个产物：anet-gui 与 anet-svc。</div>
   <div class="hero-actions">
     <a class="btn btn-primary" href="#/getting-started/quickstart">快速上手</a>
     <a class="btn btn-ghost" href="https://github.com/icen-ai/agile-net">GitHub 仓库</a>
@@ -8,12 +8,14 @@
   </div>
 </div>
 
+> **节点即主权，权利平等**：只发布规则、选择接受者，不过问对端域内的使用明细——收敛与审计止于端点边界，问责沿组织链传递。
+
 ## 双产物
 
 | 产物 | 形态 | 典型场景 |
 | --- | --- | --- |
 | **anet-gui** | 全功能图形客户端（Windows / macOS / Android） | 办公终端、内网转发机、机房留守管理端 |
-| **anet-svc** | 服务器二进制（`serve` / `tui` / `client` / `cli` 子命令） | 服务器中继、内网网关 |
+| **anet-svc / anet** | 服务器二进制 + 管理命令（同一实现双入口：`start` / `stop` / `status` / `init` / `tui` …） | 服务器中继、内网网关 |
 
 <div class="card-grid">
   <a class="card-link" href="#/getting-started/installation">
@@ -26,7 +28,7 @@
   </a>
   <a class="card-link" href="#/concepts/architecture">
     <div class="cl-title"><i data-ic="network" data-sz="15"></i>架构与双产物</div>
-    <div class="cl-desc">上下游同体、多层级链式穿透、角色由配置决定</div>
+    <div class="cl-desc">扇入扇出同体、多层级链式穿透、角色由配置决定</div>
   </a>
   <a class="card-link" href="#/concepts/management-plane">
     <div class="cl-title"><i data-ic="monitor" data-sz="15"></i>带内管理面</div>
@@ -53,7 +55,7 @@
 ## 特性一览
 
 - **多层级链式穿透**：客户端经任意级 relay 链直达最深嵌套网段，断链自动重连自愈
-- **聚合中继**：任一节点可同时是上游与下游；一台机器既是终端也是转发机
+- **聚合中继**：任一节点可同时扇入与扇出；一台机器既是终端也是转发机
 - **带内管理**：管理面流量走数据面隧道，控制台只是内网里的一个站点；relay 令牌可勾选「暴露控制面」（ro/rules/full 三档），管理可达性沿链路自动发现
 - **全功能 GUI**：灵动岛状态通知、凭据管理、路由逐条启停、列表折叠搜索；三路角色开关
 - **安全硬化**：argon2id 密码哈希、令牌只存哈希、证书固定 pinning、常数时间比较、登录限流锁定、全量审计、JWT 吊销轮换
