@@ -82,7 +82,8 @@
   （proxy-providers 逐订阅一项、`mixed-port: 57892`、`external-controller: 127.0.0.1:59292`、
   `secret` 首启随机生成并持久化于 `subscriptions.json`、`log-level: warning`、
   默认 GROUP 聚合全部 provider）。
-- 内核 REST 客户端：`GET /proxies` / `GET /proxies/{name}/delay` / `PUT /proxies/{group}`
+- 内核 REST 客户端：`GET /proxies` / `GET /group/{group}/delay`（provider 节点不在全局
+  /proxies 注册表，单节点 `/proxies/{name}/delay` 恒 404，必须整组并发测）/ `PUT /proxies/{group}`
   / `GET /providers/proxies` + `PUT`（手动更新订阅）；全部经 loopback + secret 鉴权。
 
 ### 3.2 Tauri 命令与 GUI
@@ -143,6 +144,7 @@ mihomo mixed `127.0.0.1:57892` 独立可用（用户可手动指应用过去）�
 ## 5. 安全与边界（Non-goals）
 
 - 不实现 TUN/增强模式（桌面端需驱动/提权，复杂度高收益低）；VPN 形态属于未来 Android 计划。
+  （2026-08-01 更新：桌面 Windows TUN 已立项，见 `docs/plan/tun.md`，本条款仅对订阅 P1/P2 当期有效。）
 - 不解析订阅内容（全交 mihomo proxy-providers）；不支持导入本地 yaml 文件（P1 仅 URL）。
 - 内核只从官方 Release 下载且钉版本校验，不提供「自定义内核路径」入口（防供应链注入）。
 - external-controller 仅 loopback + secret；严禁随 Web 远程面暴露（Web 远程面不映射订阅命令，

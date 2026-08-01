@@ -546,35 +546,53 @@ impl KernelApi {
         }
     }
 
-    /// 单节点延迟（ms）
-    pub async fn delay(&self, name: &str) -> Result<u32, String> {
-        let v: serde_json::Value = self
+    /// 组延迟（name → ms）：provider 节点不注册进全局 /proxies，单节点
+    /// `/proxies/{name}/delay` 恒 404，必须走 `/group/{group}/delay`（内核并发测全组，
+    /// 失败节点记为 timeout 值，此处过滤剔除）。
+    pub async fn group_delay(
+        &self,
+        group: &str,
+    ) -> Result<std::collections::HashMap<String, u32>, String> {
+        const TIMEOUT_MS: u32 = 5000;
+        let resp = self
             .req(
                 reqwest::Method::GET,
                 &format!(
-                    "/proxies/{}/delay?timeout=5000&url=http%3A%2F%2Fwww.gstatic.com%2Fgenerate_204",
-                    name
+                    "/group/{group}/delay?timeout={TIMEOUT_MS}&url=http%3A%2F%2Fwww.gstatic.com%2Fgenerate_204"
                 ),
             )
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+        if !resp.status().is_success() {
+            return Err(format!("测速失败 (HTTP {})", resp.status()));
+        }
+        let v: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+        let obj = v.as_object().ok_or("测速失败")?;
+        Ok(obj
+            .iter()
+            .filter_map(|(k, val)| {
+                let d = val.as_u64()? as u32;
+                (d < TIMEOUT_MS).then(|| (k.clone(), d))
+            })
+            .collect())
+    }
+
+    /// provider 节点明细（type/history；provider 节点不在全局 /proxies 注册表）
+    pub async fn provider_proxies(&self) -> Result<serde_json::Value, String> {
+        self.req(reqwest::Method::GET, "/providers/proxies")
             .send()
             .await
             .map_err(|e| e.to_string())?
             .json()
             .await
-            .map_err(|e| e.to_string())?;
-        v["delay"]
-            .as_u64()
-            .map(|d| d as u32)
-            .ok_or_else(|| "测速失败".into())
+            .map_err(|e| e.to_string())
     }
 
-    /// 触发订阅（provider）手动刷新
-    pub async fn update_provider(&self, index: usize) -> Result<(), String> {
+    /// 触发订阅（provider）手动刷新（单 provider 恒名 main，见 render_config）
+    pub async fn update_provider(&self) -> Result<(), String> {
         let resp = self
-            .req(
-                reqwest::Method::PUT,
-                &format!("/providers/proxies/sub{index}"),
-            )
+            .req(reqwest::Method::PUT, "/providers/proxies/main")
             .send()
             .await
             .map_err(|e| e.to_string())?;
@@ -618,6 +636,7 @@ async fn fetch_subscription(url: &str) -> Result<(u64, u64, u64, Option<u64>, us
     let mut download = 0u64;
     let mut total = 0u64;
     let mut expire = None;
+    let mut used_alt = 0u64;
     if let Some(v) = resp
         .headers()
         .get("subscription-userinfo")
@@ -631,6 +650,8 @@ async fn fetch_subscription(url: &str) -> Result<(u64, u64, u64, Option<u64>, us
                     "upload" => upload = n,
                     "download" => download = n,
                     "total" => total = n,
+                    // 非标准字段：部分面板只回传 used（可带小数），u/d 为 0 时作兜底
+                    "used" => used_alt = val.trim().parse::<f64>().unwrap_or(0.0) as u64,
                     "expire" => {
                         if n > 0 {
                             expire = Some(n)
@@ -640,6 +661,9 @@ async fn fetch_subscription(url: &str) -> Result<(u64, u64, u64, Option<u64>, us
                 }
             }
         }
+    }
+    if upload + download == 0 && used_alt > 0 {
+        download = used_alt;
     }
     let body = resp.text().await.map_err(|e| e.to_string())?;
     // 节点数估算与格式嗅探：Clash YAML（proxies: 段内 "name:" 行）或 base64/明文分享链接（含 "://"）
@@ -792,7 +816,7 @@ pub async fn update_subscription(id: &str) -> Result<Subscription, String> {
     save_store(&store)?;
     if sub.active {
         if let Ok(api) = kernel_api().await {
-            let _ = api.update_provider(0).await; // 单 provider 恒为 main（见 render_config）
+            let _ = api.update_provider().await; // 失败不阻塞（下次定时刷新自愈）
         }
     }
     roles::audit(
@@ -807,6 +831,59 @@ fn now_ts() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+// ==================== 代理列表缓存（内核未运行时代理页只读展示） ====================
+
+fn proxy_cache_path() -> PathBuf {
+    roles::data_dir().join("proxy-cache.json")
+}
+
+/// 把 provider 节点明细（type/history）并入 /proxies 载荷——
+/// provider 节点不在全局 /proxies 注册表，前端据 `PROXY_DATA[name].type` 展示协议。
+/// 已存在的条目（组/内置）不覆盖。
+pub fn merge_provider_details(v: &mut serde_json::Value, pv: &serde_json::Value) {
+    let (Some(map), Some(providers)) = (
+        v["proxies"].as_object_mut(),
+        pv["providers"].as_object(),
+    ) else {
+        return;
+    };
+    for p in providers.values() {
+        let Some(list) = p["proxies"].as_array() else {
+            continue;
+        };
+        for item in list {
+            let Some(name) = item["name"].as_str() else {
+                continue;
+            };
+            map.entry(name.to_string()).or_insert_with(|| {
+                serde_json::json!({
+                    "type": item["type"],
+                    "history": item["history"],
+                })
+            });
+        }
+    }
+}
+
+/// 持久化最近一次成功的 /proxies 快照。
+pub fn save_proxy_cache(v: &serde_json::Value) {
+    if !v["proxies"].is_object() {
+        return;
+    }
+    let data = serde_json::json!({"ts": now_ts(), "proxies": v["proxies"]});
+    if let Ok(s) = serde_json::to_string(&data) {
+        let _ = std::fs::write(proxy_cache_path(), s);
+    }
+}
+
+/// 读取缓存快照（附 `cached: true` 标记，前端据此降级为只读展示）。
+pub fn load_proxy_cache() -> Option<serde_json::Value> {
+    let s = std::fs::read_to_string(proxy_cache_path()).ok()?;
+    let mut v: serde_json::Value = serde_json::from_str(&s).ok()?;
+    v["cached"] = serde_json::Value::Bool(true);
+    Some(v)
 }
 
 #[cfg(test)]
