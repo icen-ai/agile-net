@@ -158,6 +158,10 @@ const Island = {
   timer: null, canExpand: false, detailNodes: [], current: 'bar', _t1: null, _t2: null,
   init() {
     $('island-bar').onclick = () => { if (this.canExpand) this.toggleDetail(); };
+    // 展开详情时点击岛外任意处自动收回
+    document.addEventListener('click', (e) => {
+      if (this.current === 'detail' && !e.target.closest('#island')) this.morph('bar');
+    });
   },
   _parts() { return { bar: $('island-bar'), msg: $('island-msg'), detail: $('island-detail') }; },
   /** 显式尺寸形变：先量后动、先形后内容（苹果式弹簧）；bar 在 detail 展开/收起间常显 */

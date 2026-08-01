@@ -1114,7 +1114,7 @@ async fn sysproxy_watch(app: tauri::AppHandle) {
     }
 }
 
-/// 构建系统托盘（点击图标弹出 GUI 风格面板；无系统原生菜单）
+/// 构建系统托盘（左键/双击打开主窗口，右键弹出菜单面板；无系统原生菜单）
 fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 
@@ -1133,16 +1133,29 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                 if button_state != MouseButtonState::Up {
                     return;
                 }
-                if matches!(button, MouseButton::Left | MouseButton::Right) {
-                    toggle_tray_popup(
+                match button {
+                    // 左键（含双击，两次单击事件）：直接打开主窗口
+                    MouseButton::Left => show_main_window(tray.app_handle()),
+                    // 右键：托盘菜单面板
+                    MouseButton::Right => toggle_tray_popup(
                         tray.app_handle(),
                         tauri::PhysicalPosition::new(position.x, position.y),
-                    );
+                    ),
+                    _ => {}
                 }
             }
         })
         .build(app)?;
     Ok(())
+}
+
+/// 显示并聚焦主窗口（托盘左键与托盘面板共用）
+fn show_main_window(app: &tauri::AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.unminimize();
+        let _ = w.show();
+        let _ = w.set_focus();
+    }
 }
 
 /// 弹出/收起托盘面板（懒创建；失焦自动隐藏）
@@ -1172,6 +1185,7 @@ fn toggle_tray_popup(app: &tauri::AppHandle, anchor: tauri::PhysicalPosition<f64
     .decorations(false)
     .always_on_top(true)
     .skip_taskbar(true)
+    .visible(false) // 先定位后显示，杜绝左上角闪帧
     .position(x, y)
     .build()
     else {
@@ -1183,6 +1197,7 @@ fn toggle_tray_popup(app: &tauri::AppHandle, anchor: tauri::PhysicalPosition<f64
             let _ = w.hide();
         }
     });
+    let _ = window.show();
     let _ = window.set_focus();
 }
 
@@ -1192,11 +1207,7 @@ fn tray_show_main(app: tauri::AppHandle) -> Result<(), String> {
     if let Some(w) = app.get_webview_window("tray-popup") {
         let _ = w.hide();
     }
-    if let Some(w) = app.get_webview_window("main") {
-        let _ = w.unminimize();
-        let _ = w.show();
-        let _ = w.set_focus();
-    }
+    show_main_window(&app);
     Ok(())
 }
 
@@ -1289,9 +1300,12 @@ pub fn run() {
                 sysproxy_watch(handle).await;
             });
 
-            // 窗口尺寸与定位：主屏逻辑宽 1/2、4:3、屏幕居中（与控制台统一规格）
+            // 窗口尺寸与定位：主屏逻辑宽 1/2、4:3、屏幕居中（与控制台统一规格）；
+            // 创建即隐藏（conf visible:false），定位完成后再显示，杜绝左上角闪帧
             if let Some(window) = app.get_webview_window("main") {
                 normalize_window_geometry(&window);
+                let _ = window.show();
+                let _ = window.set_focus();
             }
 
             // 关闭窗口时最小化到托盘（不退出进程）；系统主题变化时刷新托盘图标黑白
