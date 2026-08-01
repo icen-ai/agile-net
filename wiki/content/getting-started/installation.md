@@ -77,6 +77,6 @@ cargo build --release -p agile-net-node    # 产物：target/release/anet-svc
 | 管理 API / Web 后台 | `59090` |
 | Relay listener（数据面） | `54430` |
 | 客户端本地代理 | `57890` |
-| anet-gui 内嵌节点 API | `59290`（避让本地独立节点） |
+| anet-gui 内嵌节点 API | `59293`（避让本地独立节点与 Docker 演示链映射 59290） |
 | anet-gui 内嵌节点 Relay | `54431` |
 | anet-gui Web 远程面 | `59291`（仅 127.0.0.1） |

@@ -180,10 +180,10 @@ async fn start_proxy(app: tauri::AppHandle, state: State<'_, AppState>, port: u1
     }
     state.client.start_proxy(port).await.map_err(map_err)?;
     refresh_tray_icon(&app);
-    // 系统代理托管中：端口可能变化，重写期望值
+    // 系统代理模式（默认开）：启动代理即接管系统代理；engage 幂等，快照不会被重复覆盖
     if state.roles.lock().await.system_proxy {
         let server = expected_sysproxy(&state);
-        let _ = tokio::task::spawn_blocking(move || sysproxy::reclaim(&server)).await;
+        let _ = tokio::task::spawn_blocking(move || sysproxy::engage(&server)).await;
     }
     Ok(state.client.proxy_port())
 }
@@ -192,6 +192,10 @@ async fn start_proxy(app: tauri::AppHandle, state: State<'_, AppState>, port: u1
 #[tauri::command]
 async fn stop_proxy(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     state.client.stop_proxy().await;
+    // 系统代理模式：停止即还原系统代理（避免指向已死端口）；模式偏好保留，下次启动自动再接管
+    if state.roles.lock().await.system_proxy {
+        let _ = tokio::task::spawn_blocking(sysproxy::disengage).await;
+    }
     refresh_tray_icon(&app);
     Ok(())
 }
@@ -445,119 +449,103 @@ fn spa_assets() -> agile_net_client::api::SpaAssets {
         app_js: include_str!("../ui/app.js"),
         icons_js: include_str!("../ui/icons.js"),
         style_css: include_str!("../ui/style.css"),
+        tokens_css: include_str!("../ui/tokens.css"),
     }
 }
 
-/// 打开内嵌节点控制台（独立窗口复用节点管理 SPA）。
+/// 统一开窗规格：主屏逻辑宽 1/2、宽高比 4:3、屏幕居中（主窗与控制台一致）
+fn normalize_window_geometry(window: &tauri::WebviewWindow) {
+    if let Ok(Some(monitor)) = window.primary_monitor() {
+        let scale = monitor.scale_factor();
+        let logical_w = monitor.size().width as f64 / scale;
+        let w = (logical_w * 0.5).round().max(860.0);
+        let h = (w * 0.75).round().max(600.0);
+        let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize {
+            width: w,
+            height: h,
+        }));
+    }
+    let _ = window.center();
+}
+
+/// 主题 query 片段（仅接受 light/dark；控制台 SPA 据此与主窗主题一致）
+fn theme_query(theme: &Option<String>) -> String {
+    match theme.as_deref() {
+        Some("dark") => "?theme=dark".to_string(),
+        Some("light") => "?theme=light".to_string(),
+        _ => String::new(),
+    }
+}
+
+/// 主题变更广播：控制台窗口（外部源 SPA）经 Tauri 事件实时跟随主窗主题
 #[tauri::command]
-async fn open_console(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<(), String> {
-    let addr = {
-        let slot = state.server.lock().await;
-        slot.as_ref().map(|s| s.api_addr())
+fn broadcast_theme(app: tauri::AppHandle, theme: String) -> Result<(), String> {
+    use tauri::Emitter;
+    app.emit("ag-theme", theme).map_err(map_err)
+}
+
+/// 管理端控制台 URL：主窗内嵌 iframe 加载（不再开子窗口）。
+/// - 无参 → 内嵌节点（本机服务端角色，SPA 登录页）
+/// - node_id → 经客户端隧道的远端端点（管理引导票据自举，#boot 不进日志与历史）
+/// - node_id + upstream → 可管理上游（握手 v2 发现）
+/// URL 恒带 embed=1（SPA 隐藏自身侧栏与标题栏，导航经 postMessage 由主窗驱动）。
+#[tauri::command]
+async fn console_url(
+    state: State<'_, AppState>,
+    node_id: Option<String>,
+    upstream: Option<String>,
+    theme: Option<String>,
+) -> Result<String, String> {
+    let embed = match theme_query(&theme) {
+        q if q.is_empty() => "?embed=1".to_string(),
+        q => format!("{q}&embed=1"),
+    };
+    match (node_id, upstream) {
+        (None, None) => {
+            let addr = {
+                let slot = state.server.lock().await;
+                slot.as_ref().map(|s| s.api_addr())
+            }
+            .ok_or("服务端角色未运行")?;
+            Ok(format!("http://{addr}/{embed}"))
+        }
+        (Some(node_id), None) => {
+            // 管理引导票据（10 分钟一次性；节点侧校验 admin_console 授权）
+            let (ticket, api_port) = state.client.console_ticket(&node_id).await.map_err(map_err)?;
+            let local_port = ensure_console_forwarder(&state, &node_id, "127.0.0.1", api_port).await?;
+            roles::audit(
+                "admin.console_access",
+                serde_json::json!({"target": node_id, "path": "本机→客户端隧道", "identity": "管理链接"}),
+            );
+            Ok(format!(
+                "http://127.0.0.1:{local_port}/{embed}#boot={ticket}"
+            ))
+        }
+        (Some(node_id), Some(upstream)) => {
+            let (ticket, api_host, api_port, scope) = state
+                .client
+                .upstream_console_ticket(&node_id, &upstream)
+                .await
+                .map_err(map_err)?;
+            let fwd_key = format!("{node_id}|{upstream}");
+            let local_port = ensure_console_forwarder(&state, &fwd_key, &api_host, api_port).await?;
+            roles::audit(
+                "admin.console_access",
+                serde_json::json!({
+                    "target": upstream,
+                    "path": format!("本机→{node_id}→relay"),
+                    "identity": format!("relay 票据（scope={scope}）"),
+                }),
+            );
+            Ok(format!(
+                "http://127.0.0.1:{local_port}/{embed}#boot={ticket}"
+            ))
+        }
+        (None, Some(_)) => Err("缺少端点参数".into()),
     }
-    .ok_or("服务端角色未运行")?;
-    if let Some(w) = app.get_webview_window("console") {
-        let _ = w.unminimize();
-        let _ = w.show();
-        let _ = w.set_focus();
-        return Ok(());
-    }
-    let url: tauri::Url = format!("http://{addr}/").parse().map_err(map_err)?;
-    tauri::WebviewWindowBuilder::new(&app, "console", tauri::WebviewUrl::External(url))
-        .title("AgileNet 控制台")
-        .inner_size(1180.0, 780.0)
-        .min_inner_size(860.0, 600.0)
-        .build()
-        .map_err(map_err)?;
-    Ok(())
 }
 
 // ==================== 控制台通道（管理此节点） ====================
-
-/// 打开远端节点控制台：loopback 转发器（本地环回端口 → 客户端隧道 → 节点 API）
-/// + 管理引导票据自举（#boot=ticket），ACL 与真人操作审计全部在节点侧收口。
-#[tauri::command]
-async fn open_node_console(
-    app: tauri::AppHandle,
-    state: State<'_, AppState>,
-    node_id: String,
-) -> Result<(), String> {
-    // 1. 申请管理引导票据（10 分钟一次性；节点侧校验 admin_console 授权）
-    let (ticket, api_port) = state.client.console_ticket(&node_id).await.map_err(map_err)?;
-
-    // 2. loopback 转发器（每节点复用；断开重连后由调用方重建）
-    let local_port = ensure_console_forwarder(&state, &node_id, "127.0.0.1", api_port).await?;
-
-    // 3. 打开/聚焦控制台窗口（复用节点管理 SPA；票据经 URL fragment 传递，不进日志与历史）
-    let label = console_window_label(&node_id);
-    if let Some(w) = app.get_webview_window(&label) {
-        let _ = w.unminimize();
-        let _ = w.show();
-        let _ = w.set_focus();
-        return Ok(());
-    }
-    let url: tauri::Url = format!("http://127.0.0.1:{local_port}/#boot={ticket}")
-        .parse()
-        .map_err(map_err)?;
-    tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::External(url))
-        .title(format!("AgileNet 控制台 — {node_id}"))
-        .inner_size(1180.0, 780.0)
-        .min_inner_size(860.0, 600.0)
-        .build()
-        .map_err(map_err)?;
-
-    roles::audit(
-        "admin.console_access",
-        serde_json::json!({"target": node_id, "path": "本机→客户端隧道", "identity": "管理链接"}),
-    );
-    Ok(())
-}
-
-/// 打开可管理上游的控制台（握手 v2 发现；经当前节点隧道访问上游管理面）。
-#[tauri::command]
-async fn open_upstream_console(
-    app: tauri::AppHandle,
-    state: State<'_, AppState>,
-    node_id: String,
-    upstream: String,
-) -> Result<(), String> {
-    let (ticket, api_host, api_port, scope) = state
-        .client
-        .upstream_console_ticket(&node_id, &upstream)
-        .await
-        .map_err(map_err)?;
-
-    // 转发器目标为上游 API（经当前节点隧道直达，ACL 由隧道对端收口）
-    let fwd_key = format!("{node_id}|{upstream}");
-    let local_port = ensure_console_forwarder(&state, &fwd_key, &api_host, api_port).await?;
-
-    let label = console_window_label(&fwd_key);
-    if let Some(w) = app.get_webview_window(&label) {
-        let _ = w.unminimize();
-        let _ = w.show();
-        let _ = w.set_focus();
-        return Ok(());
-    }
-    let url: tauri::Url = format!("http://127.0.0.1:{local_port}/#boot={ticket}")
-        .parse()
-        .map_err(map_err)?;
-    tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::External(url))
-        .title(format!("AgileNet 控制台 — {upstream}（经 {node_id}）"))
-        .inner_size(1180.0, 780.0)
-        .min_inner_size(860.0, 600.0)
-        .build()
-        .map_err(map_err)?;
-
-    roles::audit(
-        "admin.console_access",
-        serde_json::json!({
-            "target": upstream,
-            "path": format!("本机→{node_id}→relay"),
-            "identity": format!("relay 票据（scope={scope}）"),
-        }),
-    );
-    Ok(())
-}
 
 /// 控制台 loopback 转发器：本地环回端口 → 指定节点隧道 → 目标 API。
 /// key 去重（node_id 或 node_id|upstream）；断开重连后由调用方清理重建。
@@ -600,15 +588,6 @@ async fn ensure_console_forwarder(
     });
     map.insert(key.to_string(), port);
     Ok(port)
-}
-
-/// Tauri 窗口标签（仅字母数字-_）。
-fn console_window_label(node_id: &str) -> String {
-    let sanitized: String = node_id
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
-        .collect();
-    format!("console-{sanitized}")
 }
 
 /// 启动时恢复服务端角色（上次退出时处于开启状态）。
@@ -818,9 +797,30 @@ async fn subscription_status(state: State<'_, AppState>) -> Result<subscription:
     Ok(state.kernel.status().await)
 }
 
+/// 代理组与节点：内核在运行返回实时数据并落缓存；
+/// 内核未运行回落到最近缓存（cached 标记），代理页只读展示节点情况
 #[tauri::command]
 async fn proxy_groups() -> Result<serde_json::Value, String> {
-    subscription::kernel_api().await?.proxies().await
+    let live = match subscription::kernel_api().await {
+        Ok(api) => match api.proxies().await {
+            Ok(mut v) => {
+                // 并入 provider 节点协议/历史（/proxies 全局表不含 provider 节点）
+                if let Ok(pv) = api.provider_proxies().await {
+                    subscription::merge_provider_details(&mut v, &pv);
+                }
+                Some(v)
+            }
+            Err(_) => None,
+        },
+        Err(_) => None,
+    };
+    match live {
+        Some(v) => {
+            subscription::save_proxy_cache(&v);
+            Ok(v)
+        }
+        None => subscription::load_proxy_cache().ok_or_else(|| "订阅内核未运行".into()),
+    }
 }
 
 #[tauri::command]
@@ -828,9 +828,11 @@ async fn select_proxy(group: String, name: String) -> Result<(), String> {
     subscription::kernel_api().await?.select(&group, &name).await
 }
 
+/// 组测速：provider 节点只能经 /group/{group}/delay 测（内核并发一次测全组），
+/// 返回 name → ms（超时节点已被剔除）。
 #[tauri::command]
-async fn test_delay(name: String) -> Result<u32, String> {
-    subscription::kernel_api().await?.delay(&name).await
+async fn test_delay(group: String) -> Result<std::collections::HashMap<String, u32>, String> {
+    subscription::kernel_api().await?.group_delay(&group).await
 }
 
 /// 开关D：订阅代理角色。开启即下载/启动内核（崩溃自动退避重启），关闭即停机。
@@ -879,8 +881,13 @@ fn expected_sysproxy(state: &State<'_, AppState>) -> String {
 #[tauri::command]
 async fn set_system_proxy(state: State<'_, AppState>, enabled: bool) -> Result<(), String> {
     if enabled {
+        // 本地代理未启动则自动拉起（默认端口同「连接」页 57890），
+        // 消除"必须先手动启动本地代理"的顺序陷阱
         if state.client.proxy_port() == 0 {
-            return Err("请先启动本地代理".into());
+            if !state.roles.lock().await.client {
+                return Err("客户端角色已停用，请在「设置 → 角色与远程面」开启".into());
+            }
+            state.client.start_proxy(57890).await.map_err(map_err)?;
         }
         let server = expected_sysproxy(&state);
         tokio::task::spawn_blocking(move || sysproxy::engage(&server))
@@ -902,10 +909,17 @@ async fn set_system_proxy(state: State<'_, AppState>, enabled: bool) -> Result<(
 #[tauri::command]
 async fn sysproxy_status(state: State<'_, AppState>) -> Result<sysproxy::SysProxyStatus, String> {
     let managed = state.roles.lock().await.system_proxy;
+    let running = state.client.proxy_port() > 0;
     let expected = expected_sysproxy(&state);
-    tokio::task::spawn_blocking(move || sysproxy::inspect(managed, &expected))
+    let mut st = tokio::task::spawn_blocking(move || sysproxy::inspect(managed, &expected))
         .await
-        .map_err(map_err)?
+        .map_err(map_err)??;
+    // 代理未运行时不判冲突：启动清理已还原残留，
+    // 默认系统代理模式下"还没启动代理"不属于被抢占
+    if !running {
+        st.conflict = false;
+    }
+    Ok(st)
 }
 
 #[tauri::command]
@@ -1080,7 +1094,8 @@ async fn sysproxy_watch(app: tauri::AppHandle) {
         tokio::time::sleep(std::time::Duration::from_secs(30)).await;
         let state = app.state::<AppState>();
         let managed = state.roles.lock().await.system_proxy;
-        if !managed {
+        // 代理未运行时不判冲突（同 sysproxy_status）
+        if !managed || state.client.proxy_port() == 0 {
             in_conflict = false;
             continue;
         }
@@ -1233,9 +1248,8 @@ pub fn run() {
             has_web_password,
             set_web_password,
             set_web_role,
-            open_console,
-            open_node_console,
-            open_upstream_console,
+            console_url,
+            broadcast_theme,
             set_server_connector,
             uninstall_app,
             list_subscriptions,
@@ -1266,23 +1280,18 @@ pub fn run() {
                 restore_web_role(&handle).await;
                 restore_subscription_role(&handle).await;
             });
+            // 启动清理：上次异常退出（进程被杀）可能遗留系统代理指向已死端口，按快照还原
+            tauri::async_runtime::spawn(async move {
+                let _ = tokio::task::spawn_blocking(sysproxy::cleanup_if_pending).await;
+            });
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 sysproxy_watch(handle).await;
             });
 
-            // 窗口尺寸：主屏逻辑宽的 1/2，宽高比 4:3
+            // 窗口尺寸与定位：主屏逻辑宽 1/2、4:3、屏幕居中（与控制台统一规格）
             if let Some(window) = app.get_webview_window("main") {
-                if let Ok(Some(monitor)) = window.primary_monitor() {
-                    let scale = monitor.scale_factor();
-                    let logical_w = monitor.size().width as f64 / scale;
-                    let w = (logical_w * 0.5).round().max(860.0);
-                    let h = (w * 0.75).round().max(600.0);
-                    let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize {
-                        width: w,
-                        height: h,
-                    }));
-                }
+                normalize_window_geometry(&window);
             }
 
             // 关闭窗口时最小化到托盘（不退出进程）；系统主题变化时刷新托盘图标黑白

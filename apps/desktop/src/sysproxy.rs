@@ -271,11 +271,23 @@ mod imp {
 
 // ==================== 对外语义 ====================
 
-/// 开启托管：快照 → 指向本地代理端口。
+/// 开启托管：快照（仅首次，重复调用不覆盖原快照）→ 指向本地代理端口。
+/// 幂等：代理重启/端口变化时重复 engage 安全，还原始终回到首次开启前的状态。
 pub fn engage(server: &str) -> Result<(), String> {
-    imp::take_snapshot()?;
+    if !snapshot_path().exists() {
+        imp::take_snapshot()?;
+    }
     imp::set(server)?;
     roles::audit("gui.sysproxy_engage", serde_json::json!({"server": server}));
+    Ok(())
+}
+
+/// 启动清理：存在未还原快照说明上次异常退出（进程被杀/崩溃）可能遗留
+/// 系统代理指向已死端口，按快照还原；无快照则未曾托管，不碰系统设置。
+pub fn cleanup_if_pending() -> Result<(), String> {
+    if snapshot_path().exists() {
+        disengage()?;
+    }
     Ok(())
 }
 

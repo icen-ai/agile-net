@@ -9,7 +9,7 @@
   （main.rs 薄壳化；API 支持端口 0 动态分配回填；优雅停机）；`apps/desktop` 三路独立开关
   （客户端默认开 / 服务端默认关 / Web 远程面默认关，状态持久化 + `gui.role_toggle` /
   `web.exposure_change` 审计 JSONL）；服务端角色首开强制设管理密码（argon2id），
-  内嵌实例默认端口避让（API 127.0.0.1:59290 / Relay 54431，数据于 `~/.agile-net/embedded-node/`）；
+  内嵌实例默认端口避让（API 127.0.0.1:59293 / Relay 54431，避让 Docker 演示链宿主机映射 59290，数据于 `~/.agile-net/embedded-node/`）；
   控制台独立 Tauri 窗口复用内嵌节点 SPA；Web 远程面的密码基础设施就位，
   HTTP 服务本身随 P1.5 落地。测试：`crates/node/tests/service_test.rs`（start/serve/stop + 同库重启）。
 - **P1.5 客户端管理面 Web 化（已完成，2026-07-31）**：`crates/client` 新增 `api` 模块——

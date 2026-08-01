@@ -2,7 +2,7 @@
 //!
 //! - 角色状态持久化于 `~/.agile-net/gui-settings.json`
 //! - 内嵌节点数据（SQLite / 证书）位于 `~/.agile-net/embedded-node/`，
-//!   默认端口避让本地独立节点（API 59290 / Relay 54431）
+//!   默认端口避让本地独立节点（API 59290）与 Docker 演示链宿主机映射（59290）→ API 59293 / Relay 54431
 //! - 开关变更与 Web 面暴露变更写入 `~/.agile-net/gui-audit.jsonl`（审计）
 //! - Web 远程面管理密码以 argon2id 哈希存于 `~/.agile-net/web-auth.json`
 
@@ -11,8 +11,8 @@ use agile_net_core::config::NodeConfig;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-/// 内嵌节点默认监听（避让独立节点 59090 / 54430）
-pub const EMBEDDED_API_ADDR: &str = "127.0.0.1:59290";
+/// 内嵌节点默认监听（避让独立节点 59090 / 54430 与 Docker 演示链宿主机映射 59290）
+pub const EMBEDDED_API_ADDR: &str = "127.0.0.1:59293";
 pub const EMBEDDED_RELAY_ADDR: &str = "0.0.0.0:54431";
 /// Web 远程面默认监听（仅 loopback）
 pub const DEFAULT_WEB_LISTEN: &str = "127.0.0.1:59291";
@@ -40,8 +40,9 @@ pub struct RoleSettings {
     /// 订阅流量经统一出口（ProxyRouter 回落到内核 mixed 入站；默认开）
     #[serde(default = "default_true")]
     pub subscription_unified: bool,
-    /// 系统代理托管（指向本地代理端口；关闭时还原快照）
-    #[serde(default)]
+    /// 系统代理托管（指向本地代理端口；关闭时还原快照；默认开——多数人即开即用，
+    /// 仅监听端口的本地代理模式面向需要手动配置应用的用户）
+    #[serde(default = "default_true")]
     pub system_proxy: bool,
 }
 
@@ -83,7 +84,7 @@ impl Default for RoleSettings {
             subscription: false,
             subscription_feature: false,
             subscription_unified: true,
-            system_proxy: false,
+            system_proxy: true,
         }
     }
 }
