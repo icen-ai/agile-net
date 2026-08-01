@@ -53,5 +53,8 @@ ip_network = { workspace = true }
 rcgen = { workspace = true }
 instant-acme = { version = "0.8", default-features = false, features = ["ring", "rcgen", "hyper-rustls"] }
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 reqwest = { workspace = true }
