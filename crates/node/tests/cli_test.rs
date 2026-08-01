@@ -87,7 +87,7 @@ async fn cli_full_workflow_against_live_api() {
     let runtime = Arc::new(NodeRuntime {
         started_at: Instant::now(),
         listener: None,
-        connector: None,
+        connectors: Vec::new(),
         proxy_stats: None,
         proxy_listen: None,
         log_buffer: LogBuffer::new(),

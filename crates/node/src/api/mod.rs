@@ -27,7 +27,8 @@ use std::time::{Duration, Instant};
 pub struct NodeRuntime {
     pub started_at: Instant,
     pub listener: Option<Arc<RelayListener>>,
-    pub connector: Option<Arc<RelayConnector>>,
+    /// 全部上游 connector（多上游扇出/容灾）
+    pub connectors: Vec<Arc<RelayConnector>>,
     pub proxy_stats: Option<Arc<ProxyStats>>,
     pub proxy_listen: Option<String>,
     pub log_buffer: LogBuffer,
@@ -38,15 +39,26 @@ pub struct NodeRuntime {
 }
 
 impl NodeRuntime {
+    /// 扇出汇总状态：任一连通则 connected，全无扇出配置则 disabled。
     pub fn connector_status(&self) -> &'static str {
-        match &self.connector {
-            Some(c) => match c.state() {
-                ConnectionState::Connected => "connected",
-                ConnectionState::Connecting => "connecting",
-                ConnectionState::Reconnecting => "reconnecting",
-                ConnectionState::Disconnected => "disconnected",
-            },
-            None => "disabled",
+        if self.connectors.is_empty() {
+            return "disabled";
+        }
+        let mut any_connected = false;
+        let mut any_active = false;
+        for c in &self.connectors {
+            match c.state() {
+                ConnectionState::Connected => any_connected = true,
+                ConnectionState::Connecting | ConnectionState::Reconnecting => any_active = true,
+                ConnectionState::Disconnected => {}
+            }
+        }
+        if any_connected {
+            "connected"
+        } else if any_active {
+            "connecting"
+        } else {
+            "disconnected"
         }
     }
 

@@ -25,7 +25,7 @@ async fn test_app() -> (Router, Database, Arc<JwtService>) {
     let runtime = Arc::new(NodeRuntime {
         started_at: Instant::now(),
         listener: None,
-        connector: None,
+        connectors: Vec::new(),
         proxy_stats: None,
         proxy_listen: None,
         log_buffer: LogBuffer::new(),

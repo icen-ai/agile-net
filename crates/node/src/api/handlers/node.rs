@@ -3,6 +3,7 @@
 use super::audit;
 use crate::api::extractors::{AdminAuth, ClientIp};
 use crate::api::{ApiState, codes, err, ok};
+use agile_net_core::relay::ConnectionState;
 use axum::{
     Json,
     extract::{
@@ -45,14 +46,23 @@ pub async fn status(AdminAuth(_): AdminAuth, State(state): State<ApiState>) -> R
         None => (json!({ "enabled": false }), 0),
     };
 
-    let connector_json = match &state.runtime.connector {
-        Some(c) => json!({
-            "enabled": true,
-            "upstream": c.upstream_addr().to_string(),
-            "status": state.runtime.connector_status(),
-        }),
-        None => json!({ "enabled": false }),
-    };
+    // 扇出（多目标：地址 + 逐条状态）
+    let connectors_json: Vec<serde_json::Value> = state
+        .runtime
+        .connectors
+        .iter()
+        .map(|c| {
+            json!({
+                "upstream": c.upstream_addr().to_string(),
+                "status": match c.state() {
+                    ConnectionState::Connected => "connected",
+                    ConnectionState::Connecting => "connecting",
+                    ConnectionState::Reconnecting => "reconnecting",
+                    ConnectionState::Disconnected => "disconnected",
+                },
+            })
+        })
+        .collect();
 
     // 可管理上游（握手 v2 发现；脱敏：不含票据）
     let manageable_json: Vec<serde_json::Value> = state
@@ -89,7 +99,8 @@ pub async fn status(AdminAuth(_): AdminAuth, State(state): State<ApiState>) -> R
         "manageable_upstreams": manageable_json,
         "roles": {
             "listener": listener_json,
-            "connector": connector_json,
+            "connectors": connectors_json,
+            "connector_status": state.runtime.connector_status(),
         },
         "proxy": proxy_json,
         "accounts": {

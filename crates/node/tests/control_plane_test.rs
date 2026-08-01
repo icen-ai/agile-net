@@ -65,7 +65,7 @@ async fn start_downstream(relay_port: u16) -> NodeServer {
     let dir = temp_dir("down");
     let config = NodeConfig {
         name: "node-mid".into(),
-        connector: Some(ConnectorConfig {
+        connectors: vec![ConnectorConfig {
             upstream_addr: format!("127.0.0.1:{relay_port}"),
             token: RELAY_TOKEN.into(),
             sni_hostname: "cdn.cloudflare.com".into(),
@@ -73,7 +73,7 @@ async fn start_downstream(relay_port: u16) -> NodeServer {
             ca_cert_path: None,
             pinned_cert_path: None,
             insecure: true,
-        }),
+        }],
         ..Default::default()
     };
     NodeServer::start_with(

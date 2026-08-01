@@ -56,7 +56,7 @@ pub struct NodeServer {
     runtime: Arc<NodeRuntime>,
     state: ApiState,
     api_addr: SocketAddr,
-    relay_connector: Option<Arc<RelayConnector>>,
+    relay_connectors: Vec<Arc<RelayConnector>>,
     tasks: Vec<tokio::task::JoinHandle<()>>,
     api_shutdown: Option<axum_server::Handle>,
     api_stop_tx: Option<tokio::sync::oneshot::Sender<()>>,
@@ -198,9 +198,9 @@ impl NodeServer {
             relay_listener = Some(listener);
         }
 
-        // 5. Relay Connector（下游角色，自动重连）
-        let mut relay_connector: Option<Arc<RelayConnector>> = None;
-        if let Some(connector_cfg) = &config.connector {
+        // 5. Relay Connector（扇出角色，多目标扇出/容灾：[[connectors]] 数组，自动重连）
+        let mut relay_connectors: Vec<Arc<RelayConnector>> = Vec::new();
+        for connector_cfg in &config.connectors {
             let upstream: SocketAddr = resolve_upstream(&connector_cfg.upstream_addr).await?;
             let mut tls_builder = TlsConfigBuilder::new().sni_hostname(&connector_cfg.sni_hostname);
 
@@ -273,7 +273,7 @@ impl NodeServer {
                     }
                 }));
             }
-            relay_connector = Some(connector);
+            relay_connectors.push(connector);
         }
 
         // 6. 本地代理入站（可选）
@@ -304,7 +304,7 @@ impl NodeServer {
         let runtime = Arc::new(NodeRuntime {
             started_at: Instant::now(),
             listener: relay_listener.clone(),
-            connector: relay_connector.clone(),
+            connectors: relay_connectors.clone(),
             proxy_stats,
             proxy_listen,
             log_buffer,
@@ -465,7 +465,7 @@ impl NodeServer {
             runtime,
             state,
             api_addr: bound_api_addr,
-            relay_connector,
+            relay_connectors,
             tasks,
             api_shutdown: Some(api_shutdown),
             api_stop_tx,
@@ -475,6 +475,22 @@ impl NodeServer {
     /// API 实际监听地址（端口 0 动态分配时为回读值）。
     pub fn api_addr(&self) -> SocketAddr {
         self.api_addr
+    }
+
+    /// 各上游 connector 的（地址, 状态）（GUI 上游列表展示用）。
+    pub fn connector_states(&self) -> Vec<(String, String)> {
+        self.relay_connectors
+            .iter()
+            .map(|c| {
+                let st = match c.state() {
+                    agile_net_core::relay::ConnectionState::Connected => "connected",
+                    agile_net_core::relay::ConnectionState::Connecting => "connecting",
+                    agile_net_core::relay::ConnectionState::Reconnecting => "reconnecting",
+                    agile_net_core::relay::ConnectionState::Disconnected => "disconnected",
+                };
+                (c.upstream_addr().to_string(), st.to_string())
+            })
+            .collect()
     }
 
     pub fn db(&self) -> Database {
@@ -494,7 +510,7 @@ impl NodeServer {
         self.state.clone()
     }
 
-    /// 停止节点：API 优雅停机 → connector 断开 → 中止全部后台任务。幂等。
+    /// 停止节点：API 优雅停机 → 全部 connector 断开 → 中止全部后台任务。幂等。
     pub async fn stop(mut self) {
         if let Some(tx) = self.api_stop_tx.take() {
             let _ = tx.send(());
@@ -502,7 +518,7 @@ impl NodeServer {
         if let Some(handle) = self.api_shutdown.take() {
             handle.graceful_shutdown(Some(std::time::Duration::from_secs(2)));
         }
-        if let Some(c) = &self.relay_connector {
+        for c in &self.relay_connectors {
             c.disconnect().await;
         }
         for t in &self.tasks {

@@ -55,7 +55,7 @@ pub struct ApiState {
 pub struct NodeRuntime {
     started_at: Instant,
     listener: Option<Arc<RelayListener>>,
-    connector: Option<Arc<RelayConnector>>,
+    connectors: Vec<Arc<RelayConnector>>,  // 扇出连接（多目标扇出/容灾）
     proxy_stats: Option<Arc<ProxyStats>>,
     proxy_listen: Option<String>,
     log_buffer: LogBuffer,

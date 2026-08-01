@@ -66,7 +66,7 @@ async fn start_full_node() -> (String, SocketAddr, SocketAddr) {
     let runtime = Arc::new(NodeRuntime {
         started_at: Instant::now(),
         listener: Some(listener),
-        connector: None,
+        connectors: Vec::new(),
         proxy_stats: None,
         proxy_listen: None,
         log_buffer: LogBuffer::new(),

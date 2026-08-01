@@ -21,11 +21,12 @@ pub struct NodeConfig {
     #[serde(default)]
     pub api: ApiConfig,
 
-    /// Relay listener 配置（上游角色）
+    /// Relay listener 配置（扇入角色：接受扇入端点连入）
     pub listener: Option<ListenerConfig>,
 
-    /// Relay connector 配置（下游角色）
-    pub connector: Option<ConnectorConfig>,
+    /// Relay connector 配置（扇出角色：`[[connectors]]` 数组，多目标扇出/容灾）
+    #[serde(default)]
+    pub connectors: Vec<ConnectorConfig>,
 
     /// 本地代理入站配置
     pub proxy: Option<ProxyConfig>,
@@ -189,7 +190,7 @@ impl Default for NodeConfig {
             public_host: None,
             api: ApiConfig::default(),
             listener: None,
-            connector: None,
+            connectors: Vec::new(),
             proxy: None,
             acme: None,
             log: None,
