@@ -83,15 +83,12 @@ pub fn kill_process(pid: u32) -> Result<bool> {
     Ok(!fetch(&mut sys))
 }
 
-/// 运行中的服务记录（PID 存活）；幻尸记录自动清理。
+/// 运行中的服务记录（PID 存活）。探测失败不删文件——
+/// 新进程对 sysinfo 可能短暂不可见，幻尸记录无害（探测为死即视为未运行），
+/// 仅在 write/stop 时覆盖或清除。
 pub fn running_record() -> Option<PidRecord> {
     let rec = read_pid()?;
-    if process_alive(rec.pid) {
-        Some(rec)
-    } else {
-        remove_pid();
-        None
-    }
+    if process_alive(rec.pid) { Some(rec) } else { None }
 }
 
 pub fn cmd_stop() -> Result<()> {
