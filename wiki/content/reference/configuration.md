@@ -23,15 +23,21 @@ cert_path = "certs/relay-cert.pem"    # 不存在则自动生成自签并持久�
 key_path  = "certs/relay-key.pem"
 sni_hostname = "cdn.cloudflare.com"   # 自签证书 SAN / 对外 SNI
 
-# 下游角色：接入上游 relay（自动重连）
-[connector]
-upstream_addr = "relay.example.com:54430"
+# 扇出角色：扇出到目标 relay（自动重连；[[connectors]] 数组可多目标扇出/容灾）
+[[connectors]]
+upstream_addr = "relay-a.example.com:54430"
 token = "psk_..."
 sni_hostname = "cdn.cloudflare.com"
-advertise = ["10.12.0.0/16", "git.internal"]   # 向上游通告的可服务网段
+advertise = ["10.12.0.0/16", "git.internal"]   # 向对端通告的可服务网段
 # ca_cert_path = "certs/ca.pem"        # 自定义 CA
 # pinned_cert_path = "certs/up.pem"    # 证书固定（生产推荐）
 # insecure = true                      # 跳过证书校验（仅开发）
+
+# 第二个扇出目标（可选，容灾/扇出到多个内网）
+# [[connectors]]
+# upstream_addr = "relay-b.example.com:54430"
+# token = "psk_..."
+# sni_hostname = "cdn.cloudflare.com"
 
 # 节点本地代理（可选）
 [proxy]
