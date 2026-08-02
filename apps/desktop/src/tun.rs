@@ -72,6 +72,8 @@ pub fn is_admin() -> bool {
 }
 
 /// 以管理员身份拉起自身 exe（runas 动词触发 UAC；返回 Ok 仅表示请求已发出）。
+/// 用 SW_HIDE：控制台子系统的 debug 构建经 ShellExecute 拉起会新分配可见命令行窗口，
+/// 隐藏之（日志可在 GUI 控制台窗口查看）；release 为 windows 子系统本无控制台。
 #[cfg(windows)]
 fn relaunch_elevated() -> Result<(), String> {
     use std::os::windows::ffi::OsStrExt;
@@ -85,7 +87,7 @@ fn relaunch_elevated() -> Result<(), String> {
             file.as_ptr(),
             std::ptr::null(),
             std::ptr::null(),
-            windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL,
+            windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE,
         )
     };
     // 返回值 > 32 表示成功，否则为错误码
