@@ -63,7 +63,7 @@
       <div class="nav-item" data-aview="groups"><i data-ic="shield"></i><span class="nav-label">权限</span></div>
       <div class="nav-item" data-aview="rules"><i data-ic="route"></i><span class="nav-label">规则</span></div>
       <div class="nav-sep"></div>
-      <div class="nav-item" data-aview="tokens"><i data-ic="key-round"></i><span class="nav-label">令牌</span></div>
+      <div class="nav-item" data-aview="fanin"><i data-ic="globe"></i><span class="nav-label">扇入</span></div>
       <div class="nav-item" data-aview="connectors"><i data-ic="git-fork"></i><span class="nav-label">扇出</span></div>
       <div class="nav-item" data-aview="audit"><i data-ic="scroll-text"></i><span class="nav-label">审计</span></div>
       <div class="nav-sep"></div>
@@ -73,11 +73,11 @@
 
   <main class="content">
     <!-- 客户端角色关闭时的全局提示 -->
-    <div id="role-banner" class="net-banner" style="display:none"><i data-ic="info" data-sz="14"></i>扇入已停用：端点连接与本地代理均已关闭，可在首页重新开启</div>
-    <!-- 首页：快速接入 / 代理 / 手动添加 / 已保存端点 -->
+    <div id="role-banner" class="net-banner" style="display:none"><i data-ic="info" data-sz="14"></i>扇入已停用：下游连接与本地代理均已关闭，可在首页重新开启</div>
+    <!-- 首页：角色开关 / 本地代理（首次接入引导；扇入的添加与管理在扇入页） -->
     <section class="view" id="view-connect">
       <div class="page-title"><i data-ic="home" data-sz="19"></i>首页</div>
-      <div class="page-desc">粘贴接入链接一键接入内网，启动代理即可使用（默认自动接管系统代理）</div>
+      <div class="page-desc">客户端 / 远程角色开关与本地代理（默认自动接管系统代理）；扇入的添加与管理在「扇入」页</div>
 
       <!-- 空状态引导（未连接任何节点时显示） -->
       <div id="onboarding" class="hero" style="display:none">
@@ -114,15 +114,6 @@
         </div>
       </div>
 
-      <!-- 快速接入（有端点后的紧凑条） -->
-      <div class="card" id="quick-card">
-        <div class="row">
-          <input id="connect-url" class="grow mono" placeholder="粘贴接入链接添加另一个端点 agilenet://connect?...">
-          <button id="btn-import">导入并连接</button>
-          <button id="btn-paste" class="ghost icon-btn" title="从剪贴板导入"><i data-ic="clipboard" data-sz="15"></i></button>
-        </div>
-      </div>
-
       <!-- 代理 -->
       <div class="card">
         <h3><i data-ic="power"></i>代理 <span class="hint inline">SOCKS5 / HTTP 自动识别，仅监听 127.0.0.1</span></h3>
@@ -143,33 +134,6 @@
         </div>
       </div>
 
-      <!-- 手动添加（折叠） -->
-      <div class="card">
-        <h3 id="manual-toggle" style="cursor:pointer"><i data-ic="plus"></i>手动添加端点 <span class="hint" id="manual-arrow"><i data-ic="chevron-right" data-sz="13"></i></span></h3>
-        <div id="manual-form" style="display:none">
-          <div class="grid2">
-            <div><label>端点 API 地址（host:port 或 https://…）</label><input id="m-addr" placeholder="cdn.example.com:59090"></div>
-            <div><label>账号</label><input id="m-user" placeholder="zhangsan"></div>
-            <div><label>密码</label><input id="m-pass" type="password" placeholder="sk-..."></div>
-            <div><label>证书固定 PEM 路径（可选，生产推荐）</label><input id="m-pin" placeholder="certs/node.pem"></div>
-          </div>
-          <div class="row" style="margin-top:10px">
-            <label class="chk"><input type="checkbox" id="m-insecure"> 跳过证书校验（仅开发）</label>
-            <label class="chk"><input type="checkbox" id="m-hosts"> 管理系统 hosts</label>
-            <label class="chk"><input type="checkbox" id="m-save" checked> 保存凭据</label>
-            <button id="btn-connect">连接</button>
-          </div>
-        </div>
-      </div>
-
-      <!-- 已保存端点（管理：连接/断开/导出/删除） -->
-      <div class="card" id="creds-card" style="display:none">
-        <h3><i data-ic="hard-drive"></i>已保存端点
-          <span class="h3-tools"><button class="ghost small icon-btn search-toggle" data-search="creds" title="搜索"><i data-ic="search" data-sz="13"></i></button></span>
-        </h3>
-        <div class="list-search" id="search-creds" hidden><input placeholder="搜索账号 / 地址" ></div>
-        <div id="creds-list"></div>
-      </div>
     </section>
 
     <!-- 扇出：服务端角色的扇出连接（路由再发布；多目标扇出/容灾） -->
@@ -216,20 +180,50 @@
       </div>
     </section>
 
-    <!-- 端点（扇入）：连接状态一览 -->
+    <!-- 扇入（下游）：本机连入的 AgileNet 端点 —— 添加 / 连接 / 消费管理 -->
     <section class="view" id="view-nodes" hidden>
       <div class="page-title"><i data-ic="globe" data-sz="19"></i>扇入</div>
-      <div class="page-desc">作为客户端连接的 AgileNet 端点与实时状态；离线端点整卡降饱和标识</div>
+      <div class="page-desc">下游连接的消费管理：以已保存扇入为主体，叠加实时状态；离线扇入整卡降饱和标识</div>
       <div id="net-banner" class="net-banner" style="display:none"></div>
+
+      <!-- 快速接入（导入条） -->
+      <div class="card" id="quick-card">
+        <div class="row">
+          <input id="connect-url" class="grow mono" placeholder="粘贴接入链接添加扇入 agilenet://connect?...">
+          <button id="btn-import">导入并连接</button>
+          <button id="btn-paste" class="ghost icon-btn" title="从剪贴板导入"><i data-ic="clipboard" data-sz="15"></i></button>
+        </div>
+      </div>
+
+      <!-- 手动添加扇入（折叠） -->
       <div class="card">
-        <h3><i data-ic="globe"></i>端点列表
+        <h3 id="manual-toggle" style="cursor:pointer"><i data-ic="plus"></i>手动添加扇入 <span class="hint" id="manual-arrow"><i data-ic="chevron-right" data-sz="13"></i></span></h3>
+        <div id="manual-form" style="display:none">
+          <div class="grid2">
+            <div><label>扇入端点地址（host:port 或 https://…）</label><input id="m-addr" placeholder="cdn.example.com:59090"></div>
+            <div><label>账号</label><input id="m-user" placeholder="zhangsan"></div>
+            <div><label>密码</label><input id="m-pass" type="password" placeholder="sk-..."></div>
+            <div><label>证书固定 PEM 路径（可选，生产推荐）</label><input id="m-pin" placeholder="certs/node.pem"></div>
+          </div>
+          <div class="row" style="margin-top:10px">
+            <label class="chk"><input type="checkbox" id="m-insecure"> 跳过证书校验（仅开发）</label>
+            <label class="chk"><input type="checkbox" id="m-hosts"> 管理系统 hosts</label>
+            <label class="chk"><input type="checkbox" id="m-save" checked> 保存凭据</label>
+            <button id="btn-connect">连接</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 扇入列表（已保存扇入为主体 + 实时状态；连接/断开/分享/删除） -->
+      <div class="card" id="creds-card">
+        <h3><i data-ic="globe"></i>扇入列表
           <span class="h3-tools">
             <button class="ghost small icon-btn" id="btn-refresh" title="刷新"><i data-ic="refresh-cw" data-sz="13"></i></button>
-            <button class="ghost small icon-btn search-toggle" data-search="nodes" title="搜索"><i data-ic="search" data-sz="13"></i></button>
+            <button class="ghost small icon-btn search-toggle" data-search="creds" title="搜索"><i data-ic="search" data-sz="13"></i></button>
           </span>
         </h3>
-        <div class="list-search" id="search-nodes" hidden><input placeholder="搜索名称 / 地址 / 状态"></div>
-        <div id="nodes-list"><div class="empty">尚未连接端点</div></div>
+        <div class="list-search" id="search-creds" hidden><input placeholder="搜索名称 / 账号 / 地址 / 状态"></div>
+        <div id="creds-list"><div class="empty">尚未添加扇入</div></div>
       </div>
     </section>
 
@@ -306,8 +300,8 @@
         <h3><i data-ic="settings"></i>偏好</h3>
         <div class="row col">
           <label class="chk"><input type="checkbox" id="s-autostart"> 开机自动启动 AgileNet</label>
-          <label class="chk"><input type="checkbox" id="s-autoproxy" checked> 连接端点后自动启动本地代理</label>
-          <label class="chk"><input type="checkbox" id="s-autoreconnect" checked> 启动应用时自动重连已保存端点</label>
+          <label class="chk"><input type="checkbox" id="s-autoproxy" checked> 连接扇入后自动启动本地代理</label>
+          <label class="chk"><input type="checkbox" id="s-autoreconnect" checked> 自动重连已保存的扇入</label>
           <div class="lang-theme">
             <select id="s-lang">
               <option value="zh">中文</option>
@@ -418,7 +412,7 @@
     <h3><i data-ic="trash-2" data-sz="16"></i> 卸载 AgileNet</h3>
     <div class="hint" style="margin:6px 0 12px">应用退出后由系统卸载程序完成移除。请选择要一并清理的本地数据：</div>
     <div class="row col" style="gap:10px">
-      <label class="chk"><input type="checkbox" id="un-creds" checked> 已保存的端点与凭据</label>
+      <label class="chk"><input type="checkbox" id="un-creds" checked> 已保存的扇入与凭据</label>
       <label class="chk"><input type="checkbox" id="un-server" checked> 服务端端点数据与订阅内核（数据库、证书、mihomo）</label>
       <label class="chk"><input type="checkbox" id="un-prefs" checked> 配置与偏好（角色设置、Web 密码、主题语言）</label>
       <label class="chk"><input type="checkbox" id="un-audit"> 审计日志</label>

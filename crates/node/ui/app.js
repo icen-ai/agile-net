@@ -8,6 +8,7 @@ const ICONS = {
   'route': '<circle cx="6" cy="19" r="3"/><path d="M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15"/><circle cx="18" cy="5" r="3"/>',
   'key-round': '<path d="M2.586 17.414A2 2 0 0 0 2 18.828V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.172a2 2 0 0 0 1.414-.586l.814-.814a6.5 6.5 0 1 0-4-4z"/><circle cx="16.5" cy="7.5" r=".5" fill="currentColor"/>',
   'git-fork': '<circle cx="12" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><circle cx="18" cy="6" r="3"/><path d="M18 9v1a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V9"/><path d="M12 12v3"/>',
+  'globe': '<circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/>',
   'scroll-text': '<path d="M15 12h-5"/><path d="M15 8h-5"/><path d="M19 17V5a2 2 0 0 0-2-2H4"/><path d="M8 21h12a2 2 0 0 0 2-2v-1a1 1 0 0 0-1-1H11a1 1 0 0 0-1 1v1a2 2 0 1 1-4 0V5a2 2 0 1 0-4 0v2a1 1 0 0 0 1 1h3"/>',
   'settings': '<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/>',
   'sun': '<circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/>',
@@ -192,7 +193,7 @@ function switchView(v) {
   S.timers.forEach(clearInterval); S.timers = [];
   document.querySelectorAll('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.view === v));
   const fn = ({dashboard: renderDashboard, accounts: renderAccounts, groups: renderGroups,
-    rules: renderRules, tokens: renderTokens, connectors: renderConnectors, audit: renderAudit, settings: renderSettings})[v] || renderDashboard;
+    rules: renderRules, fanin: renderFanIn, connectors: renderConnectors, audit: renderAudit, settings: renderSettings})[v] || renderDashboard;
   fn();
 }
 async function loadGroupsCache() {
@@ -667,12 +668,48 @@ function openBatchImport() {
     ]);
 }
 
-/* ================= Relay 令牌 ================= */
-async function renderTokens() {
-  $('view').innerHTML = '<div class="page-title">' + ic('key-round', 20) + 'Relay 令牌</div><div class="page-desc">扇入端点连入本端点的预共享密钥（psk_ 48 位），服务端只存哈希，全文仅创建时展示一次</div>' +
-    '<div class="toolbar"><div class="spacer"></div><button onclick="openCreateToken()">' + ic('plus', 15) + '生成令牌</button></div>' +
-    '<div class="card table-wrap"><table><thead><tr><th>前缀</th><th>权限组</th><th>备注</th><th>暴露控制面</th><th>最近使用</th><th>创建时间</th><th>操作</th></tr></thead><tbody id="tok-body"></tbody></table></div>';
-  await loadTokens();
+/* ================= 扇入（谁连着本端点：监听 / 连接 / 令牌） ================= */
+async function renderFanIn() {
+  $('view').innerHTML = '<div class="page-title">' + ic('globe', 20) + '扇入</div><div class="page-desc">谁连着本端点：扇入监听状态、在线扇入连接与扇入令牌管理（生成令牌是扇入能力之一，归本页）</div>' +
+    '<div class="card"><h3>扇入监听</h3><div id="fanin-listener"></div></div>' +
+    '<div class="card"><h3>扇入连接</h3><div class="table-wrap"><table><thead><tr><th>对端 node_id</th><th>上行</th><th>下行</th></tr></thead><tbody id="fanin-peers"></tbody></table></div></div>' +
+    '<div class="card"><h3>扇入令牌</h3>' +
+      '<div class="page-desc" style="margin-bottom:12px">令牌 = 允许对端扇入本端点的预共享密钥（psk_ 48 位），服务端只存哈希，全文仅创建时展示一次</div>' +
+      '<div class="toolbar"><div class="spacer"></div><button onclick="openCreateToken()">' + ic('plus', 15) + '生成令牌</button></div>' +
+      '<div class="table-wrap"><table><thead><tr><th>前缀</th><th>权限组</th><th>备注</th><th>暴露控制面</th><th>最近使用</th><th>创建时间</th><th>操作</th></tr></thead><tbody id="tok-body"></tbody></table></div></div>';
+  await Promise.all([loadFaninStatus(), loadTokens()]);
+  S.timers.push(setInterval(loadFaninStatus, 10000));
+}
+/* 监听卡 + 连接表同源于 roles.listener：单次拉取、单签名变更检测（不变不重写 DOM） */
+async function loadFaninStatus() {
+  const box = $('fanin-listener'); if (!box) return;
+  let L;
+  try { L = (await api('GET', '/api/v1/admin/node/status')).roles.listener; }
+  catch(e) { toast(e.message, 'err'); return; }
+  L = L || { enabled: false };
+  const sig = JSON.stringify(L);
+  if (sig === box.dataset.sig) return;
+  box.dataset.sig = sig;
+  if (!L.enabled) {
+    box.innerHTML = '<div class="empty">扇入监听未开启：对端端点与客户端均无法连入。请在服务端配置中启用 relay listener 后，此处展示监听地址与连接概况。</div>';
+  } else {
+    box.innerHTML =
+      '<div class="kv"><span class="k">监听地址</span><span class="mono">' + esc(L.addr || '-') + '</span></div>' +
+      '<div class="kv"><span class="k">TLS</span><span>' + (L.tls ? '<span class="badge b-ok">已启用</span>' : '<span class="badge b-off">未启用</span>') + '</span></div>' +
+      '<div class="kv"><span class="k">扇入端点</span><span>' + (L.connected_connectors || 0) + ' 个已连接</span></div>' +
+      '<div class="kv"><span class="k">在线客户端</span><span>' + (L.online_clients || 0) + ' 个</span></div>';
+  }
+  const traffic = L.enabled ? (L.peer_traffic || []) : [];
+  const peers = L.enabled ? (L.peers || []) : [];
+  // peers 有而 traffic 缺失的补 0（流量计数为启动以来累计）
+  const rows = traffic.slice();
+  const seen = new Set(traffic.map(t => t.node_id));
+  peers.filter(p => !seen.has(p)).forEach(p => rows.push({ node_id: p, bytes_up: 0, bytes_down: 0 }));
+  $('fanin-peers').innerHTML = rows.map(t =>
+    '<tr><td class="mono"><span class="dot on"></span>' + esc(t.node_id) + '</td>' +
+    '<td class="mono">' + fmtBytes(t.bytes_up) + '</td>' +
+    '<td class="mono">' + fmtBytes(t.bytes_down) + '</td></tr>'
+  ).join('') || '<tr><td colspan="3" class="empty">暂无扇入连接</td></tr>';
 }
 async function loadTokens() {
   const body = $('tok-body'); if (!body) return;
@@ -690,7 +727,7 @@ async function loadTokens() {
       '<td style="color:var(--dim)">' + esc(t.created_at) + '</td>' +
       '<td style="white-space:nowrap"><button class="ghost small" onclick="openEditToken(\'' + esc(t.id) + '\',\'' + esc(t.group_id||'') + '\',' + t.expose_control + ',\'' + esc(t.control_scope) + '\')">编辑</button> ' +
       '<button class="danger small" onclick="delToken(\'' + esc(t.id) + '\')">吊销</button></td></tr>'
-    ).join('') || '<tr><td colspan="7" class="empty">暂无令牌</td></tr>';
+    ).join('') || '<tr><td colspan="7" class="empty">暂无扇入令牌</td></tr>';
   } catch(e) { toast(e.message, 'err'); }
 }
 async function toggleExpose(id, on) {
@@ -708,7 +745,7 @@ async function setScope(id, scope) {
   } catch(e) { toast(e.message, 'err'); }
 }
 function openCreateToken() {
-  openModal('生成 Relay 令牌',
+  openModal('生成扇入令牌',
     '<label>备注（如：分公司跳板机）</label><input id="nt-remark" style="width:100%">' +
     '<label>权限组（留空 = 不收敛，放行一切）</label><select id="nt-group" style="width:100%">' +
       '<option value="">不收敛（放行一切）</option>' +
@@ -751,7 +788,7 @@ async function delToken(id) {
 /* 编辑收敛组：PUT 三态语义（缺省=不变 / null=不收敛 / 字符串=挂组），
    编辑为用户显式选择故总是送出；暴露控制面在列表直接改（不送 group_id=不变） */
 function openEditToken(id, groupId, exposeControl, controlScope) {
-  openModal('编辑 Relay 令牌',
+  openModal('编辑扇入令牌',
     '<label>权限组（选「不收敛」= 放行一切）</label><select id="et-group" style="width:100%">' +
       '<option value="">不收敛（放行一切）</option>' +
       S.groups.map(g => '<option value="' + esc(g.id) + '" ' + (groupId===g.id?'selected':'') + '>' + esc(g.name) + '</option>').join('') + '</select>' +
@@ -1050,7 +1087,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     if (d.type === 'ag-theme' && (d.theme === 'dark' || d.theme === 'light')) {
       try { localStorage.setItem('ag_theme', d.theme); applyTheme(); } catch(_) {}
     }
-    if (d.type === 'ag-nav' && {dashboard:1,accounts:1,groups:1,rules:1,tokens:1,connectors:1,audit:1,settings:1}[d.view]) {
+    if (d.type === 'ag-nav' && {dashboard:1,accounts:1,groups:1,rules:1,fanin:1,connectors:1,audit:1,settings:1}[d.view]) {
       switchView(d.view);
     }
   });

@@ -113,13 +113,13 @@ const I18N = {
     'banner-degraded': '端点 {name} 网络不可达，正在自动重连…',
     'banner-down': '端点 {name} 已离线，其网段当前不可达',
     'proxy-running': '代理运行中', 'proxy-stopped': '代理未启动',
-    'reconnecting-nodes': '正在自动重连 {n} 个已保存端点…',
+    'reconnecting-nodes': '正在自动重连 {n} 个已保存的扇入…',
     'connected-toast': '已连接 {name}（下发规则 {n} 条）',
     'proxy-on': '代理已启动', 'proxy-off': '代理已停止',
     'btn-start-proxy': '启动代理', 'btn-stop-proxy': '停止代理',
     'err-need-url': '请粘贴接入链接', 'err-bad-url': '链接格式不正确，应以 agilenet://connect? 开头',
     'clip-ok': '已识别剪贴板中的接入链接', 'clip-none': '剪贴板中没有接入链接', 'clip-fail': '无法读取剪贴板',
-    'disconnected': '已断开', 'no-nodes': '尚未连接端点', 'no-rules': '无生效规则', 'no-creds': '无保存的凭据',
+    'disconnected': '已断开', 'no-rules': '无生效规则', 'no-creds': '尚未添加扇入',
   },
   en: {
     'st-connected': 'Connected', 'st-connecting': 'Connecting', 'st-reconnecting': 'Reconnecting', 'st-disconnected': 'Disconnected',
@@ -127,13 +127,13 @@ const I18N = {
     'banner-degraded': 'Node {name} unreachable, reconnecting…',
     'banner-down': 'Node {name} is offline; its networks are unreachable',
     'proxy-running': 'Proxy running', 'proxy-stopped': 'Proxy stopped',
-    'reconnecting-nodes': 'Reconnecting {n} saved nodes…',
+    'reconnecting-nodes': 'Reconnecting {n} saved fan-ins…',
     'connected-toast': 'Connected {name} ({n} rules)',
     'proxy-on': 'Proxy started', 'proxy-off': 'Proxy stopped',
     'btn-start-proxy': 'Start Proxy', 'btn-stop-proxy': 'Stop Proxy',
     'err-need-url': 'Please paste a connect URL', 'err-bad-url': 'Invalid URL: must start with agilenet://connect?',
     'clip-ok': 'Connect URL detected in clipboard', 'clip-none': 'No connect URL in clipboard', 'clip-fail': 'Cannot read clipboard',
-    'disconnected': 'Disconnected', 'no-nodes': 'No nodes connected', 'no-rules': 'No active rules', 'no-creds': 'No saved credentials',
+    'disconnected': 'Disconnected', 'no-rules': 'No active rules', 'no-creds': 'No fan-in saved',
   },
 };
 let LANG = localStorage.getItem('ag_lang') || 'zh';
@@ -267,12 +267,10 @@ function friendlyError(e) {
 function updateOnboarding(nodes) {
   const empty = !nodes || nodes.length === 0;
   $('onboarding').style.display = empty ? 'block' : 'none';
-  $('quick-card').style.display = empty ? 'none' : 'block';
-  $('creds-card').style.display = (window._creds && Object.keys(window._creds).length) ? 'block' : 'none';
 }
 
 /* ================= 列表过滤（搜索） ================= */
-const FILTERS = { nodes: '', creds: '', rules: '' };
+const FILTERS = { creds: '', rules: '' };
 function bindSearch() {
   document.querySelectorAll('.search-toggle').forEach(btn => {
     btn.onclick = () => {
@@ -283,13 +281,12 @@ function bindSearch() {
       else { row.hidden = true; input.value = ''; setFilter(key, ''); }
     };
   });
-  ['nodes', 'creds', 'rules'].forEach(key => {
+  ['creds', 'rules'].forEach(key => {
     $('search-' + key).querySelector('input').oninput = (e) => setFilter(key, e.target.value);
   });
 }
 function setFilter(key, v) {
   FILTERS[key] = v.trim().toLowerCase();
-  if (key === 'nodes') renderNodeList(window._nodes || []);
   if (key === 'rules') renderMergedRules(window._nodes || []);
   if (key === 'creds') renderCredList(window._credsRaw || [], window._nodeStatus || {});
 }
@@ -311,8 +308,8 @@ async function refreshNodes(force) {
   if (force || sig !== lastNodesSig) {
     lastNodesSig = sig;
     await loadPaused(nodes);
-    renderNodeList(nodes);
     renderMergedRules(nodes);
+    renderCredList(window._credsRaw || [], window._nodeStatus || {});
   }
   updateOnboarding(nodes);
 }
@@ -327,31 +324,6 @@ function statusBadgeHtml(s) {
   if (s === 'Connecting') return '<span class="badge b-warn"><span class="pulse"></span>' + T('st-connecting') + '</span>';
   if (s === 'Reconnecting') return '<span class="badge b-warn"><span class="pulse"></span>' + T('st-reconnecting') + '</span>';
   return '<span class="badge b-off">' + T('st-disconnected') + '</span>';
-}
-function renderNodeList(nodes) {
-  const list = $('nodes-list');
-  const f = FILTERS.nodes;
-  const shown = !f ? nodes : nodes.filter(n =>
-    n.node_name.toLowerCase().includes(f) || n.addr.toLowerCase().includes(f) || statusText(n.status).includes(f));
-  if (!shown.length) {
-    list.innerHTML = '<div class="empty">' + (f ? '无匹配结果' : T('no-nodes')) + '</div>';
-    return;
-  }
-  list.innerHTML = shown.map(n =>
-    '<div class="node-card' + (n.status === 'Connected' || n.status === 'Connecting' || n.status === 'Reconnecting' ? '' : ' down') + '"><div class="info">' +
-    '<div class="name">' + esc(n.node_name) + (n.username ? ' <span class="dim">· ' + esc(n.username) + '</span>' : '') + ' ' + statusBadgeHtml(n.status) + (n.admin_console ? ' <span class="badge b-info">可管理</span>' : '') + '</div>' +
-    '<div class="addr mono">' + esc(n.addr) + ' · 规则 ' + (n.rules || []).length + ' 条 · 配置 v' + n.config_version + '</div>' +
-    ((n.manageable || []).length
-      ? '<div class="addr" style="margin-top:4px">可管理扇出：' + n.manageable.map(m =>
-          '<span class="badge b-info">' + esc(m.node_name) + '</span>' +
-          (!HTTP_MODE ? ' <button class="ghost small" data-act="upconsole" data-id="' + esc(n.node_id) + '" data-up="' + esc(m.node_name) + '">' + AgIcon('monitor', 12) + ' 管理</button>' : '')
-        ).join(' ') + '</div>'
-      : '') +
-    '</div><div class="card-actions">' +
-    (n.admin_console && n.status === 'Connected' && !HTTP_MODE
-      ? '<button class="ghost small" data-act="console" data-id="' + esc(n.node_id) + '">' + AgIcon('monitor', 13) + ' 管理此端点</button>' : '') +
-    '<button class="danger small" data-act="disconnect" data-id="' + esc(n.node_id) + '">断开</button></div></div>'
-  ).join('');
 }
 
 /* ---- 路由合并视图（可暂停单条规则） ---- */
@@ -557,14 +529,11 @@ function initAdminMode() {
   });
 }
 
-/* ================= 控制台通道（管理此端点 / 可管理扇出；内嵌进主窗口） ================= */
+/* ================= 控制台通道（管理此端点；内嵌进主窗口） ================= */
 async function openNodeConsole(nodeId) {
   const n = (window._nodes || []).find(x => x.node_id === nodeId);
   const label = n ? n.node_name + (n.username ? ' · ' + n.username : '') : nodeId;
   await enterAdmin(nodeId, null, label);
-}
-async function openUpstreamConsole(nodeId, upstream) {
-  await enterAdmin(nodeId, upstream, upstream);
 }
 
 /* ================= 接入链接导入 ================= */
@@ -638,7 +607,7 @@ async function toggleProxy() {
   } catch (e) { toast(friendlyError(e), 'err'); }
 }
 
-/* ================= 已保存凭据（管理：连接/断开/导出/删除） ================= */
+/* ================= 扇入列表（已保存扇入为主体 + 未保存的活跃连接；连接/断开/导出/删除） ================= */
 async function refreshCreds() {
   try {
     const creds = await invoke('list_credentials');
@@ -651,27 +620,48 @@ async function refreshCreds() {
 function renderCredList(creds, statusMap) {
   const list = $('creds-list');
   const f = FILTERS.creds;
-  const shown = !f ? creds : creds.filter(([key, c]) =>
-    c.username.toLowerCase().includes(f) || c.addr.toLowerCase().includes(f) || key.toLowerCase().includes(f));
-  if (!shown.length) {
+  const nodeMap = Object.fromEntries((window._nodes || []).map(n => [n.node_id, n]));
+  // 未保存的活跃连接（手动连接未勾选保存凭据）：附在已保存扇入之后，仅可断开/管理
+  const savedKeys = new Set(creds.map(([k]) => k));
+  const unsaved = (window._nodes || []).filter(n => !savedKeys.has(n.node_id));
+  const live = (st) => st === 'Connected' || st === 'Connecting' || st === 'Reconnecting';
+  const match = (name, username, addr, st) => !f ||
+    name.toLowerCase().includes(f) || (username || '').toLowerCase().includes(f) ||
+    addr.toLowerCase().includes(f) || (st ? statusText(st) : '未连接').includes(f);
+  const shownCreds = creds.filter(([key, c]) =>
+    match(key.includes('@') ? key.slice(0, key.indexOf('@')) : key, c.username, c.addr, statusMap[key]));
+  const shownUnsaved = unsaved.filter(n => match(n.node_name, n.username, n.addr, n.status));
+  if (!shownCreds.length && !shownUnsaved.length) {
     list.innerHTML = '<div class="empty">' + (f ? '无匹配结果' : T('no-creds')) + '</div>';
     return;
   }
-  list.innerHTML = shown.map(([key, c]) => {
+  list.innerHTML = shownCreds.map(([key, c]) => {
     const st = statusMap[key];
+    const n = nodeMap[key];
     const badge = st ? statusBadgeHtml(st) : '<span class="badge b-gray">未连接</span>';
     const mainBtn = st === 'Connected'
       ? '<button class="ghost small" data-act="disconnect" data-key="' + esc(key) + '">断开</button>'
       : '<button class="ghost small" data-act="reconnect" data-key="' + esc(key) + '">' + (st ? '重连' : '连接') + '</button>';
     const epName = key.includes('@') ? key.slice(0, key.indexOf('@')) : key;
-    return '<div class="node-card"><div class="info">' +
+    return '<div class="node-card' + (live(st) ? '' : ' down') + '"><div class="info">' +
       '<div class="name">' + esc(epName) + ' <span class="dim">· ' + esc(c.username) + '</span> ' + badge + '</div>' +
       '<div class="addr mono">' + esc(c.addr) + (c.insecure ? ' · <span class="badge b-warn">insecure</span>' : '') + '</div>' +
-      '</div><div class="card-actions">' + mainBtn +
+      '</div><div class="card-actions">' +
+      (n && n.admin_console && st === 'Connected' && !HTTP_MODE
+        ? '<button class="ghost small" data-act="console" data-id="' + esc(key) + '">' + AgIcon('monitor', 13) + ' 管理</button>' : '') +
+      mainBtn +
       '<button class="ghost small icon-btn" title="导出接入链接（复制到剪贴板）" data-act="export" data-key="' + esc(key) + '">' + AgIcon('share-2', 13) + '</button>' +
-      '<button class="danger small icon-btn" title="删除该凭据" data-act="delcred" data-key="' + esc(key) + '">' + AgIcon('trash-2', 13) + '</button>' +
+      '<button class="danger small icon-btn" title="删除该扇入" data-act="delcred" data-key="' + esc(key) + '">' + AgIcon('trash-2', 13) + '</button>' +
       '</div></div>';
-  }).join('');
+  }).join('') + shownUnsaved.map(n =>
+    '<div class="node-card' + (live(n.status) ? '' : ' down') + '"><div class="info">' +
+    '<div class="name">' + esc(n.node_name) + (n.username ? ' <span class="dim">· ' + esc(n.username) + '</span>' : '') + ' ' + statusBadgeHtml(n.status) + ' <span class="badge b-gray">未保存</span></div>' +
+    '<div class="addr mono">' + esc(n.addr) + '</div>' +
+    '</div><div class="card-actions">' +
+    (n.admin_console && n.status === 'Connected' && !HTTP_MODE
+      ? '<button class="ghost small" data-act="console" data-id="' + esc(n.node_id) + '">' + AgIcon('monitor', 13) + ' 管理</button>' : '') +
+    '<button class="danger small" data-act="disconnect" data-key="' + esc(n.node_id) + '">断开</button></div></div>'
+  ).join('');
 }
 async function reconnectSaved(key, btn) {
   const c = (window._creds || {})[key];
@@ -695,7 +685,7 @@ async function deleteCred(key, btn) {
   if (btn.dataset.confirm === '1') {
     try {
       await invoke('delete_credential', { key });
-      toast('已删除保存的端点', 'ok');
+      toast('已删除保存的扇入', 'ok');
       refreshCreds();
     } catch (e) { toast(friendlyError(e), 'err'); }
     return;
@@ -1420,9 +1410,9 @@ function initTitlebarExtra() {
 function switchView(v) {
   document.querySelectorAll('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.view === v));
   document.querySelectorAll('.view').forEach(s => { s.hidden = s.id !== 'view-' + v; });
-  if (v === 'nodes' || v === 'routes') refreshNodes();
+  if (v === 'nodes') { refreshNodes(true); refreshCreds(); }
+  if (v === 'routes') refreshNodes();
   if (v === 'upstreams') refreshUpstreams();
-  if (v === 'connect') refreshCreds();
   if (v === 'subscription') { refreshSubs(); refreshSubStatus(); }
   if (v === 'proxy') { refreshSubs(); refreshGroups(); }
   if (v === 'settings') { refreshSysproxy(); refreshSubFeature(); }
@@ -1503,7 +1493,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   $('btn-import-hero').onclick = (e) => importUrl($('connect-url-hero').value, e.target);
   $('btn-paste').onclick = pasteFromClipboard;
   $('link-paste').onclick = pasteFromClipboard;
-  $('link-manual').onclick = () => toggleManual(true);
+  $('link-manual').onclick = () => { switchView('nodes'); toggleManual(true); };
   $('manual-toggle').onclick = () => toggleManual();
   $('connect-url').addEventListener('keydown', e => { if (e.key === 'Enter') $('btn-import').click(); });
   $('connect-url-hero').addEventListener('keydown', e => { if (e.key === 'Enter') $('btn-import-hero').click(); });
@@ -1520,16 +1510,9 @@ window.addEventListener('DOMContentLoaded', async () => {
     }, $('btn-connect'));
   };
   $('btn-proxy-toggle').onclick = toggleProxy;
-  $('btn-refresh').onclick = () => { refreshNodes(true); refreshProxy(); };
+  $('btn-refresh').onclick = () => { refreshNodes(true); refreshCreds(); refreshProxy(); };
 
   // 列表动作事件委托（CSP 禁止内联 onclick）
-  $('nodes-list').addEventListener('click', (e) => {
-    const btn = e.target.closest('button[data-act]');
-    if (!btn) return;
-    if (btn.dataset.act === 'disconnect') disconnectNode(btn.dataset.id);
-    if (btn.dataset.act === 'console') openNodeConsole(btn.dataset.id);
-    if (btn.dataset.act === 'upconsole') openUpstreamConsole(btn.dataset.id, btn.dataset.up);
-  });
   $('creds-list').addEventListener('click', (e) => {
     const btn = e.target.closest('button[data-act]');
     if (!btn) return;
@@ -1538,6 +1521,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     if (btn.dataset.act === 'disconnect') disconnectNode(key);
     if (btn.dataset.act === 'export') exportCred(key);
     if (btn.dataset.act === 'delcred') deleteCred(key, btn);
+    if (btn.dataset.act === 'console') openNodeConsole(btn.dataset.id);
   });
   $('rules-body').addEventListener('change', (e) => {
     const cb = e.target.closest('input[data-rule]');
@@ -1571,7 +1555,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   refreshProxy();
   await refreshCreds();
 
-  // 启动时自动重连已保存节点
+  // 启动时自动重连已保存的扇入
   if (PREFS.autoreconnect && window._creds) {
     const keys = Object.keys(window._creds);
     if (keys.length) {
