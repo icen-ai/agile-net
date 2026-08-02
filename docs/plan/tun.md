@@ -22,7 +22,8 @@
   - §2.4 回落外部上游：`gui-settings.json` 新增 `tun_mode` / `external_upstream`
     （默认 127.0.0.1:7890，serde default）；TUN 开启 → `set_proxy_fallback(外部上游)`
     + TCP 拨测一次（不通仅灵动岛告警不阻断）；审计 `gui.fallback_change`（记地址不记凭据）。
-  - §2.5 互斥与防环：TUN 开 → 统一出口强制关 + UI 置灰（反向亦拒绝开启）；
+  - §2.5 互斥与防环：TUN 开 → 统一出口强制关 + UI 置灰（反向亦拒绝开启；
+    2026-08-03 起已改为派生行为无开关，见 §2.5 正文）；
     回落目标校验（仅回环、严禁 57890/57892/59292）；`check_no_loop` 扩展
     （TUN 无 mixed-port / 57890 仅以 proxies 出站出现一次 / rules 必须 MATCH→ANET-IN），
     落盘前强制检查，违规拒绝启动内核。另：TUN 下出站模式固定 rule（global/direct 绕过 anet 分流）。
@@ -43,9 +44,9 @@
     出站不被 TUN 捕获，不成环）；`check_no_loop` 同步断言两项各出现且仅一次。
   - 回落优先级（`effective_fallback`）：TUN 且有激活订阅 → 57893 订阅出口；无激活订阅
     → 外部上游（默认 7890，校验同步禁指 57893）；拨测目标改为生效回落地址。
-  - 统一出口改**运行时排除**：TUN 期间 `effective_fallback` 的 TUN 分支优先，不再写死
-    `subscription_unified=false`——TUN 关闭后统一出口自动恢复用户原偏好（`set_tun_upstream`
-    与 `set_subscription_unified` 的互斥拒绝逻辑保留）。
+  - 统一出口语义迭代：先改运行时排除（不写死偏好），**2026-08-03 起进一步移除用户开关
+    改为派生行为**（订阅内核开 = 未命中走订阅出口 57892；TUN 开 = 自动接管 57893；
+    开关/互斥守卫/`set_subscription_unified` 命令全部移除，`subscription_unified` 字段删除）。
   - 优雅降级补强（abandon_tun 统一兜底）：UAC 取消/权限丢失/wintun 不可用/内核 TUN 启动
     失败/副作用失败 → 自动关 TUN 并以普通模式重启内核，审计 `gui.tun_abandon` + 一次性
     灵动岛提示（`tun_status.notice` 读取即清除）。
@@ -156,9 +157,10 @@ rules:
 
 ### 2.5 互斥与防环（硬约束）
 
-- **统一出口（回落→57892）与 TUN 严格互斥**：TUN 开启时统一出口强制关闭并置灰
-  （57890→57892→MATCH→57890 是死环）。
-- 回落目标合法性单测：TUN 模式下回落严禁指向 57890/57892/59292 及 loopback 外的未配置地址。
+- **统一出口与 TUN 语义互斥**（2026-08-03 起统一出口为派生行为，无用户开关）：
+  非 TUN 且订阅内核运行 → 回落 57892；TUN 开启 → 回落自动切换 57893（TUN 分支优先），
+  关 TUN 自动回落 57892——57890→57892→MATCH→57890 死环从配置上杜绝，无需用户操作。
+- 回落目标合法性单测：TUN 模式下回落严禁指向 57890/57892/57893/59292 及 loopback 外的未配置地址。
 - `assert_no_loop` 扩展：TUN 配置不得含 `mixed-port`；非 TUN 配置维持原断言。
 - mihomo TUN 配置中 57890 仅以 `proxies` 出站形式出现，rules 严禁回指 57892。
 

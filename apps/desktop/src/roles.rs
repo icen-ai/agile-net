@@ -46,9 +46,6 @@ pub struct RoleSettings {
     /// 订阅功能已安装激活（侧栏「订阅/代理」入口可见；安装内核成功后由用户显式激活）
     #[serde(default)]
     pub subscription_feature: bool,
-    /// 订阅流量经统一出口（ProxyRouter 回落到内核 mixed 入站；默认开）
-    #[serde(default = "default_true")]
-    pub subscription_unified: bool,
     /// 系统代理托管（指向本地代理端口；关闭时还原快照；默认开——多数人即开即用，
     /// 仅监听端口的本地代理模式面向需要手动配置应用的用户）
     #[serde(default = "default_true")]
@@ -121,7 +118,6 @@ impl Default for RoleSettings {
             web_listen: default_web_listen(),
             subscription: false,
             subscription_feature: false,
-            subscription_unified: true,
             system_proxy: true,
             sub_mode: default_sub_mode(),
             sub_scripts: Vec::new(),

@@ -340,13 +340,13 @@
         <div class="hint" id="sub-exit-geo" style="margin-top:4px"></div>
         <div class="kv" id="sub-traffic-row" style="display:none"><span class="k">流量</span><span class="mono" id="sub-traffic-total">-</span></div>
         <div class="dc-spark" id="sub-spark" style="display:none"></div>
-        <div style="display:flex;align-items:center;margin-top:8px"><label class="chk" style="margin-top:0"><input type="checkbox" id="s-unified" checked> 未命中 AgileNet 规则的流量经订阅出口</label><span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip">开启后本地代理 57890 单端口同时承接订阅出口流量，应用无需区分端口</span></span></div>
+        <div class="hint" style="margin-top:6px">未命中 AgileNet 规则的流量自动经订阅出口</div>
       </div>
 
       <!-- TUN 模式（docs/plan/tun.md P1：网卡层接管，anet 在前 FlClash 在后；仅 Windows x64，需管理员） -->
       <div class="card" id="tun-card">
         <h3><i data-ic="layers"></i>TUN 模式 <span class="hint inline" id="tun-status-text">未开启</span>
-          <span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip">虚拟网卡接管全部流量（含不读系统代理的应用）：先走 anet 分流，命中规则走隧道，未命中回落订阅出口（无订阅时回落外部上游）；需管理员权限，与统一出口互斥</span></span>
+          <span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip">虚拟网卡接管全部流量（含不读系统代理的应用）：先走 anet 分流，命中规则走隧道，未命中回落订阅出口（无订阅时回落外部上游）；需管理员权限</span></span>
           <span class="h3-tools"><label class="switch"><input type="checkbox" id="tun-mode"><span class="slider"></span></label></span>
         </h3>
         <div class="kv"><span class="k">外部上游 <span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip">无可用订阅时未命中流量的回落目标（如 FlClash mixed 入站）；有订阅时未命中流量自动走订阅出口（127.0.0.1:57893）；仅允许本机回环地址</span></span></span>

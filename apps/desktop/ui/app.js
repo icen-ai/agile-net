@@ -1617,12 +1617,9 @@ async function initRoles() {
   $('r-server').checked = settings.server;
   $('d-server').checked = settings.server;
   $('r-web').checked = settings.web;
-  $('s-unified').checked = settings.subscription_unified !== false;
-  // TUN 初值（详细状态由 refreshTun 轮询同步；此处先落开关与互斥置灰避免闪烁）
+  // TUN 初值（详细状态由 refreshTun 轮询同步；此处先落开关）
   TUN_UPSTREAM = settings.external_upstream || TUN_UPSTREAM;
   $('tun-mode').checked = !!settings.tun_mode;
-  $('s-unified').disabled = !!settings.tun_mode;
-  if (settings.tun_mode) $('s-unified').checked = false;
   const subMode = settings.sub_mode || 'rule';
   $('sub-mode').value = subMode;
   $('sub-mode').dataset.prev = subMode;
@@ -2218,12 +2215,6 @@ function initSubscription() {
     }
   };
   initSubScripts();
-  $('s-unified').onchange = async (e) => {
-    try {
-      await invoke('set_subscription_unified', { enabled: e.target.checked });
-      toast(e.target.checked ? '统一出口已开启（57890 单端口）' : '统一出口已关闭', 'ok');
-    } catch (err) { e.target.checked = !e.target.checked; toast(friendlyError(err), 'err'); }
-  };
 
   /* 代理页事件 */
   $('group-tabs').addEventListener('click', (e) => {
@@ -2382,9 +2373,7 @@ function applyTunStatus(st) {
     else stateTxt = '内核未运行';
   }
   setText('tun-state', stateTxt);
-  // 互斥（§2.5）：TUN 开 → 统一出口强制关并置灰；出站模式固定规则（global/direct 会绕过 anet 分流）
-  $('s-unified').disabled = TUN_ON;
-  if (TUN_ON) $('s-unified').checked = false;
+  // 互斥（§2.5）：TUN 下出站模式固定 rule（global/direct 会绕过 anet 分流）
   const modeSel = $('sub-mode');
   if (modeSel.disabled !== TUN_ON) { modeSel.disabled = TUN_ON; agSelectRefresh(modeSel); }
   // 上游不可达灵动岛告警（签名去重：同一地址只弹一次，恢复后重置）
