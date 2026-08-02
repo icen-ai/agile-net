@@ -136,6 +136,13 @@ fn reuse_local_wintun(dll: &PathBuf) -> Result<bool, String> {
 /// 确保 wintun.dll 存在（已存在 / 本地候选复用即返回），仅 Windows x64 需要。
 /// 缺失时**不再当场下载**——返回 NEED_DOWNLOAD 错误，由下载管理器（download.rs）
 /// 后台流式下载 + 进度展示，完成后前端重试原动作（见 set_tun_mode）。
+/// wintun.dll 0.14.1 (amd64) 官方原版内嵌——wireguard.com 在受限网络不可达、
+/// gh 镜像又不能代理非 github 域名，下载路径对国内用户必然失败（弹窗风暴根源），
+/// 故钉版本直接随二进制分发（wintun 为 MIT 许可，允许再分发；来源 https://www.wintun.net/）。
+/// 升级 = 替换 apps/desktop/wintun/wintun.dll + 更新 WINTUN_VERSION/WINTUN_DLL_SHA256。
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+static WINTUN_DLL_EMBEDDED: &[u8] = include_bytes!("../wintun/wintun.dll");
+
 pub async fn ensure_wintun() -> Result<PathBuf, String> {
     #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
     {
@@ -149,7 +156,16 @@ pub async fn ensure_wintun() -> Result<PathBuf, String> {
         }
         let dir = kernel_dir();
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-        // 优先本地候选复用（受限网络下 wireguard.com 不可达时的主路径，免下载）
+        // 主路径：内嵌官方 dll 落盘（钉值校验，杜绝编译期篡改）；免网络、免下载
+        {
+            use sha2::Digest;
+            if format!("{:x}", sha2::Sha256::digest(WINTUN_DLL_EMBEDDED)) == WINTUN_DLL_SHA256 {
+                std::fs::write(&dll, WINTUN_DLL_EMBEDDED)
+                    .map_err(|e| format!("wintun 内嵌落盘失败: {e}"))?;
+                return Ok(dll);
+            }
+        }
+        // 兜底：本地候选复用（Clash 系客户端自带同版本 dll）
         if reuse_local_wintun(&dll)? {
             return Ok(dll);
         }
@@ -1963,6 +1979,19 @@ pub fn load_proxy_cache() -> Option<serde_json::Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 内嵌 wintun.dll 必须与钉值一致（防替换错版本/构建期污染；升级时需同步三处）
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    #[test]
+    fn wintun_embedded_matches_pin() {
+        use sha2::Digest;
+        assert_eq!(WINTUN_VERSION, "0.14.1");
+        assert_eq!(
+            format!("{:x}", sha2::Sha256::digest(WINTUN_DLL_EMBEDDED)),
+            WINTUN_DLL_SHA256
+        );
+        assert_eq!(WINTUN_DLL_EMBEDDED.len(), 427_552);
+    }
 
     #[test]
     fn config_render_basic() {
