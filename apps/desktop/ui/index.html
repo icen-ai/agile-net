@@ -75,10 +75,10 @@
   <main class="content">
     <!-- 客户端角色关闭时的全局提示 -->
     <div id="role-banner" class="net-banner" style="display:none"><i data-ic="info" data-sz="14"></i>扇入已停用：下游连接与本地代理均已关闭，可在首页重新开启</div>
-    <!-- 首页：角色开关 / 本地代理（首次接入引导；扇入的添加与管理在扇入页） -->
+    <!-- 首页：运行概览仪表盘（代理 / 扇入 / 扇出 / 订阅 / 远程 / 网络检测；首次接入引导） -->
     <section class="view" id="view-connect">
       <div class="page-title"><i data-ic="home" data-sz="19"></i>首页</div>
-      <div class="page-desc">客户端 / 远程角色开关与本地代理（默认自动接管系统代理）；扇入的添加与管理在「扇入」页</div>
+      <div class="page-desc">运行概览：代理 / 扇入 / 扇出 / 订阅 / 远程与网络检测；开关在卡片右侧，点卡片进入对应页面</div>
 
       <!-- 空状态引导（未连接任何节点时显示） -->
       <div id="onboarding" class="hero" style="display:none">
@@ -97,42 +97,85 @@
         <div class="hero-alt">或 <a href="javascript:void(0)" id="link-paste">从剪贴板导入</a> · <a href="javascript:void(0)" id="link-manual">手动填写</a></div>
       </div>
 
-      <!-- 角色快捷开关：扇入（客户端角色）/ 远程（Web 远程面） -->
-      <div class="card" id="quick-roles-card">
-        <div class="role-list">
-          <div class="role-row">
-            <div class="role-info"><b>扇入</b><span class="hint">作为客户端连接 AgileNet 端点（消费连接；关闭即断开全部端点与本地代理）</span></div>
-            <label class="switch"><input type="checkbox" id="r-client" checked><span class="slider"></span></label>
-          </div>
-          <div class="role-row">
-            <div class="role-info"><b>远程</b><span class="hint">Web 远程面：把本机管理界面经 HTTP 暴露（默认仅 127.0.0.1，须先设管理密码）</span></div>
-            <label class="switch"><input type="checkbox" id="r-web"><span class="slider"></span></label>
-          </div>
-          <div id="web-panel" style="display:none">
-            <div class="kv"><span class="k">监听地址</span><span><input id="web-listen" class="mono" style="width:170px"> <button id="btn-web-listen-save" class="ghost small">保存</button></span></div>
-            <div class="hint" id="web-status"></div>
-          </div>
-        </div>
-      </div>
+      <!-- 仪表盘卡片网格（风格对齐管理端概览；local-only 卡在 Web 远程面隐藏） -->
+      <div class="dash-grid" id="dash-grid">
 
-      <!-- 代理 -->
-      <div class="card">
-        <h3><i data-ic="power"></i>代理 <span class="hint inline">SOCKS5 / HTTP 自动识别，仅监听 127.0.0.1</span></h3>
-        <div class="row">
-          <div class="group-tabs" id="proxy-mode" style="margin-bottom:0">
-            <button class="group-tab" data-proxy-mode="system">系统代理</button>
-            <button class="group-tab" data-proxy-mode="local">本地代理</button>
+        <!-- 代理：系统/本地模式 + 端口 + 启停开关 + 系统代理冲突 banner -->
+        <div class="dcard" id="dc-proxy">
+          <div class="dc-head"><i data-ic="power" data-sz="15"></i>代理 <span id="d-proxy-badge"></span>
+            <label class="switch dc-switch"><input type="checkbox" id="d-proxy"><span class="slider"></span></label>
           </div>
-          <label>端口</label>
-          <input id="proxy-port" type="number" value="57890" style="width:100px">
-          <button id="btn-proxy-toggle" class="ghost">启动代理</button>
-          <span class="hint" id="proxy-hint"></span>
+          <div class="row">
+            <div class="group-tabs" id="proxy-mode" style="margin-bottom:0">
+              <button class="group-tab" data-proxy-mode="system">系统代理</button>
+              <button class="group-tab" data-proxy-mode="local">本地代理</button>
+            </div>
+            <label style="margin:0">端口</label>
+            <input id="proxy-port" type="number" value="57890" style="width:90px">
+          </div>
+          <div class="dc-kv"><span class="k">监听</span><span class="mono v2" id="d-proxy-addr">-</span></div>
+          <div class="hint" id="proxy-hint" style="margin-top:0"></div>
+          <div class="net-banner" id="sysproxy-banner" style="display:none;margin-top:0">
+            <i data-ic="triangle-alert" data-sz="14"></i><span id="sysproxy-banner-text">系统代理已被外部修改</span>
+            <button class="ghost small" id="btn-sysproxy-reclaim" style="margin-left:auto">收回</button>
+          </div>
         </div>
-        <div class="hint" style="margin-top:6px">系统代理：自动接管系统流量，浏览器即开即用（推荐）；本地代理：仅监听端口，需手动配置应用</div>
-        <div class="net-banner" id="sysproxy-banner" style="display:none;margin-top:8px">
-          <i data-ic="triangle-alert" data-sz="14"></i><span id="sysproxy-banner-text">系统代理已被外部修改</span>
-          <button class="ghost small" id="btn-sysproxy-reclaim" style="margin-left:auto">收回</button>
+
+        <!-- 扇入：客户端角色开关 + 已连接/已保存数量（点卡片进扇入页） -->
+        <div class="dcard" id="dc-fanin" data-goto="nodes">
+          <div class="dc-head"><i data-ic="globe" data-sz="15"></i>扇入 <span id="d-fanin-off" style="display:none"><span class="badge b-off">已停用</span></span>
+            <label class="switch dc-switch local-only"><input type="checkbox" id="r-client" checked><span class="slider"></span></label>
+          </div>
+          <div class="dc-val" id="d-fanin-val">-</div>
+          <div class="dc-sub" id="d-fanin-sub">扇入加载中…</div>
         </div>
+
+        <!-- 扇出：监听开关 + 连通数 + API/Relay 地址简述（点卡片进扇出页） -->
+        <div class="dcard local-only" id="dc-fanout" data-goto="upstreams">
+          <div class="dc-head"><i data-ic="git-fork" data-sz="15"></i>扇出 <span id="d-server-badge"></span>
+            <label class="switch dc-switch"><input type="checkbox" id="d-server"><span class="slider"></span></label>
+          </div>
+          <div class="dc-val" id="d-fanout-val">-</div>
+          <div class="dc-sub" id="d-fanout-sub">扇出监听状态加载中…</div>
+        </div>
+
+        <!-- 订阅：内核开关 + 激活订阅/节点数 + 当前节点延迟；功能未激活显示引导态 -->
+        <div class="dcard local-only" id="dc-sub" data-goto="subscription">
+          <div class="dc-head"><i data-ic="satellite-dish" data-sz="15"></i>订阅 <span id="d-sub-badge"></span>
+            <label class="switch dc-switch" id="d-sub-switch"><input type="checkbox" id="d-sub"><span class="slider"></span></label>
+          </div>
+          <div id="d-sub-body">
+            <div class="dc-val" id="d-sub-val">-</div>
+            <div class="dc-sub" id="d-sub-sub">订阅加载中…</div>
+          </div>
+          <div id="d-sub-guide" style="display:none">
+            <div class="dc-sub">订阅代理（mihomo 内核）未启用</div>
+            <div class="dc-sub">到「设置 → 订阅代理」安装内核并激活，即可导入 Clash 系订阅</div>
+          </div>
+        </div>
+
+        <!-- 远程：Web 远程面开关 + 监听地址（原 web-panel 迁入） -->
+        <div class="dcard local-only" id="dc-web">
+          <div class="dc-head"><i data-ic="monitor" data-sz="15"></i>远程
+            <label class="switch dc-switch"><input type="checkbox" id="r-web"><span class="slider"></span></label>
+          </div>
+          <div class="dc-sub">Web 远程面：把本机管理界面经 HTTP 暴露（默认仅 127.0.0.1，须先设管理密码）</div>
+          <div id="web-panel" style="display:none">
+            <div class="dc-kv"><span class="k">监听地址</span><span><input id="web-listen" class="mono" style="width:150px"> <button id="btn-web-listen-save" class="ghost small">保存</button></span></div>
+            <div class="hint" id="web-status" style="margin-top:4px"></div>
+          </div>
+        </div>
+
+        <!-- 网络检测：出口 IP + 文字归属地 + 内网 IP + 手动刷新 -->
+        <div class="dcard local-only" id="dc-net">
+          <div class="dc-head"><i data-ic="activity" data-sz="15"></i>网络检测
+            <span class="h3-tools"><button class="ghost small icon-btn" id="btn-net-refresh" title="重新探测"><i data-ic="refresh-cw" data-sz="13"></i></button></span>
+          </div>
+          <div class="dc-val mono" id="d-net-ip">探测中…</div>
+          <div class="dc-sub" id="d-net-geo"></div>
+          <div class="dc-kv"><span class="k">内网 IP</span><span class="mono v2" id="d-net-lan">-</span></div>
+        </div>
+
       </div>
 
     </section>
@@ -255,6 +298,8 @@
         </h3>
         <div class="kv"><span class="k">内核版本</span><span class="mono" id="sub-version">-</span></div>
         <div class="kv"><span class="k">本地出口</span><span class="mono">127.0.0.1:57892（mixed）</span></div>
+        <div class="kv"><span class="k">出口 IP</span><span class="mono" id="sub-exit-ip">内核未运行</span></div>
+        <div class="hint" id="sub-exit-geo" style="margin-top:4px"></div>
         <label class="chk" style="margin-top:8px"><input type="checkbox" id="s-unified" checked> 未命中 AgileNet 规则的流量经订阅出口（统一 57890 单端口）</label>
       </div>
 

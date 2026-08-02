@@ -151,6 +151,10 @@ function esc(s) {
   }[c]));
 }
 
+/* 变更检测写入：内容不变不动 DOM（轮询渲染防频闪） */
+function setText(id, s) { const el = $(id); if (el && el.textContent !== s) el.textContent = s; }
+function setHtml(id, h) { const el = $(id); if (el && el.innerHTML !== h) el.innerHTML = h; }
+
 /* ================= ag-select 统一自定义下拉（共享组件，样式在 components.css） =================
    渐进增强：原生 select 保留为数据/逻辑载体（视觉隐藏），自定义 UI 与其双向同步——
    选择自定义项 = 写回 sel.value 并 dispatch change（冒泡，既有绑定照常触发）；
@@ -396,8 +400,11 @@ function friendlyError(e) {
 
 /* ================= 空状态引导 ================= */
 function updateOnboarding(nodes) {
-  const empty = !nodes || nodes.length === 0;
+  // 无任何活跃连接且未保存扇入 = 空状态：只显示接入引导；有数据后显示仪表盘卡片网格
+  const empty = (!nodes || nodes.length === 0) && !(window._credsRaw || []).length;
   $('onboarding').style.display = empty ? 'block' : 'none';
+  const dg = $('dash-grid');
+  if (dg) dg.style.display = empty ? 'none' : '';
 }
 
 /* ================= 列表过滤（搜索） ================= */
@@ -443,6 +450,7 @@ async function refreshNodes(force) {
     renderCredList(window._credsRaw || [], window._nodeStatus || {});
   }
   updateOnboarding(nodes);
+  updateDashFanin();
 }
 function statusText(s) {
   if (s === 'Connected') return T('st-connected');
@@ -719,29 +727,44 @@ async function refreshProxy() {
       text = T('proxy-stopped');
     }
     Island.setStatus(mode, text, degraded);
-    const btnText = st.running ? T('btn-stop-proxy') : T('btn-start-proxy');
-    if ($('btn-proxy-toggle').textContent !== btnText) $('btn-proxy-toggle').textContent = btnText;
+    // 仪表盘代理卡：开关态 / 状态徽标 / 监听地址（变更检测写入）
+    if ($('d-proxy').checked !== st.running) $('d-proxy').checked = st.running;
+    setHtml('d-proxy-badge', st.running ? '<span class="badge b-ok">运行中</span>' : '<span class="badge b-gray">未启动</span>');
+    setText('d-proxy-addr', st.running ? '127.0.0.1:' + st.port : '-');
     const hint = st.running
       ? (CUR_PROXY_MODE === 'system'
         ? '已接管系统代理 127.0.0.1:' + st.port + '，浏览器即开即用'
         : '本地代理运行中，应用手动指向 127.0.0.1:' + st.port + ' 即可')
-      : '';
+      : '系统代理：自动接管系统流量（推荐）；本地代理：仅监听端口，需手动配置应用';
     if ($('proxy-hint').textContent !== hint) $('proxy-hint').textContent = hint;
   } catch (e) {}
 }
-async function toggleProxy() {
+async function toggleProxy(e) {
+  const on = e.target.checked;
   try {
-    const st = await invoke('proxy_status');
-    if (st.running) {
-      await invoke('stop_proxy');
-      toast(T('proxy-off'), 'ok');
-    } else {
+    if (on) {
       const port = parseInt($('proxy-port').value || '57890', 10);
       const actual = await invoke('start_proxy', { port });
       toast(T('proxy-on') + ' 127.0.0.1:' + actual, 'ok');
+    } else {
+      await invoke('stop_proxy');
+      toast(T('proxy-off'), 'ok');
     }
     refreshProxy();
-  } catch (e) { toast(friendlyError(e), 'err'); }
+  } catch (err) {
+    e.target.checked = !on;
+    toast(friendlyError(err), 'err');
+  }
+}
+
+/* ================= 仪表盘：扇入卡（已连接 / 已保存概览） ================= */
+function updateDashFanin() {
+  const nodes = window._nodes || [];
+  const saved = (window._credsRaw || []).length;
+  const conn = nodes.filter(n => n.status === 'Connected').length;
+  const trying = nodes.length - conn;
+  setText('d-fanin-val', conn + ' 已连接');
+  setText('d-fanin-sub', saved + ' 个已保存' + (trying ? ' · ' + trying + ' 个连接中/重连中' : ''));
 }
 
 /* ================= 扇入列表（已保存扇入为主体 + 未保存的活跃连接；连接/断开/导出/删除） ================= */
@@ -752,6 +775,7 @@ async function refreshCreds() {
     window._creds = Object.fromEntries(creds);
     renderCredList(creds, window._nodeStatus || {});
     invoke('list_nodes').then(nodes => updateOnboarding(nodes)).catch(() => {});
+    updateDashFanin();
   } catch (e) {}
 }
 function renderCredList(creds, statusMap) {
@@ -971,6 +995,8 @@ function closePwdModal(result) {
 }
 function applyClientRole(on) {
   $('role-banner').style.display = on ? 'none' : 'flex';
+  const off = $('d-fanin-off');
+  if (off) off.style.display = on ? 'none' : '';
 }
 async function refreshServerPanel() {
   let st = null;
@@ -980,6 +1006,60 @@ async function refreshServerPanel() {
   $('server-panel').style.display = on ? 'block' : 'none';
   $('sv-api').textContent = st.api_addr || '-';
   $('sv-relay').textContent = st.relay_addr || '-';
+}
+
+/* 仪表盘扇出卡：监听状态徽标 + 连通数 + API/Relay 地址简述（10s 轮询 + 变更后调用） */
+async function renderDashFanout() {
+  if (HTTP_MODE) return;
+  let st = null, conns = [];
+  try { st = await invoke('server_status'); } catch (e) {}
+  try { conns = await invoke('list_server_connectors'); } catch (e) {}
+  const running = !!(st && st.running);
+  const total = conns.length;
+  const ok = conns.filter(c => c.enabled && c.state === 'connected').length;
+  setHtml('d-server-badge', running ? '<span class="badge b-ok">监听中</span>' : '<span class="badge b-gray">未开启</span>');
+  setText('d-fanout-val', total ? ok + ' / ' + total + ' 连通' : '未配置');
+  setText('d-fanout-sub', running
+    ? 'API ' + (st.api_addr || '-') + ' · Relay ' + (st.relay_addr || '-')
+    : (total ? '扇出监听未开启 · ' + total + ' 条扇出已配置' : '扇出监听未开启'));
+}
+
+/* 扇出监听开关（扇出页 r-server 与仪表盘 d-server 双入口同一逻辑，状态互相同步） */
+function syncServerSwitch(v) {
+  $('r-server').checked = v;
+  const d = $('d-server');
+  if (d) d.checked = v;
+}
+async function serverToggle(on, el) {
+  try {
+    if (on) {
+      // 首开强制设管理密码
+      const st = await invoke('server_status');
+      if (!st.has_admin) {
+        el.checked = false;
+        const cred = await askPassword({
+          title: '设置服务端管理密码',
+          desc: '首开服务端角色须先设置内嵌端点管理员，该密码用于登录控制台。',
+          showUser: true,
+        });
+        if (!cred) return;
+        await invoke('init_server_admin', { username: cred.user, password: cred.pass });
+        el.checked = true;
+        toast('管理员已创建', 'ok');
+      }
+    }
+    await invoke('set_server_role', { enabled: on });
+    syncServerSwitch(on);
+    await refreshServerPanel();
+    refreshAdminEntry();
+    renderDashFanout();
+    toast(on ? '服务端角色已开启（内嵌端点运行中）' : '服务端角色已关闭', 'ok');
+  } catch (err) {
+    syncServerSwitch(false);
+    toast(friendlyError(err), 'err');
+    refreshServerPanel();
+    renderDashFanout();
+  }
 }
 function refreshWebPanel() {
   const on = $('r-web').checked;
@@ -991,6 +1071,7 @@ async function initRoles() {
   try { settings = await invoke('get_role_settings'); } catch (e) {}
   $('r-client').checked = settings.client;
   $('r-server').checked = settings.server;
+  $('d-server').checked = settings.server;
   $('r-web').checked = settings.web;
   $('s-unified').checked = settings.subscription_unified !== false;
   applySubFeature(!!settings.subscription_feature);
@@ -1011,35 +1092,8 @@ async function initRoles() {
     }
   };
 
-  $('r-server').onchange = async (e) => {
-    const on = e.target.checked;
-    try {
-      if (on) {
-        // 首开强制设管理密码
-        const st = await invoke('server_status');
-        if (!st.has_admin) {
-          e.target.checked = false;
-          const cred = await askPassword({
-            title: '设置服务端管理密码',
-            desc: '首开服务端角色须先设置内嵌端点管理员，该密码用于登录控制台。',
-            showUser: true,
-          });
-          if (!cred) return;
-          await invoke('init_server_admin', { username: cred.user, password: cred.pass });
-          e.target.checked = true;
-          toast('管理员已创建', 'ok');
-        }
-      }
-      await invoke('set_server_role', { enabled: on });
-      await refreshServerPanel();
-      refreshAdminEntry();
-      toast(on ? '服务端角色已开启（内嵌端点运行中）' : '服务端角色已关闭', 'ok');
-    } catch (err) {
-      e.target.checked = false;
-      toast(friendlyError(err), 'err');
-      refreshServerPanel();
-    }
-  };
+  $('r-server').onchange = (e) => serverToggle(e.target.checked, e.target);
+  $('d-server').onchange = (e) => serverToggle(e.target.checked, e.target);
 
   $('r-web').onchange = async (e) => {
     const on = e.target.checked;
@@ -1091,11 +1145,36 @@ let PROXY_DATA = null;
 let PROXY_CACHED = false; // true = 内核未运行，展示缓存快照（只读）
 let CUR_GROUP = null;
 
-/** 功能入口可见性（安装激活后侧栏出现「订阅/代理」） */
+/** 功能入口可见性（安装激活后侧栏出现「订阅/代理」；仪表盘订阅卡切引导态） */
 function applySubFeature(on) {
   document.querySelectorAll('.nav-item.sub-feature').forEach(n => { n.style.display = on ? '' : 'none'; });
   $('btn-activate-sub').style.display = on ? 'none' : '';
   $('btn-deactivate-sub').style.display = on ? '' : 'none';
+  const body = $('d-sub-body'), guide = $('d-sub-guide'), sw = $('d-sub-switch');
+  if (body) body.style.display = on ? '' : 'none';
+  if (guide) guide.style.display = on ? 'none' : '';
+  if (sw) sw.style.display = on ? '' : 'none';
+}
+
+/* 仪表盘订阅卡：激活订阅 + 节点数 + 当前节点延迟（PROXY_DATA 就绪后补充） */
+function updateDashSub() {
+  const active = SUBS.find(s => s.active);
+  let val, sub;
+  if (active) {
+    val = active.name;
+    sub = active.node_count + ' 节点 · 共 ' + SUBS.length + ' 个订阅';
+    const g = PROXY_DATA && CUR_GROUP && PROXY_DATA[CUR_GROUP];
+    if (g && g.now) {
+      const p = PROXY_DATA[g.now] || {};
+      const hist = (p.history && p.history.length) ? p.history[p.history.length - 1].delay : 0;
+      sub += ' · 当前 ' + g.now + (hist ? ' ' + hist + 'ms' : '');
+    }
+  } else {
+    val = SUBS.length ? SUBS.length + ' 个订阅' : '未添加订阅';
+    sub = SUBS.length ? '未激活，点卡片进订阅页激活' : '点卡片进订阅页添加';
+  }
+  setText('d-sub-val', val);
+  setText('d-sub-sub', sub);
 }
 
 function fmtBytes(n) {
@@ -1122,6 +1201,7 @@ async function refreshSubs() {
   $('proxy-sub-desc').textContent = active
     ? '当前激活：' + active.name + '（' + active.node_count + ' 节点）— 点击卡片切换，点闪电图标单点测速'
     : '请先在「订阅」页激活一个订阅';
+  updateDashSub();
   if (!SUBS.length) {
     list.innerHTML = '<div class="empty">尚未添加订阅</div>';
     return;
@@ -1154,6 +1234,16 @@ async function refreshSubStatus() {
     : (st.installed ? '已安装，未运行' : (st.supported ? '未开启' : '当前平台不支持'));
   $('sub-version').textContent = st.version || (st.installed ? '已安装' : '-');
   $('r-sub').checked = st.running;
+  // 仪表盘订阅卡开关与徽标同步（与订阅页内核开关同一角色）
+  const d = $('d-sub');
+  if (d) d.checked = st.running;
+  setHtml('d-sub-badge', st.running ? '<span class="badge b-ok">运行中</span>' : '<span class="badge b-gray">未运行</span>');
+  // 内核状态翻转：出口路径随之变化，立刻重探出口 IP（经 mihomo ↔ 直连）
+  if (window._subRunning !== st.running) {
+    window._subRunning = st.running;
+    NetProbe.refresh();
+  }
+  NetProbe.render();
   // 无论内核是否运行都刷新代理页（未运行时回落缓存快照，方便查看节点情况）
   refreshGroups();
 }
@@ -1205,6 +1295,7 @@ function renderNodeGrid() {
       (PROXY_CACHED ? '' : '<button class="node-test" data-test="' + esc(n) + '" title="测速">' + AgIcon('zap', 13) + '</button>') +
       '</div></div>';
   }).join('');
+  updateDashSub();
 }
 
 // provider 节点无单节点测速 API，后端仍是整组并发测（耗时相同），但单点只更新本卡片
@@ -1333,13 +1424,14 @@ function initSubscription() {
     }
   });
 
-  /* 内核角色开关（订阅页内核卡） */
-  $('r-sub').onchange = async (e) => {
+  /* 内核角色开关（订阅页 r-sub 与仪表盘 d-sub 双入口同一逻辑，checked 由 refreshSubStatus 统一同步） */
+  const subToggle = async (e) => {
     const on = e.target.checked;
-    e.target.disabled = true;
+    const el = e.target;
+    el.disabled = true;
     try {
       if (on && !SUBS.length) {
-        e.target.checked = false;
+        el.checked = false;
         toast('请先添加订阅', 'err');
         openSubModal();
         return;
@@ -1348,12 +1440,14 @@ function initSubscription() {
       toast(on ? '订阅代理已开启（内核运行中）' : '订阅代理已关闭', 'ok');
       refreshSubStatus();
     } catch (err) {
-      e.target.checked = !on;
+      el.checked = !on;
       toast(friendlyError(err), 'err');
     } finally {
-      e.target.disabled = false;
+      el.disabled = false;
     }
   };
+  $('r-sub').onchange = subToggle;
+  $('d-sub').onchange = subToggle;
   $('s-unified').onchange = async (e) => {
     try {
       await invoke('set_subscription_unified', { enabled: e.target.checked });
@@ -1451,7 +1545,7 @@ async function refreshSysproxy() {
   if (st.managed && st.conflict) {
     banner.style.display = 'flex';
     $('sysproxy-banner-text').textContent = '系统代理已被外部修改（当前 ' + (st.current || '未启用') + '，期望 ' + st.expected + '）';
-    if (!_spConflict) { _spConflict = true; toast('系统代理已被外部修改，可在「连接」页收回', 'err'); }
+    if (!_spConflict) { _spConflict = true; toast('系统代理已被外部修改，可在「首页」收回', 'err'); }
   } else {
     banner.style.display = 'none';
     _spConflict = false;
@@ -1484,6 +1578,66 @@ function initSysproxy() {
     catch (err) { toast(friendlyError(err), 'err'); }
   };
 }
+
+/* ================= 网络检测（出口 IP / 文字归属地 / 内网 IP） =================
+   JS 侧缓存结果：30s 轮询 + 内核状态翻转/手动刷新时重探；签名对比，不变不重绘。
+   订阅内核运行时经 mihomo mixed 出口探测（验证订阅代理真实生效），否则直连。 */
+const NetProbe = {
+  data: null,   // { ip, country, country_code, via } 或 { fail: true, via }
+  lan: '',
+  _sig: '',
+  _busy: false,
+  async refresh(force) {
+    if (HTTP_MODE || (this._busy && !force)) return;
+    this._busy = true;
+    const via = !!window._subRunning;
+    try {
+      const r = await invoke('fetch_exit_ip', { viaProxy: via });
+      this.data = { ip: r.ip, country: r.country, country_code: r.country_code, via };
+    } catch (e) {
+      this.data = { fail: true, via };
+    }
+    this._busy = false;
+    this.render();
+  },
+  async refreshLan() {
+    if (HTTP_MODE) return;
+    try {
+      const r = await invoke('lan_ip');
+      this.lan = r.ip + (r.iface ? '（' + r.iface + '）' : '');
+    } catch (e) { this.lan = ''; }
+    this.render();
+  },
+  render() {
+    const sig = JSON.stringify(this.data) + '|' + this.lan + '|' + window._subRunning;
+    if (sig === this._sig) return;
+    this._sig = sig;
+    const d = this.data;
+    const geo = (x) => [x.country_code, x.country].filter(Boolean).join(' · ');
+    // 首页网络检测卡：失败仅显示「探测失败」，不占位报错
+    setText('d-net-ip', !d ? '探测中…' : (d.fail ? '探测失败' : d.ip));
+    setText('d-net-geo', !d ? '' : (d.fail
+      ? (d.via ? '经 mihomo 出口探测失败' : '直连出口探测失败')
+      : (geo(d) || '归属地未知') + ' · ' + (d.via ? '经 mihomo 出口' : '直连出口')));
+    setText('d-net-lan', this.lan || '-');
+    // 订阅页：内核运行时同显出口（验证 mihomo 是否代理成功），只采用经内核出口的探测结果
+    if ($('sub-exit-ip')) {
+      if (!window._subRunning) {
+        setText('sub-exit-ip', '内核未运行');
+        setText('sub-exit-geo', '');
+      } else if (d && d.via && !d.fail) {
+        setText('sub-exit-ip', d.ip);
+        setText('sub-exit-geo', (geo(d) || '归属地未知') + ' · 经 mihomo 出口');
+      } else if (d && d.via && d.fail) {
+        setText('sub-exit-ip', '探测失败');
+        setText('sub-exit-geo', '经 mihomo 出口探测失败');
+      } else {
+        setText('sub-exit-ip', '探测中…');
+        setText('sub-exit-geo', '');
+      }
+    }
+  },
+};
 
 /* ================= 设置 ================= */
 async function loadSettings() {
@@ -1552,6 +1706,7 @@ function initTitlebarExtra() {
 function switchView(v) {
   document.querySelectorAll('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.view === v));
   document.querySelectorAll('.view').forEach(s => { s.hidden = s.id !== 'view-' + v; });
+  if (v === 'connect') { refreshNodes(); refreshProxy(); renderDashFanout(); NetProbe.render(); }
   if (v === 'nodes') { refreshNodes(true); refreshCreds(); }
   if (v === 'routes') refreshNodes();
   if (v === 'upstreams') refreshUpstreams();
@@ -1582,10 +1737,9 @@ window.addEventListener('DOMContentLoaded', async () => {
   initAdminMode();
   initUpstreams();
 
-  // 浏览器模式（Web 远程面）：隐藏本机专属 UI，未登录先出登录框
+  // 浏览器模式（Web 远程面）：本机专属卡片/开关经 .local-only 隐藏，未登录先出登录框
   if (HTTP_MODE) {
     document.body.classList.add('http-mode');
-    const rc = $('quick-roles-card'); if (rc) rc.style.display = 'none';
     const as = $('s-autostart'); if (as) { const l = as.closest('label'); if (l) l.style.display = 'none'; }
     const sp = $('proxy-mode'); if (sp) sp.style.display = 'none';
     const subNav = document.querySelector('.nav-item[data-view="subscription"]');
@@ -1651,7 +1805,14 @@ window.addEventListener('DOMContentLoaded', async () => {
       save_credential: $('m-save').checked,
     }, $('btn-connect'));
   };
-  $('btn-proxy-toggle').onclick = toggleProxy;
+  $('d-proxy').onchange = toggleProxy;
+  $('btn-net-refresh').onclick = () => { NetProbe.refresh(true); NetProbe.refreshLan(); };
+  // 仪表盘卡片：点非开关/按钮区跳对应页面（开关经 change 事件自行处理）
+  $('dash-grid').addEventListener('click', (e) => {
+    if (e.target.closest('.switch, button, input, select, a, .group-tabs')) return;
+    const card = e.target.closest('[data-goto]');
+    if (card) switchView(card.dataset.goto);
+  });
   $('btn-refresh').onclick = () => { refreshNodes(true); refreshCreds(); refreshProxy(); };
 
   // 列表动作事件委托（CSP 禁止内联 onclick）
@@ -1696,6 +1857,9 @@ window.addEventListener('DOMContentLoaded', async () => {
   applyTheme();
   refreshNodes(true);
   refreshProxy();
+  renderDashFanout();
+  NetProbe.refresh();
+  NetProbe.refreshLan();
   await refreshCreds();
 
   // 启动时自动重连已保存的扇入
@@ -1709,5 +1873,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     }
   }
 
-  setInterval(() => { refreshNodes(); refreshProxy(); refreshSubStatus(); refreshSysproxy(); }, 10000);
+  setInterval(() => { refreshNodes(); refreshProxy(); refreshSubStatus(); refreshSysproxy(); renderDashFanout(); }, 10000);
+  // 出口 IP 探测 30s 轮询（结果带签名对比，不变不重绘）
+  setInterval(() => { NetProbe.refresh(); }, 30000);
 });

@@ -325,6 +325,21 @@ th { text-align: left; color: var(--dim2); font-size: 12px; font-weight: 500; pa
 td { padding: 8px; border-bottom: 1px solid var(--row-border); }
 tr:last-child td { border-bottom: none; }
 
+/* ===== 首页仪表盘（卡片网格；风格对齐管理端概览 stat 卡，开关在卡片右侧） ===== */
+.dash-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(258px, 1fr)); gap: 12px; margin-bottom: 14px; }
+.dcard { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 13px 15px; box-shadow: 0 1px 3px rgba(0,0,0,.045); display: flex; flex-direction: column; gap: 8px; min-width: 0; align-items: flex-start; }
+.dcard > * { width: 100%; }
+.dcard[data-goto] { cursor: pointer; transition: border-color .15s, box-shadow .18s var(--ease), transform .18s var(--ease); }
+.dcard[data-goto]:hover { border-color: var(--border2); transform: translateY(-1px); box-shadow: 0 4px 14px rgba(0,0,0,.07); }
+html[data-theme="dark"] .dcard[data-goto]:hover { box-shadow: 0 4px 14px rgba(0,0,0,.3); }
+.dc-head { display: flex; align-items: center; gap: 7px; color: var(--text-strong); font-size: 13px; font-weight: 600; }
+.dc-head .dc-switch, .dc-head .h3-tools { margin-left: auto; }
+.dc-val { font-size: 19px; font-weight: 600; color: var(--text-strong); font-variant-numeric: tabular-nums; line-height: 1.35; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dc-sub { font-size: 11.5px; color: var(--dim2); line-height: 1.5; }
+.dc-kv { display: flex; justify-content: space-between; align-items: center; gap: 10px; font-size: 12.5px; }
+.dc-kv .k { color: var(--dim); flex-shrink: 0; }
+.dc-kv .v2 { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 /* ===== 响应式：窄屏（Android 竖屏等）侧栏转顶部横排导航 ===== */
 @media (max-width: 720px) {
   .tb-controls { display: none; }
@@ -353,5 +368,6 @@ tr:last-child td { border-bottom: none; }
 .modal label { display: block; font-size: 12px; color: var(--dim); margin-bottom: 4px; }
 .modal input { width: 100%; box-sizing: border-box; }
 
-/* ===== 浏览器模式（Web 远程面）：隐藏窗口控制 ===== */
+/* ===== 浏览器模式（Web 远程面）：隐藏窗口控制与本机专属卡片/开关 ===== */
 body.http-mode .tb-controls { display: none; }
+body.http-mode .local-only { display: none !important; }
