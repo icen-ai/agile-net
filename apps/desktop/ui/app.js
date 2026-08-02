@@ -1618,6 +1618,14 @@ async function initRoles() {
   $('d-server').checked = settings.server;
   $('r-web').checked = settings.web;
   $('s-unified').checked = settings.subscription_unified !== false;
+  // TUN 初值（详细状态由 refreshTun 轮询同步；此处先落开关与互斥置灰避免闪烁）
+  TUN_UPSTREAM = settings.external_upstream || TUN_UPSTREAM;
+  $('tun-mode').checked = !!settings.tun_mode;
+  $('s-unified').disabled = !!settings.tun_mode;
+  if (settings.tun_mode) $('s-unified').checked = false;
+  const subMode = settings.sub_mode || 'rule';
+  $('sub-mode').value = subMode;
+  $('sub-mode').dataset.prev = subMode;
   applySubFeature(!!settings.subscription_feature);
   WEB_LISTEN = settings.web_listen;
   applyClientRole(settings.client);
@@ -1775,6 +1783,13 @@ async function refreshSubStatus() {
   const d = $('d-sub');
   if (d) d.checked = st.running;
   setHtml('d-sub-badge', st.running ? '<span class="badge b-ok">运行中</span>' : '<span class="badge b-gray">未运行</span>');
+  // 覆写脚本失败告警（签名去重：同一组失败只弹一次，恢复后重置）
+  const se = st.script_errors || [];
+  const seSig = JSON.stringify(se);
+  if (se.length && window._scriptErrSig !== seSig) {
+    toast('覆写脚本「' + se[0][0] + '」执行失败已跳过：' + se[0][1], 'err');
+  }
+  window._scriptErrSig = se.length ? seSig : '';
   // 内核状态翻转：出口路径随之变化，立刻重探出口 IP（经 mihomo ↔ 直连）
   if (window._subRunning !== st.running) {
     window._subRunning = st.running;
@@ -1938,6 +1953,170 @@ function openSubModal() {
   $('sub-url').focus();
 }
 
+/* ---------- 覆写脚本（JS：main(config) 管线；拖拽排序 + 独立开关 + 试跑） ---------- */
+let SUB_SCRIPTS = [];
+let SCRIPT_EDIT_ID = null; // null = 新建
+let SCRIPT_DRAG_ID = null;
+const SCRIPT_TEMPLATE = `const main = (config) => {
+  // config 为订阅生成的内核配置对象，修改后返回
+  config.proxies = config.proxies || [];
+  config.proxies.push({
+    name: "自建", type: "ss",
+    server: "example.com", port: 8388,
+    cipher: "aes-128-gcm", password: "密码"
+  });
+  config.rules = config.rules || [];
+  config.rules.unshift("DOMAIN-SUFFIX,example.com,自建");
+  return config;
+};`;
+
+async function refreshSubScripts() {
+  try { SUB_SCRIPTS = await invoke('list_sub_scripts'); } catch (e) { SUB_SCRIPTS = []; }
+  const sig = JSON.stringify(SUB_SCRIPTS.map(s => [s.id, s.name, s.enabled, s.order]));
+  const list = $('scripts-list');
+  if (!SUB_SCRIPTS.length) {
+    if (list.dataset.sig !== 'empty') { list.dataset.sig = 'empty'; list.innerHTML = '<div class="empty">尚未添加脚本</div>'; }
+    return;
+  }
+  if (list.dataset.sig === sig) return; // 变更检测：内容未变不重绘（避免拖拽中被轮询打断）
+  list.dataset.sig = sig;
+  list.innerHTML = SUB_SCRIPTS.map(s =>
+    '<div class="script-row" draggable="true" data-script-row="' + esc(s.id) + '">' +
+    '<span class="script-grip" title="拖拽排序">' + AgIcon('grip-vertical', 14) + '</span>' +
+    '<span class="script-name" title="' + esc(s.name) + '">' + esc(s.name) + '</span>' +
+    '<span class="script-state">' + (s.enabled ? '' : '已停用') + '</span>' +
+    '<label class="switch"><input type="checkbox" data-script-toggle="' + esc(s.id) + '"' + (s.enabled ? ' checked' : '') + '><span class="slider"></span></label>' +
+    '<button class="ghost small icon-btn" data-script-edit="' + esc(s.id) + '" title="编辑">' + AgIcon('pencil', 13) + '</button>' +
+    '<button class="ghost small icon-btn" data-script-del="' + esc(s.id) + '" title="删除">' + AgIcon('trash-2', 13) + '</button>' +
+    '</div>'
+  ).join('');
+}
+
+function openScriptModal(id) {
+  const sc = id ? SUB_SCRIPTS.find(s => s.id === id) : null;
+  SCRIPT_EDIT_ID = sc ? sc.id : null;
+  $('script-modal-title').textContent = sc ? '编辑脚本' : '新建脚本';
+  $('script-name').value = sc ? sc.name : '';
+  $('script-code').value = sc ? sc.code : SCRIPT_TEMPLATE;
+  $('script-err').textContent = '';
+  $('script-test-result').textContent = '';
+  $('script-modal').style.display = 'flex';
+  $('script-name').focus();
+}
+
+function initSubScripts() {
+  $('btn-add-script').onclick = () => openScriptModal(null);
+  $('script-cancel').onclick = () => { $('script-modal').style.display = 'none'; };
+  $('script-test').onclick = async () => {
+    const code = $('script-code').value;
+    const btn = $('script-test');
+    btn.disabled = true;
+    $('script-test-result').textContent = '试跑中…';
+    $('script-test-result').classList.remove('sm-err');
+    try {
+      const msg = await invoke('test_sub_script', { code });
+      $('script-test-result').textContent = msg;
+    } catch (err) {
+      $('script-test-result').textContent = friendlyError(err);
+      $('script-test-result').classList.add('sm-err');
+    } finally {
+      btn.disabled = false;
+    }
+  };
+  $('script-ok').onclick = async () => {
+    const name = $('script-name').value.trim();
+    const code = $('script-code').value;
+    if (!code.trim()) { $('script-err').textContent = '脚本代码不能为空'; return; }
+    const btn = $('script-ok');
+    btn.disabled = true;
+    $('script-err').textContent = '';
+    try {
+      if (SCRIPT_EDIT_ID) {
+        await invoke('update_sub_script', { id: SCRIPT_EDIT_ID, name, code });
+        toast('脚本已保存', 'ok');
+      } else {
+        await invoke('add_sub_script', { name, code });
+        toast('脚本已创建', 'ok');
+      }
+      $('script-modal').style.display = 'none';
+      refreshSubScripts();
+    } catch (err) {
+      $('script-err').textContent = friendlyError(err);
+    } finally {
+      btn.disabled = false;
+    }
+  };
+  const list = $('scripts-list');
+  list.addEventListener('click', async (e) => {
+    const btn = e.target.closest('button');
+    if (!btn) return;
+    try {
+      if (btn.dataset.scriptEdit) {
+        openScriptModal(btn.dataset.scriptEdit);
+      } else if (btn.dataset.scriptDel) {
+        if (btn.dataset.confirm === '1') {
+          await invoke('remove_sub_script', { id: btn.dataset.scriptDel });
+          toast('脚本已删除', 'ok');
+          refreshSubScripts();
+          return;
+        }
+        btn.dataset.confirm = '1';
+        const old = btn.innerHTML;
+        btn.innerHTML = '<span style="font-size:11px">确认</span>';
+        setTimeout(() => { if (btn.isConnected) { btn.dataset.confirm = ''; btn.innerHTML = old; } }, 2500);
+      }
+    } catch (err) { toast(friendlyError(err), 'err'); }
+  });
+  list.addEventListener('change', async (e) => {
+    const cb = e.target.closest('input[data-script-toggle]');
+    if (!cb) return;
+    try {
+      await invoke('set_sub_script_enabled', { id: cb.dataset.scriptToggle, enabled: cb.checked });
+      toast(cb.checked ? '脚本已启用' : '脚本已停用', 'ok');
+      refreshSubScripts();
+    } catch (err) { cb.checked = !cb.checked; toast(friendlyError(err), 'err'); }
+  });
+  /* HTML5 拖拽排序：drop 后按新顺序提交 reorder 命令 */
+  list.addEventListener('dragstart', (e) => {
+    const row = e.target.closest('[data-script-row]');
+    if (!row) return;
+    SCRIPT_DRAG_ID = row.dataset.scriptRow;
+    row.classList.add('dragging');
+    e.dataTransfer.effectAllowed = 'move';
+  });
+  list.addEventListener('dragend', () => {
+    SCRIPT_DRAG_ID = null;
+    list.querySelectorAll('.script-row').forEach(r => r.classList.remove('dragging', 'drop-before', 'drop-after'));
+  });
+  list.addEventListener('dragover', (e) => {
+    if (!SCRIPT_DRAG_ID) return;
+    const row = e.target.closest('[data-script-row]');
+    if (!row || row.dataset.scriptRow === SCRIPT_DRAG_ID) return;
+    e.preventDefault(); // 必须 preventDefault 才允许 drop
+    e.dataTransfer.dropEffect = 'move';
+    const rect = row.getBoundingClientRect();
+    const before = e.clientY < rect.top + rect.height / 2;
+    list.querySelectorAll('.script-row').forEach(r => r.classList.remove('drop-before', 'drop-after'));
+    row.classList.add(before ? 'drop-before' : 'drop-after');
+  });
+  list.addEventListener('drop', async (e) => {
+    if (!SCRIPT_DRAG_ID) return;
+    const row = e.target.closest('[data-script-row]');
+    if (!row || row.dataset.scriptRow === SCRIPT_DRAG_ID) return;
+    e.preventDefault();
+    const rect = row.getBoundingClientRect();
+    const before = e.clientY < rect.top + rect.height / 2;
+    const ids = SUB_SCRIPTS.map(s => s.id).filter(id => id !== SCRIPT_DRAG_ID);
+    let idx = ids.indexOf(row.dataset.scriptRow);
+    if (!before) idx += 1;
+    ids.splice(idx, 0, SCRIPT_DRAG_ID);
+    try {
+      await invoke('reorder_sub_scripts', { ids });
+      refreshSubScripts();
+    } catch (err) { toast(friendlyError(err), 'err'); }
+  });
+}
+
 function initSubscription() {
   $('btn-add-sub').onclick = openSubModal;
   $('sub-cancel').onclick = () => { $('sub-modal').style.display = 'none'; };
@@ -2024,6 +2203,21 @@ function initSubscription() {
   };
   $('r-sub').onchange = subToggle;
   $('d-sub').onchange = subToggle;
+  /* 出站模式：切换即持久化，内核运行中控制器热切（后端 PATCH /configs） */
+  $('sub-mode').onchange = async (e) => {
+    const prev = e.target.dataset.prev || 'rule';
+    try {
+      await invoke('set_sub_mode', { mode: e.target.value });
+      e.target.dataset.prev = e.target.value;
+      const label = { rule: '规则', global: '全局', direct: '直连' }[e.target.value] || e.target.value;
+      toast('出站模式已切换为 ' + label, 'ok');
+    } catch (err) {
+      e.target.value = prev;
+      agSelectRefresh(e.target);
+      toast(friendlyError(err), 'err');
+    }
+  };
+  initSubScripts();
   $('s-unified').onchange = async (e) => {
     try {
       await invoke('set_subscription_unified', { enabled: e.target.checked });
@@ -2118,7 +2312,8 @@ async function refreshSysproxy() {
   document.querySelectorAll('#proxy-mode .group-tab').forEach(b =>
     b.classList.toggle('active', b.dataset.proxyMode === CUR_PROXY_MODE));
   const banner = $('sysproxy-banner');
-  if (st.managed && st.conflict) {
+  // TUN 模式下冲突由后端巡检 30s 内自动收回（§2.6），不打扰用户
+  if (st.managed && st.conflict && !TUN_ON) {
     banner.style.display = 'flex';
     $('sysproxy-banner-text').textContent = '系统代理已被外部修改（当前 ' + (st.current || '未启用') + '，期望 ' + st.expected + '）';
     if (!_spConflict) { _spConflict = true; toast('系统代理已被外部修改，可在「首页」收回', 'err'); }
@@ -2151,6 +2346,117 @@ function initSysproxy() {
   $('btn-sysproxy-reclaim').onclick = async () => {
     try { await invoke('reclaim_sysproxy'); toast('已收回系统代理', 'ok'); refreshSysproxy(); }
     catch (err) { toast(friendlyError(err), 'err'); }
+  };
+}
+
+/* ================= TUN 模式（anet 在前 FlClash 在后；Windows x64，需管理员） =================
+   状态由后端 tun_status 轮询（10s 主轮询内），渲染全部走变更检测（setText/签名去重）；
+   开关/上游地址/提权弹窗事件显式绑定，无内联事件。 */
+let TUN_ON = false;
+let TUN_SUPPORTED = true;
+let TUN_UPSTREAM = '127.0.0.1:7890';
+
+function warnTunUpstream(st) {
+  if (st && st.upstream_ok === false) {
+    toast('外部上游 ' + st.upstream + ' 不可达：FlClash 未运行或端口不符，未命中流量将失败', 'err');
+  }
+}
+
+function applyTunStatus(st) {
+  TUN_ON = !!st.enabled;
+  TUN_SUPPORTED = !!st.supported;
+  if (st.upstream) TUN_UPSTREAM = st.upstream;
+  // 放弃开启的一次性提示（权限不足/启动失败回退普通模式；后端读取即清除，仅弹一次）
+  if (st.notice) toast(st.notice, 'err');
+  const toggle = $('tun-mode');
+  toggle.checked = TUN_ON;
+  toggle.disabled = !TUN_SUPPORTED;
+  setText('tun-status-text', !TUN_SUPPORTED ? '当前平台不支持' : (TUN_ON ? (st.running ? '运行中' : '内核未运行') : '未开启'));
+  // 状态行：运行中 / 权限不足 / 上游不可达
+  let stateTxt = '-';
+  if (!TUN_SUPPORTED) stateTxt = 'TUN 仅支持 Windows x64';
+  else if (TUN_ON) {
+    if (!st.admin) stateTxt = '权限不足（需管理员）';
+    else if (st.upstream_ok === false) stateTxt = '上游不可达（未命中流量将失败）';
+    else if (st.running) stateTxt = '运行中（系统代理已托管 57890）';
+    else stateTxt = '内核未运行';
+  }
+  setText('tun-state', stateTxt);
+  // 互斥（§2.5）：TUN 开 → 统一出口强制关并置灰；出站模式固定规则（global/direct 会绕过 anet 分流）
+  $('s-unified').disabled = TUN_ON;
+  if (TUN_ON) $('s-unified').checked = false;
+  const modeSel = $('sub-mode');
+  if (modeSel.disabled !== TUN_ON) { modeSel.disabled = TUN_ON; agSelectRefresh(modeSel); }
+  // 上游不可达灵动岛告警（签名去重：同一地址只弹一次，恢复后重置）
+  if (TUN_ON && st.upstream_ok === false && window._tunWarnSig !== st.upstream) {
+    window._tunWarnSig = st.upstream;
+    warnTunUpstream(st);
+  }
+  if (!(TUN_ON && st.upstream_ok === false)) window._tunWarnSig = '';
+}
+
+async function refreshTun() {
+  let st;
+  try { st = await invoke('tun_status'); } catch (e) { return; }
+  applyTunStatus(st);
+}
+
+function openTunElevateModal() {
+  $('tun-elevate-err').textContent = '';
+  $('tun-elevate-modal').style.display = 'flex';
+}
+
+function initTun() {
+  /* TUN 开关：非管理员 → 后端返回 NEED_ELEVATION，弹提权对话框（不直接 toast） */
+  $('tun-mode').onchange = async (e) => {
+    const on = e.target.checked;
+    const el = e.target;
+    el.disabled = true;
+    try {
+      const st = await invoke('set_tun_mode', { enabled: on });
+      applyTunStatus(st);
+      if (on) {
+        toast('TUN 模式已开启（系统代理已托管 127.0.0.1:57890）', 'ok');
+        warnTunUpstream(st);
+      } else {
+        toast('TUN 模式已关闭', 'ok');
+      }
+    } catch (err) {
+      el.checked = !on;
+      if (String(err).indexOf('NEED_ELEVATION:') === 0) openTunElevateModal();
+      else toast(friendlyError(err), 'err');
+    } finally {
+      el.disabled = !TUN_SUPPORTED;
+    }
+  };
+
+  /* 外部上游地址（agedit 行内编辑；后端严格校验：仅回环，严禁 57890/57892/59292） */
+  bindInlineEdit($('tun-upstream'), {
+    get: () => TUN_UPSTREAM,
+    validate: (v) => /^\S+:\d+$/.test(v) ? null : '地址格式应为 ip:port（如 127.0.0.1:7890）',
+    set: async (v) => {
+      const st = await invoke('set_tun_upstream', { addr: v });
+      TUN_UPSTREAM = v;
+      applyTunStatus(st);
+      toast('外部上游已保存', 'ok');
+      warnTunUpstream(st);
+    },
+  });
+
+  /* 提权弹窗：确认 → runas 拉起重启（进程退出，无需后续）；取消 → 审计 declined */
+  $('tun-elevate-cancel').onclick = async () => {
+    $('tun-elevate-modal').style.display = 'none';
+    try { await invoke('tun_elevation_declined'); } catch (e) {}
+  };
+  $('tun-elevate-ok').onclick = async (e) => {
+    const btn = e.target.closest('button');
+    btn.disabled = true;
+    try {
+      await invoke('tun_relaunch_elevated');
+    } catch (err) {
+      btn.disabled = false;
+      $('tun-elevate-err').textContent = friendlyError(err);
+    }
   };
 }
 
@@ -2285,7 +2591,7 @@ function switchView(v) {
   if (v === 'nodes') { refreshNodes(true); refreshCreds(); }
   if (v === 'routes') { refreshNodes(); refreshCustomRules(); refreshCombos(); }
   if (v === 'upstreams') refreshUpstreams();
-  if (v === 'subscription') { refreshSubs(); refreshSubStatus(); SubTraffic.poll(); }
+  if (v === 'subscription') { refreshSubs(); refreshSubStatus(); refreshSubScripts(); SubTraffic.poll(); }
   if (v === 'proxy') { refreshSubs(); refreshGroups(); }
   if (v === 'settings') { refreshSysproxy(); refreshSubFeature(); }
 }
@@ -2414,9 +2720,12 @@ window.addEventListener('DOMContentLoaded', async () => {
   initSubFeature();
   refreshSubFeature();
   initSysproxy();
+  initTun();
   refreshSubs();
   refreshSubStatus();
+  refreshSubScripts();
   refreshSysproxy();
+  refreshTun();
   $('s-lang').value = localStorage.getItem('ag_lang') || 'zh';
   $('s-theme').value = localStorage.getItem('ag_theme') || 'light';
   agSelectEnhance(document);
@@ -2452,7 +2761,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     }
   }
 
-  setInterval(() => { refreshNodes(); refreshProxy(); refreshSubStatus(); refreshSysproxy(); renderDashFanout(); refreshCustomRules(); refreshCombos(); }, 10000);
+  setInterval(() => { refreshNodes(); refreshProxy(); refreshSubStatus(); refreshSysproxy(); refreshTun(); renderDashFanout(); refreshCustomRules(); refreshCombos(); }, 10000);
   // 订阅内核流量 2s 轮询（sub_traffic 读 Atomic 快照，廉价；内部变更检测不重绘）
   setInterval(() => { SubTraffic.poll(); }, 2000);
   // 出口 IP 探测 30s 轮询（结果带签名对比，不变不重绘）

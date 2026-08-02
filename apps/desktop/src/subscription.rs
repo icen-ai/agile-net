@@ -67,6 +67,88 @@ fn download_urls(asset: &str) -> Vec<String> {
     ]
 }
 
+// ==================== wintun.dll 钉版本下发（TUN 模式，Windows x64） ====================
+
+/// 钉死的 wintun 版本（升级 = 改这里 + 更新哈希）
+pub const WINTUN_VERSION: &str = "0.14.1";
+/// wintun-0.14.1.zip 的 SHA-256（与内核同策略钉死；哈希与 wintun.net 官网、
+/// wireguard-windows 构建脚本等多源交叉验证一致）
+const WINTUN_ZIP_SHA256: &str = "07c256185d6ee3652e09fa55c0b673e2624b565e02c4b9091c79ca7d2f24ef51";
+/// 官方源（wintun 无镜像；完整性由 SHA-256 钉死保证）
+const WINTUN_ZIP_URL: &str = "https://download.wireguard.com/wintun/wintun-0.14.1.zip";
+
+/// wintun.dll 落盘位置（与 mihomo.exe 同目录，wintun 按 exe 相邻加载）。
+pub fn wintun_dll_path() -> PathBuf {
+    kernel_dir().join("wintun.dll")
+}
+
+/// 确保 wintun.dll 存在（缺失则下载 + SHA-256 校验 + 原子落盘），仅 Windows x64 需要。
+/// 校验失败拒绝落盘并审计 gui.wintun_tamper（同内核 gui.kernel_tamper 策略）。
+pub async fn ensure_wintun() -> Result<PathBuf, String> {
+    #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+    {
+        Err("TUN 模式当前仅支持 Windows x64".into())
+    }
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    {
+        let dll = wintun_dll_path();
+        if dll.exists() {
+            return Ok(dll);
+        }
+        let dir = kernel_dir();
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let client = reqwest::Client::builder()
+            .user_agent(format!("anet-gui/{MIHOMO_VERSION}"))
+            .timeout(std::time::Duration::from_secs(60))
+            .build()
+            .map_err(|e| e.to_string())?;
+        let resp = client
+            .get(WINTUN_ZIP_URL)
+            .send()
+            .await
+            .map_err(|e| format!("wintun 下载失败: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(format!("wintun 下载失败 (HTTP {})", resp.status()));
+        }
+        let bytes = resp.bytes().await.map_err(|e| format!("wintun 下载中断: {e}"))?;
+
+        // SHA-256 校验（钉死值，篡改可检出）
+        use sha2::Digest;
+        let actual = format!("{:x}", sha2::Sha256::digest(&bytes));
+        if actual != WINTUN_ZIP_SHA256 {
+            roles::audit(
+                "gui.wintun_tamper",
+                serde_json::json!({"expect": WINTUN_ZIP_SHA256, "actual": actual}),
+            );
+            return Err("wintun 校验失败（SHA-256 不匹配，已拒绝落盘并记录审计）".into());
+        }
+
+        // 解包 amd64/wintun.dll 到临时文件后原子改名
+        let reader = std::io::Cursor::new(bytes.as_ref());
+        let mut zip = zip::ZipArchive::new(reader).map_err(|e| e.to_string())?;
+        let mut inner = None;
+        for i in 0..zip.len() {
+            let name = zip.by_index(i).map_err(|e| e.to_string())?.name().to_string();
+            if name.replace('\\', "/").ends_with("bin/amd64/wintun.dll") {
+                inner = Some(name);
+                break;
+            }
+        }
+        let inner = inner.ok_or("wintun 包内未找到 amd64/wintun.dll")?;
+        let mut file = zip.by_name(&inner).map_err(|e| e.to_string())?;
+        let mut buf = Vec::with_capacity(file.size() as usize);
+        std::io::Read::read_to_end(&mut file, &mut buf).map_err(|e| e.to_string())?;
+        let tmp = dir.join("wintun.download");
+        std::fs::write(&tmp, buf).map_err(|e| e.to_string())?;
+        std::fs::rename(&tmp, &dll).map_err(|e| e.to_string())?;
+        roles::audit(
+            "gui.wintun_download",
+            serde_json::json!({"version": WINTUN_VERSION}),
+        );
+        Ok(dll)
+    }
+}
+
 // ==================== 订阅清单（敏感凭据，0600） ====================
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -120,6 +202,11 @@ fn kernel_bin_path() -> PathBuf {
 /// 内核二进制是否已安装。
 pub fn kernel_bin_exists() -> bool {
     kernel_bin_path().exists()
+}
+
+/// 当前平台是否支持订阅内核（有钉版本资产）。
+pub fn kernel_supported() -> bool {
+    kernel_asset().is_some()
 }
 
 fn config_path() -> PathBuf {
@@ -182,7 +269,16 @@ fn yaml_escape(s: &str) -> String {
 }
 
 /// 由订阅清单生成 mihomo config.yaml（仅加载当前激活订阅，单 provider 恒名 main）。
-pub fn render_config(store: &SubStore) -> String {
+/// mode 为出站模式（rule|global|direct，非法值回落 rule）；tun=true 走 TUN 骨架（§2.3）。
+pub fn render_config(store: &SubStore, mode: &str, tun: bool) -> String {
+    if tun {
+        return render_config_tun(store);
+    }
+    let mode = if roles::valid_sub_mode(mode) {
+        mode
+    } else {
+        "rule"
+    };
     let active = store.subscriptions.iter().find(|s| s.active);
     let mut s = String::new();
     s.push_str("# 本文件由 AgileNet 自动生成，手动修改将在下次启动时被覆盖\n");
@@ -193,20 +289,9 @@ pub fn render_config(store: &SubStore) -> String {
     ));
     s.push_str(&format!("secret: \"{}\"\n", yaml_escape(&store.secret)));
     s.push_str("log-level: warning\n");
-    s.push_str("mode: rule\n");
+    s.push_str(&format!("mode: {mode}\n"));
     s.push_str("unified-delay: true\n");
-    if let Some(sub) = active {
-        s.push_str("proxy-providers:\n");
-        s.push_str("  main:\n");
-        s.push_str("    type: http\n");
-        s.push_str(&format!("    url: \"{}\"\n", yaml_escape(&sub.url)));
-        s.push_str("    interval: 86400\n");
-        s.push_str("    proxy: DIRECT\n");
-        s.push_str("    health-check:\n");
-        s.push_str("      enable: true\n");
-        s.push_str("      url: http://www.gstatic.com/generate_204\n");
-        s.push_str("      interval: 600\n");
-    }
+    push_provider_section(&mut s, active);
     s.push_str("proxy-groups:\n");
     s.push_str("  - name: AGILE-SUB\n");
     s.push_str("    type: select\n");
@@ -220,11 +305,102 @@ pub fn render_config(store: &SubStore) -> String {
     s
 }
 
-/// 防环静态断言：生成配置不得把流量指回本地代理/控制面端口。
-#[cfg(test)]
-fn assert_no_loop(cfg: &str) {
-    assert!(!cfg.contains("57890"), "配置不得引用本地代理端口");
-    assert!(!cfg.contains("127.0.0.1:57892,DIRECT") || cfg.contains("IP-CIDR,127.0.0.0/8,DIRECT"));
+/// proxy-providers 段（两种模式共用；保留：代理页测速/切换仍走控制面，与数据面解耦）
+fn push_provider_section(s: &mut String, active: Option<&Subscription>) {
+    if let Some(sub) = active {
+        s.push_str("proxy-providers:\n");
+        s.push_str("  main:\n");
+        s.push_str("    type: http\n");
+        s.push_str(&format!("    url: \"{}\"\n", yaml_escape(&sub.url)));
+        s.push_str("    interval: 86400\n");
+        s.push_str("    proxy: DIRECT\n");
+        s.push_str("    health-check:\n");
+        s.push_str("      enable: true\n");
+        s.push_str("      url: http://www.gstatic.com/generate_204\n");
+        s.push_str("      interval: 600\n");
+    }
+}
+
+/// TUN 模式配置骨架（tun.md §2.3，全量重写原则不变）：
+/// 无 mixed-port（关闭 57892，防环关键）；TUN 捕获全部流量，fake-ip 保域名，
+/// 全部 TCP 经 ANET-IN（socks5 127.0.0.1:57890）转交 anet 路由器分流。
+/// 既定决策：TUN 配置不经过覆写脚本链——脚本作用于订阅代理配置语义，
+/// 本骨架的防环约束（无 mixed-port / ANET-IN 出站 / MATCH 指向）必须完整保留。
+fn render_config_tun(store: &SubStore) -> String {
+    let active = store.subscriptions.iter().find(|s| s.active);
+    let mut s = String::new();
+    s.push_str("# 本文件由 AgileNet 自动生成，手动修改将在下次启动时被覆盖（TUN 模式）\n");
+    // 防环关键：严禁 mixed-port（57892 关闭），否则 57890→57892→MATCH→57890 死环（§2.5）
+    s.push_str(&format!(
+        "external-controller: 127.0.0.1:{MIHOMO_CTRL_PORT}\n"
+    ));
+    s.push_str(&format!("secret: \"{}\"\n", yaml_escape(&store.secret)));
+    s.push_str("log-level: warning\n");
+    s.push_str("tun:\n");
+    s.push_str("  enable: true\n");
+    s.push_str("  stack: mixed              # TCP 系统栈 / UDP gVisor；异常时降级 gvisor\n");
+    s.push_str("  auto-route: true\n");
+    s.push_str("  auto-detect-interface: true\n");
+    s.push_str("  dns-hijack:\n");
+    s.push_str("    - any:53\n");
+    s.push_str("dns:\n");
+    // fake-ip 保域名：SOCKS5 CONNECT 以域名形式到达 57890，AgileNet 域名规则方可匹配
+    s.push_str("  enable: true\n");
+    s.push_str("  enhanced-mode: fake-ip\n");
+    s.push_str("  fake-ip-range: 198.18.0.1/16\n");
+    s.push_str("  nameserver:\n");
+    s.push_str("    - 223.5.5.5\n");
+    s.push_str("    - 119.29.29.29\n");
+    s.push_str("proxies:\n");
+    s.push_str("  - name: ANET-IN\n");
+    s.push_str("    type: socks5\n");
+    s.push_str("    server: 127.0.0.1\n");
+    s.push_str("    port: 57890             # 唯一允许出现 57890 的位置（出站形式）\n");
+    push_provider_section(&mut s, active);
+    s.push_str("proxy-groups:\n");
+    s.push_str("  - name: AGILE-SUB\n");
+    s.push_str("    type: select\n");
+    if active.is_some() {
+        s.push_str("    use:\n");
+        s.push_str("      - main\n");
+    }
+    s.push_str("rules:\n");
+    s.push_str("  - AND,((NETWORK,UDP),(DST-PORT,443)),REJECT   # 压制 QUIC：anet 入站不支持 UDP，强制回退 TCP\n");
+    s.push_str("  - NETWORK,UDP,DIRECT                          # 其余 UDP（STUN 等）直连，P1 不接管\n");
+    s.push_str("  - IP-CIDR,127.0.0.0/8,DIRECT,no-resolve\n");
+    s.push_str("  - MATCH,ANET-IN                               # 全部 TCP 转交 anet 路由器\n");
+    s
+}
+
+/// 防环静态检查（§2.5 硬约束）：配置生成后、落盘前执行，违规即拒绝启动内核。
+/// TUN 配置：不得含 mixed-port；57892 严禁出现；57890 仅以 proxies 出站形式出现一次；
+/// rules 必须 MATCH→ANET-IN（严禁回指 57892）。
+/// 非 TUN 配置：维持原断言（严禁引用本地代理 57890；mixed-port 57892 是内核自身入站，合法）。
+/// secret 行为随机十六进制，可能巧合命中端口数字串，不参与检查。
+pub(crate) fn check_no_loop(cfg: &str, tun: bool) -> Result<(), String> {
+    let body: Vec<&str> = cfg
+        .lines()
+        .filter(|l| !l.starts_with("secret:"))
+        .collect();
+    let hit = |needle: &str| body.iter().filter(|l| l.contains(needle)).count();
+    if tun {
+        if hit("mixed-port") > 0 {
+            return Err("TUN 配置严禁含 mixed-port（57892 与 57890 互指会成死环）".into());
+        }
+        if hit("57892") > 0 {
+            return Err("TUN 配置严禁引用 57892（防环）".into());
+        }
+        let n = hit("57890");
+        if n != 1 || !body.iter().any(|l| l.trim().starts_with("port: 57890")) {
+            return Err("TUN 配置中 57890 须且仅须出现在 ANET-IN proxies 出站".into());
+        }
+        if hit("  - MATCH,ANET-IN") != 1 {
+            return Err("TUN 配置 rules 必须以 MATCH,ANET-IN 收尾".into());
+        }
+    } else if hit("57890") > 0 {
+        return Err("配置不得引用本地代理端口 57890（防环）".into());
+    }
+    Ok(())
 }
 
 // ==================== 内核下载（钉版本 + SHA-256 校验 + 原子落盘） ====================
@@ -314,6 +490,8 @@ pub struct KernelStatus {
     pub version: String,
     pub restart_count: u32,
     pub last_error: String,
+    /// 最近一次生成配置时被跳过的覆写脚本（脚本名, 错误摘要；空 = 全部成功）
+    pub script_errors: Vec<(String, String)>,
 }
 
 /// 内核进程托管：启动/停止/崩溃退避重启（上限 5 次后放弃并审计）。
@@ -325,6 +503,8 @@ pub struct KernelManager {
     /// /traffic WS 累计器（内核启动时挂任务，停止即清零）
     traffic: Arc<TrafficStats>,
     traffic_stop: Arc<std::sync::Mutex<Option<tokio::sync::mpsc::Sender<()>>>>,
+    /// 最近一次启动时覆写脚本失败摘要（供前端灵动岛告警展示）
+    script_errors: Arc<std::sync::Mutex<Vec<(String, String)>>>,
 }
 
 impl Default for KernelManager {
@@ -335,6 +515,7 @@ impl Default for KernelManager {
             last_error: Arc::new(std::sync::Mutex::new(String::new())),
             traffic: Arc::new(TrafficStats::default()),
             traffic_stop: Arc::new(std::sync::Mutex::new(None)),
+            script_errors: Arc::new(std::sync::Mutex::new(Vec::new())),
         }
     }
 }
@@ -352,7 +533,23 @@ impl KernelManager {
         ensure_secret(&mut store);
         save_store(&store)?;
         ensure_kernel().await?;
-        std::fs::write(config_path(), render_config(&store)).map_err(|e| e.to_string())?;
+        // 配置生成管线：基础 render（含出站模式与 TUN 分模式）→ 覆写脚本链（失败脚本跳过并审计）→
+        // 防环静态检查（§2.5 硬约束，违规拒绝启动）→ 落盘。
+        // TUN 模式既定决策：TUN 骨架不经过脚本链——脚本作用于订阅代理配置语义，
+        // TUN 骨架防环约束（无 mixed-port / ANET-IN 出站 / MATCH 指向）必须完整保留。
+        let settings = roles::RoleSettings::load();
+        let effective = if settings.tun_mode {
+            *self.script_errors.lock().unwrap() = Vec::new();
+            render_config(&store, &settings.sub_mode, true)
+        } else {
+            let base = render_config(&store, &settings.sub_mode, false);
+            let (effective, script_fails) =
+                crate::sub_script::apply_scripts(&base, &settings.sub_scripts);
+            *self.script_errors.lock().unwrap() = script_fails;
+            effective
+        };
+        check_no_loop(&effective, settings.tun_mode)?;
+        std::fs::write(config_path(), effective).map_err(|e| e.to_string())?;
 
         let (tx, rx) = tokio::sync::mpsc::channel::<()>(1);
         *self.stop_tx.lock().unwrap() = Some(tx);
@@ -372,7 +569,7 @@ impl KernelManager {
         }
         if !ready {
             self.stop().await;
-            return Err("内核启动后控制面未就绪（57892/59292 端口被占用？）".into());
+            return Err("内核启动后控制面未就绪（端口被占用或权限不足？）".into());
         }
         self.start_traffic();
         roles::audit("gui.kernel_start", serde_json::json!({}));
@@ -525,6 +722,7 @@ impl KernelManager {
             version,
             restart_count: self.restart_count.load(Ordering::Relaxed),
             last_error: self.last_error.lock().unwrap().clone(),
+            script_errors: self.script_errors.lock().unwrap().clone(),
         }
     }
 }
@@ -645,6 +843,33 @@ impl KernelApi {
         } else {
             Err(format!("刷新失败 (HTTP {})", resp.status()))
         }
+    }
+
+    /// 出站模式热切（PATCH /configs，mihomo 支持 mode 热更新，无需重启内核）
+    pub async fn set_mode(&self, mode: &str) -> Result<(), String> {
+        let resp = self
+            .req(reqwest::Method::PATCH, "/configs")
+            .json(&serde_json::json!({"mode": mode}))
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+        if resp.status().is_success() {
+            Ok(())
+        } else {
+            Err(format!("模式切换失败 (HTTP {})", resp.status()))
+        }
+    }
+
+    /// 当前生效配置（GET /configs；E2E 断言 TUN 骨架已加载用）
+    #[cfg(test)]
+    pub async fn configs(&self) -> Result<serde_json::Value, String> {
+        self.req(reqwest::Method::GET, "/configs")
+            .send()
+            .await
+            .map_err(|e| e.to_string())?
+            .json()
+            .await
+            .map_err(|e| e.to_string())
     }
 }
 
@@ -994,6 +1219,11 @@ pub fn list_subscriptions() -> Vec<Subscription> {
     load_store().subscriptions
 }
 
+/// 当前订阅清单（配置生成管线用）
+pub(crate) fn current_store() -> SubStore {
+    load_store()
+}
+
 /// 添加订阅：先拉取校验（拉不通/不可识别即失败），首个订阅自动激活。
 pub async fn add_subscription(name: &str, url: &str) -> Result<Subscription, String> {
     let url = url.trim();
@@ -1191,7 +1421,7 @@ mod tests {
         store
             .subscriptions
             .push(mk("b", "机场B", "https://b.example.com/link", false));
-        let cfg = render_config(&store);
+        let cfg = render_config(&store, "rule", false);
         assert!(cfg.contains("mixed-port: 57892"));
         assert!(cfg.contains("external-controller: 127.0.0.1:59292"));
         assert!(cfg.contains("secret: \"s3cret\""));
@@ -1202,7 +1432,7 @@ mod tests {
         assert!(cfg.contains("      - main\n"));
         assert!(cfg.contains("  - MATCH,AGILE-SUB\n"));
         assert!(cfg.contains("IP-CIDR,127.0.0.0/8,DIRECT,no-resolve"));
-        assert_no_loop(&cfg);
+        assert!(check_no_loop(&cfg, false).is_ok());
     }
 
     #[test]
@@ -1221,8 +1451,111 @@ mod tests {
             total: 0,
             expire: None,
         });
-        let cfg = render_config(&store);
+        let cfg = render_config(&store, "rule", false);
         assert!(cfg.contains("\\\"injected"));
+    }
+
+    #[test]
+    fn config_render_mode_three_states() {
+        let store = SubStore::default();
+        for (mode, expect) in [
+            ("rule", "mode: rule\n"),
+            ("global", "mode: global\n"),
+            ("direct", "mode: direct\n"),
+        ] {
+            assert!(render_config(&store, mode, false).contains(expect), "mode={mode}");
+        }
+        // 非法值回落 rule
+        assert!(render_config(&store, "bogus", false).contains("mode: rule\n"));
+    }
+
+    /// TUN 模式配置快照（tun.md §2.3 骨架逐字段）+ 防环检查通过
+    #[test]
+    fn config_render_tun_snapshot() {
+        let mut store = SubStore::default();
+        store.secret = "s3cret".into();
+        store.subscriptions.push(Subscription {
+            id: "a".into(),
+            name: "机场A".into(),
+            url: "https://example.com/sub?token=abc".into(),
+            active: true,
+            updated_at: None,
+            node_count: 0,
+            upload: 0,
+            download: 0,
+            total: 0,
+            expire: None,
+        });
+        let cfg = render_config(&store, "rule", true);
+        // 骨架头部：无 mixed-port（防环关键），控制面保留
+        assert!(!cfg.contains("mixed-port"));
+        assert!(cfg.contains("external-controller: 127.0.0.1:59292"));
+        assert!(cfg.contains("secret: \"s3cret\""));
+        // tun 段：enable / stack mixed / auto-route / auto-detect-interface / dns-hijack
+        assert!(cfg.contains("tun:\n  enable: true\n"));
+        assert!(cfg.contains("  stack: mixed"));
+        assert!(cfg.contains("  auto-route: true\n"));
+        assert!(cfg.contains("  auto-detect-interface: true\n"));
+        assert!(cfg.contains("    - any:53\n"));
+        // dns 段：fake-ip 保域名
+        assert!(cfg.contains("  enhanced-mode: fake-ip\n"));
+        assert!(cfg.contains("  fake-ip-range: 198.18.0.1/16\n"));
+        assert!(cfg.contains("    - 223.5.5.5\n"));
+        // ANET-IN socks5 → 57890（全量 TCP 转交 anet 路由器）
+        assert!(cfg.contains("  - name: ANET-IN\n    type: socks5\n    server: 127.0.0.1\n"));
+        assert!(cfg.contains("    port: 57890"));
+        // proxy-providers 保留（代理页测速/切换仍走控制面）
+        assert!(cfg.contains("proxy-providers:\n  main:\n"));
+        assert!(cfg.contains("url: \"https://example.com/sub?token=abc\""));
+        assert!(cfg.contains("  - name: AGILE-SUB\n    type: select\n    use:\n      - main\n"));
+        // rules：QUIC 压制 + UDP DIRECT + 回环直连 + MATCH→ANET-IN
+        assert!(cfg.contains("  - AND,((NETWORK,UDP),(DST-PORT,443)),REJECT"));
+        assert!(cfg.contains("  - NETWORK,UDP,DIRECT"));
+        assert!(cfg.contains("  - IP-CIDR,127.0.0.0/8,DIRECT,no-resolve\n"));
+        assert!(cfg.contains("  - MATCH,ANET-IN"));
+        assert!(check_no_loop(&cfg, true).is_ok(), "TUN 骨架须过防环检查");
+    }
+
+    /// 防环静态检查全覆盖（tun.md §2.5 各条）
+    #[test]
+    fn check_no_loop_covers_all_clauses() {
+        let mut store = SubStore::default();
+        store.secret = "s".into();
+        let tun_cfg = render_config(&store, "rule", true);
+        let base_cfg = render_config(&store, "rule", false);
+        assert!(check_no_loop(&tun_cfg, true).is_ok());
+        assert!(check_no_loop(&base_cfg, false).is_ok());
+
+        // TUN：含 mixed-port → 拒绝
+        let bad = tun_cfg.replace("tun:\n", "mixed-port: 57892\ntun:\n");
+        assert!(check_no_loop(&bad, true).is_err());
+        // TUN：57892 出现（rules 回指）→ 拒绝
+        let bad = tun_cfg.replace("  - MATCH,ANET-IN", "  - MATCH,ANET-IN\n  - DST-PORT,57892,DIRECT");
+        assert!(check_no_loop(&bad, true).is_err());
+        // TUN：57890 重复出现（rules 回指本地代理）→ 拒绝
+        let bad = tun_cfg.replace(
+            "  - MATCH,ANET-IN",
+            "  - IP-CIDR,127.0.0.1/32,DIRECT # 57890\n  - MATCH,ANET-IN",
+        );
+        assert!(check_no_loop(&bad, true).is_err());
+        // TUN：57890 不在 proxies 出站行（被挪到注释里）→ 拒绝
+        let bad = tun_cfg.replace("    port: 57890", "    port: 15789 # 57890");
+        assert!(check_no_loop(&bad, true).is_err());
+        // TUN：缺 MATCH,ANET-IN → 拒绝
+        let bad = tun_cfg.replace("  - MATCH,ANET-IN", "  - MATCH,AGILE-SUB");
+        assert!(check_no_loop(&bad, true).is_err());
+        // 非 TUN：引用 57890 → 拒绝；mixed-port 57892 是内核自身入站（合法，维持原断言）
+        let bad = base_cfg.replace("  - MATCH,AGILE-SUB", "  - MATCH,AGILE-SUB # 57890");
+        assert!(check_no_loop(&bad, false).is_err());
+        assert!(base_cfg.contains("mixed-port: 57892"));
+        assert!(check_no_loop(&base_cfg, false).is_ok());
+        // secret 行随机十六进制巧合命中端口串不误伤
+        let mut store = SubStore::default();
+        store.secret = "57890abcdef".into();
+        let cfg = render_config(&store, "rule", false);
+        assert!(check_no_loop(&cfg, false).is_ok(), "secret 行不参与检查");
+        let cfg = render_config(&store, "rule", true);
+        assert!(check_no_loop(&cfg, true).is_ok(), "secret 行不参与检查");
     }
 
     #[test]
@@ -1475,6 +1808,85 @@ mod tests {
         .await;
         km.stop().await;
         restore(backup);
+        result.unwrap();
+    }
+
+    /// TUN 接管全链路 E2E（docs/plan/tun.md §2.8；需管理员本机手动，显式 --ignored 运行）：
+    /// cargo test --manifest-path apps/desktop/Cargo.toml tun_e2e -- --ignored --nocapture
+    ///
+    /// 自动断言：wintun 下载校验落盘 → TUN 配置启动内核 → 控制面 /configs 确认 tun.enable=true
+    /// 且无 mixed-port。以下步骤按 §2.8 手动验证（需 FlClash 监听 7890 与 AgileNet 端点在线）：
+    ///   1. curl http://ip.sb（不带 -x，模拟不读系统代理应用）→ 出口 IP = FlClash 节点
+    ///   2. AgileNet 内网域名走隧道通
+    ///   3. 浏览器系统代理 = 57890 访问谷歌经 anet→FlClash 通
+    ///   4. 关 FlClash → 未命中失败 + 灵动岛上报告警
+    ///   5. 退出 GUI → 系统代理与路由表还原
+    #[tokio::test]
+    #[ignore = "需管理员本机 + 联网下载 wintun/内核，显式 --ignored 运行"]
+    async fn tun_e2e() {
+        use crate::tun::Elevation;
+        if !crate::tun::SystemElevation.is_admin() {
+            eprintln!("跳过：需以管理员身份运行本测试（TUN 需管理员权限）");
+            return;
+        }
+        // 备份并隔离真实配置（测试结束还原，不污染用户数据）
+        let settings_file = roles::data_dir().join("gui-settings.json");
+        let settings_backup = std::fs::read_to_string(&settings_file).ok();
+        let sub_file = store_path();
+        let sub_backup = std::fs::read_to_string(&sub_file).ok();
+        let restore = || {
+            match &settings_backup {
+                Some(s) => std::fs::write(&settings_file, s).unwrap(),
+                None => {
+                    let _ = std::fs::remove_file(&settings_file);
+                }
+            }
+            match &sub_backup {
+                Some(s) => std::fs::write(&sub_file, s).unwrap(),
+                None => {
+                    let _ = std::fs::remove_file(&sub_file);
+                }
+            }
+        };
+
+        let mut store = SubStore::default();
+        ensure_secret(&mut store);
+        // 不可达 provider：拉取失败不阻塞内核启动与控制面
+        store.subscriptions.push(Subscription {
+            id: "e2e".into(),
+            name: "e2e-dummy".into(),
+            url: "http://127.0.0.1:9/sub".into(),
+            active: true,
+            updated_at: None,
+            node_count: 0,
+            upload: 0,
+            download: 0,
+            total: 0,
+            expire: None,
+        });
+        save_store(&store).unwrap();
+        let settings = roles::RoleSettings {
+            tun_mode: true,
+            subscription: true,
+            ..Default::default()
+        };
+        settings.save().unwrap();
+
+        let km = KernelManager::default();
+        let result = async {
+            ensure_wintun().await.map_err(|e| format!("wintun: {e}"))?;
+            assert!(wintun_dll_path().exists(), "wintun.dll 未落盘");
+            km.start().await.map_err(|e| format!("start: {e}"))?;
+            let api = kernel_api().await?;
+            let cfg = api.configs().await?;
+            assert_eq!(cfg["tun"]["enable"].as_bool(), Some(true), "控制面未见 TUN 生效");
+            assert!(cfg.get("mixed-port").is_none(), "TUN 配置严禁 mixed-port");
+            eprintln!("TUN 已接管；请按 docs/plan/tun.md §2.8 手动执行 curl/浏览器验证步骤");
+            Ok::<(), String>(())
+        }
+        .await;
+        km.stop().await;
+        restore();
         result.unwrap();
     }
 }

@@ -12,8 +12,11 @@ use tauri::{Manager, State};
 
 mod roles;
 mod subscription;
+mod sub_script;
 mod sysproxy;
+mod tun;
 use roles::RoleSettings;
+use tun::Elevation;
 
 /// 前端传入的连接参数（与 Web REST 共用 agile-net-client::ParsedConnect）
 pub type ConnectInput = ParsedConnect;
@@ -36,6 +39,12 @@ pub struct AppState {
     kernel: Arc<subscription::KernelManager>,
     /// 客户端代理真实状态槽（传给内嵌节点；管理端「本地代理」卡数据源）
     client_proxy_slot: agile_net_node::service::ClientProxySlot,
+    /// TUN 最近一次外部上游拨测结果（None = 未拨测；前端状态行/灵动岛告警数据源）
+    tun_upstream_ok: Arc<tokio::sync::Mutex<Option<bool>>>,
+    /// TUN 放弃开启的一次性提示（权限不足/启动失败回退普通模式；前端读取后清除）
+    tun_notice: Arc<tokio::sync::Mutex<Option<String>>>,
+    /// 最近一次应用的回落上游（变化时审计 gui.fallback_change，记地址不记凭据）
+    last_fallback: Arc<tokio::sync::Mutex<Option<std::net::SocketAddr>>>,
 }
 
 impl AppState {
@@ -57,6 +66,9 @@ impl AppState {
             consoles: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
             kernel: Arc::new(subscription::KernelManager::default()),
             client_proxy_slot,
+            tun_upstream_ok: Arc::new(tokio::sync::Mutex::new(None)),
+            tun_notice: Arc::new(tokio::sync::Mutex::new(None)),
+            last_fallback: Arc::new(tokio::sync::Mutex::new(None)),
         }
     }
 }
@@ -908,14 +920,25 @@ async fn restore_web_role(app: &tauri::AppHandle) {
 
 // ==================== 订阅代理（mihomo sidecar） ====================
 
-/// 应用回落上游：订阅角色开 + 统一出口开 + 内核运行 → 未命中规则的流量回落到内核 mixed。
+/// 应用回落上游（记地址不记凭据；变化时审计 gui.fallback_change）：
+/// - TUN 模式：回落 = 外部上游（FlClash；§2.4），57890 未命中流量交给它
+/// - 非 TUN：订阅角色开 + 统一出口开 + 内核运行 → 回落到内核 mixed（57892）
+/// - 其余：无回落（未命中直连）
 async fn apply_proxy_fallback(state: &State<'_, AppState>) {
-    let (sub, unified) = {
+    let (sub, unified, tun_mode, upstream_raw) = {
         let r = state.roles.lock().await;
-        (r.subscription, r.subscription_unified)
+        (
+            r.subscription,
+            r.subscription_unified,
+            r.tun_mode,
+            r.external_upstream.clone(),
+        )
     };
     let running = state.kernel.running().await;
-    let addr = if sub && unified && running {
+    let addr = if tun_mode && running {
+        // 保存时已严格校验；此处防御性解析，异常值宁可无回落也不成环
+        roles::validate_external_upstream(&upstream_raw).ok()
+    } else if sub && unified && running {
         Some(std::net::SocketAddr::from((
             [127, 0, 0, 1],
             subscription::MIHOMO_MIXED_PORT,
@@ -923,7 +946,204 @@ async fn apply_proxy_fallback(state: &State<'_, AppState>) {
     } else {
         None
     };
+    let mut last = state.last_fallback.lock().await;
+    if *last != addr {
+        roles::audit(
+            "gui.fallback_change",
+            serde_json::json!({"addr": addr.map(|a| a.to_string())}),
+        );
+        *last = addr;
+    }
+    drop(last);
     state.client.set_proxy_fallback(addr);
+}
+
+// ==================== TUN 模式（docs/plan/tun.md P1：anet 在前 FlClash 在后） ====================
+
+/// TUN 状态（前端轮询展示：运行中/权限不足/上游不可达）
+#[derive(Debug, Clone, Serialize)]
+pub struct TunStatus {
+    /// 当前平台支持 TUN（Windows x64 且内核可安装）
+    pub supported: bool,
+    /// TUN 开关（持久化）
+    pub enabled: bool,
+    /// 内核运行中（配置为 TUN 骨架）
+    pub running: bool,
+    /// 当前进程已是管理员
+    pub admin: bool,
+    /// 外部上游（回落目标）
+    pub upstream: String,
+    /// 最近一次拨测结果（None = 未拨测）
+    pub upstream_ok: Option<bool>,
+    /// 放弃开启的一次性提示（读取即清除；前端 toast 后不再出现）
+    pub notice: Option<String>,
+}
+
+/// TUN 放弃开启的统一兜底：关开关持久化 + 审计 + 一次性提示。
+/// 语义（用户要求）：TUN 是独立可选项，权限不足/启动失败时安静放弃，绝不影响其它功能。
+async fn abandon_tun(state: &State<'_, AppState>, reason: &str) {
+    {
+        let mut roles = state.roles.lock().await;
+        roles.tun_mode = false;
+        let _ = roles.save();
+    }
+    roles::audit("gui.tun_abandon", serde_json::json!({"reason": reason}));
+    *state.tun_notice.lock().await = Some(format!(
+        "TUN 已放弃开启：{reason}（已回退普通模式，不影响其它功能）"
+    ));
+}
+
+async fn tun_status_of(state: &State<'_, AppState>) -> TunStatus {
+    let (enabled, upstream) = {
+        let r = state.roles.lock().await;
+        (r.tun_mode, r.external_upstream.clone())
+    };
+    TunStatus {
+        supported: cfg!(all(target_os = "windows", target_arch = "x86_64"))
+            && subscription::kernel_supported(),
+        enabled,
+        running: enabled && state.kernel.running().await,
+        admin: tun::SystemElevation.is_admin(),
+        upstream,
+        upstream_ok: *state.tun_upstream_ok.lock().await,
+        notice: state.tun_notice.lock().await.take(),
+    }
+}
+
+#[tauri::command]
+async fn tun_status(state: State<'_, AppState>) -> Result<TunStatus, String> {
+    Ok(tun_status_of(&state).await)
+}
+
+/// TUN 开启后的数据面/系统代理副作用（开启与提权重启恢复共用）：
+/// 本地代理钉 57890（ANET-IN 目标）→ 回落 = 外部上游 → 系统代理自动托管 57890（§2.6）
+/// → 外部上游 TCP 拨测一次（不通仅前端灵动岛告警，不阻断；§2.4）。
+async fn tun_side_effects(app: &tauri::AppHandle, state: &State<'_, AppState>) -> Result<(), String> {
+    let port = state.client.proxy_port();
+    if port != 57890 {
+        if port > 0 {
+            state.client.stop_proxy().await;
+        }
+        state.client.start_proxy(57890).await.map_err(map_err)?;
+        report_client_proxy(state).await;
+        refresh_tray_icon(app);
+    }
+    apply_proxy_fallback(state).await;
+    let server = expected_sysproxy(state);
+    let _ = tokio::task::spawn_blocking(move || sysproxy::engage(&server)).await;
+    let upstream = state.roles.lock().await.external_upstream.clone();
+    let ok = match roles::validate_external_upstream(&upstream) {
+        Ok(sa) => tun::tcp_reachable(sa).await,
+        Err(_) => false,
+    };
+    *state.tun_upstream_ok.lock().await = Some(ok);
+    Ok(())
+}
+
+/// TUN 模式开关（§2.2 提权 / §2.4 回落 / §2.5 互斥 / §2.6 系统代理）。
+#[tauri::command]
+async fn set_tun_mode(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    enabled: bool,
+) -> Result<TunStatus, String> {
+    if enabled {
+        // §2.2 管理员提权：非管理员 → NEED_ELEVATION（前端弹对话框走 runas 重启路径）
+        tun::precheck(&tun::SystemElevation)?;
+        // §2.1 wintun.dll 钉版本下发（SHA-256 校验，失败拒落盘 + gui.wintun_tamper）
+        subscription::ensure_wintun().await?;
+        if subscription::list_subscriptions().is_empty() {
+            return Err("请先添加订阅".into());
+        }
+        {
+            let mut roles = state.roles.lock().await;
+            // §2.4 回落目标合法性（硬约束；违规拒绝开启）
+            roles::validate_external_upstream(&roles.external_upstream)?;
+            roles.tun_mode = true;
+            roles.subscription = true;
+            // §2.5 严格互斥：统一出口强制关闭（57890→57892→MATCH→57890 是死环）
+            roles.subscription_unified = false;
+            roles.save()?;
+        }
+        roles::audit(
+            "gui.tun_enable",
+            serde_json::json!({"upstream": state.roles.lock().await.external_upstream}),
+        );
+        // 重启内核加载 TUN 骨架 + 数据面副作用；任一步失败都整体回退普通模式（订阅不受影响）
+        state.kernel.stop().await;
+        let start_result = match state.kernel.start().await {
+            Ok(()) => tun_side_effects(&app, &state).await,
+            Err(e) => Err(e),
+        };
+        if let Err(e) = start_result {
+            abandon_tun(&state, &format!("启动失败（{e}）")).await;
+            // 回滚后尝试以普通模式重启内核，订阅角色保持可用
+            let _ = state.kernel.start().await;
+            apply_proxy_fallback(&state).await;
+            return Err(format!("TUN 开启失败，已回退普通模式: {e}"));
+        }
+    } else {
+        {
+            let mut roles = state.roles.lock().await;
+            roles.tun_mode = false;
+            roles.save()?;
+        }
+        roles::audit("gui.tun_disable", serde_json::json!({}));
+        *state.tun_upstream_ok.lock().await = None;
+        // 内核回到普通配置（订阅角色保持开启）
+        state.kernel.stop().await;
+        state.kernel.start().await?;
+        apply_proxy_fallback(&state).await;
+        // §2.6 关 TUN：还原系统代理快照；系统代理偏好仍开且代理在跑则按偏好重新托管
+        let _ = tokio::task::spawn_blocking(sysproxy::disengage).await;
+        let system_pref = state.roles.lock().await.system_proxy;
+        if system_pref && state.client.proxy_port() > 0 {
+            let server = expected_sysproxy(&state);
+            let _ = tokio::task::spawn_blocking(move || sysproxy::engage(&server)).await;
+        }
+    }
+    Ok(tun_status_of(&state).await)
+}
+
+/// 「以管理员身份重启」（§2.2）：持久化 TUN 开关（重启后自动恢复开启）→ 审计 → runas 拉起自身 → 退出。
+#[tauri::command]
+async fn tun_relaunch_elevated(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    {
+        let mut roles = state.roles.lock().await;
+        roles.tun_mode = true;
+        roles.subscription = true;
+        roles.subscription_unified = false;
+        roles.save()?;
+    }
+    roles::audit("gui.tun_elevation", serde_json::json!({"granted": true}));
+    tun::SystemElevation.relaunch_elevated()?;
+    app.exit(0);
+    Ok(())
+}
+
+/// 提权对话框取消：停留现状，审计 declined（§2.2）。
+#[tauri::command]
+fn tun_elevation_declined() -> Result<(), String> {
+    roles::audit("gui.tun_elevation", serde_json::json!({"granted": false}));
+    Ok(())
+}
+
+/// 修改外部上游（§2.4）：严格校验（§2.5）后持久化；TUN 运行中即重应用回落并拨测。
+#[tauri::command]
+async fn set_tun_upstream(state: State<'_, AppState>, addr: String) -> Result<TunStatus, String> {
+    let sa = roles::validate_external_upstream(&addr)?;
+    let tun_on = {
+        let mut roles = state.roles.lock().await;
+        roles.external_upstream = sa.to_string();
+        roles.save()?;
+        roles.tun_mode
+    };
+    if tun_on && state.kernel.running().await {
+        apply_proxy_fallback(&state).await;
+        let ok = tun::tcp_reachable(sa).await;
+        *state.tun_upstream_ok.lock().await = Some(ok);
+    }
+    Ok(tun_status_of(&state).await)
 }
 
 #[tauri::command]
@@ -947,6 +1167,9 @@ async fn activate_subscription_feature(
 ) -> Result<(), String> {
     if enabled && !subscription::kernel_bin_exists() {
         return Err("内核尚未安装".into());
+    }
+    if !enabled && state.roles.lock().await.tun_mode {
+        return Err("TUN 模式开启中，请先关闭 TUN 模式".into());
     }
     if !enabled {
         state.kernel.stop().await;
@@ -1068,6 +1291,9 @@ async fn set_subscription_role(
     state: State<'_, AppState>,
     enabled: bool,
 ) -> Result<subscription::KernelStatus, String> {
+    if !enabled && state.roles.lock().await.tun_mode {
+        return Err("TUN 模式开启中，请先关闭 TUN 模式".into());
+    }
     if enabled {
         state.kernel.start().await?;
     } else {
@@ -1089,6 +1315,10 @@ async fn set_subscription_role(
 /// 订阅流量是否经统一出口（ProxyRouter 回落）。
 #[tauri::command]
 async fn set_subscription_unified(state: State<'_, AppState>, enabled: bool) -> Result<(), String> {
+    // §2.5 严格互斥：TUN 开启中统一出口严禁开启（57890→57892→MATCH→57890 是死环）
+    if enabled && state.roles.lock().await.tun_mode {
+        return Err("TUN 模式下统一出口强制关闭（防环硬约束）".into());
+    }
     {
         let mut roles = state.roles.lock().await;
         roles.subscription_unified = enabled;
@@ -1102,6 +1332,207 @@ async fn set_subscription_unified(state: State<'_, AppState>, enabled: bool) -> 
 #[tauri::command]
 async fn sub_traffic(state: State<'_, AppState>) -> Result<subscription::TrafficSnapshot, String> {
     Ok(state.kernel.traffic())
+}
+
+// ==================== 订阅覆写脚本 / 出站模式 ====================
+
+/// 脚本变更后内核在运行即重启加载新配置（与激活订阅同一热更路径：重写配置 + 重启）。
+async fn reload_kernel_if_running(state: &State<'_, AppState>) -> Result<(), String> {
+    if state.roles.lock().await.subscription {
+        state.kernel.stop().await;
+        state.kernel.start().await?;
+        apply_proxy_fallback(state).await;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn list_sub_scripts(state: State<'_, AppState>) -> Result<Vec<roles::SubScript>, String> {
+    Ok(state.roles.lock().await.sub_scripts.clone())
+}
+
+/// 新建脚本（默认启用，追加到链尾）；内核运行中即重启生效。
+#[tauri::command]
+async fn add_sub_script(
+    state: State<'_, AppState>,
+    name: String,
+    code: String,
+) -> Result<roles::SubScript, String> {
+    if code.trim().is_empty() {
+        return Err("脚本代码不能为空".into());
+    }
+    let sc = {
+        let mut roles = state.roles.lock().await;
+        let sc = roles::SubScript {
+            id: uuid::Uuid::new_v4().simple().to_string(),
+            name: if name.trim().is_empty() {
+                format!("脚本 {}", roles.sub_scripts.len() + 1)
+            } else {
+                name.trim().to_string()
+            },
+            code,
+            enabled: true,
+            order: roles.sub_scripts.len(),
+        };
+        roles.sub_scripts.push(sc.clone());
+        roles.save()?;
+        sc
+    };
+    roles::audit("gui.sub_script_add", serde_json::json!({"name": sc.name}));
+    reload_kernel_if_running(&state).await?;
+    Ok(sc)
+}
+
+/// 更新脚本名称/代码；内核运行中即重启生效。
+#[tauri::command]
+async fn update_sub_script(
+    state: State<'_, AppState>,
+    id: String,
+    name: String,
+    code: String,
+) -> Result<(), String> {
+    if code.trim().is_empty() {
+        return Err("脚本代码不能为空".into());
+    }
+    {
+        let mut roles = state.roles.lock().await;
+        let sc = roles
+            .sub_scripts
+            .iter_mut()
+            .find(|s| s.id == id)
+            .ok_or("脚本不存在")?;
+        sc.name = if name.trim().is_empty() { sc.name.clone() } else { name.trim().to_string() };
+        sc.code = code;
+        roles.save()?;
+    }
+    roles::audit("gui.sub_script_update", serde_json::json!({"id": id}));
+    reload_kernel_if_running(&state).await
+}
+
+#[tauri::command]
+async fn remove_sub_script(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    {
+        let mut roles = state.roles.lock().await;
+        let before = roles.sub_scripts.len();
+        roles.sub_scripts.retain(|s| s.id != id);
+        if roles.sub_scripts.len() == before {
+            return Err("脚本不存在".into());
+        }
+        for (i, s) in roles.sub_scripts.iter_mut().enumerate() {
+            s.order = i;
+        }
+        roles.save()?;
+    }
+    roles::audit("gui.sub_script_remove", serde_json::json!({"id": id}));
+    reload_kernel_if_running(&state).await
+}
+
+#[tauri::command]
+async fn set_sub_script_enabled(
+    state: State<'_, AppState>,
+    id: String,
+    enabled: bool,
+) -> Result<(), String> {
+    {
+        let mut roles = state.roles.lock().await;
+        let sc = roles
+            .sub_scripts
+            .iter_mut()
+            .find(|s| s.id == id)
+            .ok_or("脚本不存在")?;
+        sc.enabled = enabled;
+        roles.save()?;
+    }
+    reload_kernel_if_running(&state).await
+}
+
+/// 拖拽排序：ids 为全量脚本 id 的目标顺序（须为现有 id 的排列）。
+#[tauri::command]
+async fn reorder_sub_scripts(state: State<'_, AppState>, ids: Vec<String>) -> Result<(), String> {
+    {
+        let mut roles = state.roles.lock().await;
+        let cur = &roles.sub_scripts;
+        if ids.len() != cur.len()
+            || !ids.iter().all(|id| cur.iter().any(|s| &s.id == id))
+            || !cur.iter().all(|s| ids.contains(&s.id))
+        {
+            return Err("排序参数与现有脚本不一致".into());
+        }
+        let mut next: Vec<roles::SubScript> = Vec::with_capacity(cur.len());
+        for id in &ids {
+            next.push(cur.iter().find(|s| &s.id == id).unwrap().clone());
+        }
+        for (i, s) in next.iter_mut().enumerate() {
+            s.order = i;
+        }
+        roles.sub_scripts = next;
+        roles.save()?;
+    }
+    reload_kernel_if_running(&state).await
+}
+
+/// 试跑：对当前订阅配置（含现有启用脚本管线结果）执行一次，返回摘要或错误。
+#[tauri::command]
+async fn test_sub_script(state: State<'_, AppState>, code: String) -> Result<String, String> {
+    let (mode, scripts) = {
+        let r = state.roles.lock().await;
+        (r.sub_mode.clone(), r.sub_scripts.clone())
+    };
+    // 与生产同管线：基础 render（非 TUN；脚本不作用于 TUN 骨架，既定决策）→
+    // 启用脚本链（失败跳过）→ 试跑代码（错误透出）
+    let store = subscription::current_store();
+    let base = subscription::render_config(&store, &mode, false);
+    let (effective, _) = sub_script::apply_scripts(&base, &scripts);
+    let before: serde_json::Value =
+        serde_yaml::from_str(&effective).map_err(|e| format!("当前配置解析失败: {e}"))?;
+    let after = sub_script::test_run(&code, &effective)?;
+    let count = |v: &serde_json::Value, key: &str| v[key].as_array().map(|a| a.len()).unwrap_or(0);
+    let fmt = |key: &str, label: &str| {
+        let (b, a) = (count(&before, key), count(&after, key));
+        if b == a {
+            format!("{label} {a}（不变）")
+        } else {
+            format!("{label} {b} → {a}")
+        }
+    };
+    Ok(format!(
+        "执行成功：{}，{}，{}",
+        fmt("proxies", "proxies"),
+        fmt("proxy-groups", "groups"),
+        fmt("rules", "rules"),
+    ))
+}
+
+/// 切换订阅出站模式：持久化；内核运行中走控制器 PATCH /configs 热切（失败则重启兜底）。
+#[tauri::command]
+async fn set_sub_mode(state: State<'_, AppState>, mode: String) -> Result<(), String> {
+    if !roles::valid_sub_mode(&mode) {
+        return Err("非法出站模式（rule|global|direct）".into());
+    }
+    // TUN 模式下出站模式固定为规则：global/direct 会绕过 rules（含 MATCH→ANET-IN），
+    // 流量不再经 anet 分流，违反 anet 在前设计
+    if state.roles.lock().await.tun_mode {
+        return Err("TUN 模式下出站模式固定为规则（全局/直连会绕过 anet 分流）".into());
+    }
+    {
+        let mut roles = state.roles.lock().await;
+        roles.sub_mode = mode.clone();
+        roles.save()?;
+    }
+    roles::audit("gui.sub_mode", serde_json::json!({"mode": mode}));
+    if state.kernel.running().await {
+        let patched = match subscription::kernel_api().await {
+            Ok(api) => api.set_mode(&mode).await.is_ok(),
+            Err(_) => false,
+        };
+        if !patched {
+            // 热切失败兜底：重启内核按新设置重生成配置
+            state.kernel.stop().await;
+            state.kernel.start().await?;
+            apply_proxy_fallback(&state).await;
+        }
+    }
+    Ok(())
 }
 
 // ==================== 系统代理托管 ====================
@@ -1160,7 +1591,11 @@ async fn set_system_proxy(state: State<'_, AppState>, enabled: bool) -> Result<(
 
 #[tauri::command]
 async fn sysproxy_status(state: State<'_, AppState>) -> Result<sysproxy::SysProxyStatus, String> {
-    let managed = state.roles.lock().await.system_proxy;
+    // TUN 模式视同托管（系统自动代理指向 57890，巡检自动收回）
+    let managed = {
+        let r = state.roles.lock().await;
+        r.system_proxy || r.tun_mode
+    };
     let running = state.client.proxy_port() > 0;
     let expected = expected_sysproxy(&state);
     let mut st = tokio::task::spawn_blocking(move || sysproxy::inspect(managed, &expected))
@@ -1331,9 +1766,13 @@ async fn uninstall_app(
     state.client.disconnect_all().await;
     state.client.stop_proxy().await;
 
-    // 系统代理托管中：卸载前还原系统代理
-    if state.roles.lock().await.system_proxy {
-        let _ = tokio::task::spawn_blocking(sysproxy::disengage).await;
+    // 系统代理托管中（含 TUN 模式自动托管）：卸载前还原系统代理
+    {
+        let r = state.roles.lock().await;
+        if r.system_proxy || r.tun_mode {
+            drop(r);
+            let _ = tokio::task::spawn_blocking(sysproxy::disengage).await;
+        }
     }
 
     // 卸载必做：移除开机自启
@@ -1427,32 +1866,79 @@ fn refresh_tray_icon(app: &tauri::AppHandle) {
 }
 
 /// 启动时恢复订阅内核（上次退出时订阅角色处于开启状态）。
+/// TUN 模式持久化恢复（§2.2 提权重启后自动恢复开启）：补 wintun → 启动内核（TUN 骨架）
+/// → 数据面/系统代理副作用（拨测结果进状态槽，前端灵动岛告警）。
 async fn restore_subscription_role(app: &tauri::AppHandle) {
     let state = app.state::<AppState>();
-    if !state.roles.lock().await.subscription {
+    let (sub_on, tun_mode) = {
+        let r = state.roles.lock().await;
+        (r.subscription, r.tun_mode)
+    };
+    if !sub_on {
         return;
     }
     if subscription::list_subscriptions().is_empty() {
         tracing::warn!("subscription role was enabled but no subscription exists — keeping kernel stopped");
         return;
     }
+    // 提权重启后被用户取消（UAC 拒绝）或权限已丢失：放弃 TUN 改普通模式恢复，不影响使用
+    let mut tun_mode = tun_mode;
+    if tun_mode && !tun::SystemElevation.is_admin() {
+        tracing::warn!("persisted TUN mode but process is not elevated — abandoning TUN, restore as normal mode");
+        abandon_tun(&state, "需要管理员权限").await;
+        tun_mode = false;
+    }
+    if tun_mode {
+        if let Err(e) = subscription::ensure_wintun().await {
+            // wintun 不可用同样只放弃 TUN，不阻断普通模式恢复
+            tracing::error!(error = %e, "failed to ensure wintun for persisted TUN mode");
+            abandon_tun(&state, &format!("wintun 组件不可用（{e}）")).await;
+            tun_mode = false;
+        }
+    }
     match state.kernel.start().await {
         Ok(()) => {
-            tracing::info!("subscription kernel restored");
+            tracing::info!(tun = tun_mode, "subscription kernel restored");
             apply_proxy_fallback(&state).await;
+            if tun_mode {
+                if let Err(e) = tun_side_effects(app, &state).await {
+                    tracing::error!(error = %e, "failed to apply TUN side effects on restore");
+                }
+            }
         }
-        Err(e) => tracing::error!(error = %e, "failed to restore subscription kernel"),
+        Err(e) => {
+            if tun_mode {
+                // TUN 配置启动失败：放弃 TUN 再以普通模式重试一次
+                tracing::error!(error = %e, "failed to restore kernel with TUN, retrying normal mode");
+                abandon_tun(&state, &format!("启动失败（{e}）")).await;
+                match state.kernel.start().await {
+                    Ok(()) => {
+                        tracing::info!("subscription kernel restored in normal mode after TUN failure");
+                        apply_proxy_fallback(&state).await;
+                    }
+                    Err(e2) => tracing::error!(error = %e2, "failed to restore subscription kernel"),
+                }
+            } else {
+                tracing::error!(error = %e, "failed to restore subscription kernel");
+            }
+        }
     }
 }
 
-/// 系统代理冲突巡检（30s）：托管中系统值 ≠ 期望值即记审计（每轮冲突只记一次，恢复后可再记）。
+/// 系统代理冲突巡检（30s）：托管中系统值 ≠ 期望值即记审计。
+/// TUN 模式（§2.6）升级为自动收回：被抢即重写期望值并记审计（含来源值），每轮处理；
+/// 非 TUN 维持"提醒手动收回"（每轮冲突只记一次，恢复后可再记）。
 async fn sysproxy_watch(app: tauri::AppHandle) {
     let mut in_conflict = false;
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(30)).await;
         let state = app.state::<AppState>();
-        let managed = state.roles.lock().await.system_proxy;
-        // 代理未运行时不判冲突（同 sysproxy_status）
+        let (pref, tun_mode) = {
+            let r = state.roles.lock().await;
+            (r.system_proxy, r.tun_mode)
+        };
+        // TUN 模式视同托管（自动收回策略）；代理未运行时不判冲突（同 sysproxy_status）
+        let managed = pref || tun_mode;
         if !managed || state.client.proxy_port() == 0 {
             in_conflict = false;
             continue;
@@ -1461,7 +1947,14 @@ async fn sysproxy_watch(app: tauri::AppHandle) {
         if let Ok(Ok(st)) =
             tokio::task::spawn_blocking(move || sysproxy::inspect(true, &expected)).await
         {
-            if st.conflict && !in_conflict {
+            if st.conflict && tun_mode {
+                roles::audit(
+                    "gui.sysproxy_conflict",
+                    serde_json::json!({"expected": st.expected, "current": st.current, "auto_reclaim": true}),
+                );
+                let server = st.expected.clone();
+                let _ = tokio::task::spawn_blocking(move || sysproxy::reclaim(&server)).await;
+            } else if st.conflict && !in_conflict {
                 roles::audit(
                     "gui.sysproxy_conflict",
                     serde_json::json!({"expected": st.expected, "current": st.current}),
@@ -1584,7 +2077,7 @@ pub fn run() {
         )
         .init();
 
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
@@ -1640,9 +2133,22 @@ pub fn run() {
             set_subscription_role,
             set_subscription_unified,
             sub_traffic,
+            list_sub_scripts,
+            add_sub_script,
+            update_sub_script,
+            remove_sub_script,
+            set_sub_script_enabled,
+            reorder_sub_scripts,
+            test_sub_script,
+            set_sub_mode,
             set_system_proxy,
             sysproxy_status,
             reclaim_sysproxy,
+            tun_status,
+            set_tun_mode,
+            tun_relaunch_elevated,
+            tun_elevation_declined,
+            set_tun_upstream,
             fetch_exit_ip,
             lan_ip,
             list_custom_rules,
@@ -1700,8 +2206,24 @@ pub fn run() {
             }
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running AgileNet desktop");
+        .build(tauri::generate_context!())
+        .expect("error while building AgileNet desktop");
+    app.run(|app_handle: &tauri::AppHandle, event: tauri::RunEvent| {
+        // §2.6 退出 GUI（TUN 模式）：停内核（mihomo 退出自动清理 TUN 适配器与路由）
+        // + 还原系统代理快照；事件回调在主线程，block_on 安全
+        if let tauri::RunEvent::ExitRequested { .. } = event {
+            let state = app_handle.state::<AppState>();
+            let tun_on =
+                tauri::async_runtime::block_on(async { state.roles.lock().await.tun_mode });
+            if tun_on {
+                let kernel = state.kernel.clone();
+                let _ = tauri::async_runtime::block_on(async move {
+                    tokio::time::timeout(std::time::Duration::from_secs(5), kernel.stop()).await
+                });
+                let _ = sysproxy::disengage();
+            }
+        }
+    });
 }
 
 #[cfg(test)]

@@ -9,7 +9,33 @@
 
 ## 0. 实施进度
 
-- 未实施。完成后在此回填分期状态。
+- **P1 已实施**（2026-08-02，Windows x64 桌面 GUI）：
+  - §2.1 wintun.dll 钉版本下发：官方源 wintun-0.14.1.zip + SHA-256 内置校验
+    （哈希与 wintun.net 官网 / wireguard-windows 构建脚本多源交叉验证），校验失败拒落盘
+    + 审计 `gui.wintun_tamper`；落盘 `~/.agile-net/mihomo/wintun.dll`（卸载清理随内核目录覆盖）。
+  - §2.2 管理员提权：`CheckTokenMembership` 检测；非管理员 → 对话框 + runas 拉起自身
+    （tun_mode 先持久化，重启后自动恢复开启）；审计 `gui.tun_elevation`（granted/declined）。
+  - §2.3 TUN 配置骨架：`render_config` 分 TUN/非 TUN 双路径；骨架逐字段按计划
+    （无 mixed-port / tun mixed+auto-route+dns-hijack / fake-ip / ANET-IN socks5→57890 /
+    QUIC 压制+UDP DIRECT+MATCH→ANET-IN；proxy-providers 保留）。
+    既定决策：TUN 配置不经过覆写脚本链（脚本作用于订阅代理配置语义，防环约束必须完整保留）。
+  - §2.4 回落外部上游：`gui-settings.json` 新增 `tun_mode` / `external_upstream`
+    （默认 127.0.0.1:7890，serde default）；TUN 开启 → `set_proxy_fallback(外部上游)`
+    + TCP 拨测一次（不通仅灵动岛告警不阻断）；审计 `gui.fallback_change`（记地址不记凭据）。
+  - §2.5 互斥与防环：TUN 开 → 统一出口强制关 + UI 置灰（反向亦拒绝开启）；
+    回落目标校验（仅回环、严禁 57890/57892/59292）；`check_no_loop` 扩展
+    （TUN 无 mixed-port / 57890 仅以 proxies 出站出现一次 / rules 必须 MATCH→ANET-IN），
+    落盘前强制检查，违规拒绝启动内核。另：TUN 下出站模式固定 rule（global/direct 绕过 anet 分流）。
+  - §2.6 系统代理策略：TUN 开 → 自动 engage 57890；30s 巡检升级为自动收回
+    （被抢即重写 + 审计 `gui.sysproxy_conflict` 记来源值）；关 TUN/退出 → 快照还原，
+    退出时停内核（mihomo 自动清理 TUN 适配器与路由）。
+  - §2.7 GUI：订阅页「TUN 模式」分区（开关 / 外部上游 agedit 行内编辑 /
+    状态行：运行中·权限不足·上游不可达）+ FlClash 系统代理提示文案；
+    审计 `gui.tun_enable` / `gui.tun_disable`。
+  - §2.8 测试：TUN/非 TUN 配置快照、`check_no_loop` 全分支、回落目标校验、
+    权限检测 mock 注入、TCP 拨测；E2E `tun_e2e`（--ignored，需管理员本机手动，
+    自动断言 wintun 落盘 + 控制面 tun.enable，curl/浏览器步骤手动）。
+- **P2 未实施**（规则下沉 TUN 层，性能优化）。
 
 ## 1. 背景与选型
 
@@ -130,7 +156,8 @@ rules:
 
 - 订阅页新增「TUN 模式」分区：开关、外部上游地址输入、状态（运行中/权限不足/上游不可达）。
 - 审计事件：`gui.tun_enable` / `gui.tun_disable` / `gui.tun_elevation`（granted/declined）/
-  `gui.wintun_download` / `gui.wintun_tamper` / `gui.fallback_change`（记地址不记凭据）。
+  `gui.wintun_download` / `gui.wintun_tamper` / `gui.fallback_change`（记地址不记凭据）/
+  `gui.tun_abandon`（权限不足/启动失败安静放弃并回退普通模式，附一次性 UI 提示；TUN 为可选附加，绝不影响其它功能）。
 - 前端约束沿用既有约定（无内联事件、变更检测、灵动岛通知）。
 
 ### 2.8 P1 测试

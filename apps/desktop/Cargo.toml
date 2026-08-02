@@ -32,10 +32,20 @@ reqwest = { version = "0.12", features = ["json"] }
 sha2 = "0.10"
 flate2 = "1"
 zip = { version = "2", default-features = false, features = ["deflate"] }
+# 订阅脚本沙箱（嵌入式 QuickJS，无外部运行时）与配置管线（YAML ↔ JSON）
+rquickjs = { version = "0.12", default-features = false, features = ["std"] }
+serde_yaml = "0.9"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.10"
-windows-sys = { version = "0.59", features = ["Win32_Networking_WinInet"] }
+windows-sys = { version = "0.59", features = [
+    "Win32_Networking_WinInet",
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_SystemServices",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1"

@@ -329,6 +329,13 @@
         </h3>
         <div class="kv"><span class="k">内核版本</span><span class="mono" id="sub-version">-</span></div>
         <div class="kv"><span class="k">本地出口</span><span class="mono">127.0.0.1:57892（mixed）</span></div>
+        <div class="kv"><span class="k">出站模式 <span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip">规则：按订阅规则分流；全局：全部流量走选中节点；直连：全部直连。切换即热生效</span></span></span>
+          <select id="sub-mode" class="small" style="width:104px">
+            <option value="rule">规则</option>
+            <option value="global">全局</option>
+            <option value="direct">直连</option>
+          </select>
+        </div>
         <div class="kv"><span class="k">出口 IP</span><span class="mono" id="sub-exit-ip">内核未运行</span></div>
         <div class="hint" id="sub-exit-geo" style="margin-top:4px"></div>
         <div class="kv" id="sub-traffic-row" style="display:none"><span class="k">流量</span><span class="mono" id="sub-traffic-total">-</span></div>
@@ -336,11 +343,32 @@
         <div style="display:flex;align-items:center;margin-top:8px"><label class="chk" style="margin-top:0"><input type="checkbox" id="s-unified" checked> 未命中 AgileNet 规则的流量经订阅出口</label><span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip">开启后本地代理 57890 单端口同时承接订阅出口流量，应用无需区分端口</span></span></div>
       </div>
 
+      <!-- TUN 模式（docs/plan/tun.md P1：网卡层接管，anet 在前 FlClash 在后；仅 Windows x64，需管理员） -->
+      <div class="card" id="tun-card">
+        <h3><i data-ic="layers"></i>TUN 模式 <span class="hint inline" id="tun-status-text">未开启</span>
+          <span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip">虚拟网卡接管全部流量（含不读系统代理的应用）：先走 anet 分流，命中规则走隧道，未命中回落外部上游（FlClash）；需管理员权限，与统一出口互斥</span></span>
+          <span class="h3-tools"><label class="switch"><input type="checkbox" id="tun-mode"><span class="slider"></span></label></span>
+        </h3>
+        <div class="kv"><span class="k">外部上游 <span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip">未命中 AgileNet 规则的流量回落目标（FlClash mixed 入站）；仅允许本机回环地址，严禁指向 57890/57892/59292</span></span></span>
+          <span id="tun-upstream" class="mono"></span>
+        </div>
+        <div class="kv"><span class="k">状态</span><span class="mono" id="tun-state">-</span></div>
+        <div class="hint" style="margin-top:6px">建议同时关闭 FlClash 的「系统代理」开关（保持其内核监听 7890 即可），避免两软件周期性互抢注册表</div>
+      </div>
+
       <div class="card">
         <h3><i data-ic="rss"></i>订阅列表
           <span class="h3-tools"><button class="ghost small icon-btn" id="btn-add-sub" title="添加订阅"><i data-ic="plus" data-sz="14"></i></button></span>
         </h3>
         <div id="subs-list" class="sub-grid"><div class="empty">尚未添加订阅</div></div>
+      </div>
+
+      <div class="card">
+        <h3><i data-ic="scroll-text"></i>覆写脚本
+          <span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip">订阅配置交给内核前按序执行的 JS（main(config) 返回新配置）；拖拽调整执行顺序；执行失败的脚本自动跳过并告警</span></span>
+          <span class="h3-tools"><button class="ghost small icon-btn" id="btn-add-script" title="新建脚本"><i data-ic="plus" data-sz="14"></i></button></span>
+        </h3>
+        <div id="scripts-list"><div class="empty">尚未添加脚本</div></div>
       </div>
     </section>
 
@@ -493,6 +521,53 @@
     <div class="row" style="justify-content:flex-end">
       <button id="sub-cancel" class="ghost">取消</button>
       <button id="sub-ok">拉取并添加</button>
+    </div>
+  </div>
+</div>
+
+<!-- 新建/编辑覆写脚本弹窗（JS：main(config) 返回新配置；试跑对当前订阅配置执行一次） -->
+<div class="modal-mask" id="script-modal" style="display:none">
+  <div class="modal sub-modal script-modal">
+    <div class="sm-head">
+      <span class="sm-logo"><i data-ic="scroll-text" data-sz="20"></i></span>
+      <div>
+        <h3 id="script-modal-title">新建脚本</h3>
+        <div class="hint">订阅配置交给内核前按序执行；main(config) 须返回配置对象</div>
+      </div>
+    </div>
+    <div class="sm-body">
+      <label>名称</label>
+      <input id="script-name" placeholder="例如：追加自建节点">
+      <label>代码（JS）</label>
+      <textarea id="script-code" class="mono" rows="12" spellcheck="false"></textarea>
+      <div class="hint" id="script-test-result"></div>
+      <div class="hint sm-err" id="script-err"></div>
+    </div>
+    <div class="row" style="justify-content:flex-end">
+      <button id="script-test" class="ghost">试跑</button>
+      <button id="script-cancel" class="ghost">取消</button>
+      <button id="script-ok">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- TUN 提权弹窗（非管理员开 TUN：说明 + 以管理员身份重启；重启后自动恢复开启） -->
+<div class="modal-mask" id="tun-elevate-modal" style="display:none">
+  <div class="modal sub-modal">
+    <div class="sm-head">
+      <span class="sm-logo"><i data-ic="shield" data-sz="20"></i></span>
+      <div>
+        <h3>TUN 模式需要管理员权限</h3>
+        <div class="hint">创建虚拟网卡须以管理员身份运行</div>
+      </div>
+    </div>
+    <div class="sm-body">
+      <div class="hint">应用将以管理员身份重启；TUN 开关已记忆，重启后自动恢复开启。取消则保持现状。</div>
+      <div class="hint sm-err" id="tun-elevate-err"></div>
+    </div>
+    <div class="row" style="justify-content:flex-end">
+      <button id="tun-elevate-cancel" class="ghost">取消</button>
+      <button id="tun-elevate-ok">以管理员身份重启</button>
     </div>
   </div>
 </div>

@@ -17,6 +17,18 @@ pub const EMBEDDED_RELAY_ADDR: &str = "0.0.0.0:54431";
 /// Web 远程面默认监听（仅 loopback）
 pub const DEFAULT_WEB_LISTEN: &str = "127.0.0.1:59291";
 
+/// 订阅覆写脚本（QuickJS 沙箱执行；Vec 顺序即执行顺序，order 与下标同步冗余存储）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubScript {
+    pub id: String,
+    pub name: String,
+    pub code: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub order: usize,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RoleSettings {
     /// 开关A：客户端角色（连上游、本地代理、路由组合）
@@ -41,6 +53,18 @@ pub struct RoleSettings {
     /// 仅监听端口的本地代理模式面向需要手动配置应用的用户）
     #[serde(default = "default_true")]
     pub system_proxy: bool,
+    /// 订阅出站模式（rule|global|direct，写入 mihomo mode）
+    #[serde(default = "default_sub_mode")]
+    pub sub_mode: String,
+    /// 订阅覆写脚本链（render_config 产物交给 mihomo 前依序执行；Vec 顺序 = 执行顺序）
+    #[serde(default)]
+    pub sub_scripts: Vec<SubScript>,
+    /// TUN 模式（docs/plan/tun.md P1：mihomo TUN 接管，anet 在前 FlClash 在后；需管理员）
+    #[serde(default)]
+    pub tun_mode: bool,
+    /// TUN 模式外部上游（anet 未命中规则的流量回落目标，默认 FlClash mixed 入站）
+    #[serde(default = "default_external_upstream")]
+    pub external_upstream: String,
 }
 
 fn default_true() -> bool {
@@ -49,6 +73,43 @@ fn default_true() -> bool {
 
 fn default_web_listen() -> String {
     DEFAULT_WEB_LISTEN.to_string()
+}
+
+pub fn default_sub_mode() -> String {
+    "rule".to_string()
+}
+
+/// 出站模式合法值校验（rule|global|direct）
+pub fn valid_sub_mode(mode: &str) -> bool {
+    matches!(mode, "rule" | "global" | "direct")
+}
+
+/// TUN 外部上游默认值（FlClash mixed 入站）
+pub const DEFAULT_EXTERNAL_UPSTREAM: &str = "127.0.0.1:7890";
+
+fn default_external_upstream() -> String {
+    DEFAULT_EXTERNAL_UPSTREAM.to_string()
+}
+
+/// TUN 回落目标合法性校验（tun.md §2.5 硬约束）：
+/// - 必须 loopback——非回环目标会被 mihomo TUN 重捕获（MATCH→57890→回落→再次被捕获）形成死环
+/// - 严禁指向本地代理 57890 / 内核 mixed 57892 / 控制面 59292（端口号与 subscription::MIHOMO_* 保持一致）
+pub fn validate_external_upstream(addr: &str) -> Result<std::net::SocketAddr, String> {
+    let sa: std::net::SocketAddr = addr
+        .trim()
+        .parse()
+        .map_err(|_| "外部上游地址格式应为 ip:port（如 127.0.0.1:7890）".to_string())?;
+    if !sa.ip().is_loopback() {
+        return Err("外部上游必须是本机回环地址（非回环目标会被 TUN 重捕获形成死环）".into());
+    }
+    if sa.port() == 0 {
+        return Err("外部上游端口非法".into());
+    }
+    const FORBIDDEN: [u16; 3] = [57890, 57892, 59292];
+    if FORBIDDEN.contains(&sa.port()) {
+        return Err(format!("外部上游严禁指向本机端口 {}（防环硬约束）", sa.port()));
+    }
+    Ok(sa)
 }
 
 impl Default for RoleSettings {
@@ -62,6 +123,10 @@ impl Default for RoleSettings {
             subscription_feature: false,
             subscription_unified: true,
             system_proxy: true,
+            sub_mode: default_sub_mode(),
+            sub_scripts: Vec::new(),
+            tun_mode: false,
+            external_upstream: default_external_upstream(),
         }
     }
 }
@@ -271,5 +336,95 @@ impl agile_net_client::api::ClientWebAuth for DesktopWebAuth {
 
     fn audit(&self, action: &str, detail: serde_json::Value) {
         audit(action, detail);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn settings_default_sub_mode_and_scripts() {
+        // 旧版配置无新字段：serde default 兜底
+        let v: RoleSettings = serde_json::from_str(
+            r#"{"client":true,"server":false,"web":false}"#,
+        )
+        .unwrap();
+        assert_eq!(v.sub_mode, "rule");
+        assert!(v.sub_scripts.is_empty());
+    }
+
+    #[test]
+    fn settings_scripts_roundtrip_with_order_and_enabled() {
+        let mut v = RoleSettings::default();
+        v.sub_mode = "global".into();
+        v.sub_scripts = vec![
+            SubScript { id: "a".into(), name: "甲".into(), code: "c1".into(), enabled: true, order: 0 },
+            SubScript { id: "b".into(), name: "乙".into(), code: "c2".into(), enabled: false, order: 1 },
+        ];
+        let raw = serde_json::to_string(&v).unwrap();
+        let back: RoleSettings = serde_json::from_str(&raw).unwrap();
+        assert_eq!(back.sub_mode, "global");
+        assert_eq!(back.sub_scripts.len(), 2);
+        assert_eq!(back.sub_scripts[0].id, "a");
+        assert!(back.sub_scripts[0].enabled);
+        assert!(!back.sub_scripts[1].enabled);
+        assert_eq!(back.sub_scripts[1].order, 1);
+        // 缺省 enabled/order 字段的旧脚本数据：enabled 默认 true、order 默认 0
+        let legacy: SubScript =
+            serde_json::from_str(r#"{"id":"x","name":"n","code":"c"}"#).unwrap();
+        assert!(legacy.enabled);
+        assert_eq!(legacy.order, 0);
+    }
+
+    #[test]
+    fn sub_mode_validation() {
+        assert!(valid_sub_mode("rule"));
+        assert!(valid_sub_mode("global"));
+        assert!(valid_sub_mode("direct"));
+        assert!(!valid_sub_mode("RULE"));
+        assert!(!valid_sub_mode(""));
+    }
+
+    #[test]
+    fn settings_default_tun_fields() {
+        // 旧版配置无 TUN 字段：serde default 兜底
+        let v: RoleSettings = serde_json::from_str(
+            r#"{"client":true,"server":false,"web":false}"#,
+        )
+        .unwrap();
+        assert!(!v.tun_mode);
+        assert_eq!(v.external_upstream, DEFAULT_EXTERNAL_UPSTREAM);
+        // 持久化往返
+        let mut v = RoleSettings::default();
+        v.tun_mode = true;
+        v.external_upstream = "127.0.0.1:7897".into();
+        let raw = serde_json::to_string(&v).unwrap();
+        let back: RoleSettings = serde_json::from_str(&raw).unwrap();
+        assert!(back.tun_mode);
+        assert_eq!(back.external_upstream, "127.0.0.1:7897");
+    }
+
+    #[test]
+    fn external_upstream_validation() {
+        // 合法：回环 + 非保留端口
+        assert_eq!(
+            validate_external_upstream("127.0.0.1:7890").unwrap().to_string(),
+            "127.0.0.1:7890"
+        );
+        assert!(validate_external_upstream("[::1]:7890").unwrap().ip().is_loopback());
+        // 严禁回指本机端口（57890 本地代理 / 57892 内核 mixed / 59292 控制面）
+        for p in [57890, 57892, 59292] {
+            let addr = format!("127.0.0.1:{p}");
+            assert!(validate_external_upstream(&addr).is_err(), "{addr} 应被拒绝");
+        }
+        // 非回环目标（会被 TUN 重捕获成环）
+        assert!(validate_external_upstream("192.168.1.5:7890").is_err());
+        assert!(validate_external_upstream("10.0.0.2:1080").is_err());
+        // 非法格式 / 非法端口
+        assert!(validate_external_upstream("not-an-addr").is_err());
+        assert!(validate_external_upstream("127.0.0.1").is_err());
+        assert!(validate_external_upstream("127.0.0.1:0").is_err());
+        assert!(validate_external_upstream("example.com:7890").is_err());
     }
 }
