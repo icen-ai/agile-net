@@ -81,6 +81,12 @@ pub struct NodeState {
     /// 可管理上游（握手 v2 自动发现；仅管理版账号下发）
     #[serde(default)]
     pub manageable: Vec<ManageableNode>,
+    /// 隧道流量：上行字节（发往节点；当前会话计数，重连归零，未连接为 0）
+    #[serde(default)]
+    pub bytes_up: u64,
+    /// 隧道流量：下行字节（来自节点；当前会话计数，重连归零，未连接为 0）
+    #[serde(default)]
+    pub bytes_down: u64,
 }
 
 /// 可管理节点（本机/已连节点/上游链自动发现）。
@@ -666,6 +672,8 @@ impl AgileNetClient {
             config_version: version,
             admin_console,
             manageable,
+            bytes_up: 0,
+            bytes_down: 0,
         };
 
         // 4. 后台任务：隧道自动重连 + 心跳 + 配置长轮询
@@ -776,6 +784,8 @@ impl AgileNetClient {
             config_version: cached.config_version,
             admin_console: false,
             manageable: Vec::new(),
+            bytes_up: 0,
+            bytes_down: 0,
         };
 
         let mut tasks = Vec::new();
@@ -842,29 +852,35 @@ impl AgileNetClient {
     }
 
     pub async fn list_nodes(&self) -> Vec<NodeState> {
-        self.inner
-            .nodes
-            .iter_mut()
-            .map(|mut r| {
-                // 以隧道实时状态为准修正缓存状态：
-                // 对端关闭/断网时缓存的 Connected 不会自动回写（管理面按钮据此显隐）
-                let live = if r.tunnel.is_connected() {
-                    NodeStatus::Connected
-                } else {
-                    match r.tunnel.state() {
-                        agile_net_core::relay::ConnectionState::Reconnecting => {
-                            NodeStatus::Reconnecting
-                        }
-                        agile_net_core::relay::ConnectionState::Connecting => NodeStatus::Connecting,
-                        _ => NodeStatus::Disconnected,
+        // 先同步修正状态并取出隧道句柄，再异步读流量（避免持 dashmap 守卫跨 await）
+        let mut states = Vec::with_capacity(self.inner.nodes.len());
+        let mut tunnels = Vec::with_capacity(self.inner.nodes.len());
+        for mut r in self.inner.nodes.iter_mut() {
+            // 以隧道实时状态为准修正缓存状态：
+            // 对端关闭/断网时缓存的 Connected 不会自动回写（管理面按钮据此显隐）
+            let live = if r.tunnel.is_connected() {
+                NodeStatus::Connected
+            } else {
+                match r.tunnel.state() {
+                    agile_net_core::relay::ConnectionState::Reconnecting => {
+                        NodeStatus::Reconnecting
                     }
-                };
-                if r.state.status != live {
-                    r.state.status = live;
+                    agile_net_core::relay::ConnectionState::Connecting => NodeStatus::Connecting,
+                    _ => NodeStatus::Disconnected,
                 }
-                r.state.clone()
-            })
-            .collect()
+            };
+            if r.state.status != live {
+                r.state.status = live;
+            }
+            states.push(r.state.clone());
+            tunnels.push(r.tunnel.clone());
+        }
+        for (state, tunnel) in states.iter_mut().zip(tunnels) {
+            let (up, down) = tunnel.traffic().await;
+            state.bytes_up = up;
+            state.bytes_down = down;
+        }
+        states
     }
 
     pub fn node_status(&self, node_id: &str) -> NodeStatus {

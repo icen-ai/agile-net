@@ -93,6 +93,16 @@ impl ClientTunnel {
         self.state() == ConnectionState::Connected
     }
 
+    /// 数据面流量计数（上行字节, 下行字节）：上行 = 发往节点，下行 = 来自节点。
+    /// 仅统计 Data 帧 payload（同 `MuxSession::traffic`）。
+    /// 当前会话语义：自动重连会新建 MuxSession，计数从 0 重新起算；未连接返回 (0, 0)。
+    pub async fn traffic(&self) -> (u64, u64) {
+        match self.session.lock().await.as_ref() {
+            Some(mux) => mux.traffic(),
+            None => (0, 0),
+        }
+    }
+
     /// 建立一次连接（TLS + 认证 + 会话维护任务）。
     pub async fn connect(&self) -> Result<()> {
         self.state

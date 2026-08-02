@@ -4,7 +4,9 @@
 
    当前收录：ag-select 统一自定义下拉（.agsel-*；原生 select 保留为数据/逻辑载体）
              ag-tabs 横向页签条（.agtabs/.agtab；页内分区切换，可带右侧工具位）
-             agchart 图表（.agchart*；JS 在同目录 agchart.js，首个共享 JS 组件，同机制服务） */
+             agchart 图表（.agchart*；JS 在同目录 agchart.js，首个共享 JS 组件，同机制服务）
+             ahelp 行内帮助（.ahelp/.ahelp-tip；badge-question-mark + 纯 CSS hover 说明卡，
+             两端 JS 各有 ahelp(text) helper，静态 HTML 手写同构 span 即可） */
 
 /* --- agchart 图表（JS 见共享 agchart.js；本层收录图例/浮层/网格/空态样式） --- */
 /* 结构：el.agchart(.agchart-line|.agchart-spark) > [.agchart-legend] + .agchart-plot > svg + .agchart-tip */
@@ -57,3 +59,11 @@ select.agsel-src { position: absolute !important; width: 1px !important; height:
 .agtab.active { background: var(--accent); color: var(--accent-fg); }
 .agtab:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
 .agtabs-tools { margin-left: auto; display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+/* --- ahelp 行内帮助（badge-question-mark 13px + 纯 CSS hover 说明卡；两端 JS 各有 ahelp(text) 内联 helper） ---
+   结构：<span class="ahelp">icon<span class="ahelp-tip">说明</span></span>；不吃 JS，hover 上浮展开，
+   tooltip 用 panel2/border/阴影质感，z-index 高于卡片、低于 agsel-pop(500)。 */
+.ahelp { position: relative; display: inline-flex; vertical-align: -2px; margin-left: 4px; color: var(--dim2); cursor: help; }
+.ahelp:hover { color: var(--dim); }
+.ahelp-tip { position: absolute; bottom: calc(100% + 7px); left: 50%; transform: translate(-50%, 3px); width: max-content; max-width: 240px; white-space: normal; text-align: left; font-size: 12px; font-weight: 400; line-height: 1.55; color: var(--text); background: var(--panel2); border: 1px solid var(--border); border-radius: 9px; box-shadow: 0 8px 24px rgba(0,0,0,.14); padding: 7px 10px; opacity: 0; pointer-events: none; transition: opacity .15s, transform .15s; z-index: 450; }
+.ahelp:hover .ahelp-tip { opacity: 1; transform: translate(-50%, 0); }

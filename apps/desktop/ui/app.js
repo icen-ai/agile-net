@@ -151,6 +151,11 @@ function esc(s) {
   }[c]));
 }
 
+/* 行内帮助（共享组件 .ahelp，样式在 components.css）：问号图标 + 纯 CSS hover 说明卡 */
+function ahelp(text) {
+  return '<span class="ahelp">' + AgIcon('badge-question-mark', 13) + '<span class="ahelp-tip">' + esc(text) + '</span></span>';
+}
+
 /* 变更检测写入：内容不变不动 DOM（轮询渲染防频闪） */
 function setText(id, s) { const el = $(id); if (el && el.textContent !== s) el.textContent = s; }
 function setHtml(id, h) { const el = $(id); if (el && el.innerHTML !== h) el.innerHTML = h; }
@@ -440,6 +445,7 @@ async function refreshNodes(force) {
   } catch (e) { toast(friendlyError(e), 'err'); updateOnboarding([]); return; }
   window._nodes = nodes;
   window._nodeStatus = Object.fromEntries(nodes.map(n => [n.node_id, n.status]));
+  trackFaninTraffic(nodes);
   refreshAdminEntry();
   await restorePaused(nodes);
   const sig = JSON.stringify(nodes);
@@ -757,7 +763,22 @@ async function toggleProxy(e) {
   }
 }
 
-/* ================= 仪表盘：扇入卡（已连接 / 已保存概览） ================= */
+/* ================= 仪表盘：扇入卡（已连接 / 已保存概览 + 流量趋势） ================= */
+// 扇入流量速率序列（list_nodes 每次轮询累一点；计数为当前会话语义，重连归零按新基准）
+let _tfLast = null, _tfSeries = [];
+function trackFaninTraffic(nodes) {
+  const up = nodes.reduce((s, n) => s + (n.bytes_up || 0), 0);
+  const down = nodes.reduce((s, n) => s + (n.bytes_down || 0), 0);
+  const total = up + down;
+  if (_tfLast !== null) {
+    let delta = total - _tfLast;
+    if (delta < 0) delta = total; // 会话重连计数归零：负差按新基准
+    _tfSeries.push(delta);
+    if (_tfSeries.length > 90) _tfSeries.shift();
+  }
+  _tfLast = total;
+  window._tfTotals = { up, down };
+}
 function updateDashFanin() {
   const nodes = window._nodes || [];
   const saved = (window._credsRaw || []).length;
@@ -765,6 +786,17 @@ function updateDashFanin() {
   const trying = nodes.length - conn;
   setText('d-fanin-val', conn + ' 已连接');
   setText('d-fanin-sub', saved + ' 个已保存' + (trying ? ' · ' + trying + ' 个连接中/重连中' : ''));
+  const tf = window._tfTotals || { up: 0, down: 0 };
+  const has = tf.up + tf.down > 0;
+  const tfEl = $('d-fanin-tf'), sparkEl = $('d-fanin-spark');
+  if (tfEl) {
+    tfEl.style.display = has ? '' : 'none';
+    if (has) setText('d-fanin-tf', '↑ ' + fmtBytes(tf.up) + ' · ↓ ' + fmtBytes(tf.down));
+  }
+  if (sparkEl) {
+    sparkEl.style.display = has ? '' : 'none';
+    if (has) AgChart.sparkline(sparkEl, _tfSeries.length > 1 ? _tfSeries : [0, 0]);
+  }
 }
 
 /* ================= 扇入列表（已保存扇入为主体 + 未保存的活跃连接；连接/断开/导出/删除） ================= */

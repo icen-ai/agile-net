@@ -47,12 +47,12 @@
   <aside class="sidebar">
     <div id="nav-client">
       <div class="nav-item active" data-view="connect"><i data-ic="home"></i><span class="nav-label">首页</span></div>
-      <div class="nav-item" data-view="nodes"><i data-ic="globe"></i><span class="nav-label">扇入</span></div>
+      <div class="nav-item" data-view="nodes"><i data-ic="orbit"></i><span class="nav-label">扇入</span></div>
       <div class="nav-item" data-view="upstreams"><i data-ic="git-fork"></i><span class="nav-label">扇出</span></div>
-      <div class="nav-item" data-view="routes"><i data-ic="route"></i><span class="nav-label">路由</span></div>
+      <div class="nav-item" data-view="routes"><i data-ic="route"></i><span class="nav-label">规则</span></div>
       <div class="nav-sep"></div>
-      <div class="nav-item sub-feature" data-view="subscription" style="display:none"><i data-ic="satellite-dish"></i><span class="nav-label">订阅</span></div>
-      <div class="nav-item sub-feature" data-view="proxy" style="display:none"><i data-ic="zap"></i><span class="nav-label">节点</span></div>
+      <div class="nav-item sub-feature" data-view="subscription" style="display:none"><i data-ic="satellite"></i><span class="nav-label">订阅</span></div>
+      <div class="nav-item sub-feature" data-view="proxy" style="display:none"><i data-ic="earth"></i><span class="nav-label">节点</span></div>
       <div class="nav-sep"></div>
       <div class="nav-item" data-view="settings"><i data-ic="settings"></i><span class="nav-label">设置</span></div>
     </div>
@@ -64,7 +64,7 @@
       <div class="nav-item" data-aview="groups"><i data-ic="shield"></i><span class="nav-label">权限</span></div>
       <div class="nav-item" data-aview="rules"><i data-ic="route"></i><span class="nav-label">规则</span></div>
       <div class="nav-sep"></div>
-      <div class="nav-item" data-aview="fanin"><i data-ic="globe"></i><span class="nav-label">扇入</span></div>
+      <div class="nav-item" data-aview="fanin"><i data-ic="orbit"></i><span class="nav-label">扇入</span></div>
       <div class="nav-item" data-aview="connectors"><i data-ic="git-fork"></i><span class="nav-label">扇出</span></div>
       <div class="nav-item" data-aview="audit"><i data-ic="scroll-text"></i><span class="nav-label">审计</span></div>
       <div class="nav-sep"></div>
@@ -123,11 +123,13 @@
 
         <!-- 扇入：客户端角色开关 + 已连接/已保存数量（点卡片进扇入页） -->
         <div class="dcard" id="dc-fanin" data-goto="nodes">
-          <div class="dc-head"><i data-ic="globe" data-sz="15"></i>扇入 <span id="d-fanin-off" style="display:none"><span class="badge b-off">已停用</span></span>
+          <div class="dc-head"><i data-ic="orbit" data-sz="15"></i>扇入 <span id="d-fanin-off" style="display:none"><span class="badge b-off">已停用</span></span>
             <label class="switch dc-switch local-only"><input type="checkbox" id="r-client" checked><span class="slider"></span></label>
           </div>
           <div class="dc-val" id="d-fanin-val">-</div>
           <div class="dc-sub" id="d-fanin-sub">扇入加载中…</div>
+          <div class="dc-tf" id="d-fanin-tf" style="display:none"></div>
+          <div class="dc-spark" id="d-fanin-spark" style="display:none"></div>
         </div>
 
         <!-- 扇出：监听开关 + 连通数 + API/Relay 地址简述（点卡片进扇出页） -->
@@ -141,7 +143,7 @@
 
         <!-- 订阅：内核开关 + 激活订阅/节点数 + 当前节点延迟；功能未激活显示引导态 -->
         <div class="dcard local-only" id="dc-sub" data-goto="subscription">
-          <div class="dc-head"><i data-ic="satellite-dish" data-sz="15"></i>订阅 <span id="d-sub-badge"></span>
+          <div class="dc-head"><i data-ic="satellite" data-sz="15"></i>订阅 <span id="d-sub-badge"></span>
             <label class="switch dc-switch" id="d-sub-switch"><input type="checkbox" id="d-sub"><span class="slider"></span></label>
           </div>
           <div id="d-sub-body">
@@ -150,16 +152,15 @@
           </div>
           <div id="d-sub-guide" style="display:none">
             <div class="dc-sub">订阅代理（mihomo 内核）未启用</div>
-            <div class="dc-sub">到「设置 → 订阅代理」安装内核并激活，即可导入 Clash 系订阅</div>
+            <div class="dc-sub">到「设置 → 订阅内核」安装内核并激活，即可导入 Clash 系订阅</div>
           </div>
         </div>
 
         <!-- 远程：Web 远程面开关 + 监听地址（原 web-panel 迁入） -->
         <div class="dcard local-only" id="dc-web">
-          <div class="dc-head"><i data-ic="monitor" data-sz="15"></i>远程
+          <div class="dc-head"><i data-ic="monitor" data-sz="15"></i>远程 <span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip">Web 远程面：把本机管理界面经 HTTP 暴露（默认仅 127.0.0.1，须先设管理密码）</span></span>
             <label class="switch dc-switch"><input type="checkbox" id="r-web"><span class="slider"></span></label>
           </div>
-          <div class="dc-sub">Web 远程面：把本机管理界面经 HTTP 暴露（默认仅 127.0.0.1，须先设管理密码）</div>
           <div id="web-panel" style="display:none">
             <div class="dc-kv"><span class="k">监听地址</span><span><input id="web-listen" class="mono" style="width:150px"> <button id="btn-web-listen-save" class="ghost small">保存</button></span></div>
             <div class="hint" id="web-status" style="margin-top:4px"></div>
@@ -196,7 +197,7 @@
         <div class="card">
           <div class="role-list">
             <div class="role-row">
-              <div class="role-info"><b>扇出监听</b><span class="hint">内嵌完整端点（Relay / 账号 / 规则 / 审计），本机可作为转发机或留守管理端</span></div>
+              <div class="role-info"><b>扇出监听 <span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip">内嵌完整端点（Relay / 账号 / 规则 / 审计），本机可作为转发机或留守管理端</span></span></b></div>
               <label class="switch"><input type="checkbox" id="r-server"><span class="slider"></span></label>
             </div>
             <div id="server-panel" style="display:none">
@@ -204,7 +205,6 @@
               <div class="kv"><span class="k">Relay 监听</span><span class="mono" id="sv-relay">-</span></div>
               <div class="row" style="margin-top:8px">
                 <button id="btn-open-console" class="ghost small"><i data-ic="external-link" data-sz="13"></i> 打开控制台</button>
-                <span class="hint inline">控制台在主窗口内嵌管理内嵌端点</span>
               </div>
             </div>
           </div>
@@ -227,8 +227,8 @@
 
     <!-- 扇入（下游）：本机连入的 AgileNet 端点 —— 添加 / 连接 / 消费管理 -->
     <section class="view" id="view-nodes" hidden>
-      <div class="page-title"><i data-ic="globe" data-sz="19"></i>扇入</div>
-      <div class="page-desc">下游连接的消费管理：以已保存扇入为主体，叠加实时状态；离线扇入整卡降饱和标识</div>
+      <div class="page-title"><i data-ic="orbit" data-sz="19"></i>扇入</div>
+      <div class="page-desc">下游连接的消费管理：以已保存扇入为主体，叠加实时状态</div>
       <div id="net-banner" class="net-banner" style="display:none"></div>
 
       <!-- 快速接入（导入条） -->
@@ -261,7 +261,7 @@
 
       <!-- 扇入列表（已保存扇入为主体 + 实时状态；连接/断开/分享/删除） -->
       <div class="card" id="creds-card">
-        <h3><i data-ic="globe"></i>扇入列表
+        <h3><i data-ic="orbit"></i>扇入列表
           <span class="h3-tools">
             <button class="ghost small icon-btn" id="btn-refresh" title="刷新"><i data-ic="refresh-cw" data-sz="13"></i></button>
             <button class="ghost small icon-btn search-toggle" data-search="creds" title="搜索"><i data-ic="search" data-sz="13"></i></button>
@@ -272,12 +272,12 @@
       </div>
     </section>
 
-    <!-- 路由：合并视图（可暂停单条规则自由组合；长表粘性表头 + 内部滚动） -->
+    <!-- 规则：合并视图（可暂停单条规则自由组合；长表粘性表头 + 内部滚动） -->
     <section class="view" id="view-routes" hidden>
-      <div class="page-title"><i data-ic="route" data-sz="19"></i>路由</div>
+      <div class="page-title"><i data-ic="route" data-sz="19"></i>路由规则</div>
       <div class="page-desc">全部端点下发规则的合并视图；关闭开关可暂停单条规则（立即生效并本地记忆）</div>
       <div class="card" id="rules-card">
-        <h3><i data-ic="route"></i>生效路由（合并视图）
+        <h3><i data-ic="route"></i>生效规则（合并视图）
           <span class="h3-tools"><button class="ghost small icon-btn search-toggle" data-search="rules" title="搜索"><i data-ic="search" data-sz="13"></i></button></span>
         </h3>
         <div class="list-search" id="search-rules" hidden><input placeholder="搜索类型 / 匹配值 / 端点"></div>
@@ -289,7 +289,7 @@
 
     <!-- 订阅：订阅列表管理（激活单选） -->
     <section class="view" id="view-subscription" hidden>
-      <div class="page-title"><i data-ic="satellite-dish" data-sz="19"></i>订阅</div>
+      <div class="page-title"><i data-ic="satellite" data-sz="19"></i>订阅</div>
       <div class="page-desc">导入 Clash 系订阅，无需第三方客户端；内核由应用托管（钉版本 SHA-256 校验）</div>
 
       <div class="card">
@@ -300,7 +300,7 @@
         <div class="kv"><span class="k">本地出口</span><span class="mono">127.0.0.1:57892（mixed）</span></div>
         <div class="kv"><span class="k">出口 IP</span><span class="mono" id="sub-exit-ip">内核未运行</span></div>
         <div class="hint" id="sub-exit-geo" style="margin-top:4px"></div>
-        <label class="chk" style="margin-top:8px"><input type="checkbox" id="s-unified" checked> 未命中 AgileNet 规则的流量经订阅出口（统一 57890 单端口）</label>
+        <div style="display:flex;align-items:center;margin-top:8px"><label class="chk" style="margin-top:0"><input type="checkbox" id="s-unified" checked> 未命中 AgileNet 规则的流量经订阅出口</label><span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip">开启后本地代理 57890 单端口同时承接订阅出口流量，应用无需区分端口</span></span></div>
       </div>
 
       <div class="card">
@@ -313,7 +313,7 @@
 
     <!-- 代理：激活订阅的节点组与切换 -->
     <section class="view" id="view-proxy" hidden>
-      <div class="page-title"><i data-ic="zap" data-sz="19"></i>节点</div>
+      <div class="page-title"><i data-ic="earth" data-sz="19"></i>节点</div>
       <div class="page-desc" id="proxy-sub-desc">激活订阅的节点列表；点击卡片切换，点闪电图标单点测速</div>
       <div class="card" id="groups-card">
         <div class="group-tabs" id="group-tabs"></div>
@@ -327,15 +327,38 @@
       <iframe id="admin-frame" title="管理端"></iframe>
     </section>
 
-    <!-- 设置 -->
+    <!-- 设置（分区：通用 → 连接 → 订阅内核 → 系统 → 关于与卸载；元素 id 不变，JS 绑定不受影响） -->
     <section class="view" id="view-settings" hidden>
       <div class="page-title"><i data-ic="settings" data-sz="19"></i>设置</div>
-      <div class="page-desc">订阅代理、启动行为、语言与主题（角色开关：扇入/远程在首页，服务端在扇出页）</div>
+      <div class="page-desc">通用、连接、订阅内核与系统项（角色开关：扇入/远程在首页，服务端在扇出页）</div>
 
-      <!-- 订阅代理：安装内核 → 激活功能（侧栏出现「订阅/代理」） -->
+      <!-- 通用：语言与主题 -->
+      <div class="card">
+        <h3><i data-ic="settings"></i>通用</h3>
+        <div class="lang-theme" style="margin-top:0">
+          <select id="s-lang">
+            <option value="zh">中文</option>
+            <option value="en">English</option>
+          </select>
+          <select id="s-theme">
+            <option value="light">浅色</option>
+            <option value="dark">深色</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- 连接：代理与重连偏好 -->
+      <div class="card">
+        <h3><i data-ic="orbit"></i>连接</h3>
+        <div class="row col">
+          <label class="chk"><input type="checkbox" id="s-autoproxy" checked> 连接扇入后自动启动本地代理</label>
+          <label class="chk"><input type="checkbox" id="s-autoreconnect" checked> 自动重连已保存的扇入</label>
+        </div>
+      </div>
+
+      <!-- 订阅内核：安装内核 → 激活功能（侧栏出现「订阅/节点」） -->
       <div class="card" id="sub-feature-card">
-        <h3><i data-ic="satellite-dish"></i>订阅代理 <span class="hint inline" id="sub-install-status">未安装</span></h3>
-        <div class="hint" style="margin-bottom:10px">导入 Clash 系订阅的可选附加服务。内核（mihomo）钉版本下载并 SHA-256 校验，仅在本地运行。</div>
+        <h3><i data-ic="satellite"></i>订阅内核 <span class="hint inline" id="sub-install-status">未安装</span> <span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip">导入 Clash 系订阅的可选附加服务；内核（mihomo）钉版本下载并 SHA-256 校验，仅在本地运行</span></span></h3>
         <div class="row">
           <button id="btn-install-kernel" class="ghost small"><i data-ic="download" data-sz="13"></i> 下载并安装内核</button>
           <button id="btn-activate-sub" class="small" disabled>激活订阅功能</button>
@@ -343,23 +366,17 @@
         </div>
       </div>
 
+      <!-- 系统：开机启动 -->
       <div class="card">
-        <h3><i data-ic="settings"></i>偏好</h3>
-        <div class="row col">
-          <label class="chk"><input type="checkbox" id="s-autostart"> 开机自动启动 AgileNet</label>
-          <label class="chk"><input type="checkbox" id="s-autoproxy" checked> 连接扇入后自动启动本地代理</label>
-          <label class="chk"><input type="checkbox" id="s-autoreconnect" checked> 自动重连已保存的扇入</label>
-          <div class="lang-theme">
-            <select id="s-lang">
-              <option value="zh">中文</option>
-              <option value="en">English</option>
-            </select>
-            <select id="s-theme">
-              <option value="light">浅色</option>
-              <option value="dark">深色</option>
-            </select>
-          </div>
-        </div>
+        <h3><i data-ic="power"></i>系统</h3>
+        <label class="chk"><input type="checkbox" id="s-autostart"> 开机自动启动 AgileNet</label>
+      </div>
+
+      <!-- 关于与卸载 -->
+      <div class="card">
+        <h3><i data-ic="zap"></i>关于</h3>
+        <div class="kv"><span class="k">版本</span><span>v<span id="ver">-</span></span></div>
+        <div class="hint">关闭主窗口将最小化到系统托盘，右键托盘图标可退出</div>
       </div>
       <div class="card">
         <h3><i data-ic="trash-2"></i>卸载</h3>
@@ -367,11 +384,6 @@
           <span class="hint">从这台电脑移除 AgileNet，可选择保留或清理本地数据</span>
           <button id="btn-uninstall" class="danger">卸载 AgileNet</button>
         </div>
-      </div>
-      <div class="card">
-        <h3><i data-ic="zap"></i>关于</h3>
-        <div class="kv"><span class="k">版本</span><span>v<span id="ver">-</span></span></div>
-        <div class="hint">关闭主窗口将最小化到系统托盘，右键托盘图标可退出</div>
       </div>
     </section>
   </main>
@@ -381,8 +393,7 @@
 <div class="modal-mask" id="login-modal" style="display:none">
   <div class="modal">
     <h3><i data-ic="shield" data-sz="16"></i> Web 远程面</h3>
-    <div class="hint" style="margin:6px 0 12px">请输入管理密码登录本机管理界面</div>
-    <div class="row col" style="gap:10px">
+    <div class="row col" style="gap:10px;margin-top:12px">
       <div><label>管理密码</label><input id="login-pass" type="password" autocomplete="current-password"></div>
     </div>
     <div class="row" style="justify-content:flex-end;margin-top:14px">
@@ -430,7 +441,7 @@
 <div class="modal-mask" id="sub-modal" style="display:none">
   <div class="modal sub-modal">
     <div class="sm-head">
-      <span class="sm-logo"><i data-ic="satellite-dish" data-sz="20"></i></span>
+      <span class="sm-logo"><i data-ic="satellite" data-sz="20"></i></span>
       <div>
         <h3>添加订阅</h3>
         <div class="hint">拉取校验通过才会保存；URL 视为凭据，绝不写入日志</div>

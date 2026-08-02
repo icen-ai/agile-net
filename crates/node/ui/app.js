@@ -6,9 +6,9 @@ const ICONS = {
   'users': '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
   'shield': '<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/>',
   'route': '<circle cx="6" cy="19" r="3"/><path d="M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15"/><circle cx="18" cy="5" r="3"/>',
-  'key-round': '<path d="M2.586 17.414A2 2 0 0 0 2 18.828V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.172a2 2 0 0 0 1.414-.586l.814-.814a6.5 6.5 0 1 0-4-4z"/><circle cx="16.5" cy="7.5" r=".5" fill="currentColor"/>',
+  'badge-question-mark': '<path d="M3.85 8.62a4 4 0 0 1 4.78-4.77 4 4 0 0 1 6.74 0 4 4 0 0 1 4.78 4.78 4 4 0 0 1 0 6.74 4 4 0 0 1-4.77 4.78 4 4 0 0 1-6.75 0 4 4 0 0 1-4.78-4.77 4 4 0 0 1 0-6.76Z"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" x2="12.01" y1="17" y2="17"/>',
   'git-fork': '<circle cx="12" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><circle cx="18" cy="6" r="3"/><path d="M18 9v1a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V9"/><path d="M12 12v3"/>',
-  'globe': '<circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/>',
+  'orbit': '<path d="M20.341 6.484A10 10 0 0 1 10.266 21.85"/><path d="M3.659 17.516A10 10 0 0 1 13.74 2.152"/><circle cx="12" cy="12" r="3"/><circle cx="19" cy="5" r="2"/><circle cx="5" cy="19" r="2"/>',
   'scroll-text': '<path d="M15 12h-5"/><path d="M15 8h-5"/><path d="M19 17V5a2 2 0 0 0-2-2H4"/><path d="M8 21h12a2 2 0 0 0 2-2v-1a1 1 0 0 0-1-1H11a1 1 0 0 0-1 1v1a2 2 0 1 1-4 0V5a2 2 0 1 0-4 0v2a1 1 0 0 0 1 1h3"/>',
   'settings': '<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/>',
   'sun': '<circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/>',
@@ -185,6 +185,10 @@ function esc(s) {
   return String(s ?? '').replace(/[&<>"'`]/g, c => ({
     '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;','`':'&#96;'
   }[c]));
+}
+/* 行内帮助（共享组件 .ahelp，样式在 /ui/components.css）：问号图标 + 纯 CSS hover 说明卡 */
+function ahelp(text) {
+  return '<span class="ahelp">' + ic('badge-question-mark', 13) + '<span class="ahelp-tip">' + esc(text) + '</span></span>';
 }
 function fmtBytes(n) {
   n = Number(n) || 0;
@@ -579,8 +583,7 @@ function openCreateAccount() {
       S.groups.map(g => '<option value="' + esc(g.id) + '">' + esc(g.name) + '</option>').join('') + '</select>' +
     '<label>备注</label><input id="na-remark" style="width:100%">' +
     '<label class="chk" style="display:flex;align-items:center;gap:6px;margin-top:8px"><input type="checkbox" id="na-admin"> 同时授予管理权限（生成管理版接入链接）</label>' +
-    '<div class="hint" id="na-admin-warn" style="color:var(--danger-text);display:none">' + ic('triangle-alert', 13) + ' 持管理版接入链接者可经控制台通道管理本端点（规则/账号/令牌同管理员），签发将记入审计。仅发给可信管理员。</div>' +
-    '<div class="hint">密码由服务端自动生成（sk- 48 位强随机），创建后仅展示一次</div>',
+    '<div class="hint" id="na-admin-warn" style="color:var(--danger-text);display:none">' + ic('triangle-alert', 13) + ' 持管理版接入链接者可经控制台通道管理本端点（规则/账号/令牌同管理员），签发将记入审计。仅发给可信管理员。</div>',
     [
       {label:'取消', kind:'ghost', fn: closeModal},
       {label:'创建', fn: async () => {
@@ -803,7 +806,7 @@ function ruleFormHtml(t, v, resolve, remark) {
       '<option value="host" ' + (t==='host'?'selected':'') + '>host（域名，如 git.internal 或 *.dev.internal）</option>' +
     '</select>' +
     '<label>匹配值</label><input id="rf-value" style="width:100%" value="' + esc(v||'') + '" placeholder="10.12.0.0/16 或 git.internal">' +
-    '<label id="rf-resolve-row" style="display:' + (t === 'host' ? 'flex' : 'none') + ';gap:8px;align-items:center;margin-top:10px"><input type="checkbox" id="rf-resolve" ' + (resolve?'checked':'') + '> host 需要客户端写入系统 hosts（仅 host 类型）</label>' +
+    '<label id="rf-resolve-row" style="display:' + (t === 'host' ? 'flex' : 'none') + ';gap:8px;align-items:center;margin-top:10px"><input type="checkbox" id="rf-resolve" ' + (resolve?'checked':'') + '> host 需要客户端写入系统 hosts</label>' +
     '<label>备注</label><input id="rf-remark" style="width:100%" value="' + esc(remark||'') + '">';
 }
 function openCreateRule() {
@@ -888,7 +891,7 @@ let FANIN_PEERS = [];
 let FANIN_TOKENS = [];
 async function renderFanIn() {
   const tab = S.faninTab;
-  $('view').innerHTML = '<div class="page-title">' + ic('globe', 20) + '扇入</div><div class="page-desc">谁连着本端点：扇入监听状态、在线扇入连接与扇入令牌管理（生成令牌是扇入能力之一，归本页）</div>' +
+  $('view').innerHTML = '<div class="page-title">' + ic('orbit', 20) + '扇入</div><div class="page-desc">谁连着本端点：扇入监听状态、在线扇入连接与扇入令牌管理</div>' +
     '<div class="agtabs" id="fanin-tabs">' +
       '<div class="agtabs-pill">' +
         '<button class="agtab' + (tab === 'listen' ? ' active' : '') + '" data-agtab="listen">监听</button>' +
@@ -899,8 +902,7 @@ async function renderFanIn() {
     '</div>' +
     '<div data-agpanel="listen"><div class="card"><h3>扇入监听</h3><div id="fanin-listener"></div></div></div>' +
     '<div data-agpanel="peers" hidden><div class="card"><h3>扇入连接</h3><div class="table-wrap"><table><thead><tr><th>对端 node_id</th><th>上行</th><th>下行</th></tr></thead><tbody id="fanin-peers"></tbody></table></div></div></div>' +
-    '<div data-agpanel="tokens" hidden><div class="card"><h3>扇入令牌</h3>' +
-      '<div class="page-desc" style="margin-bottom:12px">令牌 = 允许对端扇入本端点的预共享密钥（psk_ 48 位），服务端只存哈希，全文仅创建时展示一次</div>' +
+    '<div data-agpanel="tokens" hidden><div class="card"><h3>扇入令牌' + ahelp('令牌 = 允许对端扇入本端点的预共享密钥（psk_ 48 位）；服务端只存哈希，全文仅创建时展示一次') + '</h3>' +
       '<div class="toolbar"><div class="spacer"></div><button onclick="openCreateToken()">' + ic('plus', 15) + '生成令牌</button></div>' +
       '<div class="table-wrap"><table><thead><tr><th>前缀</th><th>权限组</th><th>备注</th><th>暴露控制面</th><th>最近使用</th><th>创建时间</th><th>操作</th></tr></thead><tbody id="tok-body"></tbody></table></div></div></div>';
   agTabsBind($('fanin-tabs'), (k) => {
@@ -1070,7 +1072,7 @@ function connStatusBadge(st) {
     esc(CONN_STATUS[st] || st || '未知') + '</span>';
 }
 async function renderConnectors() {
-  $('view').innerHTML = '<div class="page-title">' + ic('git-fork', 20) + '扇出</div><div class="page-desc">本端点主动连出的对端隧道；扇出 token 为对端签发的连接凭据，加密落库、创建后不回显（仅可重置）</div>' +
+  $('view').innerHTML = '<div class="page-title">' + ic('git-fork', 20) + '扇出</div><div class="page-desc">本端点主动连出的对端隧道</div>' +
     '<div class="toolbar"><div class="spacer"></div><button onclick="openCreateConnector()">' + ic('plus', 15) + '新建扇出</button></div>' +
     '<div class="card table-wrap"><table><thead><tr><th>名称</th><th>上游地址</th><th>权限组</th><th>状态</th><th>启用</th><th>备注</th><th>操作</th></tr></thead><tbody id="conn-body"></tbody></table></div>';
   await loadConnectors();
@@ -1214,10 +1216,12 @@ async function loadAudit() {
 
 /* ================= 节点设置 ================= */
 async function renderSettings() {
-  $('view').innerHTML = '<div class="page-title">' + ic('settings', 20) + '端点设置</div><div class="page-desc">基础信息、公网接入、管理员与系统日志</div>' +
-    '<div class="card"><h3>基础信息</h3>' +
+  // 分区：服务端信息（名称/公网地址/运行信息）→ 管理面（管理员/我的密码）→ 系统日志；仅重排分组，元素 id 全部保留
+  $('view').innerHTML = '<div class="page-title">' + ic('settings', 20) + '端点设置</div><div class="page-desc">服务端信息、管理面账号与系统日志</div>' +
+    '<div class="card"><h3>服务端信息</h3>' +
       '<label>端点名称</label><div style="display:flex;gap:10px"><input id="set-name" style="flex:1"><button onclick="saveNodeName()">保存</button></div>' +
       '<label>公网接入地址（connect_url 与隧道端点主机名）</label><div style="display:flex;gap:10px"><input id="set-host" style="flex:1" placeholder="cdn.example.com"><button onclick="savePublicHost()">保存</button></div>' +
+      '<div id="set-info" style="margin-top:14px"></div>' +
     '</div>' +
     '<div class="card"><h3>管理员</h3>' +
       '<div class="table-wrap"><table><thead><tr><th>用户名</th><th>创建时间</th><th>操作</th></tr></thead><tbody id="admin-body"></tbody></table></div>' +
@@ -1228,7 +1232,6 @@ async function renderSettings() {
       '<label>新密码（≥10 位，含大小写字母与数字）</label><input id="pw-new" type="password" style="width:280px">' +
       '<div style="margin-top:12px"><button onclick="changePassword()">修改密码（修改后需重新登录）</button></div>' +
     '</div>' +
-    '<div class="card"><h3>服务信息</h3><div id="set-info"></div></div>' +
     '<div class="card"><h3>最近系统日志</h3><div id="set-logs" class="mono" style="max-height:300px;overflow-y:auto;color:var(--dim);font-size:12px"></div></div>';
   try {
     const st = await api('GET', '/api/v1/admin/node/status');

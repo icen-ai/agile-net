@@ -186,3 +186,50 @@ async fn client_acl_denied() -> Result<()> {
 
     Ok(())
 }
+
+/// 流量计数：traffic() 反映当前会话 Data 帧字节（上行/下行，仅 payload）
+#[tokio::test]
+async fn client_tunnel_traffic_counters() -> Result<()> {
+    let echo_addr = get_free_addr();
+    let relay_addr = get_free_addr();
+
+    start_echo_server(echo_addr).await;
+
+    let listener = Arc::new(RelayListener::with_validator(
+        relay_addr,
+        Arc::new(TestValidator),
+        agile_net_core::tunnel::tls::TlsConfigBuilder::new()
+            .build_server()
+            .map(|(cfg, _)| tokio_rustls::TlsAcceptor::from(cfg))?,
+    ));
+    let l = listener.clone();
+    tokio::spawn(async move {
+        let _ = l.start().await;
+    });
+    tokio::time::sleep(Duration::from_millis(80)).await;
+
+    let tunnel = ClientTunnel::new_insecure(relay_addr, "acc-wangwu", "tun_secret")?;
+    // 未连接时为 (0, 0)
+    assert_eq!(tunnel.traffic().await, (0, 0));
+
+    tunnel.connect().await?;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    // 已连接但无业务数据时仍为 (0, 0)（仅计 Data 帧，认证/心跳不计）
+    assert_eq!(tunnel.traffic().await, (0, 0));
+
+    // 打开通道发送固定字节，echo 原样返回（256KiB 小于流控窗口，无挂起）
+    const PAYLOAD: usize = 256 * 1024;
+    let data = vec![0x5Au8; PAYLOAD];
+    let mut ch = tunnel.open_channel("127.0.0.1", echo_addr.port()).await?;
+    ch.write_all(&data).await?;
+    let mut received = vec![0u8; PAYLOAD];
+    ch.read_exact(&mut received).await?;
+    assert_eq!(received, data);
+
+    // 下行全部到达即说明上行已全部发出并计数；两侧都应恰好等于 payload 总量
+    let (up, down) = tunnel.traffic().await;
+    assert_eq!(up, PAYLOAD as u64, "上行字节应等于发送的 Data payload");
+    assert_eq!(down, PAYLOAD as u64, "下行字节应等于回显的 Data payload");
+
+    Ok(())
+}
