@@ -446,6 +446,57 @@ pub(crate) fn check_no_loop(cfg: &str, tun: bool) -> Result<(), String> {
 
 // ==================== 内核下载（钉版本 + SHA-256 校验 + 原子落盘） ====================
 
+/// Windows：把内核子进程挂进带 KILL_ON_JOB_CLOSE 的 Job——GUI 以任何方式退出
+/// （崩溃、强杀、提权重启 app.exit）系统都会连带终止内核，杜绝孤儿 mihomo。
+/// Job 句柄有意保持打开直至本进程退出（句柄泄漏即生命周期锚点）。
+#[cfg(windows)]
+fn bind_kill_on_close(child: &tokio::process::Child) {
+    use windows_sys::Win32::System::JobObjects::*;
+    unsafe {
+        let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+        if job.is_null() {
+            tracing::warn!("CreateJobObjectW failed; kernel not bound to GUI lifetime");
+            return;
+        }
+        let mut info: JOBOBJECT_BASIC_LIMIT_INFORMATION = std::mem::zeroed();
+        info.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        let ok = SetInformationJobObject(
+            job,
+            JobObjectBasicLimitInformation,
+            &info as *const _ as *const _,
+            std::mem::size_of::<JOBOBJECT_BASIC_LIMIT_INFORMATION>() as u32,
+        );
+        if ok == 0 {
+            windows_sys::Win32::Foundation::CloseHandle(job);
+            tracing::warn!("SetInformationJobObject failed; kernel not bound");
+            return;
+        }
+        if let Some(h) = child.raw_handle() {
+            if AssignProcessToJobObject(job, h) == 0 {
+                tracing::warn!("AssignProcessToJobObject failed (kernel may already be in a job)");
+            }
+        }
+    }
+}
+
+/// 启动前清扫遗留内核进程（只杀 exe 路径=本应用内核目录者，用户自建的 mihomo/Clash 不动；
+/// 提权实例遗留的无权限进程跳过——Job 绑定普及后此类遗留只会越来越少）。
+#[cfg(windows)]
+pub fn sweep_orphan_kernels() {
+    let exe = kernel_bin_path();
+    let script = format!(
+        "Get-CimInstance Win32_Process -Filter \"Name='mihomo.exe'\" \
+         | Where-Object {{ $_.ExecutablePath -eq '{}' }} \
+         | ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }}",
+        exe.to_string_lossy()
+    );
+    let _ = std::process::Command::new("powershell")
+        .args(["-NoProfile", "-Command", &script])
+        .output();
+}
+
+// ==================== 内核下载（钉版本 + SHA-256 校验 + 原子落盘） ====================
+
 /// 确保内核二进制存在（缺失则下载校验），返回二进制路径。
 pub async fn ensure_kernel() -> Result<PathBuf, String> {
     let bin = kernel_bin_path();
@@ -548,6 +599,8 @@ impl KernelManager {
         if self.stop_tx.lock().unwrap().is_some() {
             return Ok(());
         }
+        #[cfg(windows)]
+        sweep_orphan_kernels();
         let mut store = load_store();
         if store.subscriptions.is_empty() {
             return Err("请先添加订阅".into());
@@ -639,7 +692,10 @@ impl KernelManager {
             // CREATE_NO_WINDOW（tokio::process::Command 自带 creation_flags）
             cmd.creation_flags(0x08000000);
         }
-        cmd.spawn().map_err(|e| format!("内核启动失败: {e}"))
+        let child = cmd.spawn().map_err(|e| format!("内核启动失败: {e}"))?;
+        #[cfg(windows)]
+        bind_kill_on_close(&child);
+        Ok(child)
     }
 
     /// supervisor：独占子进程；崩溃指数退避重启（1/2/4/8/16s，上限 5 次）；
