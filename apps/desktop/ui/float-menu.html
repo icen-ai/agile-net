@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AgileNet 悬浮球菜单</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%233C3F43' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z'/></svg>">
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="components.css">
+<script src="icons.js"></script>
+<script src="float-menu.js"></script>
+<style>
+/* 悬浮球菜单：200×268 独立窗口（后端 float_open_menu 定位创建，失焦自动关闭）。
+   整窗即一张玻璃菜单：行用 components.css .ctx-item/.ctx-sep；三段胶囊参照 tray.html .seg 内联实现。
+   token 一律吃 tokens.css；--glass-bg/--glass-border/--glass-hi 均已收录，rgba 仅作极端兜底注释。 */
+html, body { height: 100%; overflow: hidden; background: transparent; }
+[hidden] { display: none !important; }
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font: 12px/1.4 -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; color: var(--text); user-select: none; -webkit-user-select: none; }
+
+#fm-root { position: fixed; inset: 0; padding: 8px; display: flex; flex-direction: column;
+  background: var(--glass-bg, rgba(248, 248, 248, .94)); /* 兜底：浅色 --panel2 加透明 */
+  backdrop-filter: blur(12px) saturate(1.4); -webkit-backdrop-filter: blur(12px) saturate(1.4);
+  border: 1px solid var(--glass-border, rgba(0, 0, 0, .08)); /* 兜底：浅色 --glass-border */
+  border-radius: 10px;
+  box-shadow: var(--shadow-2), inset 0 1px 0 var(--glass-hi, rgba(255, 255, 255, .5)); /* 兜底：浅色 --glass-hi */ }
+html[data-theme="dark"] #fm-root { background: var(--glass-bg, rgba(58, 56, 56, .94)); /* 兜底：深色 --panel2 加透明 */ }
+#fm-root .ctx-item { font-size: 12.5px; }
+#fm-root .ctx-item svg { flex-shrink: 0; color: var(--dim); }
+#fm-root .ctx-item:hover svg { color: inherit; }
+#fm-root .ctx-item.danger svg { color: inherit; }
+
+/* ---- 代理方式三段胶囊（参照 tray.html .seg） ---- */
+.fm-seg-wrap { padding: 2px 2px 0; }
+.seg { display: flex; gap: 2px; padding: 2px; background: var(--chip); border-radius: 8px; }
+.seg button { flex: 1; border: 0; background: transparent; padding: 4px 0; border-radius: 6px;
+  font: inherit; font-size: 12px; color: var(--dim); cursor: pointer; transition: background .15s, color .15s; }
+.seg button:hover { color: var(--text); }
+.seg button.cur { background: var(--panel2); color: var(--text-strong); font-weight: 600;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, .10); /* 投影不涉主题色 */ }
+.seg button.dis { opacity: .45; pointer-events: none; } /* 需管理员重启：置灰禁用 */
+.fm-mode-tip { padding: 4px 6px 2px; font-size: 10px; line-height: 1.5; color: var(--dim2); }
+.fm-mode-note { padding: 1px 6px 0; font-size: 10px; line-height: 1.5; color: var(--dim2); }
+.fm-mode-note.err { color: var(--danger-text); }
+
+/* 无 TAURI 环境兜底 */
+#fm-noenv { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+  padding: 12px; text-align: center; font-size: 11px; color: var(--dim2); background: var(--panel2); }
+</style>
+</head>
+<body>
+<div id="fm-root" hidden>
+  <div class="ctx-item" id="fm-open" role="button"><i data-ic="monitor" data-sz="13"></i><span>打开主窗口</span></div>
+  <div class="ctx-item" id="fm-sys" role="button"><i data-ic="shield" data-sz="13"></i><span id="fm-sys-label">启动系统代理</span></div>
+  <div class="ctx-item" id="fm-sub" role="button"><i data-ic="satellite" data-sz="13"></i><span id="fm-sub-label">启动订阅代理</span></div>
+  <div class="fm-seg-wrap">
+    <div class="seg" id="fm-mode">
+      <button type="button" data-mode="system">系统</button>
+      <button type="button" data-mode="local">本地</button>
+      <button type="button" data-mode="tun">虚拟</button>
+    </div>
+    <div class="fm-mode-tip">系统=接管系统代理 · 本地=仅 127.0.0.1 代理 · 虚拟=TUN 虚拟网卡</div>
+    <div class="fm-mode-note" id="fm-mode-note" hidden></div>
+  </div>
+  <div class="fm-seg-wrap">
+    <div class="seg" id="fm-outmode">
+      <button type="button" data-om="rule">规则</button>
+      <button type="button" data-om="global">全局</button>
+      <button type="button" data-om="direct">直连</button>
+    </div>
+    <div class="fm-mode-tip">出站模式：规则=按规则分流 · 全局=全部走节点 · 直连=全部直连</div>
+  </div>
+  <div class="ctx-sep"></div>
+  <div class="ctx-item" id="fm-hide" role="button"><i data-ic="minus" data-sz="13"></i><span>隐藏悬浮球</span></div>
+  <div class="ctx-item danger" id="fm-quit" role="button"><i data-ic="x" data-sz="13"></i><span>退出 AgileNet</span></div>
+</div>
+<div id="fm-noenv" hidden>需在 AgileNet 桌面端中使用</div>
+</body>
+</html>

@@ -1672,6 +1672,7 @@ function syncNotifyFloatRow() {
 async function initRoles() {
   let settings = { client: true, server: false, web: false, web_listen: '127.0.0.1:59291' };
   try { settings = await invoke('get_role_settings'); } catch (e) {}
+  window._rolesCache = settings; // Hero 当前模式摘要数据源（system_proxy/tun_mode/sub_mode；各变更点同步更新，不重复拉取）
   $('r-client').checked = settings.client;
   $('r-server').checked = settings.server;
   $('d-server').checked = settings.server;
@@ -1744,6 +1745,7 @@ async function initRoles() {
     const on = e.target.checked;
     try {
       await invoke('set_sysproxy_lock', { on });
+      if (window._rolesCache) window._rolesCache.sysproxy_lock = on;
       toast(on ? '已锁定系统代理（被抢占将自动收回）' : '已解锁系统代理', 'ok');
     } catch (err) {
       e.target.checked = !on;
@@ -1985,7 +1987,8 @@ function renderSideFoot() {
 /* ================= 中控台英雄卡（竞品标杆：FlClash 大开关 + 速率曲线、Stash 中控台摘要） =================
    数据源：proxy_power / proxy_power_toggle（10s 主轮询；HTTP_MODE 回落 proxy_status+start/stop_proxy）；
    速率曲线吃 SubTraffic 2s 差分速率（60 点环形缓冲，同 tray.js down60/up60 思路，onTraffic 钩子驱动）；
-   活跃连接 sub_connections active.length（10s 主轮询挂一次，1s 高频归日志视图）；出口 IP 读 NetProbe.data。
+   活跃连接 sub_connections active.length（10s 主轮询挂一次，1s 高频归日志视图）；
+   当前模式读 proxy_power.on + window._rolesCache（initRoles 缓存 get_role_settings，各变更点同步更新）。
    anet 代理流量无计数器：内核未运行曲线区空态「订阅内核未运行，暂无速率数据」，不造假。全部签名对比。 */
 const Hero = {
   power: null,          // { on, detail }：detail = '127.0.0.1:57890' / '已停止'
@@ -1998,6 +2001,7 @@ const Hero = {
       try { this.power = await invoke('proxy_power'); } catch (e) { return; }
     }
     this.renderPower();
+    this.renderMode(); // 模式文案随 power 即时翻转（运行中 ↔ 已停止）
   },
   renderPower() {
     const p = this.power;
@@ -2034,7 +2038,7 @@ const Hero = {
     this.pollPower();
     refreshProxy(); // 代理卡 / 灵动岛 / 侧栏底部同步
   },
-  /* SubTraffic 2s 钩子：速率缓冲 + 双序列曲线（下行为主 --chart-down / 上行 --chart-up）+ 今日已用 */
+  /* SubTraffic 2s 钩子：速率缓冲 + 双序列曲线（下行为主 --chart-down / 上行 --chart-up）+ 今日已用（含上下行拆分小字） */
   onTraffic() {
     const running = !!window._subRunning;
     const r = SubTraffic.rates || { up: 0, down: 0 };
@@ -2051,6 +2055,7 @@ const Hero = {
     odoSet($('hero-rate-up'), running ? fmtBytes(r.up) + '/s' : '-');
     const t = SubTraffic.data;
     odoSet($('hero-traffic'), running && t ? fmtBytes(t.up_total + t.down_total) : '-');
+    setText('hero-traffic-split', running && t ? '↑ ' + fmtBytes(t.up_total) + ' · ↓ ' + fmtBytes(t.down_total) : '');
     if (!running) return;
     AgChart.sparkline(chart, [
       { name: '下行', values: this.down60.slice(), color: 'var(--chart-down)' },
@@ -2064,16 +2069,21 @@ const Hero = {
     try { n = ((await invoke('sub_connections')).active || []).length; } catch (e) { return; }
     odoSet($('hero-conns'), window._subRunning ? String(n) : '-');
   },
-  /* 出口 IP：NetProbe JS 缓存（30s 重探 + 内核翻转即时重探），失败显「探测失败」；Web 远程面无本机探测显 '-' */
-  renderExit() {
-    const d = NetProbe.data;
-    odoSet($('hero-exit'), HTTP_MODE ? '-' : (!d ? '探测中…' : (d.fail ? '探测失败' : d.ip)));
+  /* 当前模式：proxy_power.on + _rolesCache（get_role_settings 前端缓存，变更点同步，不重复拉取）。
+     映射：关→已停止；tun_mode→TUN · 出站（§2.5 互斥固定 rule）；否则 系统代理/本地代理 · 出站模式 */
+  renderMode() {
+    if (HTTP_MODE) { setText('hero-mode', '-'); return; }
+    const on = !!(this.power && this.power.on);
+    const r = window._rolesCache || {};
+    const sub = { rule: '规则', global: '全局', direct: '直连' }[r.sub_mode || 'rule'] || '规则';
+    setText('hero-mode', !on ? '已停止'
+      : r.tun_mode ? 'TUN · ' + sub
+      : (r.system_proxy !== false ? '系统代理' : '本地代理') + ' · ' + sub);
   },
-  /* 10s 主轮询条目：先落总开关（Onboarding 步骤③依赖），再刷连接/出口/检查单 */
+  /* 10s 主轮询条目：先落总开关（Onboarding 步骤③依赖；pollPower 内已联动 renderPower/renderMode），再刷连接/检查单 */
   async tick10s() {
     await this.pollPower();
     this.pollConns();
-    this.renderExit();
     Onboarding.refresh();
   },
 };
@@ -2623,6 +2633,7 @@ function initSubscription() {
     try {
       await invoke('set_sub_mode', { mode: e.target.value });
       e.target.dataset.prev = e.target.value;
+      if (window._rolesCache) window._rolesCache.sub_mode = e.target.value;
       const label = { rule: '规则', global: '全局', direct: '直连' }[e.target.value] || e.target.value;
       toast('出站模式已切换为 ' + label, 'ok');
     } catch (err) {
@@ -2752,6 +2763,7 @@ function initSysproxy() {
         await invoke('set_system_proxy', { enabled: false });
         toast('已切换到本地代理（手动指向 127.0.0.1:' + proxyPort() + '）', 'ok');
       }
+      if (window._rolesCache) window._rolesCache.system_proxy = btn.dataset.proxyMode === 'system';
       refreshSysproxy();
       refreshProxy();
     } catch (err) { toast(friendlyError(err), 'err'); }
@@ -2777,6 +2789,7 @@ function warnTunUpstream(st) {
 
 function applyTunStatus(st) {
   TUN_ON = !!st.enabled;
+  if (window._rolesCache) window._rolesCache.tun_mode = TUN_ON; // Hero 当前模式摘要同步（onchange/重试/10s 轮询一处覆盖）
   TUN_SUPPORTED = !!st.supported;
   if (st.upstream) TUN_UPSTREAM = st.upstream;
   // 放弃开启的一次性提示（权限不足/启动失败回退普通模式；后端读取即清除，仅弹一次）

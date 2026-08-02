@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "默认能力集",
-  "windows": ["main", "float-ball"],
+  "windows": ["main", "float-ball", "float-menu", "float-bubble"],
   "permissions": [
     "core:default",
     "core:tray:default",

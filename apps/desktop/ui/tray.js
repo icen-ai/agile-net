@@ -21,6 +21,7 @@ const S = {
   mode: 'rule', tun: false,         // 出站模式 / TUN 锁定
   kernel: false,                    // 订阅内核
   sigStatus: '', sigMode: '', sigGroups: '', sigConns: '',
+  openGroup: null, lastGroups: null,  // 代理组展开态（组名，同时只展开一组）与最近一次组数据
   downSig: '', upSig: '',
   up60: [], down60: [],             // 60s 速率采样（B/s）
   chart: null,
@@ -107,8 +108,11 @@ function renderMode(mode, tun) {
   seg.querySelectorAll('button').forEach(b => b.classList.toggle('cur', b.dataset.mode === mode));
 }
 
-/* 代理组：仅列 Selector 组；当前选中高亮，点击 select_proxy */
+/* 代理组：仅列 Selector 组；默认收起只渲染组名行，点击 .grp-name 展开该组（再点收起，
+   同时只展开一组）；展开态存 S.openGroup 并并入签名，延迟等数据变化触发重绘后展开态保持。
+   展开组内当前选中高亮，点击节点 select_proxy。 */
 function renderGroups(d) {
+  S.lastGroups = d;
   const px = (d && d.proxies) || {};
   const groups = Object.entries(px)
     .filter(([, p]) => p && Array.isArray(p.all) && p.type === 'Selector')
@@ -121,20 +125,26 @@ function renderGroups(d) {
         return { name: n, delay: hist, cur: n === g.now };
       }),
     }));
-  const sig = S.kernel + '|' + JSON.stringify(groups);
+  const sig = S.kernel + '|' + (S.openGroup || '') + '|' + JSON.stringify(groups);
   if (sig === S.sigGroups) return;
   S.sigGroups = sig;
   const box = $('tp-groups');
   if (!S.kernel) { box.innerHTML = '<div class="tp-empty">订阅内核未运行</div>'; return; }
   if (!groups.length) { box.innerHTML = '<div class="tp-empty">无可用代理组</div>'; return; }
   box.innerHTML = groups.map(g =>
-    '<div class="grp"><div class="grp-name"><span>' + esc(g.name) + '</span><span class="now">' + esc(g.now) + '</span></div>' +
-    g.nodes.map(n =>
-      '<div class="tp-node' + (n.cur ? ' cur' : '') + '" data-g="' + esc(g.name) + '" data-n="' + esc(n.name) + '">' +
-      '<span class="dot ' + (n.cur ? 'on' : 'off') + '"></span>' +
-      '<span class="nm">' + esc(n.name) + '</span>' +
-      '<span class="ms">' + (n.delay ? n.delay + 'ms' : '') + '</span></div>'
-    ).join('') + '</div>'
+    '<div class="grp' + (S.openGroup === g.name ? ' open' : '') + '">' +
+    '<div class="grp-name" data-g="' + esc(g.name) + '"><span>' + esc(g.name) + '</span>' +
+    '<span class="now">' + esc(g.now) + '</span>' +
+    '<span class="chev">' + AgIcon('chevron-down', 12) + '</span></div>' +
+    (S.openGroup === g.name
+      ? g.nodes.map(n =>
+          '<div class="tp-node' + (n.cur ? ' cur' : '') + '" data-g="' + esc(g.name) + '" data-n="' + esc(n.name) + '">' +
+          '<span class="dot ' + (n.cur ? 'on' : 'off') + '"></span>' +
+          '<span class="nm">' + esc(n.name) + '</span>' +
+          '<span class="ms">' + (n.delay ? n.delay + 'ms' : '') + '</span></div>'
+        ).join('')
+      : '') +
+    '</div>'
   ).join('');
 }
 
@@ -196,8 +206,14 @@ window.addEventListener('DOMContentLoaded', () => {
     slowTick();
   });
 
-  // 代理组节点选择（事件委托）
+  // 代理组：组名行展开/收起（单组展开，立即重绘）；节点行 select_proxy（事件委托）
   $('tp-groups').addEventListener('click', async (e) => {
+    const head = e.target.closest('.grp-name');
+    if (head) {
+      S.openGroup = (S.openGroup === head.dataset.g) ? null : head.dataset.g;
+      renderGroups(S.lastGroups);
+      return;
+    }
     const row = e.target.closest('.tp-node');
     if (!row) return;
     try { await invoke('select_proxy', { group: row.dataset.g, name: row.dataset.n }); } catch (err) {}

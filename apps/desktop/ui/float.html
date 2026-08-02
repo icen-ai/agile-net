@@ -6,15 +6,12 @@
 <title>AgileNet 悬浮球</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%233C3F43' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z'/></svg>">
 <link rel="stylesheet" href="tokens.css">
-<link rel="stylesheet" href="components.css">
 <script src="icons.js"></script>
 <script src="float.js"></script>
 <style>
-/* 悬浮球：72×72 全透明窗口。球体锚定右下（right/bottom 8px）——72px 窗口内即居中；
-   窗口若被放大（本页 JS 会尽力 setSize 扩容以容纳菜单/气泡），球始终停右下角。
-   token 一律吃 tokens.css；--glass-bg tokens 暂未收录，rgba 值仅作兜底（浅色近 --panel2 #F8F8F8，
-   深色近 --panel2 #3A3838，均加透明度以出毛玻璃效果）。
-   .ctx-menu/.ctx-item/.ctx-sep 为 components.css 同名类的内联兜底。 */
+/* 悬浮球：72×72 全透明窗口，恒等尺寸（菜单/气泡已拆为独立窗口，本页不做任何扩容）。
+   球体锚定右下（right/bottom 8px）——72px 窗口内即居中。
+   token 一律吃 tokens.css；--glass-bg 已收录于 tokens.css，rgba 仅作极端兜底注释。 */
 html, body { height: 100%; overflow: hidden; background: transparent; }
 [hidden] { display: none !important; }
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -36,40 +33,20 @@ html[data-theme="dark"] #ball {
 #ball:hover { border-color: var(--border2); }
 #ball.dragging { transform: scale(.94);
   box-shadow: 0 10px 26px rgba(0, 0, 0, .22), 0 2px 6px rgba(0, 0, 0, .12); }
+/* 单击 Q 弹：scale .88→1.06→.97→1，播完由 JS 移除 class（连击不叠加） */
+#ball.boing { animation: fl-boing .35s cubic-bezier(.34, 1.56, .64, 1); }
+@keyframes fl-boing {
+  0% { transform: scale(.88); }
+  45% { transform: scale(1.06); }
+  75% { transform: scale(.97); }
+  100% { transform: scale(1); }
+}
 #ball-idle { display: flex; color: var(--dim); }
 #ball-speed { display: flex; flex-direction: column; align-items: center; line-height: 1.25; }
 #ball-speed .ln { display: inline-flex; align-items: center; gap: 2px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 #ball-speed .ln b { font-weight: 600; }
 #ball-speed .down { font-size: 10.5px; color: var(--text-strong); }
 #ball-speed .up { font-size: 8.5px; color: var(--dim2); }
-
-/* ---- 快捷菜单（components.css .ctx-* 同名兜底；定位：球体上方右对齐） ---- */
-.ctx-menu { position: fixed; right: 8px; bottom: 76px; min-width: 148px; padding: 5px; z-index: 30;
-  background: var(--glass-bg, rgba(248, 248, 248, .94));
-  backdrop-filter: blur(12px) saturate(1.4); -webkit-backdrop-filter: blur(12px) saturate(1.4);
-  border: 1px solid var(--border); border-radius: 10px;
-  box-shadow: 0 8px 28px rgba(0, 0, 0, .16), 0 2px 8px rgba(0, 0, 0, .08);
-  animation: fl-pop .15s var(--fl-ease); }
-html[data-theme="dark"] .ctx-menu { background: var(--glass-bg, rgba(58, 56, 56, .94)); }
-.ctx-item { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-radius: 7px;
-  font-size: 12.5px; color: var(--text); cursor: pointer; }
-.ctx-item:hover { background: var(--hover); }
-.ctx-item.danger { color: var(--danger-text); }
-.ctx-sep { height: 1px; background: var(--row-border); margin: 4px 6px; }
-@keyframes fl-pop { from { opacity: 0; transform: translateY(4px) scale(.97); } to { opacity: 1; transform: none; } }
-
-/* ---- 气泡通知（球体左侧，最多 3 条堆叠，最新贴球） ---- */
-#bubbles { position: fixed; right: 76px; bottom: 12px; z-index: 20;
-  display: flex; flex-direction: column; align-items: flex-end; gap: 6px; max-width: 200px; pointer-events: none; }
-.bubble { max-width: 200px; padding: 7px 11px; border-radius: 12px;
-  font-size: 11.5px; line-height: 1.45; color: var(--text); word-break: break-all;
-  background: var(--glass-bg, rgba(248, 248, 248, .94));
-  backdrop-filter: blur(12px) saturate(1.4); -webkit-backdrop-filter: blur(12px) saturate(1.4);
-  border: 1px solid var(--border); box-shadow: 0 4px 14px rgba(0, 0, 0, .12);
-  animation: fl-in .18s var(--fl-ease); }
-html[data-theme="dark"] .bubble { background: var(--glass-bg, rgba(58, 56, 56, .94)); }
-.bubble.out { opacity: 0; transform: translateX(8px); transition: opacity .3s, transform .3s; }
-@keyframes fl-in { from { opacity: 0; transform: translateX(10px); } to { opacity: 1; transform: none; } }
 
 /* 无 TAURI 环境兜底 */
 #fl-noenv { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
@@ -78,13 +55,6 @@ html[data-theme="dark"] .bubble { background: var(--glass-bg, rgba(58, 56, 56, .
 </head>
 <body>
 <div id="fl-root" hidden>
-  <div id="bubbles" aria-live="polite"></div>
-  <div id="menu" class="ctx-menu" hidden>
-    <div class="ctx-item" data-act="show"><i data-ic="monitor" data-sz="13"></i><span>打开主面板</span></div>
-    <div class="ctx-item" data-act="toggle"><i data-ic="power" data-sz="13"></i><span id="fl-toggle-label">启动代理</span></div>
-    <div class="ctx-sep"></div>
-    <div class="ctx-item danger" data-act="quit"><i data-ic="x" data-sz="13"></i><span>退出 AgileNet</span></div>
-  </div>
   <div id="ball" role="button" aria-label="AgileNet 悬浮球">
     <span id="ball-idle"><i data-ic="zap" data-sz="20"></i></span>
     <span id="ball-speed" hidden>
