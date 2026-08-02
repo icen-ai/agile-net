@@ -920,11 +920,12 @@ async fn restore_web_role(app: &tauri::AppHandle) {
 
 // ==================== 订阅代理（mihomo sidecar） ====================
 
-/// 应用回落上游（记地址不记凭据；变化时审计 gui.fallback_change）：
-/// - TUN 模式：回落 = 外部上游（FlClash；§2.4），57890 未命中流量交给它
+/// 当前生效的回落地址：
+/// - TUN 模式：订阅出口优先（TUN mihomo socks 入站 57893→AGILE-SUB，无 FlClash 也能出网）；
+///   无激活订阅时回落外部上游（§2.4），异常值宁可无回落也不成环
 /// - 非 TUN：订阅角色开 + 统一出口开 + 内核运行 → 回落到内核 mixed（57892）
 /// - 其余：无回落（未命中直连）
-async fn apply_proxy_fallback(state: &State<'_, AppState>) {
+async fn effective_fallback(state: &State<'_, AppState>) -> Option<std::net::SocketAddr> {
     let (sub, unified, tun_mode, upstream_raw) = {
         let r = state.roles.lock().await;
         (
@@ -935,9 +936,15 @@ async fn apply_proxy_fallback(state: &State<'_, AppState>) {
         )
     };
     let running = state.kernel.running().await;
-    let addr = if tun_mode && running {
-        // 保存时已严格校验；此处防御性解析，异常值宁可无回落也不成环
-        roles::validate_external_upstream(&upstream_raw).ok()
+    if tun_mode && running {
+        if subscription::list_subscriptions().iter().any(|s| s.active) {
+            Some(std::net::SocketAddr::from((
+                [127, 0, 0, 1],
+                subscription::MIHOMO_SOCKS_PORT,
+            )))
+        } else {
+            roles::validate_external_upstream(&upstream_raw).ok()
+        }
     } else if sub && unified && running {
         Some(std::net::SocketAddr::from((
             [127, 0, 0, 1],
@@ -945,7 +952,12 @@ async fn apply_proxy_fallback(state: &State<'_, AppState>) {
         )))
     } else {
         None
-    };
+    }
+}
+
+/// 应用回落上游（记地址不记凭据；变化时审计 gui.fallback_change）
+async fn apply_proxy_fallback(state: &State<'_, AppState>) {
+    let addr = effective_fallback(state).await;
     let mut last = state.last_fallback.lock().await;
     if *last != addr {
         roles::audit(
@@ -1031,10 +1043,10 @@ async fn tun_side_effects(app: &tauri::AppHandle, state: &State<'_, AppState>) -
     apply_proxy_fallback(state).await;
     let server = expected_sysproxy(state);
     let _ = tokio::task::spawn_blocking(move || sysproxy::engage(&server)).await;
-    let upstream = state.roles.lock().await.external_upstream.clone();
-    let ok = match roles::validate_external_upstream(&upstream) {
-        Ok(sa) => tun::tcp_reachable(sa).await,
-        Err(_) => false,
+    // 拨测生效回落目标（订阅出口或外部上游；不通仅前端灵动岛告警，不阻断；§2.4）
+    let ok = match effective_fallback(state).await {
+        Some(sa) => tun::tcp_reachable(sa).await,
+        None => false,
     };
     *state.tun_upstream_ok.lock().await = Some(ok);
     Ok(())
@@ -1061,8 +1073,8 @@ async fn set_tun_mode(
             roles::validate_external_upstream(&roles.external_upstream)?;
             roles.tun_mode = true;
             roles.subscription = true;
-            // §2.5 严格互斥：统一出口强制关闭（57890→57892→MATCH→57890 是死环）
-            roles.subscription_unified = false;
+            // §2.5 严格互斥：统一出口在 TUN 期间由运行时排除（effective_fallback 的 TUN 分支
+            // 优先），不破坏其持久化偏好——TUN 关闭后统一出口自动恢复原值
             roles.save()?;
         }
         roles::audit(
@@ -1112,7 +1124,7 @@ async fn tun_relaunch_elevated(app: tauri::AppHandle, state: State<'_, AppState>
         let mut roles = state.roles.lock().await;
         roles.tun_mode = true;
         roles.subscription = true;
-        roles.subscription_unified = false;
+        // 统一出口偏好保留（TUN 期间运行时排除，关闭后自动恢复，见 set_tun_mode 注释）
         roles.save()?;
     }
     roles::audit("gui.tun_elevation", serde_json::json!({"granted": true}));

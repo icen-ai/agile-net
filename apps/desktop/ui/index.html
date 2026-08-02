@@ -346,14 +346,14 @@
       <!-- TUN 模式（docs/plan/tun.md P1：网卡层接管，anet 在前 FlClash 在后；仅 Windows x64，需管理员） -->
       <div class="card" id="tun-card">
         <h3><i data-ic="layers"></i>TUN 模式 <span class="hint inline" id="tun-status-text">未开启</span>
-          <span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip">虚拟网卡接管全部流量（含不读系统代理的应用）：先走 anet 分流，命中规则走隧道，未命中回落外部上游（FlClash）；需管理员权限，与统一出口互斥</span></span>
+          <span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip">虚拟网卡接管全部流量（含不读系统代理的应用）：先走 anet 分流，命中规则走隧道，未命中回落订阅出口（无订阅时回落外部上游）；需管理员权限，与统一出口互斥</span></span>
           <span class="h3-tools"><label class="switch"><input type="checkbox" id="tun-mode"><span class="slider"></span></label></span>
         </h3>
-        <div class="kv"><span class="k">外部上游 <span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip">未命中 AgileNet 规则的流量回落目标（FlClash mixed 入站）；仅允许本机回环地址，严禁指向 57890/57892/59292</span></span></span>
+        <div class="kv"><span class="k">外部上游 <span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip">无可用订阅时未命中流量的回落目标（如 FlClash mixed 入站）；有订阅时未命中流量自动走订阅出口（127.0.0.1:57893）；仅允许本机回环地址</span></span></span>
           <span id="tun-upstream" class="mono"></span>
         </div>
         <div class="kv"><span class="k">状态</span><span class="mono" id="tun-state">-</span></div>
-        <div class="hint" style="margin-top:6px">建议同时关闭 FlClash 的「系统代理」开关（保持其内核监听 7890 即可），避免两软件周期性互抢注册表</div>
+        <div class="hint" style="margin-top:6px">未命中流量默认走订阅出口；若与 FlClash 共存，建议关闭其「系统代理」开关（保持内核监听即可），避免两软件互抢注册表</div>
       </div>
 
       <div class="card">

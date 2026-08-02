@@ -17,6 +17,8 @@ use crate::roles;
 pub const MIHOMO_VERSION: &str = "1.19.29";
 /// mixed 入站（避让 Clash 7890 系、本地代理 57890 与常见占用 57891）
 pub const MIHOMO_MIXED_PORT: u16 = 57892;
+/// TUN 模式：mihomo socks 入站（anet 未命中流量的回落点，经 IN-TYPE 规则直达订阅出口）
+pub const MIHOMO_SOCKS_PORT: u16 = 57893;
 /// external-controller（避让 9090）
 pub const MIHOMO_CTRL_PORT: u16 = 59292;
 
@@ -336,6 +338,9 @@ fn render_config_tun(store: &SubStore) -> String {
     ));
     s.push_str(&format!("secret: \"{}\"\n", yaml_escape(&store.secret)));
     s.push_str("log-level: warning\n");
+    // 订阅出口（P1.5）：socks 入站给 anet 回落用，经下方 IN-TYPE 规则直达 AGILE-SUB；
+    // 无 FlClash 时 TUN 下未命中流量也能经订阅节点出网（mihomo 自身出站不被 TUN 捕获）
+    s.push_str(&format!("socks-port: {MIHOMO_SOCKS_PORT}\n"));
     s.push_str("tun:\n");
     s.push_str("  enable: true\n");
     s.push_str("  stack: mixed              # TCP 系统栈 / UDP gVisor；异常时降级 gvisor\n");
@@ -368,6 +373,7 @@ fn render_config_tun(store: &SubStore) -> String {
     s.push_str("  - AND,((NETWORK,UDP),(DST-PORT,443)),REJECT   # 压制 QUIC：anet 入站不支持 UDP，强制回退 TCP\n");
     s.push_str("  - NETWORK,UDP,DIRECT                          # 其余 UDP（STUN 等）直连，P1 不接管\n");
     s.push_str("  - IP-CIDR,127.0.0.0/8,DIRECT,no-resolve\n");
+    s.push_str("  - IN-TYPE,socks,AGILE-SUB                   # anet 回落（socks 入站）直达订阅出口\n");
     s.push_str("  - MATCH,ANET-IN                               # 全部 TCP 转交 anet 路由器\n");
     s
 }
@@ -396,6 +402,13 @@ pub(crate) fn check_no_loop(cfg: &str, tun: bool) -> Result<(), String> {
         }
         if hit("  - MATCH,ANET-IN") != 1 {
             return Err("TUN 配置 rules 必须以 MATCH,ANET-IN 收尾".into());
+        }
+        // P1.5 订阅出口：socks 入站与 IN-TYPE 规则必须各出现且仅出现一次
+        if hit("57893") != 1 || !body.iter().any(|l| l.starts_with("socks-port: 57893")) {
+            return Err("TUN 配置须含且仅含 socks-port: 57893（订阅出口入站）".into());
+        }
+        if hit("  - IN-TYPE,socks,AGILE-SUB") != 1 {
+            return Err("TUN 配置 rules 须含 IN-TYPE,socks,AGILE-SUB（订阅出口规则）".into());
         }
     } else if hit("57890") > 0 {
         return Err("配置不得引用本地代理端口 57890（防环）".into());
@@ -1504,6 +1517,9 @@ mod tests {
         // ANET-IN socks5 → 57890（全量 TCP 转交 anet 路由器）
         assert!(cfg.contains("  - name: ANET-IN\n    type: socks5\n    server: 127.0.0.1\n"));
         assert!(cfg.contains("    port: 57890"));
+        // P1.5 订阅出口：socks 入站 57893 + IN-TYPE 规则直达 AGILE-SUB
+        assert!(cfg.contains("socks-port: 57893\n"));
+        assert!(cfg.contains("  - IN-TYPE,socks,AGILE-SUB"));
         // proxy-providers 保留（代理页测速/切换仍走控制面）
         assert!(cfg.contains("proxy-providers:\n  main:\n"));
         assert!(cfg.contains("url: \"https://example.com/sub?token=abc\""));

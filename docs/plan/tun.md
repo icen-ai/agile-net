@@ -35,6 +35,20 @@
   - §2.8 测试：TUN/非 TUN 配置快照、`check_no_loop` 全分支、回落目标校验、
     权限检测 mock 注入、TCP 拨测；E2E `tun_e2e`（--ignored，需管理员本机手动，
     自动断言 wintun 落盘 + 控制面 tun.enable，curl/浏览器步骤手动）。
+- **P1.5 已实施**（2026-08-02，订阅出口优先，无 FlClash 也可用 TUN）：
+  - 背景：实机发现原「回落=外部上游（默认 FlClash 7890）」在无 FlClash 环境全部未命中
+    流量静默失败（谷歌不可达）；且 TUN 互斥把统一出口偏好写死后不恢复，关 TUN 仍断网。
+  - 订阅出口：TUN 配置新增 `socks-port: 57893` + 规则 `IN-TYPE,socks,AGILE-SUB`（先于
+    MATCH），anet 未命中流量回落到 TUN mihomo 的 socks 入站直达订阅组出口（mihomo 自身
+    出站不被 TUN 捕获，不成环）；`check_no_loop` 同步断言两项各出现且仅一次。
+  - 回落优先级（`effective_fallback`）：TUN 且有激活订阅 → 57893 订阅出口；无激活订阅
+    → 外部上游（默认 7890，校验同步禁指 57893）；拨测目标改为生效回落地址。
+  - 统一出口改**运行时排除**：TUN 期间 `effective_fallback` 的 TUN 分支优先，不再写死
+    `subscription_unified=false`——TUN 关闭后统一出口自动恢复用户原偏好（`set_tun_upstream`
+    与 `set_subscription_unified` 的互斥拒绝逻辑保留）。
+  - 优雅降级补强（abandon_tun 统一兜底）：UAC 取消/权限丢失/wintun 不可用/内核 TUN 启动
+    失败/副作用失败 → 自动关 TUN 并以普通模式重启内核，审计 `gui.tun_abandon` + 一次性
+    灵动岛提示（`tun_status.notice` 读取即清除）。
 - **P2 未实施**（规则下沉 TUN 层，性能优化）。
 
 ## 1. 背景与选型
@@ -96,6 +110,7 @@ TUN 模式配置骨架（全量重写原则不变）：
 # TUN 模式：移除 mixed-port（关闭 57892，防环关键，见 2.5）
 external-controller: 127.0.0.1:59292
 secret: "..."
+socks-port: 57893               # P1.5：anet 未命中流量的回落入站（直达订阅出口）
 tun:
   enable: true
   stack: mixed              # TCP 系统栈 / UDP gVisor；异常时降级 gvisor
@@ -123,17 +138,21 @@ rules:
   - AND,(NETWORK,udp),(DST-PORT,443),REJECT   # 压制 QUIC：anet 入站不支持 UDP，强制回退 TCP
   - NETWORK,udp,DIRECT                        # 其余 UDP（STUN 等）直连，P1 不接管
   - IP-CIDR,127.0.0.0/8,DIRECT,no-resolve
+  - IN-TYPE,socks,AGILE-SUB                   # P1.5：anet 回落（socks 入站）直达订阅出口
   - MATCH,ANET-IN                             # 全部 TCP 转交 anet 路由器
 ```
 
-### 2.4 anet 侧回落外部上游（FlClash）
+### 2.4 anet 侧回落（P1.5 修订：订阅出口优先，外部上游兜底）
 
+- **回落优先级**：有激活订阅 → 回落 `127.0.0.1:57893`（TUN mihomo 的 socks 入站，经
+  `IN-TYPE,socks,AGILE-SUB` 规则直达订阅组出口；mihomo 自身出站不被 TUN 捕获，不成环）。
+  无激活订阅 → 回落「外部上游」地址（默认 `127.0.0.1:7890`，如 FlClash mixed 入站，可改）。
+- 效果：**不依赖 FlClash 也能用 TUN**——未命中 AgileNet 规则的流量默认走订阅节点出网；
+  与 FlClash 共存时外部上游作为无订阅场景的兜底。
 - `crates/client` `set_proxy_fallback` 已支持任意地址，无需改动核心。
-- GUI 设置新增「外部上游」地址（默认 `127.0.0.1:7890`，可改），持久化进
-  `gui-settings.json`（新增 `tun_mode: bool` / `external_upstream: String` 字段，serde default）。
-- TUN 开启时：回落 = 外部上游；开启时 TCP 拨测一次上游连通性，不通则灵动岛 warn
-  「FlClash 未运行或端口不符，未命中流量将失败」（不阻断开启）。
-- 未命中转发复用 `Socks5ForwardOutbound`（7890 mixed 入站支持 SOCKS5）。
+- GUI 设置 `gui-settings.json`（`tun_mode: bool` / `external_upstream: String`，serde default）。
+- TUN 开启/切换时 TCP 拨测**生效回落目标**一次，不通则灵动岛 warn（不阻断开启）。
+- 未命中转发复用 `Socks5ForwardOutbound`。
 
 ### 2.5 互斥与防环（硬约束）
 

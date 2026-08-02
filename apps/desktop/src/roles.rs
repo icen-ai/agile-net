@@ -105,7 +105,7 @@ pub fn validate_external_upstream(addr: &str) -> Result<std::net::SocketAddr, St
     if sa.port() == 0 {
         return Err("外部上游端口非法".into());
     }
-    const FORBIDDEN: [u16; 3] = [57890, 57892, 59292];
+    const FORBIDDEN: [u16; 4] = [57890, 57892, 57893, 59292];
     if FORBIDDEN.contains(&sa.port()) {
         return Err(format!("外部上游严禁指向本机端口 {}（防环硬约束）", sa.port()));
     }
