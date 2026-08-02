@@ -1666,14 +1666,19 @@ fn parse_ip_api(v: &serde_json::Value) -> Option<ExitIpInfo> {
 /// 出口 IP 探测：HTTPS 端点优先，失败回落备用端点；via_proxy 时经 mihomo mixed 出口
 /// （验证订阅流量真实出口）。5s 超时，全部失败由前端呈现「探测失败」。
 #[tauri::command]
-async fn fetch_exit_ip(via_proxy: bool) -> Result<ExitIpInfo, String> {
+async fn fetch_exit_ip(state: State<'_, AppState>, via_proxy: bool) -> Result<ExitIpInfo, String> {
     let mut builder = reqwest::Client::builder()
         .user_agent(concat!("anet-gui/", env!("CARGO_PKG_VERSION")))
         .timeout(std::time::Duration::from_secs(5));
     if via_proxy {
+        // TUN 模式 mixed 口（57892）按防环设计关闭，探测改走订阅出口 socks 口（57893）
+        let port = if state.roles.lock().await.tun_mode {
+            subscription::MIHOMO_SOCKS_PORT
+        } else {
+            subscription::MIHOMO_MIXED_PORT
+        };
         let proxy =
-            reqwest::Proxy::all(format!("http://127.0.0.1:{}", subscription::MIHOMO_MIXED_PORT))
-                .map_err(map_err)?;
+            reqwest::Proxy::all(format!("http://127.0.0.1:{port}")).map_err(map_err)?;
         builder = builder.proxy(proxy);
     }
     let client = builder.build().map_err(map_err)?;
