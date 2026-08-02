@@ -68,6 +68,12 @@ pub struct RoleSettings {
     /// 悬浮球窗口（仅桌面；开启即常驻右下角小球）
     #[serde(default)]
     pub float_ball: bool,
+    /// 悬浮球气泡通知开关（false 时 float_ball_notify 命令与既有桥接点均不再 emit）
+    #[serde(default = "default_true")]
+    pub notify_float_ball: bool,
+    /// 性能模式（前端据此关模糊/动画；后端仅持久化存取）
+    #[serde(default)]
+    pub reduce_effects: bool,
 }
 
 fn default_true() -> bool {
@@ -131,6 +137,8 @@ impl Default for RoleSettings {
             external_upstream: default_external_upstream(),
             sysproxy_lock: false,
             float_ball: false,
+            notify_float_ball: true,
+            reduce_effects: false,
         }
     }
 }
@@ -212,6 +220,196 @@ pub fn audit(action: &str, detail: serde_json::Value) {
     {
         let _ = writeln!(f, "{line}");
     }
+}
+
+// ==================== 事件中心（gui-audit.jsonl 尾部倒读） ====================
+
+/// 事件中心单条事件（recent_events 命令返回体）
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GuiEvent {
+    /// Unix 秒
+    pub ts: u64,
+    /// 事件类别（白名单：role_toggle/kernel/sysproxy/custom_rule/sub_script/doctor/install/uninstall/connector）
+    pub kind: String,
+    /// 人类可读描述（由白名单字段拼装，绝不回显原始 detail，天然过滤敏感字段）
+    pub detail: String,
+}
+
+/// 审计 action → 事件类别白名单映射（未列入的 action 跳过）：
+/// - role_toggle：三路角色 / 订阅角色 / TUN / 悬浮球 / 全局总开关等用户可感知开关
+/// - kernel：订阅内核生命周期、内核完整性、订阅增删更/激活、出站模式
+/// - install：内核 / wintun 下载与手动安装
+fn event_kind(action: &str) -> Option<&'static str> {
+    Some(match action {
+        "gui.role_toggle"
+        | "web.exposure_change"
+        | "gui.tun_enable"
+        | "gui.tun_disable"
+        | "gui.tun_abandon"
+        | "gui.tun_elevation"
+        | "gui.float_ball"
+        | "gui.proxy_power" => "role_toggle",
+        "gui.kernel_start"
+        | "gui.kernel_stop"
+        | "gui.kernel_crash"
+        | "gui.kernel_tamper"
+        | "gui.wintun_download"
+        | "gui.wintun_tamper"
+        | "gui.subscription_add"
+        | "gui.subscription_import"
+        | "gui.subscription_update"
+        | "gui.subscription_remove"
+        | "gui.subscription_activate"
+        | "gui.sub_mode" => "kernel",
+        "gui.sysproxy_engage"
+        | "gui.sysproxy_disengage"
+        | "gui.sysproxy_reclaim"
+        | "gui.sysproxy_conflict"
+        | "gui.sysproxy_lock" => "sysproxy",
+        "gui.custom_rule" | "gui.sub_rule_for_host" => "custom_rule",
+        "gui.sub_script_add"
+        | "gui.sub_script_update"
+        | "gui.sub_script_remove"
+        | "gui.sub_script_error" => "sub_script",
+        "gui.doctor" => "doctor",
+        "gui.dl_start" | "gui.dl_done" | "gui.dl_cancel" | "gui.dl_manual_install" => "install",
+        "gui.uninstall" => "uninstall",
+        "gui.fanout_change" => "connector",
+        _ => return None,
+    })
+}
+
+/// detail JSON → 人类可读描述。只取用白名单字段（名称/开关/地址等），
+/// 绝不整体回显原始 JSON——审计虽不落密码/Token 明文，此处仍做结构性过滤。
+fn human_detail(action: &str, d: &serde_json::Value) -> String {
+    let s = |k: &str| d[k].as_str().unwrap_or_default();
+    let b = |k: &str| d[k].as_bool().unwrap_or(false);
+    let on_off = |on: bool| if on { "开启" } else { "关闭" };
+    match action {
+        "gui.role_toggle" => {
+            let role = match s("role") {
+                "client" => "客户端角色",
+                "server" => "服务端角色",
+                "web" => "Web 远程面",
+                "subscription" => "订阅代理角色",
+                other => other,
+            };
+            format!("{}{role}", on_off(b("on")))
+        }
+        "web.exposure_change" => {
+            if s("change") == "password_set" {
+                "设置 Web 远程面管理密码".into()
+            } else {
+                format!("Web 远程面监听改为 {}", s("listen"))
+            }
+        }
+        "gui.tun_enable" => format!("开启 TUN 模式（上游 {}）", s("upstream")),
+        "gui.tun_disable" => "关闭 TUN 模式".into(),
+        "gui.tun_abandon" => format!("TUN 模式开启失败：{}", s("reason")),
+        "gui.tun_elevation" => {
+            if b("granted") { "TUN 提权已授权".into() } else { "TUN 提权被拒绝".into() }
+        }
+        "gui.float_ball" => format!("{}悬浮球", on_off(b("on"))),
+        "gui.proxy_power" => {
+            if b("on") { format!("全局代理已开启（{}）", s("detail")) } else { "全局代理已关闭".into() }
+        }
+        "gui.kernel_start" => "订阅内核已启动".into(),
+        "gui.kernel_stop" => "订阅内核已停止".into(),
+        "gui.kernel_crash" => {
+            if b("give_up") {
+                "订阅内核多次崩溃，已放弃自动重启".into()
+            } else {
+                format!("订阅内核崩溃，第 {} 次自动重启", d["restart"].as_u64().unwrap_or(0))
+            }
+        }
+        "gui.kernel_tamper" => "内核校验失败，疑似镜像篡改（已拒绝落盘）".into(),
+        "gui.wintun_download" => "wintun.dll 已就位".into(),
+        "gui.wintun_tamper" => "wintun.dll 校验失败，疑似被篡改（已拒绝落盘）".into(),
+        "gui.subscription_add" => format!("新增订阅「{}」（{} 个节点）", s("name"), d["nodes"].as_u64().unwrap_or(0)),
+        "gui.subscription_import" => format!("导入本地订阅「{}」（{} 个节点）", s("name"), d["nodes"].as_u64().unwrap_or(0)),
+        "gui.subscription_update" => format!("订阅「{}」已更新", s("name")),
+        "gui.subscription_remove" => "移除订阅".into(),
+        "gui.subscription_activate" => format!("激活订阅「{}」", s("name")),
+        "gui.sub_mode" => format!("订阅出站模式切换为 {}", s("mode")),
+        "gui.sysproxy_engage" => format!("系统代理已接管（{}）", s("server")),
+        "gui.sysproxy_disengage" => "系统代理已还原".into(),
+        "gui.sysproxy_reclaim" => format!("系统代理已自动收回（{}）", s("server")),
+        "gui.sysproxy_conflict" => "系统代理被外部修改，已自动收回".into(),
+        "gui.sysproxy_lock" => format!("{}系统代理锁定", on_off(b("on"))),
+        "gui.custom_rule" => match s("action") {
+            "add_bypass" => format!("新增放行规则 {}", s("pattern")),
+            "remove" => "删除自定义规则".into(),
+            other => format!("自定义规则变更（{other}）"),
+        },
+        "gui.sub_rule_for_host" => format!("为 {} 添加规则（{}）", s("host"), s("target")),
+        "gui.sub_script_add" => format!("新增覆写脚本「{}」", s("name")),
+        "gui.sub_script_update" => "更新覆写脚本".into(),
+        "gui.sub_script_remove" => "删除覆写脚本".into(),
+        "gui.sub_script_error" => format!("覆写脚本「{}」执行失败：{}", s("name"), s("error")),
+        "gui.doctor" => "运行自我诊断".into(),
+        "gui.dl_start" => format!("开始下载 {}", s("artifact")),
+        "gui.dl_done" => format!("{} 下载完成", s("artifact")),
+        "gui.dl_cancel" => "取消下载".into(),
+        "gui.dl_manual_install" => format!("手动安装 {}", s("artifact")),
+        "gui.uninstall" => "卸载应用并清理数据".into(),
+        "gui.fanout_change" => {
+            let verb = match s("action") {
+                "add" => "新增",
+                "update" => "更新",
+                "remove" => "删除",
+                _ => "变更",
+            };
+            format!("{verb}扇出「{}」", s("name"))
+        }
+        _ => action.to_string(),
+    }
+}
+
+/// 解析 JSONL 文本尾部事件（新的在前，最多 limit 条；跳过未白名单 action 与坏行）。
+fn parse_events(text: &str, limit: usize) -> Vec<GuiEvent> {
+    let mut out = Vec::new();
+    for line in text.lines().rev() {
+        if out.len() >= limit {
+            break;
+        }
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        let Some(action) = v["action"].as_str() else { continue };
+        let Some(kind) = event_kind(action) else { continue };
+        out.push(GuiEvent {
+            ts: v["ts"].as_u64().unwrap_or(0),
+            kind: kind.to_string(),
+            detail: human_detail(action, &v["detail"]),
+        });
+    }
+    out
+}
+
+/// 事件中心数据源：从 gui-audit.jsonl 尾部倒读（至多 256KB，丢弃跨边界残行），
+/// 取最新 limit 条白名单事件（新的在前）。文件不存在返回空 Vec。
+pub fn recent_events(limit: usize) -> Vec<GuiEvent> {
+    const TAIL_MAX: u64 = 256 * 1024;
+    let Ok(mut f) = std::fs::File::open(audit_path()) else {
+        return Vec::new();
+    };
+    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+    let start = len.saturating_sub(TAIL_MAX);
+    use std::io::{Read as _, Seek as _, SeekFrom};
+    if f.seek(SeekFrom::Start(start)).is_err() {
+        return Vec::new();
+    }
+    let mut buf = Vec::new();
+    if f.read_to_end(&mut buf).is_err() {
+        return Vec::new();
+    }
+    let text = String::from_utf8_lossy(&buf);
+    // 非头部起读时首行是残行，丢弃
+    let text = match start {
+        0 => text.into_owned(),
+        _ => text.split_once('\n').map(|(_, rest)| rest.to_string()).unwrap_or_default(),
+    };
+    parse_events(&text, limit)
 }
 
 /// 构建内嵌节点配置（默认端口避让本地独立节点与 Docker 演示链）。
@@ -379,6 +577,93 @@ mod tests {
             serde_json::from_str(r#"{"id":"x","name":"n","code":"c"}"#).unwrap();
         assert!(legacy.enabled);
         assert_eq!(legacy.order, 0);
+    }
+
+    #[test]
+    fn settings_default_notify_and_reduce_effects() {
+        // 旧版配置无新字段：serde default 兜底（通知默认开、性能模式默认关）
+        let v: RoleSettings = serde_json::from_str(
+            r#"{"client":true,"server":false,"web":false}"#,
+        )
+        .unwrap();
+        assert!(v.notify_float_ball);
+        assert!(!v.reduce_effects);
+        // 持久化往返
+        let mut v = RoleSettings::default();
+        v.notify_float_ball = false;
+        v.reduce_effects = true;
+        let raw = serde_json::to_string(&v).unwrap();
+        let back: RoleSettings = serde_json::from_str(&raw).unwrap();
+        assert!(!back.notify_float_ball);
+        assert!(back.reduce_effects);
+    }
+
+    #[test]
+    fn parse_events_filters_and_orders() {
+        let text = concat!(
+            // 非白名单 action：跳过
+            r#"{"ts":1,"action":"gui.dl_internal","user":"u","detail":{}}"#,
+            "\n",
+            // 坏行：跳过
+            "{not-json}\n",
+            // 白名单：角色开关
+            r#"{"ts":2,"action":"gui.role_toggle","user":"u","detail":{"role":"client","on":false}}"#,
+            "\n",
+            // 白名单：内核
+            r#"{"ts":3,"action":"gui.kernel_start","user":"u","detail":{}}"#,
+            "\n",
+            // 含敏感样式字段：detail 由白名单字段拼装，不回显原始 JSON
+            r#"{"ts":4,"action":"gui.sysproxy_engage","user":"u","detail":{"server":"127.0.0.1:57890","token":"psk_secret"}}"#,
+            "\n",
+        );
+        let ev = parse_events(text, 50);
+        assert_eq!(ev.len(), 3);
+        // 新的在前
+        assert_eq!(ev[0].ts, 4);
+        assert_eq!(ev[0].kind, "sysproxy");
+        assert_eq!(ev[0].detail, "系统代理已接管（127.0.0.1:57890）");
+        assert!(!ev[0].detail.contains("psk_secret"));
+        assert_eq!(ev[1].kind, "kernel");
+        assert_eq!(ev[1].detail, "订阅内核已启动");
+        assert_eq!(ev[2].kind, "role_toggle");
+        assert_eq!(ev[2].detail, "关闭客户端角色");
+    }
+
+    #[test]
+    fn parse_events_respects_limit() {
+        let mut text = String::new();
+        for i in 0..10 {
+            text.push_str(&format!(
+                "{{\"ts\":{i},\"action\":\"gui.kernel_stop\",\"user\":\"u\",\"detail\":{{}}}}\n"
+            ));
+        }
+        let ev = parse_events(&text, 3);
+        assert_eq!(ev.len(), 3);
+        assert_eq!(ev[0].ts, 9);
+        assert_eq!(ev[2].ts, 7);
+    }
+
+    #[test]
+    fn event_kind_whitelist_covers_expected_categories() {
+        for (action, kind) in [
+            ("gui.role_toggle", "role_toggle"),
+            ("gui.proxy_power", "role_toggle"),
+            ("gui.kernel_crash", "kernel"),
+            ("gui.subscription_add", "kernel"),
+            ("gui.sysproxy_conflict", "sysproxy"),
+            ("gui.custom_rule", "custom_rule"),
+            ("gui.sub_script_error", "sub_script"),
+            ("gui.doctor", "doctor"),
+            ("gui.dl_done", "install"),
+            ("gui.uninstall", "uninstall"),
+            ("gui.fanout_change", "connector"),
+        ] {
+            assert_eq!(event_kind(action), Some(kind), "{action}");
+        }
+        // 未白名单的一律跳过
+        for action in ["gui.fallback_change", "admin.console_access", "gui.dl_cancel_x", ""] {
+            assert!(event_kind(action).is_none(), "{action}");
+        }
     }
 
     #[test]

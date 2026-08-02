@@ -90,6 +90,40 @@
       <div class="page-title"><i data-ic="home" data-sz="19"></i>首页</div>
       <div class="page-desc">运行概览：代理 / 扇入 / 扇出 / 订阅 / 远程与网络检测；开关在卡片右侧，点卡片进入对应页面</div>
 
+      <!-- 中控台英雄卡：代理总开关 + 订阅内核实时速率曲线 + 摘要三项（今日已用 / 活跃连接 / 出口 IP）。
+           速率与流量仅取订阅内核数据源（anet 代理流量无计数器，不造假）；数字滚动走 .odo 组件（odoSet 驱动） -->
+      <div class="card" id="hero-card" style="display:flex;align-items:center;gap:28px;flex-wrap:wrap">
+        <div style="display:flex;flex-direction:column;align-items:center;gap:8px;min-width:132px">
+          <button id="btn-power" class="power-btn" title="代理总开关"><i data-ic="power" data-sz="32"></i></button>
+          <div id="hero-power-state" style="font-size:12.5px;font-weight:600;color:var(--text-strong)">已停止</div>
+          <div class="hint" id="hero-power-hint" style="margin-top:0;display:none;text-align:center"></div>
+        </div>
+        <div style="flex:1;min-width:260px;display:flex;flex-direction:column;gap:6px">
+          <div style="display:flex;gap:18px;font-size:12.5px;color:var(--dim)">
+            <span>下行 <span class="odo" id="hero-rate-down" style="font-weight:600;color:var(--chart-down)">-</span></span>
+            <span>上行 <span class="odo" id="hero-rate-up" style="font-weight:600;color:var(--chart-up)">-</span></span>
+          </div>
+          <div id="hero-chart" style="height:90px"></div>
+          <div class="empty-state" id="hero-chart-empty" style="display:none;padding:18px 20px">
+            <div class="empty-t" style="margin-top:0">订阅内核未运行，暂无速率数据</div>
+          </div>
+        </div>
+        <div style="display:flex;gap:30px;flex-wrap:wrap">
+          <div class="dstat"><span class="dstat-l">今日已用</span><span class="dstat-v odo" id="hero-traffic">-</span></div>
+          <div class="dstat"><span class="dstat-l">活跃连接</span><span class="dstat-v odo" id="hero-conns">-</span></div>
+          <div class="dstat"><span class="dstat-l">出口 IP</span><span class="dstat-v odo" id="hero-exit" style="font-size:16px">-</span></div>
+        </div>
+      </div>
+
+      <!-- 新手检查单（首次成功路径显性化：激活订阅功能 → 添加订阅 → 开启本地代理 → 出口探测成功；
+           四步全就绪 5s 后淡出并记 ag_ob_done；「不再显示」记 ag_ob_dismissed；有任一标记不渲染） -->
+      <div class="card" id="ob-card" style="display:none">
+        <h3><i data-ic="rocket"></i><span id="ob-title">新手检查单</span>
+          <span class="h3-tools"><button class="ghost small" id="ob-dismiss">不再显示</button></span>
+        </h3>
+        <div class="role-list" id="ob-list"></div>
+      </div>
+
       <!-- 空状态引导（未连接任何节点时显示） -->
       <div id="onboarding" class="hero" style="display:none">
         <div class="hero-logo"><i data-ic="zap" data-sz="30"></i></div>
@@ -397,15 +431,25 @@
       </div>
     </section>
 
-    <!-- 代理：激活订阅的节点组与切换 -->
+    <!-- 代理：激活订阅的节点组与切换（工具行：组页签 + 排序切换 + 组测速；标题行右侧「全部测速」） -->
     <section class="view" id="view-proxy" hidden>
-      <div class="page-title"><i data-ic="earth" data-sz="19"></i>节点</div>
-      <div class="page-desc" id="proxy-sub-desc">激活订阅的节点列表；点击卡片切换，点闪电图标单点测速</div>
+      <div class="page-title"><i data-ic="earth" data-sz="19"></i>节点
+        <span class="h3-tools"><button class="ghost small" id="btn-test-all"><i data-ic="gauge" data-sz="14"></i>全部测速</button></span>
+      </div>
+      <div class="page-desc" id="proxy-sub-desc">激活订阅的节点列表；点击卡片切换，按组批量测速后自动推荐最快节点</div>
       <div class="card" id="groups-card">
-        <div class="group-tabs" id="group-tabs"></div>
+        <div class="rl-toolbar" id="pg-toolbar" style="display:none">
+          <div class="group-tabs" id="group-tabs" style="margin-bottom:0"></div>
+          <span class="rl-tools">
+            <span class="agtabs-pill" id="sort-tabs">
+              <button class="agtab active" data-sort="default" style="padding:3px 12px;font-size:12px">默认</button>
+              <button class="agtab" data-sort="delay" style="padding:3px 12px;font-size:12px">按延迟</button>
+            </span>
+            <button class="ghost small" id="btn-test-group"><i data-ic="zap" data-sz="13"></i>测速</button>
+          </span>
+        </div>
         <div class="node-grid" id="node-grid"><div class="empty">订阅内核未运行</div></div>
       </div>
-      <button id="btn-test-all" class="fab"><i data-ic="gauge" data-sz="15"></i>延迟测试</button>
     </section>
 
     <!-- 日志：订阅内核实时可观测（连接 / 日志 / 规则命中）；仅本页打开时轮询，离开即停 -->
@@ -417,6 +461,7 @@
           <button class="agtab active" data-agtab="conn">实时连接</button>
           <button class="agtab" data-agtab="log">实时日志</button>
           <button class="agtab" data-agtab="hits">命中追踪</button>
+          <button class="agtab" data-agtab="ev">事件</button>
         </div>
       </div>
 
@@ -478,6 +523,17 @@
           </div>
         </div>
       </div>
+
+      <!-- 事件中心：本机操作与系统事件审计（进页签拉取 + 10s 轮询 + 手动刷新，新 → 旧） -->
+      <div data-agpanel="ev" hidden>
+        <div class="card">
+          <div class="rl-toolbar">
+            <span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip">来自本机操作与系统事件审计，新 → 旧</span></span>
+            <span class="rl-tools"><button id="btn-ev-refresh" class="ghost small"><i data-ic="refresh-cw" data-sz="13"></i> 刷新</button></span>
+          </div>
+          <div class="ev-list" id="lg-ev-list"></div>
+        </div>
+      </div>
     </section>
 
     <!-- 管理端：内嵌 iframe（本机服务端 / 远端端点 / 可管理扇出），导航经 postMessage 驱动 -->
@@ -507,6 +563,14 @@
           <div class="role-row" id="row-float-ball">
             <div class="role-info"><b>桌面悬浮球 <span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip">常驻桌面显示实时网速，可拖拽/双击打开主面板/右键菜单（仅桌面端）</span></span></b></div>
             <label class="switch"><input type="checkbox" id="s-float-ball"><span class="slider"></span></label>
+          </div>
+          <div class="role-row" id="row-notify-float">
+            <div class="role-info"><b>悬浮球气泡通知 <span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip">内核异常、系统代理冲突等事件在悬浮球旁弹气泡；关闭后仅记录在日志页事件签</span></span></b></div>
+            <label class="switch"><input type="checkbox" id="s-notify-float"><span class="slider"></span></label>
+          </div>
+          <div class="role-row" id="row-reduce-effects">
+            <div class="role-info"><b>性能模式 <span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip">关闭毛玻璃与动画特效，低配/国产 Linux 建议开启</span></span></b></div>
+            <label class="switch"><input type="checkbox" id="s-reduce-effects"><span class="slider"></span></label>
           </div>
         </div>
       </div>
@@ -563,6 +627,13 @@
       </div>
     </section>
   </main>
+  <!-- 窄屏底部导航（≤720px 由 components.css 同断点显示，桌面恒 display:none；active 态由 switchView 同步，HTTP_MODE/管理端模式 JS 隐藏） -->
+  <nav class="bnav" id="bnav">
+    <div class="bnav-item active" data-view="connect"><i data-ic="home"></i><span>首页</span></div>
+    <div class="bnav-item" data-view="nodes"><i data-ic="orbit"></i><span>扇入</span></div>
+    <div class="bnav-item" data-view="logs"><i data-ic="scroll-text"></i><span>日志</span></div>
+    <div class="bnav-item" data-view="settings"><i data-ic="settings"></i><span>设置</span></div>
+  </nav>
 </div>
 
 <!-- Web 远程面登录弹窗（仅浏览器模式） -->

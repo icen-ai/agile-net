@@ -933,13 +933,38 @@ impl KernelApi {
         group: &str,
     ) -> Result<std::collections::HashMap<String, u32>, String> {
         const TIMEOUT_MS: u32 = 5000;
+        let raw = self
+            .group_delay_raw(group, TIMEOUT_MS, "http://www.gstatic.com/generate_204")
+            .await?;
+        Ok(raw.into_iter().filter(|(_, d)| *d < TIMEOUT_MS).collect())
+    }
+
+    /// 组测速（「每日选妃」：HTTPS 204 探测，不剔除失败节点）：
+    /// 失败/超时节点（mihomo 记为 timeout 值）延迟归一为 0。
+    pub async fn group_delay_all(
+        &self,
+        group: &str,
+        timeout_ms: u32,
+    ) -> Result<Vec<(String, u32)>, String> {
+        let raw = self
+            .group_delay_raw(group, timeout_ms, "https://www.gstatic.com/generate_204")
+            .await?;
+        Ok(raw
+            .into_iter()
+            .map(|(name, d)| (name, if d >= timeout_ms { 0 } else { d }))
+            .collect())
+    }
+
+    /// 组测速原始请求：name → ms 全量（失败节点记 timeout 值，不做归一/过滤）。
+    async fn group_delay_raw(
+        &self,
+        group: &str,
+        timeout_ms: u32,
+        url: &str,
+    ) -> Result<std::collections::HashMap<String, u32>, String> {
         let resp = self
-            .req(
-                reqwest::Method::GET,
-                &format!(
-                    "/group/{group}/delay?timeout={TIMEOUT_MS}&url=http%3A%2F%2Fwww.gstatic.com%2Fgenerate_204"
-                ),
-            )
+            .req(reqwest::Method::GET, &format!("/group/{group}/delay"))
+            .query(&[("timeout", timeout_ms.to_string()), ("url", url.to_string())])
             .send()
             .await
             .map_err(|e| e.to_string())?;
@@ -950,10 +975,7 @@ impl KernelApi {
         let obj = v.as_object().ok_or("测速失败")?;
         Ok(obj
             .iter()
-            .filter_map(|(k, val)| {
-                let d = val.as_u64()? as u32;
-                (d < TIMEOUT_MS).then(|| (k.clone(), d))
-            })
+            .filter_map(|(k, val)| Some((k.clone(), val.as_u64()? as u32)))
             .collect())
     }
 

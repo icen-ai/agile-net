@@ -155,7 +155,7 @@ body.collapsed .island { left: calc(50% + 29px); }
 .nav-label { transition: opacity .15s ease, width .2s ease; overflow: hidden; }
 .nav-item:hover { background: var(--hover); color: var(--text-strong); }
 .nav-item:active { transform: scale(.98); }
-.nav-item.active { background: var(--accent-grad); color: var(--accent-fg); font-weight: 600; box-shadow: var(--shadow-1); }
+.nav-item.active { background: var(--accent-grad); color: var(--accent-fg); font-weight: 600; box-shadow: var(--shadow-1), inset 0 1px 0 var(--glass-hi); }
 /* 侧栏分组分隔符（收起时缩短居中） */
 .nav-sep { height: 1px; background: var(--border); margin: 7px 8px; flex-shrink: 0; }
 body.collapsed .nav-sep { margin: 7px 4px; }
@@ -249,13 +249,6 @@ input[type="checkbox"]:disabled { opacity: .5; cursor: not-allowed; }
 .node-name-text { overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; word-break: break-all; }
 .node-foot { display: flex; align-items: center; gap: 8px; min-height: 20px; padding-right: 26px; }
 .node-proto { font-size: 11.5px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.node-delay { font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
-.node-delay.ok { color: var(--ok-text); }
-.node-delay.bad { color: var(--danger-text); }
-.node-test { position: absolute; right: 9px; bottom: 9px; display: inline-flex; padding: 2px 4px; color: var(--dim); background: none; opacity: 0; pointer-events: none; transition: opacity .15s var(--ease); }
-.snode-card:hover .node-test { opacity: 1; pointer-events: auto; }
-.node-test:hover { background: none; color: var(--text-strong); }
-.fab { position: fixed; right: 26px; bottom: 24px; z-index: 50; padding: 10px 18px; border-radius: 999px; box-shadow: var(--shadow-2); font-weight: 600; }
 
 /* 添加订阅弹窗（宽版） */
 .sub-modal { width: 560px; max-width: 94vw; padding: 26px 26px 22px; }
@@ -358,16 +351,24 @@ tr:last-child td { border-bottom: none; }
 .dc-kv { display: flex; justify-content: space-between; align-items: center; gap: 10px; font-size: 12.5px; }
 .dc-kv .k { color: var(--dim); flex-shrink: 0; }
 .dc-kv .v2 { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 仪表盘摘要大数字（预留样式，结构由后续 agent 落地；可替换 .dc-val/.dc-sub 组合）：
+   <div class="dstat"><span class="dstat-l">标签</span><span class="dstat-v">1.2 GB</span></div> */
+.dstat { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.dstat-l { font-size: 11px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dstat-v { font-size: 28px; font-weight: 600; line-height: 1.25; color: var(--text-strong); font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-/* ===== 响应式：窄屏（Android 竖屏等）侧栏转顶部横排导航 ===== */
+/* ===== 响应式：窄屏（Android 竖屏等）底部导航 .bnav 接管 ===== */
 @media (max-width: 720px) {
   .tb-controls { display: none; }
   .shell { flex-direction: column; }
-  .sidebar { width: 100%; flex-direction: row; overflow-x: auto; padding: 8px 10px; gap: 4px; border-right: none; border-bottom: 1px solid var(--border); }
+  /* 二期起窄屏导航由 .bnav 底部导航接管（components.css，同断点显示）：隐藏侧栏整体
+     （含原顶部横排 nav 与 side-foot；body.collapsed 的宽度/内边距逻辑随侧栏隐藏自然失效，无需处理） */
+  .sidebar { display: none; }
   .nav-item { flex-shrink: 0; min-height: 40px; padding: 10px 14px; }
   .group-tab { display: inline-flex; align-items: center; min-height: 40px; }
   .chk { min-height: 40px; }
-  .content { padding: 14px 14px 22px; }
+  /* 底部留白 64px + safe-area：给 .bnav 让位（与 .bnav 同断点联动，JS 无需干预） */
+  .content { padding: 14px 14px calc(64px + env(safe-area-inset-bottom, 0px)); }
   .grid2 { grid-template-columns: 1fr; }
   .sub-grid { grid-template-columns: 1fr; }
   .page-title { font-size: 16px; }
@@ -382,8 +383,10 @@ tr:last-child td { border-bottom: none; }
 .role-info b { font-size: 13px; font-weight: 600; }
 .role-info .hint { font-size: 12px; }
 .modal-mask { position: fixed; inset: 0; background: var(--mask); display: flex; align-items: center; justify-content: center; z-index: 100; animation: mask-in var(--dur) ease both; backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
+/* 玻璃降级：遮罩无玻璃质感可保（--mask 本身为实色半透明托底），仅关 blur（其余玻璃组件见 components.css no-blur 一节） */
+html.no-blur .modal-mask { backdrop-filter: none; -webkit-backdrop-filter: none; }
 @keyframes mask-in { from { opacity: 0; } to { opacity: 1; } }
-.modal { background: var(--panel2); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow-3); padding: 20px 22px; width: 380px; max-width: calc(100vw - 48px); animation: modal-in var(--dur-slow) var(--spring) both; }
+.modal { background: var(--panel2); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow-3), inset 0 1px 0 var(--glass-hi); padding: 20px 22px; width: 380px; max-width: calc(100vw - 48px); animation: modal-in var(--dur-slow) var(--spring) both; }
 @keyframes modal-in { from { opacity: 0; transform: translateY(10px) scale(.97); } to { opacity: 1; transform: none; } }
 .modal h3 { margin: 0; font-size: 15px; display: flex; align-items: center; gap: 6px; }
 .modal label { display: block; font-size: 12px; color: var(--dim); margin-bottom: 4px; }

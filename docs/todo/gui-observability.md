@@ -60,3 +60,15 @@
 - `client_tunnel_test` 偶发网络型 flake（core 未改动，复跑即过）。
 - 悬浮球气泡桥接点目前 2 处（内核启动失败、系统代理冲突）；脚本错误告警链路无 AppHandle，后续可在 KernelManager 加事件槽。
 - Android 真机构建未在本机验证（需 NDK 环境）。
+
+## 二期：留存型中控台（竞品调研驱动）
+
+标杆调研（Clash Verge Rev/FlClash/Stash/v2rayN/Surge/iStat/Tailscale 等）结论：留存 = 状态可见性 + 每日仪式感 + 零打扰。二期落地：
+
+- **首页中控台**（hero-card）：`.power-btn` 大总开关（`proxy_power`/`proxy_power_toggle`，TUN 互斥守卫）+ 实时速率双序列曲线（--chart-up/down token）+ 三枚 dstat 摘要（odoSet 数字滚动，仅 hero 区克制使用）+ 新手检查单（四步首次成功路径，localStorage 持久/可关闭）。
+- **节点页「每日选妃」**：组级/全部批量测速（`sub_test_group`，前端 30ms 阶梯流式写 `.lat` 徽标，防阻塞禁用）、按延迟排序（localStorage 每组记忆）、<500ms 最低延迟「推荐」徽标（Tailscale 式替用户决策）、双层签名对比防 10s 轮询打断流式。
+- **事件中心**：日志视图第四页签，`recent_events`（gui-audit.jsonl 尾部倒读 + kind 白名单 + detail 人读化、敏感字段绝不回显），Surge Event Center 式「不打断但可回顾」。
+- **连接详情展开**：chains 全链/规则/起止/累计流量实时刷新 + 纯 HTML 链路迷你拓扑（本机→中继→出口→目标，语义色圆点）。
+- **偏好**：`notify_float_ball`（气泡开关，emit 收口门控）、`reduce_effects`（性能模式：`html.no-blur` 关玻璃动画，低配/国产 Linux，首帧 localStorage 预应用）。
+- **窄屏底部导航 .bnav**（≤720px：首页/扇入/日志/设置；侧栏整体隐藏联动；管理端/HTTP_MODE 隐藏；z-index 90 低于模态）。
+- 设计系统二期 token/组件：--chart-*/--lat-*/--power-*/--skel-*/--glass-hi；.odo/.skel/.empty-state/.power-btn/.lat/.ev-list/.bnav；玻璃组件全部 no-blur 兜底；agchart.js 主题色实色解析。

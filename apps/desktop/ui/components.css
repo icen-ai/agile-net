@@ -12,7 +12,15 @@
              tbl 实时数据表格（粘性表头 + 行 hover + 等宽数字；.tbl-dense 紧凑档）
              logv 日志流（.lv-* 级别色条与行字着色 + .logv-hl 关键字命中）
              pill 状态胶囊（.pill-ok/.pill-warn/.pill-danger/.pill-dim）
-             side-foot 侧栏底部区（.side-foot-rate 网速行；折叠态只留速率，≤720px 隐藏） */
+             side-foot 侧栏底部区（.side-foot-rate 网速行；折叠态只留速率，≤720px 隐藏）
+             odo 数字滚动（.odo/.odo-digit/.odo-strip；CSS 结构与动效，JS 由端内实现）
+             skel 骨架屏（.skel + 修饰 .skel-text/.skel-card；reduced-motion/no-blur 停扫光）
+             empty-state 空态三件套（图标 + .empty-t + .empty-d + 可选主按钮）
+             power-btn 中控台大开关（88px 圆形，运行态 .on 呼吸环发光）
+             lat 延迟徽标（.lat-good/.lat-mid/.lat-bad/.lat-na）
+             ev-list 事件中心列表（.ev-row > .ev-time + pill + .ev-detail）
+             bnav 底部导航（仅 ≤720px 显示；接管 style.css 同断点隐藏的横排 nav）
+   玻璃降级：含 backdrop-filter 组件一律 -webkit- 双写，并备 html.no-blur 实色托底规则。 */
 
 /* --- agchart 图表（JS 见共享 agchart.js；本层收录图例/浮层/网格/空态样式） --- */
 /* 结构：el.agchart(.agchart-line|.agchart-spark) > [.agchart-legend] + .agchart-plot > svg + .agchart-tip */
@@ -21,7 +29,7 @@
 .agchart-plot { position: relative; flex: 1; min-height: 0; }
 .agchart-svg { display: block; width: 100%; height: 100%; overflow: visible; }
 .agchart-svg text { font-size: 11px; fill: var(--dim2); user-select: none; }
-.agchart-svg .agc-grid { stroke: var(--row-border); stroke-width: 1; }
+.agchart-svg .agc-grid { stroke: var(--chart-grid); stroke-width: 1; }
 .agchart-svg .agc-cross { stroke: var(--border2); stroke-width: 1; stroke-dasharray: 3 3; }
 .agchart-svg .agc-dot { fill: var(--panel2); stroke-width: 2; }
 .agchart-svg .agc-empty { fill: var(--dim2); font-size: 12px; }
@@ -89,7 +97,7 @@ select.agsel-src { position: absolute !important; width: 1px !important; height:
    macOS 质感：10px 圆角 + 毛玻璃（--glass-bg + backdrop-filter blur）+ --shadow-2，
    菜单内缩 5px 间距、item 6px 圆角 hover，出现动画 scale(.96)+fade 120ms（--dur-fast）。
    z-index 600 高于 agsel-pop(500)/ahelp-tip(450)/岛(300)/模态(100)。 */
-.ctx-menu, .float-menu { position: fixed; z-index: 600; min-width: 180px; padding: 5px; background: var(--glass-bg); -webkit-backdrop-filter: blur(18px) saturate(1.5); backdrop-filter: blur(18px) saturate(1.5); border: 1px solid var(--glass-border); border-radius: 10px; box-shadow: var(--shadow-2); transform-origin: top left; animation: ctx-in var(--dur-fast) ease-out both; }
+.ctx-menu, .float-menu { position: fixed; z-index: 600; min-width: 180px; padding: 5px; background: var(--glass-bg); -webkit-backdrop-filter: blur(18px) saturate(1.5); backdrop-filter: blur(18px) saturate(1.5); border: 1px solid var(--glass-border); border-radius: 10px; box-shadow: var(--shadow-2), inset 0 1px 0 var(--glass-hi); transform-origin: top left; animation: ctx-in var(--dur-fast) ease-out both; }
 .ctx-item { display: flex; align-items: center; gap: 8px; width: 100%; padding: 6px 10px; font: inherit; font-size: 13px; text-align: left; color: var(--text); background: none; border: none; border-radius: 6px; box-shadow: none; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: background var(--dur-fast), color var(--dur-fast); }
 .ctx-item:hover { background: var(--hover); color: var(--text-strong); }
 .ctx-item:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
@@ -147,8 +155,91 @@ body.collapsed .side-foot-rate { flex-direction: column; gap: 2px; font-size: 10
   .side-foot { display: none; }
 }
 
+/* --- odo 数字滚动（odometer 实用级；本层只出 CSS 结构与动效，JS 由端内 agent 实现） ---
+   结构：<span class="odo"><span class="odo-digit"><span class="odo-strip"><span>0</span>…<span>9</span></span></span>…</span>
+   JS 按值给每个 .odo-strip 写 style.transform = translateY(-N em)（N=当前数字）；
+   非数字位（. , : 单位等）直接放文本节点（anonymous flex item 基线对齐，勿包 .odo-digit）。
+   等宽数字 + 1ch 列宽保逐位对齐；strip 竖排 0-9、每格 1em，translateY 过渡 300ms --ease。 */
+.odo { display: inline-flex; align-items: baseline; font-variant-numeric: tabular-nums; line-height: 1; }
+.odo-digit { width: 1ch; height: 1em; overflow: hidden; flex-shrink: 0; }
+.odo-strip { display: flex; flex-direction: column; transition: transform 300ms var(--ease); will-change: transform; }
+.odo-strip > span { display: block; width: 1ch; height: 1em; line-height: 1; text-align: center; }
+
+/* --- skel 骨架屏（加载占位：--skel-bg 底 + linear-gradient 扫光 1.4s；宽由布局/内联 style 给） ---
+   结构：<div class="skel skel-text"></div>（行文本 h1em）/ <div class="skel skel-card"></div>（卡片 h80px）；
+   prefers-reduced-motion 与 html.no-blur 下停扫光（::after 停在 -100% 屏外 = 静态块）。 */
+.skel { position: relative; overflow: hidden; border-radius: 6px; background: var(--skel-bg); }
+.skel::after { content: ''; position: absolute; inset: 0; background: linear-gradient(100deg, transparent 25%, var(--skel-shine) 50%, transparent 75%); transform: translateX(-100%); animation: skel-shine 1.4s ease-in-out infinite; }
+@keyframes skel-shine { to { transform: translateX(100%); } }
+.skel-text { height: 1em; }
+.skel-card { height: 80px; }
+html.no-blur .skel::after { animation: none; }
+
+/* --- empty-state 空态三件套（图标 + 标题 + 描述 + 可选主按钮，垂直居中） ---
+   结构：<div class="empty-state"><i class="ic" data-ic="inbox" data-sz="36"></i><div class="empty-t">暂无数据</div>
+         <div class="empty-d">说明文案</div><button>主操作</button></div>（按钮可省，flex 自动居中） */
+.empty-state { display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 40px 20px; }
+.empty-state .ic { width: 36px; height: 36px; color: var(--dim2); }
+.empty-state .ic svg { width: 100%; height: 100%; }
+.empty-t { margin-top: 12px; font-size: 14px; color: var(--dim); }
+.empty-d { margin-top: 4px; font-size: 12px; color: var(--dim2); max-width: 320px; line-height: 1.6; }
+.empty-state button { margin-top: 16px; }
+
+/* --- power-btn 中控台大开关（88px 圆形主开关；运行态 .on = accent 渐变底 + 反相图标 + 光晕 + 呼吸环） ---
+   结构：<button class="power-btn"><i class="ic" data-ic="power" data-sz="32"></i></button>，JS 切换 .on。
+   图标色吃 --accent-fg（浅主题白 / 深主题深灰反相）；呼吸环 = box-shadow 扩散 2s，reduced-motion 停。 */
+.power-btn { width: 88px; height: 88px; padding: 0; border-radius: 50%; background: var(--panel2); border: 2px solid var(--border2); color: var(--dim); box-shadow: var(--shadow-1); transition: transform var(--dur-fast) var(--ease), box-shadow .3s ease, border-color var(--dur) var(--ease), background var(--dur) var(--ease), color var(--dur) var(--ease); }
+.power-btn:hover { background: var(--panel2); transform: scale(1.03); }
+.power-btn:active { transform: scale(.97); }
+.power-btn .ic { width: 32px; height: 32px; }
+.power-btn .ic svg { width: 100%; height: 100%; }
+.power-btn.on { background: var(--accent-grad); border-color: transparent; color: var(--accent-fg); box-shadow: var(--shadow-2), 0 0 22px var(--power-glow); animation: power-breathe 2s ease-out infinite; }
+@keyframes power-breathe {
+  0% { box-shadow: var(--shadow-2), 0 0 22px var(--power-glow), 0 0 0 0 var(--power-ring); }
+  70%, 100% { box-shadow: var(--shadow-2), 0 0 22px var(--power-glow), 0 0 0 14px transparent; }
+}
+
+/* --- lat 延迟徽标（等宽 12px 胶囊；三档语义 + .lat-na 超时灰） ---
+   结构：<span class="lat lat-good">86ms</span> / <span class="lat lat-na">超时</span> */
+.lat { display: inline-flex; align-items: center; justify-content: center; min-width: 54px; padding: 1px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; line-height: 1.5; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.lat-good { background: var(--lat-good-bg); color: var(--lat-good); }
+.lat-mid { background: var(--lat-mid-bg); color: var(--lat-mid); }
+.lat-bad { background: var(--lat-bad-bg); color: var(--lat-bad); }
+.lat-na { background: var(--accent-bg); color: var(--dim2); }
+
+/* --- ev-list 事件中心列表（时间 + 类型 pill + detail 省略号；行高 34px 对齐 .tbl） ---
+   结构：<div class="ev-list"><div class="ev-row"><span class="ev-time">12:03:44</span>
+         <span class="pill pill-ok">连接</span><span class="ev-detail">详情文案…</span></div>…</div> */
+.ev-list { border-top: 1px solid var(--row-border); }
+.ev-row { display: flex; align-items: center; gap: 10px; height: 34px; border-bottom: 1px solid var(--row-border); font-size: 12.5px; }
+.ev-time { flex-shrink: 0; color: var(--dim2); font-variant-numeric: tabular-nums; }
+.ev-row .pill { flex-shrink: 0; }
+.ev-detail { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dim); }
+
+/* --- bnav 底部导航（仅 ≤720px 窄屏显示，桌面恒 display:none；接管 style.css 同断点隐藏的顶部横排 nav） ---
+   结构：<nav class="bnav"><button class="bnav-item active"><i class="ic" data-ic="home" data-sz="20"></i>首页</button>…</nav>
+   毛玻璃底栏（--glass-bg + blur 双写 + 顶部 1px --glass-border），padding-bottom 吃 safe-area；
+   active = accent 色 + 顶部 2px 指示条。内容区底部留白由 style.css ≤720px 媒体查询同断点联动，JS 无需干预。 */
+.bnav { display: none; }
+@media (max-width: 720px) {
+  .bnav { display: flex; position: fixed; left: 0; right: 0; bottom: 0; z-index: 90; padding: 6px 8px calc(6px + env(safe-area-inset-bottom, 0px)); background: var(--glass-bg); -webkit-backdrop-filter: blur(18px) saturate(1.5); backdrop-filter: blur(18px) saturate(1.5); border-top: 1px solid var(--glass-border); }
+  .bnav-item { position: relative; flex: 1; display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 5px 0 2px; background: none; border: none; box-shadow: none; border-radius: 8px; font-size: 10px; color: var(--dim); }
+  .bnav-item:hover { background: none; color: var(--text-strong); }
+  .bnav-item .ic { width: 20px; height: 20px; }
+  .bnav-item .ic svg { width: 100%; height: 100%; }
+  .bnav-item.active { color: var(--accent); }
+  .bnav-item.active::before { content: ''; position: absolute; top: -6px; left: 50%; transform: translateX(-50%); width: 24px; height: 2px; border-radius: 2px; background: var(--accent); }
+}
+
+/* --- 玻璃降级（html.no-blur：低性能/远程渲染场景关毛玻璃，实色 --panel2 托底；JS 在 <html> 上切类） ---
+   覆盖点：ctx-menu / float-menu / bnav（modal-mask 的降级规则在 style.css，仅关 blur） */
+html.no-blur .ctx-menu, html.no-blur .float-menu, html.no-blur .bnav { -webkit-backdrop-filter: none; backdrop-filter: none; background: var(--panel2); }
+
 /* prefers-reduced-motion 降级：新组件动画/过渡全部关闭（桌面端另有 style.css 全局兜底） */
 @media (prefers-reduced-motion: reduce) {
   .ctx-menu, .float-menu { animation: none; }
   .ctx-item, .logv-line { transition: none; }
+  .odo-strip { transition: none; }
+  .skel::after, .power-btn.on { animation: none; }
+  .power-btn, .bnav-item { transition: none; }
 }

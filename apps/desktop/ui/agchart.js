@@ -1,6 +1,8 @@
 /* AgileNet 共享图表组件（agchart）—— 零依赖原生 SVG/JS，首个共享 JS 组件（AGENTS.md §6）
    桌面端 <script src="agchart.js"> 引入；管理端经 crates/node/src/ui/mod.rs 内嵌服务于 /ui/agchart.js。
-   颜色一律吃 tokens.css 的 var(--*)（内联 SVG 的呈现属性支持 CSS 变量），严禁硬编码色值、主题无蓝。
+   颜色一律吃 tokens.css 的 var(--*)，严禁硬编码色值、主题无蓝。
+   序列色（var(--*) 字符串）经 getComputedStyle 解析为实色再写 SVG 呈现属性（呈现属性内
+   var() 引擎兼容性不一；网格/文字色走 components.css 的 CSS 类），主题切换后下一次绘制自然生效。
 
    两版本（API 留扩展位）：
    - AgChart.sparkline(el, series, opts)  省略版：仅趋势折线 + 渐变面积，无轴无字
@@ -74,6 +76,16 @@ function defaultFmt(v) {
 
 function num(v) { return Math.round(v * 100) / 100; }
 
+/* var(--*) 解析为实色（写 SVG 呈现属性用；主题切换后下一次绘制自然生效） */
+function resolveColor(c) {
+  var m = /^var\(\s*(--[\w-]+)\s*(?:,[^)]*)?\)$/.exec(c);
+  if (m && typeof getComputedStyle === 'function') {
+    var v = getComputedStyle(document.documentElement).getPropertyValue(m[1]);
+    if (v) return v.trim();
+  }
+  return c;
+}
+
 /* Catmull-Rom 平滑转三次贝塞尔；控制点钳制在值域内，避免 0 基线以下/上限以上过冲 */
 function smoothPath(pts, yLo, yHi) {
   if (pts.length === 1) return 'M ' + num(pts[0][0]) + ' ' + num(pts[0][1]);
@@ -101,6 +113,7 @@ function Chart(el, kind) {
   this.n = 0; this.ymax = 1;
   this.dots = [];
   this.gradColors = [];
+  this.rcolors = [];      // 解析后的序列实色（_resolveColors 维护）
   this.tipKey = '';
   this._build();
   var self = this;
@@ -187,6 +200,7 @@ Chart.prototype._setData = function (cfg) {
     empty: cfg.empty || '暂无数据',
     legend: cfg.legend !== false,
   };
+  this._resolveColors();
   /* 对齐：旧值按索引截断，新增点自基线 0 生长 */
   var cur = this.cur;
   var from = series.map(function (s, i) {
@@ -240,8 +254,15 @@ Chart.prototype._animate = function (from) {
 };
 
 /* ================= 绘制 ================= */
+/* 序列实色解析：var(--*) → getComputedStyle 实色（_setData/_onResize 时刷新，签名机制不变） */
+Chart.prototype._resolveColors = function () {
+  this.rcolors = this.data.series.map(function (s, i) {
+    return resolveColor(s.color || PALETTE[i % PALETTE.length]);
+  });
+};
+
 Chart.prototype._seriesColor = function (i) {
-  return (this.data.series[i] && this.data.series[i].color) || PALETTE[i % PALETTE.length];
+  return this.rcolors[i] || PALETTE[i % PALETTE.length];
 };
 
 Chart.prototype._drawAxes = function () {
@@ -415,6 +436,7 @@ Chart.prototype._onResize = function () {
   if (!this._layout()) return;
   cancelAnimationFrame(this.raf);
   this._setCur(this.data.series);
+  this._resolveColors();
   this._drawAxes();
   this._drawSeries(this._curVals());
   this._drawHover();

@@ -36,6 +36,17 @@
   --toggle-knob: #FFFFFF;
   /* 动效时长梯度（--dur 180ms 保留于 style.css；reduced-motion 全局关闭） */
   --dur-fast: 120ms; --dur-slow: 320ms;
+  /* 图表（agchart）：网格线 / 速率双色（上行绿·下行钢蓝；深色降饱和提亮变体） */
+  --chart-grid: rgba(0,0,0,.09); --chart-up: #61C555; --chart-down: #5484BC;
+  /* 延迟三档语义文字色（.lat 徽标；bg 变体为胶囊底） */
+  --lat-good: #3E8E2E; --lat-mid: #9A7414; --lat-bad: #CE3F34;
+  --lat-good-bg: rgba(97,197,85,.14); --lat-mid-bg: rgba(246,190,80,.20); --lat-bad-bg: rgba(237,106,95,.12);
+  /* 中控台大开关（power-btn 运行态：呼吸环色 + 外发光光晕） */
+  --power-ring: rgba(60,63,67,.35); --power-glow: rgba(60,63,67,.28);
+  /* 骨架屏（.skel 底色 + 扫光色） */
+  --skel-bg: rgba(0,0,0,.06); --skel-shine: rgba(255,255,255,.65);
+  /* Liquid Glass 顶部高光（inset 0 1px 0：nav-item.active / ctx-menu / modal） */
+  --glass-hi: rgba(255,255,255,.5);
 }
 html[data-theme="dark"] {
   --bg: #2A2828; --bg2: #2F2D2D; --panel: #312F2F; --panel2: #3A3838;
@@ -60,4 +71,11 @@ html[data-theme="dark"] {
   --accent-grad: linear-gradient(180deg, #F5F5F5, #DFDFDF);
   --mask: rgba(0,0,0,.58);
   --toggle-knob: #FFFFFF;
+  /* 深色变体：网格线 10% 白；速率双色降饱和提亮（对标深底可读性） */
+  --chart-grid: rgba(255,255,255,.10); --chart-up: #74CE8A; --chart-down: #8FB6DE;
+  --lat-good: #5FCF65; --lat-mid: #F8CE52; --lat-bad: #F96057;
+  --lat-good-bg: rgba(95,207,101,.14); --lat-mid-bg: rgba(248,206,82,.16); --lat-bad-bg: rgba(249,96,87,.14);
+  --power-ring: rgba(238,238,238,.40); --power-glow: rgba(238,238,238,.22);
+  --skel-bg: rgba(255,255,255,.07); --skel-shine: rgba(255,255,255,.14);
+  --glass-hi: rgba(255,255,255,.06);
 }

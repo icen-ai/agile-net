@@ -7,6 +7,7 @@
 use agile_net_client::{AgileNetClient, ConnectParams, Credential, CredentialStore, NodeState, ParsedConnect};
 use agile_net_node::service::NodeServer;
 use serde::Serialize;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tauri::{Manager, State};
 
@@ -48,11 +49,14 @@ pub struct AppState {
     tun_notice: Arc<tokio::sync::Mutex<Option<String>>>,
     /// 最近一次应用的回落上游（变化时审计 gui.fallback_change，记地址不记凭据）
     last_fallback: Arc<tokio::sync::Mutex<Option<std::net::SocketAddr>>>,
+    /// 悬浮球气泡通知开关的廉价缓存（float_notify 同步门控用；与 roles.notify_float_ball 同步）
+    notify_float_ball: Arc<AtomicBool>,
 }
 
 impl AppState {
     fn new() -> Self {
         let roles = RoleSettings::load();
+        let notify_float_ball = roles.notify_float_ball;
         // 开机初值：代理未启动 + 已保存的代理模式偏好（开机恢复态）
         let client_proxy_slot = agile_net_node::service::new_client_proxy_slot();
         client_proxy_slot.store(Arc::new(Some(agile_net_node::service::ClientProxyInfo {
@@ -73,6 +77,7 @@ impl AppState {
             tun_upstream_ok: Arc::new(tokio::sync::Mutex::new(None)),
             tun_notice: Arc::new(tokio::sync::Mutex::new(None)),
             last_fallback: Arc::new(tokio::sync::Mutex::new(None)),
+            notify_float_ball: Arc::new(AtomicBool::new(notify_float_ball)),
         }
     }
 }
@@ -199,34 +204,86 @@ async fn list_credentials(state: State<'_, AppState>) -> Result<Vec<(String, Cre
     Ok(out)
 }
 
-/// 启动本地代理
-#[tauri::command]
-async fn start_proxy(app: tauri::AppHandle, state: State<'_, AppState>, port: u16) -> Result<u16, String> {
+/// 启动本地代理共用逻辑（start_proxy 命令 / proxy_power_toggle 复用）：
+/// 按 system_proxy 角色偏好决定是否 engage 系统代理（幂等，快照不会重复覆盖）。
+async fn start_proxy_inner(app: &tauri::AppHandle, state: &State<'_, AppState>, port: u16) -> Result<u16, String> {
     if !state.roles.lock().await.client {
         return Err("扇入已停用，请在首页开启".into());
     }
     state.client.start_proxy(port).await.map_err(map_err)?;
-    refresh_tray_icon(&app);
-    // 系统代理模式（默认开）：启动代理即接管系统代理；engage 幂等，快照不会被重复覆盖
+    refresh_tray_icon(app);
     if state.roles.lock().await.system_proxy {
-        let server = expected_sysproxy(&state);
+        let server = expected_sysproxy(state);
         let _ = tokio::task::spawn_blocking(move || sysproxy::engage(&server)).await;
     }
-    report_client_proxy(&state).await;
+    report_client_proxy(state).await;
     Ok(state.client.proxy_port())
+}
+
+/// 停止本地代理共用逻辑：系统代理模式下还原系统代理（避免指向已死端口）；
+/// 模式偏好保留，下次启动自动再接管。
+async fn stop_proxy_inner(app: &tauri::AppHandle, state: &State<'_, AppState>) -> Result<(), String> {
+    state.client.stop_proxy().await;
+    if state.roles.lock().await.system_proxy {
+        let _ = tokio::task::spawn_blocking(sysproxy::disengage).await;
+    }
+    report_client_proxy(state).await;
+    refresh_tray_icon(app);
+    Ok(())
+}
+
+/// 启动本地代理
+#[tauri::command]
+async fn start_proxy(app: tauri::AppHandle, state: State<'_, AppState>, port: u16) -> Result<u16, String> {
+    start_proxy_inner(&app, &state, port).await
 }
 
 /// 停止本地代理
 #[tauri::command]
 async fn stop_proxy(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<(), String> {
-    state.client.stop_proxy().await;
-    // 系统代理模式：停止即还原系统代理（避免指向已死端口）；模式偏好保留，下次启动自动再接管
-    if state.roles.lock().await.system_proxy {
-        let _ = tokio::task::spawn_blocking(sysproxy::disengage).await;
+    stop_proxy_inner(&app, &state).await
+}
+
+/// 全局总开关状态（首页大中控台；proxy_power 返回体）
+#[derive(Debug, Clone, Serialize)]
+pub struct PowerState {
+    /// 本地代理是否正在监听
+    pub on: bool,
+    /// 监听地址（如 127.0.0.1:57890）或「已停止」
+    pub detail: String,
+}
+
+/// 当前总开关状态快照（纯内存读，无网络 IO，可供前端轮询）。
+fn power_state_of(state: &State<'_, AppState>) -> PowerState {
+    let port = state.client.proxy_port();
+    PowerState {
+        on: port > 0,
+        detail: if port > 0 { format!("127.0.0.1:{port}") } else { "已停止".into() },
     }
-    report_client_proxy(&state).await;
-    refresh_tray_icon(&app);
-    Ok(())
+}
+
+/// 全局总开关状态查询（廉价轮询用）
+#[tauri::command]
+async fn proxy_power(state: State<'_, AppState>) -> Result<PowerState, String> {
+    Ok(power_state_of(&state))
+}
+
+/// 全局总开关切换：on→停止（含系统代理还原）；off→启动（默认端口 57890，
+/// 按 system_proxy 角色偏好接管系统代理）。TUN 与系统代理互斥，TUN 运行中禁止直接 toggle。
+#[tauri::command]
+async fn proxy_power_toggle(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<PowerState, String> {
+    if state.roles.lock().await.tun_mode {
+        return Err("TUN 模式运行中，请先关闭 TUN".into());
+    }
+    if state.client.proxy_port() > 0 {
+        stop_proxy_inner(&app, &state).await?;
+    } else {
+        // 与「连接」页/系统代理自动拉起同一默认端口
+        start_proxy_inner(&app, &state, 57890).await?;
+    }
+    let st = power_state_of(&state);
+    roles::audit("gui.proxy_power", serde_json::json!({"on": st.on, "detail": st.detail}));
+    Ok(st)
 }
 
 /// 代理状态
@@ -1398,6 +1455,31 @@ async fn test_delay(group: String) -> Result<std::collections::HashMap<String, u
     subscription::kernel_api().await?.group_delay(&group).await
 }
 
+/// 节点测速结果（sub_test_group 返回体；delay=0 表示超时/失败）
+#[derive(Debug, Clone, Serialize)]
+pub struct NodeDelay {
+    pub name: String,
+    pub delay: u32,
+}
+
+/// 节点批量测速（节点页「每日选妃」）：HTTPS 204 探测、3000ms 超时；
+/// 失败/超时节点 delay 归一为 0 并排尾，有效延迟升序返回。
+#[tauri::command]
+async fn sub_test_group(state: State<'_, AppState>, group: String) -> Result<Vec<NodeDelay>, String> {
+    if !state.kernel.running().await {
+        return Err("内核未运行".into());
+    }
+    let mut v: Vec<NodeDelay> = subscription::kernel_api()
+        .await?
+        .group_delay_all(&group, 3000)
+        .await?
+        .into_iter()
+        .map(|(name, delay)| NodeDelay { name, delay })
+        .collect();
+    v.sort_by_key(|n| if n.delay == 0 { u32::MAX } else { n.delay });
+    Ok(v)
+}
+
 /// 开关D：订阅代理角色。开启即启动内核（崩溃自动退避重启），关闭即停机。
 /// 内核缺失时不再当场下载：后台开始下载并返回 NEED_DOWNLOAD，前端展示下载卡，完成后自动重试。
 #[tauri::command]
@@ -2328,9 +2410,15 @@ fn tray_quit(app: tauri::AppHandle) {
 
 // ==================== 悬浮球窗口（仅桌面） ====================
 
-/// 悬浮球气泡通知（窗口不存在时静默忽略；桥接既有告警点与 float_ball_notify 命令共用）
+/// 悬浮球气泡通知（窗口不存在时静默忽略；桥接既有告警点与 float_ball_notify 命令共用）。
+/// 用户关闭「悬浮球通知」偏好后全局静默（含既有桥接点）。
 fn float_notify(app: &tauri::AppHandle, text: impl Into<String>) {
     use tauri::Emitter;
+    if let Some(state) = app.try_state::<AppState>() {
+        if !state.notify_float_ball.load(Ordering::Relaxed) {
+            return;
+        }
+    }
     let _ = app.emit_to("float-ball", "ag-float-notify", text.into());
 }
 
@@ -2396,6 +2484,31 @@ async fn set_float_ball(
     Ok(())
 }
 
+/// 悬浮球气泡通知开关：false 时 float_notify 桥接点与 float_ball_notify 命令均不再 emit。
+#[tauri::command]
+async fn set_notify_float_ball(state: State<'_, AppState>, on: bool) -> Result<(), String> {
+    {
+        let mut roles = state.roles.lock().await;
+        roles.notify_float_ball = on;
+        roles.save()?;
+    }
+    state.notify_float_ball.store(on, Ordering::Relaxed);
+    roles::audit("gui.notify_float_ball", serde_json::json!({"on": on}));
+    Ok(())
+}
+
+/// 性能模式（前端据此关模糊/动画；后端仅持久化存取）。
+#[tauri::command]
+async fn set_reduce_effects(state: State<'_, AppState>, on: bool) -> Result<(), String> {
+    {
+        let mut roles = state.roles.lock().await;
+        roles.reduce_effects = on;
+        roles.save()?;
+    }
+    roles::audit("gui.reduce_effects", serde_json::json!({"on": on}));
+    Ok(())
+}
+
 /// 悬浮球气泡通知通道（前端主窗 → 悬浮球）。
 #[tauri::command]
 fn float_ball_notify(app: tauri::AppHandle, text: String) -> Result<(), String> {
@@ -2409,6 +2522,7 @@ fn float_ball_notify(app: tauri::AppHandle, text: String) -> Result<(), String> 
 async fn run_doctor(app: tauri::AppHandle) -> Result<agile_net_node::tool::doctor::DoctorReport, String> {
     use agile_net_node::tool::doctor as doc;
     use tauri::Emitter as _;
+    roles::audit("gui.doctor", serde_json::json!({}));
     // 流式诊断：先发检查节计划（前端渲染骨架），每完成一节推一个事件，最后返回完整报告
     let _ = app.emit("ag-doctor-begin", doc::SECTION_PLAN);
     tauri::async_runtime::spawn_blocking(move || {
@@ -2418,6 +2532,14 @@ async fn run_doctor(app: tauri::AppHandle) -> Result<agile_net_node::tool::docto
     })
     .await
     .map_err(map_err)
+}
+
+/// 事件中心：gui-audit.jsonl 尾部倒读白名单事件（新的在前；默认 50 条，上限 200）。
+/// 文件不存在返回空 Vec。
+#[tauri::command]
+fn recent_events(limit: Option<u32>) -> Result<Vec<roles::GuiEvent>, String> {
+    let n = limit.unwrap_or(50).clamp(1, 200) as usize;
+    Ok(roles::recent_events(n))
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -2448,13 +2570,18 @@ pub fn run() {
             start_proxy,
             stop_proxy,
             proxy_status,
+            proxy_power,
+            proxy_power_toggle,
             parse_connect_url,
             open_url,
             tray_show_main,
             tray_quit,
             set_float_ball,
             float_ball_notify,
+            set_notify_float_ball,
+            set_reduce_effects,
             run_doctor,
+            recent_events,
             set_autostart,
             get_autostart,
             get_role_settings,
@@ -2488,6 +2615,7 @@ pub fn run() {
             proxy_groups,
             select_proxy,
             test_delay,
+            sub_test_group,
             set_subscription_role,
             sub_traffic,
             sub_connections,

@@ -142,8 +142,14 @@ function applyLanguage() { LANG = localStorage.getItem('ag_lang') || 'zh'; refre
 function applyTheme() {
   document.documentElement.dataset.theme = localStorage.getItem('ag_theme') || 'light';
 }
+/* 性能模式（减少特效）：切 html.no-blur 关毛玻璃与动画（components.css/style.css 托底规则）。
+   localStorage 缓存先行避免首帧等待，initRoles 读 get_role_settings().reduce_effects 后校正。 */
+function applyReduceEffects(on) {
+  document.documentElement.classList.toggle('no-blur', !!on);
+}
 // 解析即应用，避免首帧浅色闪烁（与 wiki / 控制台行为一致）
 applyTheme();
+applyReduceEffects(localStorage.getItem('ag_reduce_fx') === '1');
 
 function esc(s) {
   return String(s ?? '').replace(/[&<>"'`]/g, c => ({
@@ -154,6 +160,42 @@ function esc(s) {
 /* 行内帮助（共享组件 .ahelp，样式在 components.css）：问号图标 + 纯 CSS hover 说明卡 */
 function ahelp(text) {
   return '<span class="ahelp">' + AgIcon('badge-question-mark', 13) + '<span class="ahelp-tip">' + esc(text) + '</span></span>';
+}
+
+/* odo 数字滚动驱动（结构 .odo > .odo-digit > .odo-strip 见 components.css；滚动动效由 CSS transition 完成）。
+   用法：元素带 class="odo"，每帧调 odoSet(el, text)——按字符对齐 diff：数字位复用/新建 digit 并写
+   strip.style.transform = translateY(-N em)，非数字位（. / : 单位等）放裸文本节点；值短变长自动补 digit、
+   长变短自动裁；内部签名对比，文本未变不动 DOM。仅供 hero 中控台等少量大数字使用，勿全站铺开。 */
+function odoSet(el, text) {
+  if (!el) return;
+  text = String(text);
+  if (el._odoSig === text) return;
+  el._odoSig = text;
+  const olds = [...el.querySelectorAll('.odo-digit')];
+  const frag = document.createDocumentFragment();
+  const used = [];
+  let di = 0;
+  for (const ch of text) {
+    if (ch >= '0' && ch <= '9') {
+      let d = olds[di++];
+      if (!d) {
+        d = document.createElement('span');
+        d.className = 'odo-digit';
+        const strip = document.createElement('span');
+        strip.className = 'odo-strip';
+        for (let n = 0; n <= 9; n++) { const s = document.createElement('span'); s.textContent = n; strip.appendChild(s); }
+        d.appendChild(strip);
+      }
+      d._odoN = ch;
+      used.push(d);
+      frag.appendChild(d);
+    } else {
+      frag.appendChild(document.createTextNode(ch));
+    }
+  }
+  el.textContent = '';
+  el.appendChild(frag);
+  used.forEach(d => { d.firstChild.style.transform = 'translateY(-' + d._odoN + 'em)'; });
 }
 
 /* 变更检测写入：内容不变不动 DOM（轮询渲染防频闪） */
@@ -1056,6 +1098,7 @@ async function enterAdmin(nodeId, upstream, label) {
   $('nav-client').style.display = 'none';
   $('nav-admin').style.display = 'flex';
   $('side-foot').style.display = 'none'; // 侧栏底部区属于客户端导航
+  $('bnav').style.display = 'none'; // 窄屏底部导航同属客户端导航
   document.querySelectorAll('.view').forEach(s => { s.hidden = s.id !== 'view-admin'; });
   adminNavActivate('dashboard');
   toast('已进入管理端：' + label, 'ok');
@@ -1069,6 +1112,7 @@ function exitAdmin() {
   $('nav-admin').style.display = 'none';
   $('nav-client').style.display = 'flex';
   $('side-foot').style.display = '';
+  $('bnav').style.display = ''; // 交还 CSS 断点控制（HTTP_MODE 无管理端入口，无冲突）
   switchView('connect');
 }
 
@@ -1618,6 +1662,13 @@ function initInlineEdits() {
     },
   });
 }
+/* 悬浮球气泡通知行：悬浮球未开启时置灰禁用（跟随 s-float-ball 勾选态联动） */
+function syncNotifyFloatRow() {
+  const fb = $('s-float-ball'), row = $('row-notify-float'), sw = $('s-notify-float');
+  if (!fb || !row || !sw) return;
+  row.style.opacity = fb.checked ? '' : '.5';
+  sw.disabled = !fb.checked;
+}
 async function initRoles() {
   let settings = { client: true, server: false, web: false, web_listen: '127.0.0.1:59291' };
   try { settings = await invoke('get_role_settings'); } catch (e) {}
@@ -1632,9 +1683,16 @@ async function initRoles() {
   $('sub-mode').value = subMode;
   $('sub-mode').dataset.prev = subMode;
   applySubFeature(!!settings.subscription_feature);
-  // 设置页本机开关初值（系统代理锁定 / 桌面悬浮球）
+  // 设置页本机开关初值（系统代理锁定 / 桌面悬浮球 / 悬浮球气泡通知 / 性能模式）
   $('s-sysproxy-lock').checked = !!settings.sysproxy_lock;
   $('s-float-ball').checked = !!settings.float_ball;
+  $('s-notify-float').checked = !!settings.notify_float_ball;
+  syncNotifyFloatRow();
+  // 性能模式：get_role_settings().reduce_effects 校正启动时 localStorage 预应用的值
+  const reduceFx = !!settings.reduce_effects;
+  $('s-reduce-effects').checked = reduceFx;
+  localStorage.setItem('ag_reduce_fx', reduceFx ? '1' : '0');
+  applyReduceEffects(reduceFx);
   WEB_LISTEN = settings.web_listen;
   applyClientRole(settings.client);
   refreshServerPanel();
@@ -1701,6 +1759,29 @@ async function initRoles() {
       e.target.checked = !on;
       toast(friendlyError(err), 'err');
     }
+    syncNotifyFloatRow(); // 悬浮球关闭时气泡通知行置灰禁用
+  };
+  $('s-notify-float').onchange = async (e) => {
+    const on = e.target.checked;
+    try {
+      await invoke('set_notify_float_ball', { on });
+      toast(on ? '悬浮球气泡通知已开启' : '悬浮球气泡通知已关闭（事件仍记录在日志页事件签）', 'ok');
+    } catch (err) {
+      e.target.checked = !on;
+      toast(friendlyError(err), 'err');
+    }
+  };
+  $('s-reduce-effects').onchange = async (e) => {
+    const on = e.target.checked;
+    try {
+      await invoke('set_reduce_effects', { on });
+      applyReduceEffects(on);
+      localStorage.setItem('ag_reduce_fx', on ? '1' : '0');
+      toast(on ? '性能模式已开启（毛玻璃与动画特效已关闭）' : '性能模式已关闭', 'ok');
+    } catch (err) {
+      e.target.checked = !on;
+      toast(friendlyError(err), 'err');
+    }
   };
 
   $('pwd-cancel').onclick = () => closePwdModal(null);
@@ -1719,6 +1800,12 @@ let SUBS = [];
 let PROXY_DATA = null;
 let PROXY_CACHED = false; // true = 内核未运行，展示缓存快照（只读）
 let CUR_GROUP = null;
+/* 「每日选妃」测速状态：DELAY_CACHE group -> Map(node -> ms，0=超时)，只就地刷徽标不触发整组重渲染；
+   TESTING 进行中的组（按钮禁用防重复点击）；TEST_ALL_ON 串行全部测速中 */
+const DELAY_CACHE = new Map();
+const TESTING = new Set();
+let TEST_ALL_ON = false;
+function getSortMode(g) { return localStorage.getItem('ag_sort_' + g) || 'default'; } // 每组记忆排序方式
 
 /** 功能入口可见性（安装激活后侧栏出现「订阅/代理」；仪表盘订阅卡切引导态） */
 function applySubFeature(on) {
@@ -1774,7 +1861,7 @@ async function refreshSubs() {
   const list = $('subs-list');
   const active = SUBS.find(s => s.active);
   $('proxy-sub-desc').textContent = active
-    ? '当前激活：' + active.name + '（' + active.node_count + ' 节点）— 点击卡片切换，点闪电图标单点测速'
+    ? '当前激活：' + active.name + '（' + active.node_count + ' 节点）— 点击卡片切换，「测速」批量测延迟'
     : '请先在「订阅」页激活一个订阅';
   updateDashSub();
   if (!SUBS.length) {
@@ -1828,6 +1915,7 @@ async function refreshSubStatus() {
   NetProbe.render();
   // 侧栏底部速率区随内核运行态翻转（运行↔未运行）
   renderSideFoot();
+  Hero.onTraffic(); // 英雄卡曲线/读数同步翻转（sub_traffic 报错时此处兜底切空态）
   // 无论内核是否运行都刷新代理页（未运行时回落缓存快照，方便查看节点情况）
   refreshGroups();
 }
@@ -1858,6 +1946,7 @@ const SubTraffic = {
     this.data = t;
     this.render();
     renderSideFoot();
+    Hero.onTraffic(); // 中控台英雄卡：速率缓冲/曲线/今日已用（同一 2s 数据源，不另起轮询）
   },
   render() {
     const t = this.data, show = !!window._subRunning && !!t;
@@ -1893,112 +1982,372 @@ function renderSideFoot() {
   setText('sf-down', fmtBytes(r.down) + '/s');
 }
 
-/* ---------- 代理页 ---------- */
+/* ================= 中控台英雄卡（竞品标杆：FlClash 大开关 + 速率曲线、Stash 中控台摘要） =================
+   数据源：proxy_power / proxy_power_toggle（10s 主轮询；HTTP_MODE 回落 proxy_status+start/stop_proxy）；
+   速率曲线吃 SubTraffic 2s 差分速率（60 点环形缓冲，同 tray.js down60/up60 思路，onTraffic 钩子驱动）；
+   活跃连接 sub_connections active.length（10s 主轮询挂一次，1s 高频归日志视图）；出口 IP 读 NetProbe.data。
+   anet 代理流量无计数器：内核未运行曲线区空态「订阅内核未运行，暂无速率数据」，不造假。全部签名对比。 */
+const Hero = {
+  power: null,          // { on, detail }：detail = '127.0.0.1:57890' / '已停止'
+  down60: [], up60: [], // 60 点速率环形缓冲（B/s）
+  _powerSig: '',
+  async pollPower() {
+    if (HTTP_MODE) {
+      this.power = { on: PROXY_ST.running, detail: PROXY_ST.running ? '127.0.0.1:' + PROXY_ST.port : '已停止' };
+    } else {
+      try { this.power = await invoke('proxy_power'); } catch (e) { return; }
+    }
+    this.renderPower();
+  },
+  renderPower() {
+    const p = this.power;
+    const on = !!(p && p.on);
+    const tunLocked = !HTTP_MODE && TUN_ON;
+    const clientOff = !$('r-client').checked;
+    const sig = on + '|' + (p ? p.detail : '') + '|' + tunLocked + '|' + clientOff;
+    if (sig === this._powerSig) return;
+    this._powerSig = sig;
+    const btn = $('btn-power');
+    btn.classList.toggle('on', on);
+    btn.disabled = tunLocked || clientOff;
+    btn.style.opacity = (tunLocked || clientOff) ? '.45' : '';
+    setText('hero-power-state', on ? '运行中 ' + p.detail : (p ? p.detail : '已停止'));
+    const hint = tunLocked ? 'TUN 模式运行中，总开关不可用' : (clientOff ? '请先在首页开启扇入' : '');
+    $('hero-power-hint').style.display = hint ? '' : 'none';
+    setText('hero-power-hint', hint);
+    btn.title = hint || '代理总开关';
+  },
+  async toggle() {
+    const btn = $('btn-power');
+    btn.disabled = true;
+    try {
+      if (HTTP_MODE) {
+        if (PROXY_ST.running) await invoke('stop_proxy');
+        else await invoke('start_proxy', { port: proxyPort() });
+      } else {
+        // TUN 运行中后端 Err「TUN 模式运行中，请先关闭 TUN」→ friendlyError 上岛
+        this.power = await invoke('proxy_power_toggle');
+        this.renderPower();
+      }
+    } catch (err) { toast(friendlyError(err), 'err'); }
+    btn.disabled = false;
+    this.pollPower();
+    refreshProxy(); // 代理卡 / 灵动岛 / 侧栏底部同步
+  },
+  /* SubTraffic 2s 钩子：速率缓冲 + 双序列曲线（下行为主 --chart-down / 上行 --chart-up）+ 今日已用 */
+  onTraffic() {
+    const running = !!window._subRunning;
+    const r = SubTraffic.rates || { up: 0, down: 0 };
+    if (running) {
+      this.down60.push(r.down); if (this.down60.length > 60) this.down60.shift();
+      this.up60.push(r.up); if (this.up60.length > 60) this.up60.shift();
+    } else if (this.down60.length) {
+      this.down60 = []; this.up60 = []; // 内核停止即清缓冲：重启后曲线不拖旧尾巴
+    }
+    const chart = $('hero-chart'), empty = $('hero-chart-empty');
+    chart.style.display = running ? '' : 'none';
+    empty.style.display = running ? 'none' : '';
+    odoSet($('hero-rate-down'), running ? fmtBytes(r.down) + '/s' : '-');
+    odoSet($('hero-rate-up'), running ? fmtBytes(r.up) + '/s' : '-');
+    const t = SubTraffic.data;
+    odoSet($('hero-traffic'), running && t ? fmtBytes(t.up_total + t.down_total) : '-');
+    if (!running) return;
+    AgChart.sparkline(chart, [
+      { name: '下行', values: this.down60.slice(), color: 'var(--chart-down)' },
+      { name: '上行', values: this.up60.slice(), color: 'var(--chart-up)' },
+    ]);
+  },
+  /* 活跃连接：10s 主轮询挂一次（sub_connections 的 1s 高频轮询归日志视图，不重复起） */
+  async pollConns() {
+    if (HTTP_MODE) return;
+    let n = 0;
+    try { n = ((await invoke('sub_connections')).active || []).length; } catch (e) { return; }
+    odoSet($('hero-conns'), window._subRunning ? String(n) : '-');
+  },
+  /* 出口 IP：NetProbe JS 缓存（30s 重探 + 内核翻转即时重探），失败显「探测失败」；Web 远程面无本机探测显 '-' */
+  renderExit() {
+    const d = NetProbe.data;
+    odoSet($('hero-exit'), HTTP_MODE ? '-' : (!d ? '探测中…' : (d.fail ? '探测失败' : d.ip)));
+  },
+  /* 10s 主轮询条目：先落总开关（Onboarding 步骤③依赖），再刷连接/出口/检查单 */
+  async tick10s() {
+    await this.pollPower();
+    this.pollConns();
+    this.renderExit();
+    Onboarding.refresh();
+  },
+};
+function initHero() {
+  $('btn-power').onclick = () => Hero.toggle();
+  Hero.onTraffic();  // 首帧空态/速率读数
+  Hero.tick10s();
+}
+
+/* ================= 新手检查单（首次成功路径显性化；全部就绪 5s 后淡出隐藏） =================
+   判定：① get_role_settings().subscription_feature ② list_subscriptions 非空
+        ③ proxy_power.on（HTTP_MODE 回落 PROXY_ST）④ NetProbe.data 经出口（via）且未失败。
+   localStorage ag_ob_dismissed / ag_ob_done 任一标记在 = 整张卡不渲染（display:none）。 */
+const OB_STEPS = [
+  { label: '激活订阅功能', desc: '设置页安装内核并激活，解锁订阅与节点页', goto: 'settings' },
+  { label: '添加一个订阅', desc: '导入 Clash 系订阅链接，或拖拽 YAML 文件到订阅页', goto: 'subscription' },
+  { label: '开启本地代理', desc: '点本页左侧总开关，系统流量经 AgileNet 分流', goto: '' },
+  { label: '出口探测成功', desc: '网络检测卡验证流量真实经订阅节点出口', goto: '' },
+];
+const Onboarding = {
+  _sig: '', _doneTimer: 0,
+  dismissed() { return localStorage.getItem('ag_ob_dismissed') === '1' || localStorage.getItem('ag_ob_done') === '1'; },
+  async refresh() {
+    const card = $('ob-card');
+    if (HTTP_MODE || this.dismissed()) { card.style.display = 'none'; return; }
+    let settings = {}, subs = [];
+    try { settings = await invoke('get_role_settings'); } catch (e) {}
+    try { subs = await invoke('list_subscriptions'); } catch (e) {}
+    let power = Hero.power;
+    if (!power) { try { power = await invoke('proxy_power'); } catch (e) {} }
+    const np = NetProbe.data;
+    const done = [
+      !!settings.subscription_feature,
+      subs.length > 0,
+      !!(power && power.on),
+      !!(np && np.via && !np.fail),
+    ];
+    const all = done.every(Boolean);
+    const sig = JSON.stringify(done);
+    card.style.display = '';
+    if (sig !== this._sig) {
+      this._sig = sig;
+      $('ob-list').innerHTML = OB_STEPS.map((s, i) =>
+        '<div class="role-row">' +
+        '<div class="role-info"><b><input type="checkbox" disabled' + (done[i] ? ' checked' : '') + '> ' + esc(s.label) + '</b>' +
+        '<span class="hint">' + esc(s.desc) + '</span></div>' +
+        (!done[i] && s.goto ? '<button class="ghost small" data-ob-goto="' + s.goto + '">去完成</button>' : '') +
+        '</div>').join('');
+    }
+    if (all && !this._doneTimer) {
+      setText('ob-title', '全部就绪');
+      this._doneTimer = setTimeout(() => {
+        localStorage.setItem('ag_ob_done', '1');
+        card.style.transition = 'opacity .5s ease';
+        card.style.opacity = '0';
+        setTimeout(() => { card.style.display = 'none'; }, 500);
+      }, 5000);
+    }
+  },
+  init() {
+    const card = $('ob-card');
+    if (HTTP_MODE || this.dismissed()) { card.style.display = 'none'; return; }
+    $('ob-dismiss').onclick = () => {
+      localStorage.setItem('ag_ob_dismissed', '1');
+      card.style.display = 'none';
+    };
+    // 「去完成」跳对应视图（事件委托，无内联事件）
+    $('ob-list').addEventListener('click', (e) => {
+      const b = e.target.closest('[data-ob-goto]');
+      if (b) switchView(b.dataset.obGoto);
+    });
+    this.refresh();
+  },
+};
+
+/* ---------- 代理页（「每日选妃」：组批量测速流式刷徽标 + 延迟排序 + 推荐徽标） ----------
+   渲染纪律：group-tabs / node-grid 均签名对比，数据不变不重绘（refreshSubStatus 10s 轮询会调进来）；
+   测速结果只写 DELAY_CACHE 并就地刷 .lat 徽标（text/class），不触发整组重渲染；
+   阶梯收尾后 reconcile 一次，应用延迟排序与「推荐」徽标。 */
+const GROUP_LABELS = { 'AGILE-SUB': '订阅节点' }; // 技术名 → 友好名；mihomo 内置 GLOBAL 组隐藏
+function proxyGroupList() {
+  return Object.entries(PROXY_DATA || {}).filter(([n, p]) =>
+    n !== 'GLOBAL' && p.all && ['Selector', 'URLTest', 'Fallback'].includes(p.type));
+}
+/* 节点有效延迟：测速缓存优先（0=超时）；URLTest/Fallback 组回落 mihomo history 最近值；null=未测速 */
+function delayOf(group, node) {
+  const m = DELAY_CACHE.get(group);
+  if (m && m.has(node)) return m.get(node);
+  const g = PROXY_DATA && PROXY_DATA[group];
+  if (g && (g.type === 'URLTest' || g.type === 'Fallback')) {
+    const p = PROXY_DATA[node] || {};
+    if (p.history && p.history.length) return p.history[p.history.length - 1].delay || 0;
+  }
+  return null;
+}
+// 延迟分档：<300ms good / <800ms mid / 其余 bad；0（超时）与 null（未测速）均为 na
+function latCls(ms) { return ms < 300 ? 'lat-good' : ms < 800 ? 'lat-mid' : 'lat-bad'; }
+function latHtml(ms) {
+  if (typeof ms === 'number' && ms > 0)
+    return '<span class="lat ' + latCls(ms) + '" style="margin-left:auto">' + ms + ' ms</span>';
+  return '<span class="lat lat-na" style="margin-left:auto">' + (ms === null ? '—' : '超时') + '</span>';
+}
+/* 「推荐」徽标：测速后延迟最低且 <500ms 的节点（Tailscale 式替用户决策） */
+function bestNode(group) {
+  const m = DELAY_CACHE.get(group);
+  let best = null, bestMs = 500;
+  if (m) m.forEach((ms, name) => { if (ms > 0 && ms < bestMs) { best = name; bestMs = ms; } });
+  return best;
+}
+/* 按延迟排序：有有效延迟的升序在前，无数据/超时保持原顺序在后（下标 tiebreak 保稳定）；当前选中顺其自然 */
+function sortedNodes(group) {
+  const g = PROXY_DATA[group];
+  if (getSortMode(group) !== 'delay') return g.all;
+  return g.all.map((n, i) => ({ n, i, ms: delayOf(group, n) }))
+    .sort((a, b) => {
+      const av = a.ms > 0 ? a.ms : Infinity, bv = b.ms > 0 ? b.ms : Infinity;
+      return av !== bv ? av - bv : a.i - b.i;
+    })
+    .map(k => k.n);
+}
+
+/* 空态与降级：内核未运行（「去开启」跳订阅视图，HTTP_MODE 无此入口）/ 无代理组 */
+function renderProxyEmpty(kind) {
+  $('pg-toolbar').style.display = 'none';
+  const tabs = $('group-tabs');
+  if (tabs.dataset.sig !== '') { tabs.dataset.sig = ''; tabs.innerHTML = ''; }
+  const grid = $('node-grid');
+  const sig = 'empty-' + kind + (HTTP_MODE ? '-http' : '');
+  if (grid.dataset.sig !== sig) {
+    grid.dataset.sig = sig;
+    grid.innerHTML = kind === 'down'
+      ? '<div class="empty-state" style="grid-column:1/-1">' + AgIcon('satellite', 36) +
+        '<div class="empty-t">订阅内核未运行</div>' +
+        '<div class="empty-d">开启订阅代理角色后，这里会列出可切换的节点</div>' +
+        (HTTP_MODE ? '' : '<button class="small" data-goto-sub>去开启</button>') + '</div>'
+      : '<div class="empty-state" style="grid-column:1/-1">' + AgIcon('orbit', 36) +
+        '<div class="empty-t">暂无代理组，检查订阅配置</div>' +
+        '<div class="empty-d">订阅可能未包含节点，或尚未刷新成功</div></div>';
+  }
+  syncTestUI();
+}
+
 async function refreshGroups() {
   let d;
   try { d = await invoke('proxy_groups'); } catch (e) {
     PROXY_CACHED = false;
-    $('group-tabs').innerHTML = '';
-    $('node-grid').innerHTML = '<div class="empty">订阅内核未运行，且暂无节点缓存</div>';
+    PROXY_DATA = null;
+    renderProxyEmpty('down');
+    updateDashSub();
     return;
   }
   PROXY_CACHED = !!d.cached;
   PROXY_DATA = (d && d.proxies) || {};
-  // 隐藏 mihomo 内置 GLOBAL 组；技术名映射为友好名
-  const GROUP_LABELS = { 'AGILE-SUB': '订阅节点' };
-  const groups = Object.entries(PROXY_DATA).filter(([n, p]) =>
-    n !== 'GLOBAL' && p.all && ['Selector', 'URLTest', 'Fallback'].includes(p.type));
-  if (!groups.length) {
-    $('group-tabs').innerHTML = '';
-    $('node-grid').innerHTML = '<div class="empty">暂无节点（请到「订阅」页刷新订阅）</div>';
-    return;
-  }
+  const groups = proxyGroupList();
+  if (!groups.length) { renderProxyEmpty('empty'); updateDashSub(); return; }
   if (!CUR_GROUP || !groups.some(([n]) => n === CUR_GROUP)) CUR_GROUP = groups[0][0];
-  $('group-tabs').innerHTML = groups.map(([n]) =>
-    '<button class="group-tab' + (n === CUR_GROUP ? ' active' : '') + '" data-group-tab="' + esc(n) + '">' + esc(GROUP_LABELS[n] || n) + '</button>'
-  ).join('');
-  // 缓存态：只读展示，隐藏测速入口并给出说明
-  if (PROXY_CACHED) {
-    $('proxy-sub-desc').textContent = '订阅内核未运行，以下为最近缓存节点（测速与切换不可用）';
+  $('pg-toolbar').style.display = '';
+  // 组页签签名对比：组集合与当前组不变不重绘
+  const tabs = $('group-tabs');
+  const tabSig = JSON.stringify([groups.map(([n]) => n), CUR_GROUP]);
+  if (tabs.dataset.sig !== tabSig) {
+    tabs.dataset.sig = tabSig;
+    tabs.innerHTML = groups.map(([n]) =>
+      '<button class="group-tab' + (n === CUR_GROUP ? ' active' : '') + '" data-group-tab="' + esc(n) + '">' + esc(GROUP_LABELS[n] || n) + '</button>'
+    ).join('');
   }
-  $('btn-test-all').style.display = PROXY_CACHED ? 'none' : '';
+  // 缓存态：只读展示，覆盖说明文案（正常态文案由 refreshSubs 维护）
+  if (PROXY_CACHED) setText('proxy-sub-desc', '订阅内核未运行，以下为最近缓存节点（测速与切换不可用）');
+  syncSortTabs();
+  syncTestUI();
   renderNodeGrid();
-}
-
-function renderNodeGrid() {
-  const g = PROXY_DATA && PROXY_DATA[CUR_GROUP];
-  if (!g) return;
-  $('node-grid').innerHTML = g.all.map(n => {
-    const p = PROXY_DATA[n] || {};
-    const hist = (p.history && p.history.length) ? p.history[p.history.length - 1].delay : 0;
-    const cur = g.now === n;
-    return '<div class="snode-card' + (cur ? ' current' : '') + '" data-group="' + esc(CUR_GROUP) + '" data-node="' + esc(n) + '">' +
-      '<div class="node-name">' + (cur ? '<span class="node-check">' + AgIcon('check', 11) + '</span>' : '') +
-      '<span class="node-name-text" title="' + esc(n) + '">' + esc(n) + '</span></div>' +
-      '<div class="node-foot"><span class="node-proto">' + esc(p.type || '') + '</span>' +
-      '<span class="node-delay' + (hist ? ' ok' : '') + '">' + (hist ? hist + ' ms' : '') + '</span>' +
-      (PROXY_CACHED ? '' : '<button class="node-test" data-test="' + esc(n) + '" title="测速">' + AgIcon('zap', 13) + '</button>') +
-      '</div></div>';
-  }).join('');
   updateDashSub();
 }
 
-// provider 节点无单节点测速 API，后端仍是整组并发测（耗时相同），但单点只更新本卡片
-async function testNode(btn) {
-  const card = btn.closest('.snode-card');
-  const delayEl = card.querySelector('.node-delay');
-  delayEl.textContent = '…';
-  delayEl.className = 'node-delay';
-  let map;
-  try {
-    map = await invoke('test_delay', { group: CUR_GROUP });
-  } catch (e) {
-    delayEl.textContent = '超时';
-    delayEl.className = 'node-delay bad';
-    toast(friendlyError(e), 'err');
-    return;
-  }
-  const ms = map[card.dataset.node];
-  if (ms) {
-    delayEl.textContent = ms + ' ms';
-    delayEl.className = 'node-delay ok';
-  } else {
-    delayEl.textContent = '超时';
-    delayEl.className = 'node-delay bad';
-  }
+function renderNodeGrid(force) {
+  const g = PROXY_DATA && PROXY_DATA[CUR_GROUP];
+  if (!g) return;
+  const grid = $('node-grid');
+  // 签名对比：代理数据/排序方式不变不重绘（测速徽标就地单独刷，10s 轮询不打断流式写入）
+  const sig = JSON.stringify([CUR_GROUP, g.type, g.now, g.all, PROXY_CACHED, getSortMode(CUR_GROUP)]);
+  if (!force && grid.dataset.sig === sig) return;
+  grid.dataset.sig = sig;
+  const best = bestNode(CUR_GROUP);
+  grid.innerHTML = sortedNodes(CUR_GROUP).map(n => {
+    const p = PROXY_DATA[n] || {};
+    const cur = g.now === n;
+    return '<div class="snode-card' + (cur ? ' current' : '') + '" data-group="' + esc(CUR_GROUP) + '" data-node="' + esc(n) + '">' +
+      '<div class="node-name">' + (cur ? '<span class="node-check">' + AgIcon('check', 11) + '</span>' : '') +
+      (best === n ? '<span class="pill pill-ok">推荐</span>' : '') +
+      '<span class="node-name-text" title="' + esc(n) + '">' + esc(n) + '</span></div>' +
+      '<div class="node-foot" style="padding-right:0"><span class="node-proto">' + esc(p.type || '') + '</span>' +
+      latHtml(delayOf(CUR_GROUP, n)) +
+      '</div></div>';
+  }).join('');
 }
 
-async function testGroup() {
-  const cards = [...$('node-grid').querySelectorAll('.snode-card')];
-  if (!cards.length) return;
-  cards.forEach(c => {
-    const el = c.querySelector('.node-delay');
-    el.textContent = '…';
-    el.className = 'node-delay';
-  });
-  let map;
+/* 只刷徽标不重渲染：'…' 加载态 / null 未测速（—）/ 0 超时 / >0 有效延迟 */
+function writeLat(card, ms) {
+  const el = card.querySelector('.lat');
+  if (!el) return;
+  if (ms === '…') { el.textContent = '…'; el.className = 'lat lat-na'; return; }
+  if (typeof ms === 'number' && ms > 0) { el.textContent = ms + ' ms'; el.className = 'lat ' + latCls(ms); return; }
+  el.textContent = ms === null ? '—' : '超时';
+  el.className = 'lat lat-na';
+}
+function groupCards(group) {
+  return [...$('node-grid').querySelectorAll('.snode-card')].filter(c => c.dataset.group === group);
+}
+
+/* 测速按钮态：HTTP_MODE（CMD_MAP 无此命令）与缓存态隐藏；进行中禁用 + 转圈（防重复点击，竞品投诉教训） */
+let _testUiKey = '';
+function syncTestUI() {
+  const bAll = $('btn-test-all'), bGrp = $('btn-test-group');
+  const grpBusy = TESTING.has(CUR_GROUP);
+  const key = [HTTP_MODE, PROXY_CACHED, TEST_ALL_ON, grpBusy].join('|');
+  if (key === _testUiKey) return;
+  _testUiKey = key;
+  const hide = HTTP_MODE || PROXY_CACHED;
+  bAll.style.display = hide ? 'none' : '';
+  bGrp.style.display = hide ? 'none' : '';
+  bGrp.disabled = grpBusy || TEST_ALL_ON;
+  bAll.disabled = TEST_ALL_ON;
+  bGrp.innerHTML = grpBusy ? '<span class="spinner"></span>测速中' : AgIcon('zap', 13) + '测速';
+  bAll.innerHTML = TEST_ALL_ON ? '<span class="spinner"></span>测速中…' : AgIcon('gauge', 14) + '全部测速';
+}
+function syncSortTabs() {
+  const cur = getSortMode(CUR_GROUP);
+  document.querySelectorAll('#sort-tabs .agtab').forEach(t => t.classList.toggle('active', t.dataset.sort === cur));
+}
+
+/* 组批量测速（sub_test_group：delay=0 表超时，返回已按有效延迟升序、0 排尾）：
+   点击即把全组徽标置「…」加载态；结果按返回顺序 30ms 阶梯写入，模拟流式逐行刷新
+   （mihomo 一次性返回，前端做出逐行感）；失败回滚徽标为缓存/历史值，不整组重渲染。 */
+async function testGroupDelay(group) {
+  if (!group || TESTING.has(group) || PROXY_CACHED || HTTP_MODE) return false;
+  TESTING.add(group);
+  syncTestUI();
+  groupCards(group).forEach(c => writeLat(c, '…'));
+  let results;
   try {
-    map = await invoke('test_delay', { group: CUR_GROUP });
+    results = await invoke('sub_test_group', { group });
   } catch (e) {
-    cards.forEach(c => {
-      const el = c.querySelector('.node-delay');
-      el.textContent = '超时';
-      el.className = 'node-delay bad';
-    });
+    groupCards(group).forEach(c => writeLat(c, delayOf(group, c.dataset.node)));
+    TESTING.delete(group);
+    syncTestUI();
     toast(friendlyError(e), 'err');
-    return;
+    return false;
   }
-  cards.forEach(c => {
-    const el = c.querySelector('.node-delay');
-    const ms = map[c.dataset.node];
-    if (ms) {
-      el.textContent = ms + ' ms';
-      el.className = 'node-delay ok';
-    } else {
-      el.textContent = '超时';
-      el.className = 'node-delay bad';
-    }
+  let m = DELAY_CACHE.get(group);
+  if (!m) { m = new Map(); DELAY_CACHE.set(group, m); }
+  results.forEach(r => m.set(r.name, r.delay));
+  results.forEach((r, i) => {
+    setTimeout(() => {
+      const card = $('node-grid').querySelector('[data-group="' + CSS.escape(group) + '"][data-node="' + CSS.escape(r.name) + '"]');
+      if (card) writeLat(card, r.delay);
+    }, i * 30);
   });
+  TESTING.delete(group);
+  syncTestUI();
+  // 阶梯收尾后 reconcile 一次：应用延迟排序与「推荐」徽标（当前组仍在展示时）
+  setTimeout(() => { if (CUR_GROUP === group && PROXY_DATA && PROXY_DATA[group]) renderNodeGrid(true); }, results.length * 30 + 60);
+  return true;
+}
+
+/* 全部测速：串行遍历所有组（避免并发打爆内核），任一组失败即中止；进行中按钮转圈禁用 */
+async function testAllGroups() {
+  if (TEST_ALL_ON || PROXY_CACHED || HTTP_MODE) return;
+  const groups = proxyGroupList();
+  if (!groups.length) return;
+  TEST_ALL_ON = true;
+  syncTestUI();
+  for (const [name] of groups) { if (!(await testGroupDelay(name))) break; }
+  TEST_ALL_ON = false;
+  syncTestUI();
 }
 
 function openSubModal() {
@@ -2291,28 +2640,33 @@ function initSubscription() {
     CUR_GROUP = tab.dataset.groupTab;
     refreshGroups();
   });
+  $('sort-tabs').addEventListener('click', (e) => {
+    const t = e.target.closest('[data-sort]');
+    if (!t || !CUR_GROUP) return;
+    localStorage.setItem('ag_sort_' + CUR_GROUP, t.dataset.sort);
+    syncSortTabs();
+    renderNodeGrid(true);
+  });
+  $('btn-test-group').onclick = () => testGroupDelay(CUR_GROUP);
+  $('btn-test-all').onclick = () => testAllGroups();
   $('node-grid').addEventListener('click', async (e) => {
-    const testBtn = e.target.closest('.node-test');
-    if (testBtn) {
-      e.stopPropagation();
-      testNode(testBtn);
-      return;
-    }
+    if (e.target.closest('[data-goto-sub]')) { switchView('subscription'); return; }
     const card = e.target.closest('.snode-card');
     if (!card) return;
     if (PROXY_CACHED) { toast('订阅内核未运行，仅展示缓存节点', 'err'); return; }
     try {
       await invoke('select_proxy', { group: card.dataset.group, name: card.dataset.node });
-      document.querySelectorAll('.snode-card').forEach(c => c.classList.toggle('current', c === card));
+      // 本地即时报选中态（含对勾搬迁）；g.now 同步后 10s 轮询签名自然触发重绘
+      if (PROXY_DATA && PROXY_DATA[card.dataset.group]) PROXY_DATA[card.dataset.group].now = card.dataset.node;
+      document.querySelectorAll('.snode-card').forEach(c => {
+        c.classList.toggle('current', c === card);
+        const chk = c.querySelector('.node-check');
+        if (c === card && !chk) c.querySelector('.node-name').insertAdjacentHTML('afterbegin', '<span class="node-check">' + AgIcon('check', 11) + '</span>');
+        if (c !== card && chk) chk.remove();
+      });
       toast('已切换到 ' + card.dataset.node, 'ok');
     } catch (err) { toast(friendlyError(err), 'err'); }
   });
-  $('btn-test-all').onclick = async () => {
-    const btns = [...$('node-grid').querySelectorAll('.node-test')];
-    if (!btns.length) return;
-    toast('正在测速（' + btns.length + ' 个节点）…', 'ok');
-    await testGroup();
-  };
 }
 
 /* ---------- 订阅功能安装/激活（设置页） ---------- */
@@ -2804,7 +3158,9 @@ function logLineHtml(e, kw) {
 const LogsView = {
   tab: 'conn',
   timer: null, tick: 0,
-  connSig: '', hitsSig: '',
+  connSig: '', hitsSig: '', evSig: '',
+  connMap: {},        // 最近一次连接数据 id → {c, live}（详情展开/重绘恢复的数据源）
+  connDetailId: null, // 展开中的连接详情行 id（同时只开一行；行消失即收起）
   entries: [],      // 实时日志缓存（过滤变更时全量重渲染的数据源）
   logCursor: null,  // 已渲染最后一条 {time,level,payload}（增量游标；丢失 = 缓冲轮换，全量重绘）
   follow: true,     // 自动滚底（用户上滚暂停跟随，回底恢复）
@@ -2818,12 +3174,14 @@ const LogsView = {
   onTick() {
     this.tick++;
     if (this.tab === 'hits') { if (this.tick % 2 === 0) this.pollHits(); return; }
+    if (this.tab === 'ev') { if (this.tick % 10 === 0) this.pollEvents(); return; } // 事件低频：10s
     if (this.tab === 'log') this.pollLogs();
     else this.pollConns();
   },
   pollNow() {
     if (this.tab === 'log') this.pollLogs();
     else if (this.tab === 'hits') this.pollHits();
+    else if (this.tab === 'ev') this.pollEvents();
     else this.pollConns();
   },
 
@@ -2838,12 +3196,35 @@ const LogsView = {
     const body = $('lg-conn-body');
     const act = v.active || [];
     const closed = (v.closed || []).slice(0, 100);
+    this.connMap = {};
+    act.forEach(c => { this.connMap[c.id] = { c, live: true }; });
+    closed.forEach(c => { this.connMap[c.id] = { c, live: false }; });
     if (!act.length && !closed.length) {
+      this.connDetailId = null;
       body.innerHTML = '<tr><td colspan="7" class="empty">内核未运行或暂无连接</td></tr>';
       return;
     }
     body.innerHTML = act.map(c => connRowHtml(c, true)).join('') +
       closed.map(c => connRowHtml(c, false)).join('');
+    this.restoreConnDetail(); // 整表重绘后恢复展开行（最新数据即详情实时刷新；行没了则收起）
+  },
+
+  /* 展开/收起连接详情（再点同一行或点其他行收起；同时只开一行） */
+  toggleConnDetail(id) {
+    const old = $('lg-conn-body').querySelector('.conn-detail-row');
+    if (old) old.remove();
+    this.connDetailId = this.connDetailId === id ? null : id;
+    this.restoreConnDetail();
+  },
+  restoreConnDetail() {
+    const id = this.connDetailId;
+    if (!id) return;
+    const rec = this.connMap[id];
+    if (!rec) { this.connDetailId = null; return; } // 行已消失：收起
+    let anchor = null;
+    $('lg-conn-body').querySelectorAll('tr[data-cid]').forEach(r => { if (r.dataset.cid === id) anchor = r; });
+    if (!anchor) { this.connDetailId = null; return; }
+    anchor.insertAdjacentHTML('afterend', connDetailRowHtml(rec.c, rec.live));
   },
 
   /* ---- 实时日志（1s；增量追加，缓冲轮换/过滤变更时全量重绘） ---- */
@@ -2913,7 +3294,54 @@ const LogsView = {
       '<td class="mono">' + esc(h.last_host || '—') + '</td>' +
       '<td class="dim">' + esc(fmtAgo(h.last_seen)) + '</td></tr>').join('');
   },
+
+  /* ---- 事件中心（低频：进页签拉一次 + onTick 10s + 手动刷新；签名对比，上限 50 条） ---- */
+  async pollEvents() {
+    if (HTTP_MODE) return;
+    let evs;
+    try { evs = await invoke('recent_events', { limit: 50 }); } catch (e) { return; }
+    const sig = JSON.stringify(evs);
+    if (sig === this.evSig) return;
+    this.evSig = sig;
+    const list = $('lg-ev-list');
+    if (!evs || !evs.length) {
+      list.innerHTML = '<div class="empty-state">' + AgIcon('bell', 36) +
+        '<div class="empty-t">暂无事件</div>' +
+        '<div class="empty-d">本机操作与系统事件会记录在这里</div></div>';
+      return;
+    }
+    list.innerHTML = evs.map(evRowHtml).join('');
+  },
 };
+
+/* 事件类型 → pill 映射（未识别 kind 兜底 pill-dim + 原始 kind 名） */
+const EV_KIND = {
+  role_toggle: ['pill-dim', '开关'],
+  kernel: ['pill-ok', '内核'],
+  sysproxy: ['pill-warn', '系统代理'],
+  custom_rule: ['pill-dim', '规则'],
+  sub_script: ['pill-warn', '脚本'],
+  doctor: ['pill-ok', '诊断'],
+  install: ['pill-dim', '安装'],
+  uninstall: ['pill-danger', '卸载'],
+  connector: ['pill-dim', '扇出'],
+};
+/* 事件时间：今天 HH:MM:SS；非今天 MM-DD HH:MM */
+function evTimeFmt(ts) {
+  const d = new Date((ts || 0) * 1000);
+  const pad = (n) => String(n).padStart(2, '0');
+  const now = new Date();
+  const today = d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+  return today
+    ? pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds())
+    : pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+}
+function evRowHtml(e) {
+  const k = EV_KIND[e.kind] || ['pill-dim', e.kind || '事件'];
+  return '<div class="ev-row"><span class="ev-time">' + evTimeFmt(e.ts) + '</span>' +
+    '<span class="pill ' + k[0] + '">' + esc(k[1]) + '</span>' +
+    '<span class="ev-detail" title="' + esc(e.detail) + '">' + esc(e.detail) + '</span></div>';
+}
 
 /* 连接行 HTML：活跃行左 3px accent 条（var token，无硬编码色值），已关闭整行灰显 */
 function connRowHtml(c, live) {
@@ -2923,7 +3351,7 @@ function connRowHtml(c, live) {
   const rule = c.rule
     ? esc(c.rule) + (c.rule_payload ? ' <span class="dim">' + esc(c.rule_payload) + '</span>' : '')
     : '<span class="dim">—</span>';
-  return '<tr data-cid="' + esc(c.id) + '" data-host="' + esc(c.host || '') + '" data-live="' + (live ? '1' : '') + '">' +
+  return '<tr data-cid="' + esc(c.id) + '" data-host="' + esc(c.host || '') + '" data-live="' + (live ? '1' : '') + '" style="cursor:pointer">' +
     '<td class="mono" title="' + esc(c.host || '') + '"' + (live ? ' style="box-shadow:inset 3px 0 0 var(--accent)"' : '') + '>' + esc(c.host || '—') + '</td>' +
     '<td' + dim + '>' + esc(c.process || '—') + '</td>' +
     '<td class="mono">' + rule + '</td>' +
@@ -2931,6 +3359,53 @@ function connRowHtml(c, live) {
     '<td class="mono">' + (live ? fmtBytes(c.down_rate) + '/s' : '—') + '</td>' +
     '<td class="mono">' + (live ? fmtBytes(c.up_rate) + '/s' : '—') + '</td>' +
     '<td class="mono">' + fmtDur(c.elapsed) + '</td></tr>';
+}
+
+/* 链路迷你拓扑（纯 HTML flex，零依赖无 SVG）：本机 → chains 倒序各中继 → 目标 host
+   （chains[0] 是出口，链路顺序 = 本机 + chains.slice().reverse() + host；chains 空则 本机→host 两点）。
+   圆点语义色全走 var token（本机 accent / 中继 dim2 / 目标 ok-text），连线与右箭头用 --border2；
+   节点名 10px 居中，超 8 字截断加省略号，全名挂 title。 */
+function connTopoHtml(c) {
+  const cut = (s) => s.length > 8 ? s.slice(0, 8) + '…' : s;
+  const node = (name, color) =>
+    '<div style="flex-shrink:0;display:flex;flex-direction:column;align-items:center;max-width:90px" title="' + esc(name) + '">' +
+    '<span style="width:9px;height:9px;border-radius:50%;background:' + color + '"></span>' +
+    '<span class="dim" style="margin-top:3px;font-size:10px;line-height:1.3;max-width:90px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(cut(name)) + '</span></div>';
+  const link = '<div style="flex:1;min-width:24px;height:9px;display:flex;align-items:center">' +
+    '<span style="flex:1;height:1px;background:var(--border2)"></span>' +
+    '<span style="width:0;height:0;border-top:3.5px solid transparent;border-bottom:3.5px solid transparent;border-left:5px solid var(--border2)"></span></div>';
+  const nodes = [['本机', 'var(--accent)']];
+  (c.chains || []).slice().reverse().forEach(n => nodes.push([String(n), 'var(--dim2)']));
+  nodes.push([c.host || '—', 'var(--ok-text)']);
+  return '<div style="display:flex;align-items:flex-start;margin-bottom:7px">' +
+    nodes.map((n, i) => (i ? link : '') + node(n[0], n[1])).join('') + '</div>';
+}
+
+/* 连接详情展开行（标杆 Surge：链路拓扑 + 两行内布局；样式全走内联，CSS 无此类）。
+   拓扑行 = 本机 → 中继链 → 目标（connTopoHtml）；第一行 = 完整出站链 + 命中规则；
+   第二行 = 进程 / 开始时间 / 累计流量 / 状态 pill。
+   数据随 pollConns 整表重绘原位重插，即实时刷新。 */
+function connDetailRowHtml(c, live) {
+  const chains = (c.chains && c.chains.length) ? c.chains.join(' → ') : '—';
+  const rule = c.rule
+    ? esc(c.rule) + (c.rule_payload ? ' <span class="dim">' + esc(c.rule_payload) + '</span>' : '')
+    : '<span class="dim">未命中（最终出口）</span>';
+  const d = c.start ? new Date(c.start * 1000) : null;
+  const pad = (n) => String(n).padStart(2, '0');
+  const startTxt = d ? pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds()) : '—';
+  return '<tr class="conn-detail-row">' +
+    '<td colspan="7" style="padding:8px 14px 10px;border-top:none">' +
+    connTopoHtml(c) +
+    '<div style="font-size:12px;line-height:1.7;word-break:break-all">' +
+    '<span class="mono" style="font-size:11.5px">' + esc(chains) + '</span>' +
+    '<span class="dim">　规则　</span>' + rule + '</div>' +
+    '<div class="dim" style="margin-top:3px;font-size:12px;display:flex;gap:14px;flex-wrap:wrap;align-items:center">' +
+    '<span>进程 ' + esc(c.process || '—') + '</span>' +
+    '<span>开始 ' + startTxt + '</span>' +
+    '<span>累计 ↓ ' + fmtBytes(c.download) + '</span>' +
+    '<span>累计 ↑ ' + fmtBytes(c.upload) + '</span>' +
+    '<span class="pill ' + (live ? 'pill-ok' : 'pill-dim') + '">' + (live ? '活跃' : '已关闭') + '</span>' +
+    '</div></td></tr>';
 }
 
 /* 一键加规则：主机直连放行 / 经订阅出口（后端去 scheme/端口并幂等） */
@@ -2943,7 +3418,7 @@ async function addRuleForHost(host, target) {
 }
 
 function initLogs() {
-  agTabsBind($('lg-tabs'), (key) => { LogsView.tab = key; LogsView.pollNow(); });
+  agTabsBind($('lg-tabs'), (key) => { LogsView.tab = key; LogsView.tick = 0; LogsView.pollNow(); });
   // 日志流跟随：上滚暂停自动滚底，回底恢复
   const view = $('lg-log-view');
   view.addEventListener('scroll', () => {
@@ -2969,8 +3444,18 @@ function initLogs() {
       toast('命中记录已清空', 'ok');
     } catch (err) { toast(friendlyError(err), 'err'); }
   };
+  // 事件中心手动刷新（清签名强制重拉重绘）
+  $('btn-ev-refresh').onclick = () => { LogsView.evSig = ''; LogsView.pollEvents(); };
+  // 连接行点击展开/收起详情（再点同一行或点其他行收起，同时只开一行）；
+  // 详情行内点击/右键不外溢（不触发展开切换与行右键菜单）
+  $('lg-conn-body').addEventListener('click', (e) => {
+    if (e.target.closest('.conn-detail-row')) { e.stopPropagation(); return; }
+    const tr = e.target.closest('tr[data-cid]');
+    if (tr) LogsView.toggleConnDetail(tr.dataset.cid);
+  });
   // 连接行右键菜单：强制打断（仅活跃）/ 直连该域名 / 走订阅该域名
   $('lg-conn-body').addEventListener('contextmenu', (e) => {
+    if (e.target.closest('.conn-detail-row')) { e.preventDefault(); e.stopPropagation(); return; }
     const tr = e.target.closest('tr[data-cid]');
     if (!tr) return;
     e.preventDefault();
@@ -3192,8 +3677,9 @@ function switchView(v) {
   if (CUR_VIEW === 'logs' && v !== 'logs') LogsView.stop(); // 离开日志页即停轮询
   CUR_VIEW = v;
   document.querySelectorAll('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.view === v));
+  document.querySelectorAll('#bnav .bnav-item').forEach(n => n.classList.toggle('active', n.dataset.view === v));
   document.querySelectorAll('.view').forEach(s => { s.hidden = s.id !== 'view-' + v; });
-  if (v === 'connect') { refreshNodes(); refreshProxy(); renderDashFanout(); NetProbe.render(); }
+  if (v === 'connect') { refreshNodes(); refreshProxy(); renderDashFanout(); NetProbe.render(); Hero.tick10s(); }
   if (v === 'nodes') { refreshNodes(true); refreshCreds(); }
   if (v === 'routes') { refreshNodes(); refreshCustomRules(); refreshCombos(); }
   if (v === 'upstreams') refreshUpstreams();
@@ -3222,6 +3708,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   Island.init();
   bindSearch();
   document.querySelectorAll('#nav-client .nav-item').forEach(n => n.onclick = () => switchView(n.dataset.view));
+  document.querySelectorAll('#bnav .bnav-item').forEach(n => n.onclick = () => switchView(n.dataset.view));
   initAdminMode();
   initUpstreams();
   initRules();
@@ -3237,7 +3724,9 @@ window.addEventListener('DOMContentLoaded', async () => {
     // 日志视图（订阅内核可观测）与本机专属设置项为桌面端能力，Web 远程面隐藏
     const logsNav = document.querySelector('.nav-item[data-view="logs"]');
     if (logsNav) logsNav.style.display = 'none';
-    ['row-sysproxy-lock', 'row-doctor', 'row-float-ball'].forEach(id => {
+    // 窄屏底部导航含日志等桌面端入口，Web 远程面整体隐藏（内联 none 覆盖 ≤720px 断点的 flex）
+    $('bnav').style.display = 'none';
+    ['row-sysproxy-lock', 'row-doctor', 'row-float-ball', 'row-notify-float', 'row-reduce-effects'].forEach(id => {
       const r = $(id); if (r) r.style.display = 'none';
     });
     // 管理端控制台为本机专属能力（票据/转发器仅 loopback），Web 远程面隐藏入口
@@ -3251,8 +3740,9 @@ window.addEventListener('DOMContentLoaded', async () => {
   const unCard = $('btn-uninstall') && $('btn-uninstall').closest('.card');
   if (HTTP_MODE || /Android/i.test(navigator.userAgent)) {
     if (unCard) unCard.style.display = 'none';
-    // 桌面悬浮球为桌面端窗口能力，Android 同步隐藏
+    // 桌面悬浮球为桌面端窗口能力，Android 同步隐藏（气泡通知行随行联动隐藏）
     const fb = $('row-float-ball'); if (fb) fb.style.display = 'none';
+    const nf = $('row-notify-float'); if (nf) nf.style.display = 'none';
   } else {
     $('btn-uninstall').onclick = () => { $('uninstall-modal').style.display = 'flex'; };
     $('un-cancel').onclick = () => { $('uninstall-modal').style.display = 'none'; };
@@ -3331,6 +3821,8 @@ window.addEventListener('DOMContentLoaded', async () => {
 
   await loadSettings();
   await initRoles();
+  initHero();        // 中控台英雄卡（总开关/曲线/摘要；须晚于 initRoles 的 r-client 初值）
+  Onboarding.init(); // 新手检查单（dismissed/done 标记在则整卡不渲染）
   initInlineEdits();
   initSubscription();
   initSubDragImport();
@@ -3379,7 +3871,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     }
   }
 
-  setInterval(() => { refreshNodes(); refreshProxy(); refreshSubStatus(); refreshSysproxy(); refreshTun(); renderDashFanout(); refreshCustomRules(); refreshCombos(); }, 10000);
+  setInterval(() => { refreshNodes(); refreshProxy(); refreshSubStatus(); refreshSysproxy(); refreshTun(); renderDashFanout(); refreshCustomRules(); refreshCombos(); Hero.tick10s(); }, 10000);
   // 订阅内核流量 + 制品下载状态 2s 轮询（sub_traffic 读 Atomic 快照、dl_state 读内存状态，廉价；内部变更检测不重绘）
   setInterval(() => { SubTraffic.poll(); pollDl(); }, 2000);
   // 出口 IP 探测 30s 轮询（结果带签名对比，不变不重绘）

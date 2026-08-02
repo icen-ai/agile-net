@@ -29,6 +29,11 @@ AgileNet 有三套用户界面：节点 Web 管理后台、节点 TUI 终端、�
 | `--mask` | `rgba(0,0,0,.46)` | `rgba(0,0,0,.58)` | 模态遮罩（配 backdrop-filter blur(8px)） |
 | `--toggle-knob` | `#FFFFFF` | 同 | 开关/勾选框旋钮（深浅恒白） |
 | `--dur-fast` / `--dur-slow` | `120ms` / `320ms` | 同 | 动效时长梯度（中档 `--dur` 180ms 保留于 style.css；reduced-motion 全局关闭） |
+| `--chart-grid` / `--chart-up` / `--chart-down` | `rgba(0,0,0,.09)` / `#61C555` / `#5484BC` | `rgba(255,255,255,.10)` / `#74CE8A` / `#8FB6DE` | 图表：网格线 / 速率双色（上行绿·下行钢蓝；深色降饱和提亮变体，agchart 序列可传 `var(--chart-up)` 等） |
+| `--lat-good` / `--lat-mid` / `--lat-bad`（+ `--lat-*-bg`） | `#3E8E2E` / `#9A7414` / `#CE3F34` | `#5FCF65` / `#F8CE52` / `#F96057` | 延迟三档语义文字色（与 ok/warn/danger 文字色同值，独立命名保语义；`-bg` 变体为 `.lat` 胶囊底，同 `--ok/warn/danger-bg` 值） |
+| `--power-ring` / `--power-glow` | `rgba(60,63,67,.35)` / `rgba(60,63,67,.28)` | `rgba(238,238,238,.40)` / `rgba(238,238,238,.22)` | power-btn 运行态：呼吸环色 + 外发光光晕 |
+| `--skel-bg` / `--skel-shine` | `rgba(0,0,0,.06)` / `rgba(255,255,255,.65)` | `rgba(255,255,255,.07)` / `rgba(255,255,255,.14)` | 骨架屏 `.skel` 底色 + 扫光色 |
+| `--glass-hi` | `rgba(255,255,255,.5)` | `rgba(255,255,255,.06)` | Liquid Glass 静态顶部高光（`inset 0 1px 0`：nav-item.active / ctx-menu / modal） |
 
 - 圆角：卡片 12px（`--radius`），按钮/输入框 8px，徽标与胶囊 999px，上下文菜单 10px（菜单项 6px）
 - 阴影：三级层级 token —— `--shadow-1` 卡片（hover translateY(-1px) 微抬升并升至 `--shadow-2`）、`--shadow-2` 弹层/菜单/浮层、`--shadow-3` 模态；深色同层级加深，玻璃拟态浮层另以 `--glass-border` 发光补偿。`--shadow` 为管理端 crates/node/ui 存量引用的兼容别名（值 = `--shadow-3`），新代码勿用
@@ -48,7 +53,7 @@ AgileNet 有三套用户界面：节点 Web 管理后台、节点 TUI 终端、�
 - `apps/desktop/ui/components.css` 是两端共用组件样式的唯一来源（桌面 `<link>`，管理端经 `/ui/components.css` 内嵌服务，机制同 tokens.css）；端特有覆盖留在各自 style.css。
 - 当前收录 **ag-select 统一自定义下拉**：原生 select 保留为数据/逻辑载体（视觉隐藏），`agSelectEnhance(root)` 幂等增强、`agSelectRefresh(sel)` 程序化变更后刷新；类名 `.agsel` / `.agsel-btn` / `.agsel-label` / `.agsel-pop` / `.agsel-opt`（修饰类 `.open` / `.sel` / `.agsel-sm`），弹出层 fixed 挂 body、只吃 var(--*)。
 - 当前收录 **ag-tabs 横向页签条**：页内分区切换（质感泛化自段控 `.group-tab`），结构 `.agtabs` > `.agtabs-pill` > `button.agtab[data-agtab]`（`.active` 反相胶囊），可选右侧工具位 `.agtabs-tools`（搜索/按钮右对齐）；两端 app.js 各自 `agTabsBind(bar, onSwitch)` 驱动——面板 = 与页签条同容器直属 `[data-agpanel]`，纯显隐切换不重渲染。应用：管理端扇入页（监听|连接|令牌 + 跨页签联动搜索）、客户端扇出页（监听|连接）。
-- 当前收录 **agchart 图表**（首个共享 JS 组件）：`apps/desktop/ui/agchart.js` 零依赖原生 SVG/JS，桌面端 `<script src>` 引入、管理端经 `/ui/agchart.js` 内嵌服务（机制同 components.css）。两版本：`AgChart.sparkline(el, series, opts)` 省略版（趋势折线 + 渐变面积，无轴无字）与 `AgChart.line(el, {x, series, fmtX?, fmtY?, legend?, empty?})` 完整版（XY 轴刻度网格 / 多序列 / hover 十字 + 每点浮层）；颜色只吃 var(--*)（内联 SVG 呈现属性支持 CSS 变量，默认色板 `--accent`/`--dim2`/语义色），数据签名不变不重绘，数据更新 rAF 数值插值过渡（~400ms ease-out，新增点自基线生长），hover 跟随只动 transform。样式类 `.agchart*` 在 components.css（图例 `.agchart-legend`、浮层 `.agchart-tip`、网格 `.agc-grid`、空态 `.agc-empty`）。应用：管理端概览 24h 流量趋势（完整版）+ 扇入/扇出/中继三张流量卡（sparkline）。
+- 当前收录 **agchart 图表**（首个共享 JS 组件）：`apps/desktop/ui/agchart.js` 零依赖原生 SVG/JS，桌面端 `<script src>` 引入、管理端经 `/ui/agchart.js` 内嵌服务（机制同 components.css）。两版本：`AgChart.sparkline(el, series, opts)` 省略版（趋势折线 + 渐变面积，无轴无字）与 `AgChart.line(el, {x, series, fmtX?, fmtY?, legend?, empty?})` 完整版（XY 轴刻度网格 / 多序列 / hover 十字 + 每点浮层）；颜色只吃 var(--*)（序列色字符串经 getComputedStyle 解析为实色再写 SVG 呈现属性，主题切换后下一次绘制自然生效；网格线走 `--chart-grid` token，默认色板 `--accent`/`--dim2`/语义色，速率序列建议传 `var(--chart-up)`/`var(--chart-down)`），数据签名不变不重绘，数据更新 rAF 数值插值过渡（~400ms ease-out，新增点自基线生长），hover 跟随只动 transform。样式类 `.agchart*` 在 components.css（图例 `.agchart-legend`、浮层 `.agchart-tip`、网格 `.agc-grid`、空态 `.agc-empty`）。应用：管理端概览 24h 流量趋势（完整版）+ 扇入/扇出/中继三张流量卡（sparkline）。
 - 当前收录 **ahelp 行内帮助**：解释性小字的归宿（替代常驻 hint 长文）。结构 `.ahelp`（badge-question-mark 13px 图标，dim 色）> `.ahelp-tip`（纯 CSS hover 上浮说明卡，panel2/border/阴影质感，max-width 240px 正常换行，z-index 高于卡片低于 agsel-pop）；不吃 JS。两端 app.js 各有 `ahelp(text)` 内联 helper，静态 HTML 手写同构 span（图标用 `data-ic="badge-question-mark"` 占位水合）。应用：管理端扇入令牌卡头、客户端远程卡/扇出监听/订阅内核卡头。
 - 当前收录 **agedit 行内编辑**：「值 [修改] ↔ 输入框 [保存]」统一模式（Enter 保存 / Esc 取消，validate 报错 toast 不写入）。JS 驱动：宿主元素（任意容器）调 `bindInlineEdit(el, {get, set, validate?, editValue?})`（两端各自 app.js），返回 `{refresh()}` 供轮询同步显示值（编辑中不打扰，显示值变更检测不重排 DOM）；样式 `.agedit*` 在 components.css（inline-flex 宿主 + `.agedit-val` 截断 + `.agedit-input` 紧凑输入框）。应用：客户端首页代理卡监听行（编辑端口，变更即重启代理生效）、远程卡监听地址。
 - 当前收录 **ctx-menu / float-menu 上下文菜单**：macOS 风格右键菜单（10px 圆角 + `--glass-bg` 毛玻璃 backdrop-filter blur(18px) + `--glass-border` 边缘发光 + `--shadow-2`，z-index 600 高于 agsel-pop(500)）。结构 `.ctx-menu`（fixed 浮层，JS 写 left/top；transform-origin 默认左上，可按弹出方位覆盖）> `.ctx-item`（危险项加 `.danger`，分隔线 `.ctx-sep`）；菜单内缩 5px 间距、item 6px 圆角 hover，出现动画 ctx-in = scale(.96)+fade 120ms。`.float-menu` 为悬浮球场景的语义别名，同一选择器分组、结构与样式完全复用，不重复实现。
@@ -56,7 +61,15 @@ AgileNet 有三套用户界面：节点 Web 管理后台、节点 TUI 终端、�
 - 当前收录 **logv 日志流**：`.logv`（`--bg2` 底 + 1px border + 10px 圆角，等宽 12px/1.6，可选中复制）> `.logv-line`（行 hover 微亮 `--tbl-row-hover`），级别修饰 `.lv-debug/.lv-info/.lv-warn/.lv-error` = 左 3px 色条（border-left 恒占 3px，无级别行等宽对齐）+ 整行字着色（`--log-*`）；关键字命中包 `<mark class="logv-hl">`（`--accent-bg` 圆角 2px，`color: inherit` 压 UA mark 样式）。
 - 当前收录 **pill 状态胶囊**：badge 的共享泛化沉淀，新代码一律用 pill。`.pill` + 修饰 `.pill-ok/.pill-warn/.pill-danger/.pill-dim`（语义 bg/text token；dim 档 `--accent-bg` + `--dim`）。
 - 当前收录 **side-foot 侧栏底部区**：桌面外壳侧栏 flex 列内 `margin-top:auto` 沉底，border-top 细分隔 + 纵向堆叠；`.side-foot-rate` 网速行（tabular-nums），上下行箭头 = `.up`/`.down` 的 ::before 注入 unicode ↑↓ 并着色（ok-text/info-text，不引图标字体）；折叠态（body.collapsed）只留速率（纵向紧凑排布），≤720px 窄屏整体 display:none。
-- ctx-menu/float-menu/tbl/logv/pill/side-foot 色值全部走 token 自动适配深色，并内置 prefers-reduced-motion 降级（关闭动画与过渡）。
+- 当前收录 **odo 数字滚动**（odometer 实用级，CSS 结构与动效、JS 由端内实现）：`.odo`（inline-flex + tabular-nums + line-height 1）> `.odo-digit`（1ch × 1em，overflow hidden）> `.odo-strip`（0-9 竖排，每格 1em）；JS 按值写 `transform: translateY(-N em)`，300ms `--ease` 过渡；非数字位直接放文本节点。
+- 当前收录 **skel 骨架屏**：`.skel`（`--skel-bg` 底 + linear-gradient 扫光位移动画 1.4s）+ 修饰 `.skel-text`（h1em）/`.skel-card`（h80px）；prefers-reduced-motion 与 `html.no-blur` 下停扫光留静态块。
+- 当前收录 **empty-state 空态三件套**：`.empty-state`（flex 垂直居中，padding 40px 20px）> `.ic`（36px，dim2）+ `.empty-t`（14px dim）+ `.empty-d`（12px dim2，max-width 320px）+ 可选主按钮（自动居中）。
+- 当前收录 **power-btn 中控台大开关**：88px 圆形（2px `--border2` 边，hover 1.03 / active .97）；运行态 `.on` = `--accent-grad` 底 + `--accent-fg` 反相 32px 电源图标 + `--power-glow` 外发光 + 呼吸环（box-shadow 扩散 2s，`--power-ring`，reduced-motion 停）。
+- 当前收录 **lat 延迟徽标**：`.lat` 等宽 12px 胶囊（min-width 54px tabular-nums）+ 修饰 `.lat-good`/`.lat-mid`/`.lat-bad`（`--lat-*` + `--lat-*-bg`）/`.lat-na`（超时灰）。
+- 当前收录 **ev-list 事件中心列表**：`.ev-row`（行高 34px）> `.ev-time`（dim2 等宽）+ 类型 `.pill` + `.ev-detail`（flex:1 省略号）。
+- 当前收录 **bnav 底部导航**：仅 ≤720px 显示（桌面 `display:none`），fixed 底栏毛玻璃（`--glass-bg` + blur 双写 + 顶部 1px `--glass-border`，`padding-bottom: env(safe-area-inset-bottom)`）；`.bnav-item` 图标 20px + 10px 文字，active = accent 色 + 顶部 2px 指示条；与 style.css 同断点媒体查询联动（隐藏侧栏 + `.content` 底部留白 64px），JS 无需干预。
+- **玻璃降级机制**：含 backdrop-filter 组件一律 `-webkit-` 前缀双写，并备 `html.no-blur` 规则——backdrop-filter:none + 背景改实色 `--panel2` 托底；覆盖点：ctx-menu / float-menu / bnav（components.css）、modal-mask（style.css，仅关 blur，`--mask` 本身实色半透明托底）；`html.no-blur` 同时停 `.skel` 扫光。
+- odo/skel/empty-state/power-btn/lat/ev-list/bnav 与既有 ctx-menu/float-menu/tbl/logv/pill/side-foot 色值全部走 token 自动适配深色，并内置 prefers-reduced-motion 降级（关闭动画与过渡）。
 
 ## 1. 节点 Web 管理后台（crates/node/src/ui）
 
@@ -103,7 +116,7 @@ Tauri 2 + 原生 HTML/JS，一体化应用外壳（无边框窗口 + 自定义�
 ├── 标题栏：拖拽区（Logo + 应用名）+ 灵动岛 + 窗口控制（最小化/最大化/关闭到托盘）
 ├── 灵动岛：标题栏中央，常态显示代理/网络状态；通知瞬时弹出自动收回；
 │           部分网络不可达时变黄，点击展开具体异常节点清单（动效伸缩）
-├── 侧栏导航：连接 / 节点 / 路由 / 设置（≤720px 窄屏转顶部横排，Android 复用）
+├── 侧栏导航：连接 / 节点 / 路由 / 设置（≤720px 窄屏隐藏侧栏，改由共享 .bnav 底部导航接管，Android 复用）
 ├── 连接   — Hero 空状态引导 / 快速接入（agilenet:// 含 fp 证书指纹自动固定）
 │            本地代理启停 / 手动添加（折叠）/ 已保存节点管理
 ├── 节点   — 实时状态徽标（绿=已连接 / 黄脉冲=连接中·重连中 / 灰=不可达），
@@ -119,6 +132,8 @@ Tauri 2 + 原生 HTML/JS，一体化应用外壳（无边框窗口 + 自定义�
 
 **列表搜索**：节点/已保存节点/路由列表均为「常驻收起 + 搜索图标展开」式客户端筛选
 （名称/地址/状态、账号/地址、类型/匹配值/节点）。
+
+**仪表盘摘要大数字 `.dstat`**（style.css 预留样式，结构由后续迭代落地）：`.dstat` > `.dstat-l`（上行 11px dim 标签）+ `.dstat-v`（28px 等宽大数字，可替换 `.dc-val`/`.dc-sub` 组合）。
 
 **前端硬约束**：
 
