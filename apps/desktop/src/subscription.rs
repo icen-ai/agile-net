@@ -69,13 +69,10 @@ fn download_urls(asset: &str) -> Vec<String> {
     ]
 }
 
-/// wintun zip 下载镜像（官方源 + 两个 GitHub 系反代；SHA-256 钉死校验兜底防篡改）
+/// wintun zip 下载源（官方源直连 + 本地代理兜底；gh-proxy/ghfast 仅镜像 github.com，
+/// 不能代理任意域名，已从候移除——受限网络主路径是本地候选复用 reuse_local_wintun）
 fn wintun_urls() -> Vec<String> {
-    vec![
-        format!("https://{WINTUN_ZIP_PATH}"),
-        format!("https://gh-proxy.com/https://{WINTUN_ZIP_PATH}"),
-        format!("https://ghfast.top/https://{WINTUN_ZIP_PATH}"),
-    ]
+    vec![format!("https://{WINTUN_ZIP_PATH}")]
 }
 
 /// 下载字节流：依次尝试各 URL；每个 URL 先直连，失败再走本地代理 57890
@@ -117,10 +114,51 @@ pub const WINTUN_VERSION: &str = "0.14.1";
 const WINTUN_ZIP_SHA256: &str = "07c256185d6ee3652e09fa55c0b673e2624b565e02c4b9091c79ca7d2f24ef51";
 /// 官方源路径（完整性由 SHA-256 钉死保证；下载镜像见 wintun_urls）
 const WINTUN_ZIP_PATH: &str = "download.wireguard.com/wintun/wintun-0.14.1.zip";
+/// wintun.dll 0.14.1 (amd64, 427,552 B) 本体的 SHA-256——本地候选复用时的校验钉
+/// （取自 FlClash 分发的同版本官方 dll；zip 内层 dll 与整包哈希不同，勿混用）
+const WINTUN_DLL_SHA256: &str = "e5da8447dc2c320edc0fc52fa01885c103de8c118481f683643cacc3220dafce";
 
 /// wintun.dll 落盘位置（与 mihomo.exe 同目录，wintun 按 exe 相邻加载）。
 pub fn wintun_dll_path() -> PathBuf {
     kernel_dir().join("wintun.dll")
+}
+
+/// 本地候选复用：Clash 系客户端普遍自带同版本官方 wintun.dll（受限网络下
+/// wireguard.com 不可达时免下载）；仅在 SHA-256 匹配钉值时复用，否则忽略。
+fn wintun_local_candidates() -> Vec<PathBuf> {
+    let mut v = Vec::new();
+    let home = std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .map(PathBuf::from)
+        .unwrap_or_default();
+    if !home.as_os_str().is_empty() {
+        v.push(home.join(".config/clash/wintun.dll")); // FlClash 数据目录
+    }
+    if let Ok(x) = std::env::var("APPDATA") {
+        v.push(PathBuf::from(x).join("FlClash/wintun.dll"));
+    }
+    if let Ok(x) = std::env::var("LOCALAPPDATA") {
+        v.push(PathBuf::from(x).join("Programs/FlClash/wintun.dll"));
+    }
+    v
+}
+
+/// 复用本地已存在的官方 wintun.dll（SHA-256 钉值校验），命中返回 true。
+fn reuse_local_wintun(dll: &PathBuf) -> Result<bool, String> {
+    use sha2::Digest;
+    for cand in wintun_local_candidates() {
+        let Ok(bytes) = std::fs::read(&cand) else { continue };
+        if format!("{:x}", sha2::Sha256::digest(&bytes)) == WINTUN_DLL_SHA256 {
+            std::fs::copy(&cand, dll).map_err(|e| format!("wintun 本地复用落盘失败: {e}"))?;
+            tracing::info!(from = %cand.display(), "wintun.dll 本地复用（免下载）");
+            roles::audit(
+                "gui.wintun_download",
+                serde_json::json!({"source": format!("local:{}", cand.display())}),
+            );
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// 确保 wintun.dll 存在（缺失则下载 + SHA-256 校验 + 原子落盘），仅 Windows x64 需要。
@@ -138,6 +176,10 @@ pub async fn ensure_wintun() -> Result<PathBuf, String> {
         }
         let dir = kernel_dir();
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        // 优先本地候选复用（受限网络下 wireguard.com 不可达时的主路径）
+        if reuse_local_wintun(&dll)? {
+            return Ok(dll);
+        }
         let bytes = download_bytes(&wintun_urls())
             .await
             .map_err(|e| format!("wintun 下载失败: {e}"))?;
