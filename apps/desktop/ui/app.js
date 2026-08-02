@@ -1018,7 +1018,7 @@ async function renderDashFanout() {
   const total = conns.length;
   const ok = conns.filter(c => c.enabled && c.state === 'connected').length;
   setHtml('d-server-badge', running ? '<span class="badge b-ok">监听中</span>' : '<span class="badge b-gray">未开启</span>');
-  setText('d-fanout-val', total ? ok + ' / ' + total + ' 连通' : '未配置');
+  setText('d-fanout-val', total ? ok + ' / ' + total + ' 连通' : '未扇出');
   setText('d-fanout-sub', running
     ? 'API ' + (st.api_addr || '-') + ' · Relay ' + (st.relay_addr || '-')
     : (total ? '扇出监听未开启 · ' + total + ' 条扇出已配置' : '扇出监听未开启'));

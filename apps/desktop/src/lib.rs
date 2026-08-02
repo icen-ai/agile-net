@@ -34,18 +34,29 @@ pub struct AppState {
     consoles: Arc<tokio::sync::Mutex<std::collections::HashMap<String, u16>>>,
     /// 订阅内核（mihomo sidecar）
     kernel: Arc<subscription::KernelManager>,
+    /// 客户端代理真实状态槽（传给内嵌节点；管理端「本地代理」卡数据源）
+    client_proxy_slot: agile_net_node::service::ClientProxySlot,
 }
 
 impl AppState {
     fn new() -> Self {
+        let roles = RoleSettings::load();
+        // 开机初值：代理未启动 + 已保存的代理模式偏好（开机恢复态）
+        let client_proxy_slot = agile_net_node::service::new_client_proxy_slot();
+        client_proxy_slot.store(Arc::new(Some(agile_net_node::service::ClientProxyInfo {
+            enabled: false,
+            mode: if roles.system_proxy { "system" } else { "local" }.to_string(),
+            listen: String::new(),
+        })));
         Self {
             client: AgileNetClient::new(),
             creds: Arc::new(CredentialStore::open_default().ok().map(Arc::new)),
             web_api: Arc::new(tokio::sync::Mutex::new(None)),
-            roles: Arc::new(tokio::sync::Mutex::new(RoleSettings::load())),
+            roles: Arc::new(tokio::sync::Mutex::new(roles)),
             server: Arc::new(tokio::sync::Mutex::new(None)),
             consoles: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
             kernel: Arc::new(subscription::KernelManager::default()),
+            client_proxy_slot,
         }
     }
 }
@@ -185,6 +196,7 @@ async fn start_proxy(app: tauri::AppHandle, state: State<'_, AppState>, port: u1
         let server = expected_sysproxy(&state);
         let _ = tokio::task::spawn_blocking(move || sysproxy::engage(&server)).await;
     }
+    report_client_proxy(&state).await;
     Ok(state.client.proxy_port())
 }
 
@@ -196,6 +208,7 @@ async fn stop_proxy(app: tauri::AppHandle, state: State<'_, AppState>) -> Result
     if state.roles.lock().await.system_proxy {
         let _ = tokio::task::spawn_blocking(sysproxy::disengage).await;
     }
+    report_client_proxy(&state).await;
     refresh_tray_icon(&app);
     Ok(())
 }
@@ -284,6 +297,9 @@ async fn set_client_role(state: State<'_, AppState>, enabled: bool) -> Result<()
     roles.client = enabled;
     roles.save()?;
     drop(roles);
+    if !enabled {
+        report_client_proxy(&state).await;
+    }
     roles::audit("gui.role_toggle", serde_json::json!({"role": "client", "on": enabled}));
     Ok(())
 }
@@ -338,6 +354,7 @@ async fn start_embedded_node(state: &State<'_, AppState>) -> Result<NodeServer, 
                 state.client.shared_router_handle(),
                 state.client.openers_handle(),
             )),
+            client_proxy_slot: state.client_proxy_slot.clone(),
             ..Default::default()
         },
     )
@@ -1086,6 +1103,24 @@ fn expected_sysproxy(state: &State<'_, AppState>) -> String {
     format!("127.0.0.1:{}", state.client.proxy_port())
 }
 
+/// 客户端代理真实状态写入内嵌节点状态槽（start/stop/模式切换/角色关闭后调用；
+/// 管理端「本地代理」卡经 node status 读取，模式来自 GUI 代理设置）。
+async fn report_client_proxy(state: &State<'_, AppState>) {
+    let port = state.client.proxy_port();
+    let system = state.roles.lock().await.system_proxy;
+    state.client_proxy_slot.store(Arc::new(Some(
+        agile_net_node::service::ClientProxyInfo {
+            enabled: port > 0,
+            mode: if system { "system" } else { "local" }.to_string(),
+            listen: if port > 0 {
+                format!("127.0.0.1:{port}")
+            } else {
+                String::new()
+            },
+        },
+    )));
+}
+
 #[tauri::command]
 async fn set_system_proxy(state: State<'_, AppState>, enabled: bool) -> Result<(), String> {
     if enabled {
@@ -1111,6 +1146,7 @@ async fn set_system_proxy(state: State<'_, AppState>, enabled: bool) -> Result<(
         roles.system_proxy = enabled;
         roles.save()?;
     }
+    report_client_proxy(&state).await;
     Ok(())
 }
 

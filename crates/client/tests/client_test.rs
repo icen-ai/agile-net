@@ -73,6 +73,7 @@ async fn start_full_node() -> (String, SocketAddr, SocketAddr) {
         log_buffer: LogBuffer::new(),
         cert_fingerprint: None,
         manageable: Default::default(),
+        client_proxy_slot: Default::default(),
     });
     let state = ApiState::new(
         db,

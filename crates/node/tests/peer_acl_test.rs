@@ -108,6 +108,7 @@ async fn test_app() -> (Router, Database) {
         log_buffer: LogBuffer::new(),
         cert_fingerprint: None,
         manageable: Default::default(),
+        client_proxy_slot: Default::default(),
     });
     let state = ApiState::new(db.clone(), jwt, runtime, "127.0.0.1".into(), 59090, 54430);
     (create_app(state), db)

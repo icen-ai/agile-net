@@ -46,6 +46,9 @@ pub struct NodeServerOptions {
     /// 路由再发布：客户端引擎合并路由 + 开启器注册表（GUI 内嵌场景；
     /// 客户端隧道规则转售给下游，Open 命中时经对应隧道转发）
     pub client_routes: Option<ClientRoutes>,
+    /// 客户端角色代理状态槽（GUI 内嵌场景宿主写入；缺省为空槽 = 未上报，
+    /// status API 的 proxy 段回落 proxy_listen 旧行为）
+    pub client_proxy_slot: ClientProxySlot,
 }
 
 /// 路由再发布注入件：客户端引擎的合并路由表 + 通道开启器注册表。
@@ -53,6 +56,27 @@ pub type ClientRoutes = (
     Arc<ArcSwap<ProxyRouter>>,
     Arc<dashmap::DashMap<String, Arc<dyn ChannelOpener>>>,
 );
+
+/// 客户端角色代理状态（GUI 宿主进程写入：反映客户端引擎代理真实状态，
+/// 与节点角色 proxy_listen 是两个东西）。
+#[derive(Debug, Clone)]
+pub struct ClientProxyInfo {
+    /// 客户端代理是否在监听
+    pub enabled: bool,
+    /// 代理模式："system" = 接管系统代理 / "local" = 仅监听端口
+    pub mode: String,
+    /// 监听地址（127.0.0.1:port；未启用时为空串）
+    pub listen: String,
+}
+
+/// 客户端代理状态槽（宿主与内嵌节点共享，ArcSwap 无锁热更；
+/// 槽值 None = 未上报，status 的 proxy 段维持节点 proxy_listen 行为）。
+pub type ClientProxySlot = Arc<ArcSwap<Option<ClientProxyInfo>>>;
+
+/// 新建客户端代理状态槽（初值 None = 未上报）。
+pub fn new_client_proxy_slot() -> ClientProxySlot {
+    Arc::new(ArcSwap::from_pointee(None))
+}
 
 /// 运行中的节点实例（`stop` 幂等）。
 pub struct NodeServer {
@@ -284,6 +308,7 @@ impl NodeServer {
             log_buffer,
             cert_fingerprint,
             manageable: manageable_registry.clone(),
+            client_proxy_slot: opts.client_proxy_slot.clone(),
         });
 
         // 路由热更新监视：config_version 变化即重建节点本地代理路由表与对端收敛组路由。

@@ -32,6 +32,7 @@ async fn test_app() -> (Router, Database, Arc<JwtService>) {
         log_buffer: LogBuffer::new(),
         cert_fingerprint: None,
         manageable: Default::default(),
+        client_proxy_slot: Default::default(),
     });
     let state = ApiState::new(
         db.clone(),

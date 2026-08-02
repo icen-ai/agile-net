@@ -74,17 +74,27 @@ pub async fn status(AdminAuth(_): AdminAuth, State(state): State<ApiState>) -> R
         })
         .collect();
 
-    let proxy_json = match (&state.runtime.proxy_listen, &state.runtime.proxy_stats) {
-        (Some(addr), Some(stats)) => json!({
-            "enabled": true,
-            "listen": addr,
-            "active_connections": stats.active_connections.load(std::sync::atomic::Ordering::Relaxed),
-            "total_connections": stats.total_connections.load(std::sync::atomic::Ordering::Relaxed),
-            "bytes_up": stats.bytes_up.load(std::sync::atomic::Ordering::Relaxed),
-            "bytes_down": stats.bytes_down.load(std::sync::atomic::Ordering::Relaxed),
-            "rule_count": rule_count,
+    // 客户端角色代理槽位（GUI 宿主写入的真实状态）优先；
+    // 槽位空（纯 anet-svc）维持节点角色 proxy_listen 旧行为（无 mode 字段）
+    let client_proxy = state.runtime.client_proxy_slot.load();
+    let proxy_json = match &**client_proxy {
+        Some(info) => json!({
+            "enabled": info.enabled,
+            "mode": info.mode,
+            "listen": info.listen,
         }),
-        _ => json!({ "enabled": false, "rule_count": rule_count }),
+        None => match (&state.runtime.proxy_listen, &state.runtime.proxy_stats) {
+            (Some(addr), Some(stats)) => json!({
+                "enabled": true,
+                "listen": addr,
+                "active_connections": stats.active_connections.load(std::sync::atomic::Ordering::Relaxed),
+                "total_connections": stats.total_connections.load(std::sync::atomic::Ordering::Relaxed),
+                "bytes_up": stats.bytes_up.load(std::sync::atomic::Ordering::Relaxed),
+                "bytes_down": stats.bytes_down.load(std::sync::atomic::Ordering::Relaxed),
+                "rule_count": rule_count,
+            }),
+            _ => json!({ "enabled": false, "rule_count": rule_count }),
+        },
     };
 
     ok(json!({

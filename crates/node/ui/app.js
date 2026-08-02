@@ -343,6 +343,8 @@ function groupName(id) {
   const g = S.groups.find(g => g.id === id);
   return g ? g.name : (id || '-');
 }
+/* 代理模式文案（客户端代理槽位 mode：system=系统代理 / local=本地代理） */
+function proxyModeText(m) { return ({ system: '系统代理', local: '本地代理' })[m] || m || ''; }
 function pager(viewKey, total, reload) {
   const page = S.page[viewKey], size = S.size[viewKey];
   const pages = Math.max(1, Math.ceil(total / size));
@@ -354,10 +356,15 @@ function shortId(id) { return esc(String(id||'').substring(0,8)); }
 
 /* ================= 概览 ================= */
 async function renderDashboard() {
-  $('view').innerHTML = '<div class="page-title">' + ic('layout-dashboard', 20) + '端点概览</div><div class="page-desc">运行状态、连接拓扑与流量统计</div>' +
+  $('view').innerHTML = '<div class="page-title">' + ic('layout-dashboard', 20) + '<span id="dash-title">端点概览</span></div><div class="page-desc">运行状态、连接拓扑与流量统计</div>' +
     '<div class="stat-grid" id="dash-stats"></div>' +
     '<div class="card"><h3>流量趋势（24h，按小时）</h3><div class="chart-wrap"><canvas class="chart" id="traffic-chart"></canvas></div></div>' +
     '<div class="card"><h3>实时事件</h3><div id="events-list" class="mono" style="max-height:180px;overflow-y:auto;color:var(--dim)">连接事件中…</div></div>';
+  // 卡片点击跳转（事件委托：#dash-stats 常驻，load 重写 innerHTML 不影响绑定；embed 模式同链路）
+  $('dash-stats').onclick = (e) => {
+    const card = e.target.closest('.stat[data-goto]');
+    if (card) switchView(card.dataset.goto);
+  };
 
   async function load() {
     try {
@@ -365,6 +372,8 @@ async function renderDashboard() {
       // 标题栏跟随端点名称（Tauri 控制台窗口）
       const tbt = document.querySelector('.tb-title');
       if (tbt && st.node_name) tbt.textContent = st.node_name;
+      const tt = $('dash-title'), tname = (st.node_name || '端点') + ' 概览';
+      if (tt && tt.textContent !== tname) tt.textContent = tname;
       const L = st.roles.listener, CS = st.roles.connectors || [], P = st.proxy, A = st.accounts;
       const statusText = { connected: '已连接', connecting: '连接中', reconnecting: '重连中', disconnected: '已断开' };
       const fanoutSub = CS.length
@@ -372,18 +381,22 @@ async function renderDashboard() {
             (c.status === 'connected' ? 'b-ok' : (c.status === 'disconnected' ? 'b-off' : 'b-warn')) + '">' +
             esc(statusText[c.status] || c.status) + '</span></div>').join('')
         : '-';
-      $('dash-stats').innerHTML =
-        statCard('端点名称', esc(st.node_name), 'v' + esc(st.version) + ' · 运行 ' + fmtUptime(st.uptime)) +
+      // 本地代理副行：有 mode（客户端代理槽位）→ 模式 + listen；否则节点 proxy_listen 旧口径
+      const proxySub = P.mode
+        ? esc(proxyModeText(P.mode)) + (P.enabled && P.listen ? ' · ' + esc(P.listen) : '')
+        : (P.enabled ? esc(P.listen) + ' · 活跃 ' + (P.active_connections||0) + ' · 规则 ' + (P.rule_count||0) : '规则 ' + (P.rule_count||0));
+      let cards =
+        statCard('端点名称', esc(st.node_name), 'v' + esc(st.version) + ' · 运行 ' + fmtUptime(st.uptime), 'settings') +
         statCard('Relay 监听（扇入）', L.enabled ? '<span class="badge b-ok">启用</span>' : '<span class="badge b-off">未启用</span>',
-          L.enabled ? esc(L.addr) + ' · 扇入 ' + (L.connected_connectors||0) + ' 端点 · 在线客户端 ' + (L.online_clients||0) : '-') +
-        statCard('扇出连接', CS.length ? '<span class="badge b-ok">' + CS.length + ' 条</span>' : '<span class="badge b-off">未配置</span>', fanoutSub) +
-        statCard('本地代理', P.enabled ? '<span class="badge b-ok">启用</span>' : '<span class="badge b-off">未启用</span>',
-          P.enabled ? esc(P.listen) + ' · 活跃 ' + (P.active_connections||0) + ' · 规则 ' + (P.rule_count||0) : '规则 ' + (P.rule_count||0)) +
-        statCard('客户端账号', (A.total||0) + ' 个', '在线 ' + (A.online||0) + ' · 禁用 ' + (A.disabled||0)) +
+          L.enabled ? esc(L.addr) + ' · 扇入 ' + (L.connected_connectors||0) + ' 端点 · 在线客户端 ' + (L.online_clients||0) : '-', 'fanin') +
+        statCard('扇出连接', CS.length ? '<span class="badge b-ok">' + CS.length + ' 条</span>' : '<span class="badge b-off">未扇出</span>', fanoutSub, 'connectors') +
+        statCard('本地代理', P.enabled ? '<span class="badge b-ok">启用</span>' : '<span class="badge b-off">未启用</span>', proxySub, 'settings') +
+        statCard('客户端账号', (A.total||0) + ' 个', '在线 ' + (A.online||0) + ' · 禁用 ' + (A.disabled||0), 'accounts') +
         statCard('系统资源', (st.system.memory_mb||0) + ' MB', 'CPU ' + (st.system.cpu_usage||0).toFixed(1) + '% · 总内存 ' + (st.system.total_memory_mb||0) + ' MB');
       if (L.enabled && (L.peers||[]).length) {
-        $('dash-stats').innerHTML += statCard('在线扇入端点', (L.peers||[]).map(p => '<div class="mono"><span class="dot on"></span>' + esc(p) + '</div>').join(''), '');
+        cards += statCard('在线扇入端点', (L.peers||[]).map(p => '<div class="mono"><span class="dot on"></span>' + esc(p) + '</div>').join(''), '');
       }
+      $('dash-stats').innerHTML = cards;
     } catch(e) { toast(e.message, 'err'); }
 
     try {
@@ -391,8 +404,9 @@ async function renderDashboard() {
       drawChart($('traffic-chart'), t.points || []);
     } catch(e) {}
   }
-  function statCard(k, v, sub) {
-    return '<div class="stat"><div class="k">' + k + '</div><div class="v">' + v + '</div><div class="sub">' + sub + '</div></div>';
+  function statCard(k, v, sub, view) {
+    return '<div class="stat' + (view ? ' link' : '') + '"' + (view ? ' data-goto="' + view + '"' : '') +
+      '><div class="k">' + k + '</div><div class="v">' + v + '</div><div class="sub">' + sub + '</div></div>';
   }
   await load();
   S.timers.push(setInterval(load, 15000));
@@ -1166,8 +1180,8 @@ async function renderSettings() {
       kv('Relay 监听（扇入）', st.roles.listener.enabled ? st.roles.listener.addr : '未启用') +
       kv('扇出连接', (st.roles.connectors || []).length
         ? st.roles.connectors.map(c => esc(c.upstream) + '（' + esc(c.status) + '）').join(' · ')
-        : '未配置') +
-      kv('本地代理', st.proxy.enabled ? st.proxy.listen : '未启用') +
+        : '未扇出') +
+      kv('本地代理', (st.proxy.mode ? proxyModeText(st.proxy.mode) + ' · ' : '') + (st.proxy.enabled ? st.proxy.listen : '未启用')) +
       (st.cert_fingerprint
         ? '<div class="kv"><span class="k">证书指纹 (SHA-256)</span><span class="mono" style="font-size:11px;word-break:break-all">' + esc(st.cert_fingerprint) +
           ' <button class="ghost small" onclick="copyText(\'' + esc(st.cert_fingerprint) + '\')">' + ic('copy', 13) + '复制</button></span></div>'

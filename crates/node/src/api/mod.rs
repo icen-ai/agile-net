@@ -35,6 +35,8 @@ pub struct NodeRuntime {
     pub cert_fingerprint: Option<String>,
     /// 可管理上游注册表（握手 v2 发现；config 下发与状态展示用）
     pub manageable: crate::relay_auth::ManageableRegistry,
+    /// 客户端角色代理状态槽（GUI 宿主写入；有值时 status 的 proxy 段以它为准）
+    pub client_proxy_slot: crate::service::ClientProxySlot,
 }
 
 impl NodeRuntime {
