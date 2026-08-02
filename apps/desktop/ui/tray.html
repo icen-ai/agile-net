@@ -5,46 +5,125 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AgileNet 托盘</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%233C3F43' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z'/></svg>">
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="components.css">
 <link rel="stylesheet" href="style.css">
+<script src="icons.js"></script>
+<script src="agchart.js"></script>
+<script src="tray.js"></script>
 <style>
-/* 托盘弹窗：不透明整版面板（GUI 风格自定义托盘菜单） */
+/* 托盘弹窗：292×400 固定窗口，整版面板。token 一律吃 tokens.css；
+   .pill 为 components.css 同名类的内联兜底（其升级落地前本页可独立成立）。 */
 html, body { background: var(--panel2); overflow: hidden; height: 100%; }
-body { display: block; padding: 0; }
-.tp { height: 100%; box-sizing: border-box; background: var(--panel2); padding: 8px; user-select: none; overflow-y: auto; }
-.tp-head { display: flex; align-items: center; gap: 8px; padding: 6px 8px 10px; }
-.tp-head .logo { width: 24px; height: 24px; border-radius: 7px; background: var(--accent); color: var(--accent-fg); display: inline-flex; align-items: center; justify-content: center; }
-.tp-head b { font-size: 13px; color: var(--text-strong); }
-.tp-status { margin-left: auto; font-size: 11px; color: var(--dim2); display: inline-flex; align-items: center; gap: 5px; }
-.tp-row { display: flex; align-items: center; gap: 9px; padding: 8px 9px; border-radius: 8px; font-size: 13px; color: var(--text); cursor: pointer; }
-.tp-row:hover { background: var(--hover); }
-.tp-row .ic { color: var(--dim); }
-.tp-right { margin-left: auto; font-size: 11.5px; color: var(--dim2); max-width: 130px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tp-chev { transition: transform .2s ease; }
-.tp-row.open .tp-chev { transform: rotate(90deg); }
-.tp-sep { height: 1px; background: var(--row-border); margin: 5px 7px; }
-.tp-nodes { max-height: 180px; overflow-y: auto; margin: 0 2px 4px; }
-.tp-node { display: flex; align-items: center; gap: 8px; padding: 7px 9px; border-radius: 7px; font-size: 12.5px; color: var(--text); cursor: pointer; }
+[hidden] { display: none !important; }
+body { display: block; padding: 0; font-size: 13px; }
+.tp { height: 100vh; box-sizing: border-box; background: var(--panel2); display: flex; flex-direction: column; user-select: none; }
+
+/* ---- 头部：品牌 + 状态 pill ---- */
+.tp-head { display: flex; align-items: center; gap: 8px; padding: 12px 14px 6px; flex-shrink: 0; }
+.tp-head .logo { width: 22px; height: 22px; border-radius: 6px; background: var(--accent); color: var(--accent-fg); display: inline-flex; align-items: center; justify-content: center; }
+.tp-head b { font-size: 13px; color: var(--text-strong); letter-spacing: .02em; }
+.pill { margin-left: auto; display: inline-flex; align-items: center; gap: 5px; padding: 2px 9px; border-radius: 999px; font-size: 11px; line-height: 16px; background: var(--chip); color: var(--dim); white-space: nowrap; }
+.pill::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--border2); }
+.pill.on { background: var(--ok-bg); color: var(--ok-text); }
+.pill.on::before { background: var(--ok); }
+
+/* ---- 状态区：实时网速 + sparkline ---- */
+.tp-hero { padding: 4px 14px 10px; border-bottom: 1px solid var(--row-border); flex-shrink: 0; }
+.tp-speeds { display: flex; align-items: baseline; gap: 20px; }
+.tp-speed { display: inline-flex; align-items: baseline; gap: 5px; min-width: 0; }
+.tp-speed .dir { font-size: 12px; color: var(--dim2); font-weight: 600; }
+.tp-speed .num { font-size: 22px; font-weight: 650; color: var(--text-strong); font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
+.tp-speed .unit { font-size: 11px; color: var(--dim2); font-variant-numeric: tabular-nums; }
+.tp-addr { margin-top: 1px; font-size: 11px; color: var(--dim2); font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tp-chart { height: 54px; margin-top: 6px; }
+.tp-legend { display: flex; gap: 12px; margin-top: 3px; font-size: 10px; color: var(--dim2); }
+.tp-legend .c { display: inline-block; width: 7px; height: 7px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
+/* 与 AgChart 默认色板一致：主序列 --accent（下行），次序列 --dim2（上行） */
+.tp-legend .c.d { background: var(--accent); }
+.tp-legend .c.u { background: var(--dim2); }
+.tp-legend .sp { margin-left: auto; }
+
+/* ---- 滚动区：模式 / 代理组 / 连接 ---- */
+.tp-body { flex: 1; overflow-y: auto; padding: 2px 8px 8px; }
+.tp-sec { font-size: 10.5px; color: var(--dim2); padding: 8px 6px 4px; letter-spacing: .04em; }
+
+/* 三段式模式胶囊 */
+.seg { display: flex; gap: 2px; padding: 2px; background: var(--chip); border-radius: 8px; }
+.seg button { flex: 1; border: 0; background: transparent; padding: 4px 0; border-radius: 6px; font-size: 12px; color: var(--dim); cursor: pointer; transition: background .15s, color .15s; }
+.seg button:hover { color: var(--text); }
+.seg button.cur { background: var(--panel2); color: var(--text-strong); font-weight: 600; box-shadow: 0 1px 3px rgba(0,0,0,.10); }
+.seg.off { opacity: .45; pointer-events: none; }
+
+/* 代理组节点列表 */
+.grp-name { display: flex; align-items: center; gap: 6px; padding: 5px 6px 2px; font-size: 12px; color: var(--dim); }
+.grp-name .now { margin-left: auto; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dim2); font-size: 11px; }
+.tp-node { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 7px; font-size: 12.5px; color: var(--text); cursor: pointer; }
 .tp-node:hover { background: var(--hover); }
-.tp-node.current { color: var(--ring); font-weight: 600; }
-.tp-node .dot { width: 6px; height: 6px; }
-.tp-node .st { margin-left: auto; font-size: 11px; color: var(--dim2); font-variant-numeric: tabular-nums; }
-.tp-empty { padding: 10px; font-size: 12px; color: var(--dim2); text-align: center; }
+.tp-node.cur { color: var(--ring); font-weight: 600; }
+.tp-node .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tp-node .ms { margin-left: auto; font-size: 11px; color: var(--dim2); font-variant-numeric: tabular-nums; flex-shrink: 0; }
+.tp-empty { padding: 8px 10px; font-size: 12px; color: var(--dim2); }
+
+/* 连接摘要 */
+.tp-conns-head { display: flex; align-items: baseline; }
+.tp-conns-head .cnt { margin-left: auto; font-size: 11px; color: var(--dim2); font-variant-numeric: tabular-nums; }
+.tp-conn { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-radius: 7px; font-size: 12px; color: var(--text); }
+.tp-conn .host { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tp-conn .via { margin-left: auto; font-size: 11px; color: var(--dim2); max-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex-shrink: 0; }
+
+/* ---- 底部操作行 ---- */
+.tp-foot { display: flex; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--row-border); flex-shrink: 0; }
+.tp-btn { flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 5px; padding: 7px 2px; border-radius: 8px; border: 1px solid var(--border); background: var(--panel2); font-size: 12px; color: var(--text); cursor: pointer; transition: transform .12s, background .15s, border-color .15s; }
+.tp-btn:hover { background: var(--hover); }
+.tp-btn:active { transform: scale(.95); }
+.tp-btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
+.tp-btn.primary:hover { background: var(--accent2); border-color: var(--accent2); }
+.tp-btn.warn { color: var(--danger-text); }
+.tp-btn[disabled] { opacity: .5; pointer-events: none; }
+
+/* 无 TAURI 环境（浏览器误开）兜底提示 */
+#tp-noenv { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; padding: 24px; text-align: center; font-size: 12px; color: var(--dim); background: var(--panel2); }
 </style>
 </head>
 <body>
-<div class="tp">
+<div class="tp" id="tp-root" hidden>
   <div class="tp-head">
-    <span class="logo"><i data-ic="zap" data-sz="13"></i></span><b>AgileNet</b>
-    <span class="tp-status"><span class="dot off" id="tp-dot"></span><span id="tp-status">代理未启动</span></span>
+    <span class="logo"><i data-ic="zap" data-sz="12"></i></span><b>AgileNet</b>
+    <span class="pill" id="tp-pill">已停止</span>
   </div>
-  <div class="tp-row" id="tp-proxy"><i data-ic="power" data-sz="15"></i>本地代理<span class="tp-right" id="tp-proxy-state">已停止</span></div>
-  <div class="tp-row" id="tp-nodes-row"><i data-ic="satellite" data-sz="15"></i>订阅节点<span class="tp-right" id="tp-node-cur">-</span><i data-ic="chevron-right" data-sz="13" class="tp-chev"></i></div>
-  <div class="tp-nodes" id="tp-nodes" style="display:none"></div>
-  <div class="tp-sep"></div>
-  <div class="tp-row" id="tp-show"><i data-ic="monitor" data-sz="15"></i>显示主窗口</div>
-  <div class="tp-row" id="tp-quit"><i data-ic="x" data-sz="15"></i>退出 AgileNet</div>
+
+  <div class="tp-hero">
+    <div class="tp-speeds">
+      <span class="tp-speed"><span class="dir">↓</span><span class="num" id="tp-down-num">-</span><span class="unit" id="tp-down-unit"></span></span>
+      <span class="tp-speed"><span class="dir">↑</span><span class="num" id="tp-up-num">-</span><span class="unit" id="tp-up-unit"></span></span>
+    </div>
+    <div class="tp-addr" id="tp-addr">本地代理未启动</div>
+    <div class="tp-chart" id="tp-chart"></div>
+    <div class="tp-legend"><span><span class="c d"></span>下行</span><span><span class="c u"></span>上行</span><span class="sp">60s</span></div>
+  </div>
+
+  <div class="tp-body">
+    <div class="tp-sec">出站模式</div>
+    <div class="seg" id="tp-mode">
+      <button type="button" data-mode="rule">规则</button>
+      <button type="button" data-mode="global">全局</button>
+      <button type="button" data-mode="direct">直连</button>
+    </div>
+
+    <div class="tp-sec">代理组</div>
+    <div id="tp-groups"></div>
+
+    <div class="tp-sec tp-conns-head">连接<span class="cnt" id="tp-conn-count"></span></div>
+    <div id="tp-conns"></div>
+  </div>
+
+  <div class="tp-foot">
+    <button type="button" class="tp-btn primary" id="tp-show"><i data-ic="monitor" data-sz="13"></i>主面板</button>
+    <button type="button" class="tp-btn" id="tp-toggle"><i data-ic="power" data-sz="13"></i><span id="tp-toggle-label">启动代理</span></button>
+    <button type="button" class="tp-btn warn" id="tp-quit"><i data-ic="x" data-sz="13"></i>退出</button>
+  </div>
 </div>
-<script src="icons.js"></script>
-<script src="tray.js"></script>
+<div id="tp-noenv" hidden>此页面需在 AgileNet 桌面端窗口中打开</div>
 </body>
 </html>

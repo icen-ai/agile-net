@@ -7,6 +7,7 @@
 //! - `rule|group|account|token|connector|admin|audit`：资源管理（需登录，对齐 Web 管理端）
 //! - `login|logout`：会话管理（~/.anet/session.json，0600）
 //! - `tool <sub>`：内置网络诊断工具集（tcping/curl/dns/scan/ping…，本机诊断，无需登录）
+//! - `doctor`：自我诊断（端口/系统代理/内核/网络/配置/规则体检，自动修复可修项，无需登录）
 //! - `client [config.toml]`：客户端角色（连上游 + 本地代理）
 //! - `tui [--db path]`：TUI 控制台（直连数据库兜底查看）
 //!
@@ -29,7 +30,7 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 #[command(
     version,
     about = "AgileNet — init/start/stop/restart/status + 扇入扇出管理 + TUI",
-    long_about = "AgileNet 命令行（anet / anet-svc 同一实现，按 argv[0] 分人格）。\n\n命令分组：\n  服务    start / stop / restart / status / init\n  扇入    client（消费连接：作为客户端引入外部端点）\n  扇出    rule / group / account / token / connector（对外服务：扇入消费者的规则/权限/账号/令牌，主动连出的对端）\n  管理    node / login / logout / admin / audit / tui（端点自身管理与控制台）\n  诊断    tool（内置网络诊断工具集，本机诊断，无需登录）\n\n所有管理操作经节点 API 并落审计；TUI 默认走 API，--offline 数据库只读兜底。\n双入口：anet = 管理命令（推荐），anet-svc = 服务器进程（裸跑等同 start）。\n\ntool     内置网络诊断工具集（tcping/curl/dns/scan/ping…），详见文档站「网络工具详解」"
+    long_about = "AgileNet 命令行（anet / anet-svc 同一实现，按 argv[0] 分人格）。\n\n命令分组：\n  服务    start / stop / restart / status / init\n  扇入    client（消费连接：作为客户端引入外部端点）\n  扇出    rule / group / account / token / connector（对外服务：扇入消费者的规则/权限/账号/令牌，主动连出的对端）\n  管理    node / login / logout / admin / audit / tui（端点自身管理与控制台）\n  诊断    tool / doctor（内置网络诊断与自我体检，本机操作，无需登录）\n\n所有管理操作经节点 API 并落审计；TUI 默认走 API，--offline 数据库只读兜底。\n双入口：anet = 管理命令（推荐），anet-svc = 服务器进程（裸跑等同 start）。\n\ntool     内置网络诊断工具集（tcping/curl/dns/scan/ping…），详见文档站「网络工具详解」"
 )]
 struct App {
     #[command(subcommand)]
@@ -82,6 +83,8 @@ enum Cmd {
     Audit(anet_cli::AuditArgs),
     /// 内置网络诊断工具集（诊断：tcping/curl/dns/scan/ping…，本机诊断，无需登录）
     Tool(crate::tool::ToolArgs),
+    /// 自我诊断（诊断：端口/系统代理/内核/网络/配置/规则体检，自动修复可修项，无需登录）
+    Doctor,
     /// 已废弃：`serve` 等同 `start`（保留兼容）
     #[command(hide = true)]
     Serve(StartArgs),
@@ -144,7 +147,7 @@ fn shim_legacy_config(args: &mut Vec<String>) {
     const KNOWN: &[&str] = &[
         "start", "stop", "restart", "status", "node", "client", "tui", "init", "login", "logout",
         "rule", "group", "account", "token", "connector", "admin", "audit", "tool", "serve",
-        "cli", "help",
+        "cli", "help", "doctor",
     ];
     if let Some(first) = args.get(1)
         && !first.starts_with('-')
@@ -257,6 +260,10 @@ pub async fn run() -> Result<()> {
         Some(Cmd::Tool(a)) => {
             // 诊断工具集不走会话校验（dispatch 内部最先分流）
             anet_cli::dispatch(anet_cli::Commands::Tool(a), app.api, app.json).await
+        }
+        Some(Cmd::Doctor) => {
+            // 自我诊断同为免登录本机操作（dispatch 内打印并按 err 计数映射退出码）
+            anet_cli::dispatch(anet_cli::Commands::Doctor, app.api, app.json).await
         }
         Some(Cmd::Cli(l)) => {
             eprintln!("提示：`anet cli ...` 已废弃，请直接使用顶层同名命令（如 `anet rule list`）");

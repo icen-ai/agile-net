@@ -313,15 +313,21 @@ pub fn render_config(store: &SubStore, mode: &str, tun: bool) -> String {
     s
 }
 
-/// proxy-providers 段（两种模式共用；保留：代理页测速/切换仍走控制面，与数据面解耦）
+/// proxy-providers 段（两种模式共用；保留：代理页测速/切换仍走控制面，与数据面解耦）。
+/// 本地导入订阅（url 为 file:// 前缀）走 type: file 引用落盘 YAML，不经 URL 拉取。
 fn push_provider_section(s: &mut String, active: Option<&Subscription>) {
     if let Some(sub) = active {
         s.push_str("proxy-providers:\n");
         s.push_str("  main:\n");
-        s.push_str("    type: http\n");
-        s.push_str(&format!("    url: \"{}\"\n", yaml_escape(&sub.url)));
-        s.push_str("    interval: 86400\n");
-        s.push_str("    proxy: DIRECT\n");
+        if let Some(path) = sub.url.strip_prefix("file://") {
+            s.push_str("    type: file\n");
+            s.push_str(&format!("    path: \"{}\"\n", yaml_escape(path)));
+        } else {
+            s.push_str("    type: http\n");
+            s.push_str(&format!("    url: \"{}\"\n", yaml_escape(&sub.url)));
+            s.push_str("    interval: 86400\n");
+            s.push_str("    proxy: DIRECT\n");
+        }
         s.push_str("    health-check:\n");
         s.push_str("      enable: true\n");
         s.push_str("      url: http://www.gstatic.com/generate_204\n");
@@ -558,6 +564,10 @@ pub struct KernelManager {
     /// /traffic WS 累计器（内核启动时挂任务，停止即清零）
     traffic: Arc<TrafficStats>,
     traffic_stop: Arc<std::sync::Mutex<Option<tokio::sync::mpsc::Sender<()>>>>,
+    /// /connections 连接跟踪（活跃 map + 已关闭环 + 命中聚合）
+    tracker: Arc<ConnTracker>,
+    conns_stop: Arc<std::sync::Mutex<Option<tokio::sync::mpsc::Sender<()>>>>,
+    logs_stop: Arc<std::sync::Mutex<Option<tokio::sync::mpsc::Sender<()>>>>,
     /// 最近一次启动时覆写脚本失败摘要（供前端灵动岛告警展示）
     script_errors: Arc<std::sync::Mutex<Vec<(String, String)>>>,
 }
@@ -570,6 +580,9 @@ impl Default for KernelManager {
             last_error: Arc::new(std::sync::Mutex::new(String::new())),
             traffic: Arc::new(TrafficStats::default()),
             traffic_stop: Arc::new(std::sync::Mutex::new(None)),
+            tracker: Arc::new(ConnTracker::default()),
+            conns_stop: Arc::new(std::sync::Mutex::new(None)),
+            logs_stop: Arc::new(std::sync::Mutex::new(None)),
             script_errors: Arc::new(std::sync::Mutex::new(Vec::new())),
         }
     }
@@ -629,6 +642,7 @@ impl KernelManager {
             return Err("内核启动后控制面未就绪（端口被占用或权限不足？）".into());
         }
         self.start_traffic();
+        self.start_collectors();
         roles::audit("gui.kernel_start", serde_json::json!({}));
         Ok(())
     }
@@ -653,9 +667,73 @@ impl KernelManager {
         });
     }
 
+    /// 挂 /connections 与 /logs WS 采集任务（幂等；内核停止时经信号终止并清零，
+    /// 与 start_traffic 同一生命周期模式——仅在内核就绪后挂载，未运行不空转）。
+    fn start_collectors(&self) {
+        let store = load_store();
+        if store.secret.is_empty() {
+            return;
+        }
+        self.tracker.reset();
+        // /connections：全量快照 → 活跃 map + 已关闭环 + 命中聚合
+        if self.conns_stop.lock().unwrap().is_none() {
+            let (tx, rx) = tokio::sync::mpsc::channel::<()>(1);
+            *self.conns_stop.lock().unwrap() = Some(tx);
+            let tracker = self.tracker.clone();
+            let slot = self.conns_stop.clone();
+            let secret = store.secret.clone();
+            tokio::spawn(async move {
+                collect_ws_loop(secret, "/connections", rx, move |payload| {
+                    if let Ok(v) = serde_json::from_slice::<serde_json::Value>(payload) {
+                        tracker.apply_snapshot(&v);
+                    }
+                })
+                .await;
+                *slot.lock().unwrap() = None;
+            });
+        }
+        // /logs?level=info：内核日志 ring buffer
+        if self.logs_stop.lock().unwrap().is_none() {
+            let (tx, rx) = tokio::sync::mpsc::channel::<()>(1);
+            *self.logs_stop.lock().unwrap() = Some(tx);
+            let tracker = self.tracker.clone();
+            let slot = self.logs_stop.clone();
+            let secret = store.secret.clone();
+            tokio::spawn(async move {
+                collect_ws_loop(secret, "/logs?level=info", rx, move |payload| {
+                    if let Ok(v) = serde_json::from_slice::<serde_json::Value>(payload) {
+                        tracker.push_log(&v);
+                    }
+                })
+                .await;
+                *slot.lock().unwrap() = None;
+            });
+        }
+    }
+
     /// 当前流量快照（内核停止后为零值）。
     pub fn traffic(&self) -> TrafficSnapshot {
         self.traffic.snapshot()
+    }
+
+    /// 连接快照（活跃, 已关闭）；内核停止后为空。
+    pub fn connections(&self) -> (Vec<ConnectionInfo>, Vec<ConnectionInfo>) {
+        self.tracker.connections()
+    }
+
+    /// 内核日志（旧→新）；内核停止后为空。
+    pub fn logs(&self) -> Vec<LogEntry> {
+        self.tracker.logs()
+    }
+
+    /// 规则命中聚合（count 降序，top 100）；内核停止后为空。
+    pub fn rule_hits(&self) -> Vec<RuleHit> {
+        self.tracker.rule_hits()
+    }
+
+    /// 清空日志与命中缓冲（连接态不动）。
+    pub fn clear_logs(&self) {
+        self.tracker.clear_logs();
     }
 
     fn spawn(bin: &PathBuf) -> Result<tokio::process::Child, String> {
@@ -735,30 +813,29 @@ impl KernelManager {
 
     /// 停止内核（经 clone 的发送端发信号；槽位作存活标记由 supervisor 收尾清除，等待上限 5s）。
     pub async fn stop(&self) {
-        let tx = self.stop_tx.lock().unwrap().clone();
+        Self::drain_stop(&self.stop_tx).await;
+        // 流量/连接/日志采集任务随内核停止：发信号并等待任务退出自清槽位（上限 5s；
+        // 保证 stop→start 快速重启时挂载函数看到的是已清槽位，新旧任务不打架）
+        Self::drain_stop(&self.traffic_stop).await;
+        Self::drain_stop(&self.conns_stop).await;
+        Self::drain_stop(&self.logs_stop).await;
+        self.traffic.reset();
+        self.tracker.reset();
+        roles::audit("gui.kernel_stop", serde_json::json!({}));
+    }
+
+    /// 经槽位发停止信号并等待任务自清槽位（上限 5s）。
+    async fn drain_stop(slot: &Arc<std::sync::Mutex<Option<tokio::sync::mpsc::Sender<()>>>>) {
+        let tx = slot.lock().unwrap().clone();
         if let Some(tx) = tx {
             let _ = tx.send(()).await;
             for _ in 0..50 {
-                if self.stop_tx.lock().unwrap().is_none() {
+                if slot.lock().unwrap().is_none() {
                     break;
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             }
         }
-        // 流量累计任务随内核停止：发信号并等待任务退出自清槽位（上限 5s；
-        // 保证 stop→start 快速重启时 start_traffic 看到的是已清槽位，新旧任务不打架）
-        let ttx = self.traffic_stop.lock().unwrap().clone();
-        if let Some(tx) = ttx {
-            let _ = tx.send(()).await;
-            for _ in 0..50 {
-                if self.traffic_stop.lock().unwrap().is_none() {
-                    break;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            }
-        }
-        self.traffic.reset();
-        roles::audit("gui.kernel_stop", serde_json::json!({}));
     }
 
     pub async fn running(&self) -> bool {
@@ -920,6 +997,20 @@ impl KernelApi {
         }
     }
 
+    /// 关闭单条连接（DELETE /connections/{id}；mihomo 204 无体）
+    pub async fn close_connection(&self, id: &str) -> Result<(), String> {
+        let resp = self
+            .req(reqwest::Method::DELETE, &format!("/connections/{id}"))
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+        if resp.status().is_success() {
+            Ok(())
+        } else {
+            Err(format!("关闭连接失败 (HTTP {})", resp.status()))
+        }
+    }
+
     /// 当前生效配置（GET /configs；E2E 断言 TUN 骨架已加载用）
     #[cfg(test)]
     pub async fn configs(&self) -> Result<serde_json::Value, String> {
@@ -1015,20 +1106,69 @@ async fn traffic_ws_loop(secret: String, stats: Arc<TrafficStats>, mut stop: tok
     stats.reset();
 }
 
-/// 单段 WS 会话：握手 → 帧循环（text 累计 / ping→pong / close 正常结束）。
-/// 极简 RFC 6455 客户端，仅面向 loopback mihomo 控制面，不引入额外依赖。
+/// 单段 /traffic WS 会话（语义保持：text 帧 {up,down} 累计）。
 async fn traffic_ws_session(secret: &str, stats: &TrafficStats) -> Result<(), String> {
     traffic_ws_session_on(MIHOMO_CTRL_PORT, secret, stats).await
 }
 
-/// 端口可参数化的会话本体（生产走控制面端口；测试注入 mock 端口）。
+/// 端口可参数化的 /traffic 会话（生产走控制面端口；测试注入 mock 端口）。
 async fn traffic_ws_session_on(port: u16, secret: &str, stats: &TrafficStats) -> Result<(), String> {
+    ws_session_on(port, secret, "/traffic", &mut |payload| {
+        if let Ok(v) = serde_json::from_slice::<serde_json::Value>(payload) {
+            stats.add(
+                v["up"].as_u64().unwrap_or(0),
+                v["down"].as_u64().unwrap_or(0),
+            );
+        }
+    })
+    .await
+}
+
+/// 采集通用重连循环（/connections、/logs 共用）：断线指数退避重连
+/// （1s 起、30s 封顶，会话稳定 10s 后断线重置退避）；停止信号（含发送端被丢弃）即退出。
+async fn collect_ws_loop<F>(
+    secret: String,
+    path: &str,
+    mut stop: tokio::sync::mpsc::Receiver<()>,
+    mut handler: F,
+) where
+    F: FnMut(&[u8]) + Send,
+{
+    let mut backoff = 1u64;
+    loop {
+        let started = std::time::Instant::now();
+        tokio::select! {
+            _ = stop.recv() => break,
+            _ = ws_session_on(MIHOMO_CTRL_PORT, &secret, path, &mut handler) => {}
+        }
+        if started.elapsed() >= std::time::Duration::from_secs(10) {
+            backoff = 1;
+        }
+        if tokio::time::timeout(std::time::Duration::from_secs(backoff), stop.recv())
+            .await
+            .is_ok()
+        {
+            break;
+        }
+        backoff = (backoff * 2).min(30);
+    }
+}
+
+/// 通用单段 WS 会话（握手路径参数化）：握手 → 帧循环（text/binary 帧交 handler /
+/// ping→pong / close 正常结束）。极简 RFC 6455 客户端，仅面向 loopback mihomo 控制面，
+/// 不引入额外依赖。
+async fn ws_session_on<F: FnMut(&[u8])>(
+    port: u16,
+    secret: &str,
+    path: &str,
+    handler: &mut F,
+) -> Result<(), String> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
         .await
         .map_err(|e| e.to_string())?;
     let req = format!(
-        "GET /traffic HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {}\r\nSec-WebSocket-Version: 13\r\nAuthorization: Bearer {secret}\r\n\r\n",
+        "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {}\r\nSec-WebSocket-Version: 13\r\nAuthorization: Bearer {secret}\r\n\r\n",
         ws_key()
     );
     stream.write_all(req.as_bytes()).await.map_err(|e| e.to_string())?;
@@ -1064,12 +1204,7 @@ async fn traffic_ws_session_on(port: u16, secret: &str, stats: &TrafficStats) ->
                     if !frame.fin {
                         return Err("不支持分片帧".into());
                     }
-                    if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&frame.payload) {
-                        stats.add(
-                            v["up"].as_u64().unwrap_or(0),
-                            v["down"].as_u64().unwrap_or(0),
-                        );
-                    }
+                    handler(&frame.payload);
                 }
                 0x8 => return Ok(()), // close
                 0x9 => {
@@ -1177,6 +1312,291 @@ fn b64_encode(data: &[u8]) -> String {
     out
 }
 
+/// 速率格式化（B/KB/MB 自适应，1024 进制；托盘 tooltip 与前端展示共用）
+pub fn format_rate(bytes: u64) -> String {
+    if bytes >= 1 << 20 {
+        format!("{:.1} MB", bytes as f64 / 1048576.0)
+    } else if bytes >= 1 << 10 {
+        format!("{:.1} KB", bytes as f64 / 1024.0)
+    } else {
+        format!("{bytes} B")
+    }
+}
+
+// ==================== 连接/日志采集（/connections、/logs WS） ====================
+
+/// 连接记录（活跃与已关闭共用结构；速率由相邻快照差分得出）
+#[derive(Debug, Clone, Serialize)]
+pub struct ConnectionInfo {
+    pub id: String,
+    /// 目标主机（metadata.host 优先，缺省 destinationIP）
+    pub host: String,
+    /// 发起进程（metadata.process；未知为空串）
+    pub process: String,
+    /// 出站链（末段即节点名）
+    pub chains: Vec<String>,
+    pub rule: String,
+    pub rule_payload: String,
+    pub upload: u64,
+    pub download: u64,
+    /// 快照差分速率（字节/秒；已关闭连接恒 0）
+    pub up_rate: u64,
+    pub down_rate: u64,
+    /// 建立时间（秒级时间戳）
+    pub start: u64,
+    /// 存活时长（秒；活跃=至今，关闭=总存活）
+    pub elapsed: u64,
+}
+
+/// 内核日志条目（/logs WS 推送）
+#[derive(Debug, Clone, Serialize)]
+pub struct LogEntry {
+    /// 收到时间（秒级时间戳）
+    pub time: u64,
+    pub level: String,
+    pub payload: String,
+}
+
+/// 规则命中聚合（按 rule+rule_payload）
+#[derive(Debug, Clone, Serialize)]
+pub struct RuleHit {
+    pub rule: String,
+    pub payload: String,
+    pub count: u64,
+    pub last_host: String,
+    pub last_seen: u64,
+}
+
+/// 活跃连接内部态（ConnectionInfo + 差分基准）
+#[derive(Debug)]
+struct ConnState {
+    info: ConnectionInfo,
+    last_up: u64,
+    last_down: u64,
+    last_tick: std::time::Instant,
+}
+
+/// 连接/日志/命中缓冲（Mutex 短临界区，与 TrafficStats 全 Atomic 风格并列的既定简单方案；
+/// 随内核 stop 清零——内核停止后命令层返回空集）
+#[derive(Debug, Default)]
+pub struct ConnTracker {
+    active: std::sync::Mutex<std::collections::HashMap<String, ConnState>>,
+    /// 最近已关闭（新的在前，上限 300）
+    closed: std::sync::Mutex<std::collections::VecDeque<ConnectionInfo>>,
+    /// 命中聚合 key=(rule, rule_payload)，保留 top 100
+    hits: std::sync::Mutex<std::collections::HashMap<(String, String), RuleHit>>,
+    /// 日志 ring buffer（上限 500，旧→新排列）
+    logs: std::sync::Mutex<std::collections::VecDeque<LogEntry>>,
+}
+
+impl ConnTracker {
+    /// /connections 全量快照：更新活跃表（差分速率）、迁移消失项到已关闭环、登记新连接命中。
+    fn apply_snapshot(&self, v: &serde_json::Value) {
+        let now = now_ts();
+        let Some(list) = v["connections"].as_array() else {
+            return;
+        };
+        let mut active = self.active.lock().unwrap();
+        let mut seen = std::collections::HashSet::new();
+        for c in list {
+            let Some(id) = c["id"].as_str() else { continue };
+            seen.insert(id.to_string());
+            let up = c["upload"].as_u64().unwrap_or(0);
+            let down = c["download"].as_u64().unwrap_or(0);
+            if let Some(st) = active.get_mut(id) {
+                let dt = st.last_tick.elapsed().as_secs().max(1);
+                st.info.up_rate = up.saturating_sub(st.last_up) / dt;
+                st.info.down_rate = down.saturating_sub(st.last_down) / dt;
+                st.info.upload = up;
+                st.info.download = down;
+                st.info.elapsed = now.saturating_sub(st.info.start);
+                st.last_up = up;
+                st.last_down = down;
+                st.last_tick = std::time::Instant::now();
+            } else {
+                let md = &c["metadata"];
+                let host = md["host"]
+                    .as_str()
+                    .filter(|s| !s.is_empty())
+                    .or_else(|| md["destinationIP"].as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                let info = ConnectionInfo {
+                    id: id.to_string(),
+                    host,
+                    process: md["process"].as_str().unwrap_or_default().to_string(),
+                    chains: c["chains"]
+                        .as_array()
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|x| x.as_str().map(String::from))
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                    rule: c["rule"].as_str().unwrap_or_default().to_string(),
+                    rule_payload: c["rulePayload"].as_str().unwrap_or_default().to_string(),
+                    upload: up,
+                    download: down,
+                    up_rate: 0,
+                    down_rate: 0,
+                    start: c["start"].as_str().and_then(parse_rfc3339_ts).unwrap_or(now),
+                    elapsed: 0,
+                };
+                self.record_hit(&info);
+                active.insert(
+                    id.to_string(),
+                    ConnState {
+                        info,
+                        last_up: up,
+                        last_down: down,
+                        last_tick: std::time::Instant::now(),
+                    },
+                );
+            }
+        }
+        // 快照中消失 = 已关闭：迁移到环首（固定速率清零，elapsed 定格）
+        let gone: Vec<String> = active.keys().filter(|k| !seen.contains(*k)).cloned().collect();
+        if !gone.is_empty() {
+            let mut closed = self.closed.lock().unwrap();
+            for id in gone {
+                if let Some(mut st) = active.remove(&id) {
+                    st.info.up_rate = 0;
+                    st.info.down_rate = 0;
+                    closed.push_front(st.info);
+                }
+            }
+            while closed.len() > 300 {
+                closed.pop_back();
+            }
+        }
+    }
+
+    /// 新连接命中登记（count 递增；超过 128 键时修剪保留 top 100）
+    fn record_hit(&self, info: &ConnectionInfo) {
+        if info.rule.is_empty() {
+            return;
+        }
+        let mut hits = self.hits.lock().unwrap();
+        let key = (info.rule.clone(), info.rule_payload.clone());
+        let h = hits.entry(key).or_insert_with(|| RuleHit {
+            rule: info.rule.clone(),
+            payload: info.rule_payload.clone(),
+            count: 0,
+            last_host: String::new(),
+            last_seen: 0,
+        });
+        h.count += 1;
+        h.last_host = info.host.clone();
+        h.last_seen = now_ts();
+        if hits.len() > 128 {
+            let mut all: Vec<(String, String)> = hits
+                .values()
+                .map(|x| (x.rule.clone(), x.payload.clone()))
+                .collect();
+            all.sort_by_key(|k| std::cmp::Reverse(hits[k].count));
+            all.truncate(100);
+            let keep: std::collections::HashSet<_> = all.into_iter().collect();
+            hits.retain(|k, _| keep.contains(k));
+        }
+    }
+
+    fn push_log(&self, v: &serde_json::Value) {
+        let Some(payload) = v["payload"].as_str() else {
+            return;
+        };
+        let mut logs = self.logs.lock().unwrap();
+        logs.push_back(LogEntry {
+            time: now_ts(),
+            level: v["type"].as_str().unwrap_or("info").to_string(),
+            payload: payload.to_string(),
+        });
+        while logs.len() > 500 {
+            logs.pop_front();
+        }
+    }
+
+    fn connections(&self) -> (Vec<ConnectionInfo>, Vec<ConnectionInfo>) {
+        let active = self
+            .active
+            .lock()
+            .unwrap()
+            .values()
+            .map(|st| st.info.clone())
+            .collect();
+        let closed = self.closed.lock().unwrap().iter().cloned().collect();
+        (active, closed)
+    }
+
+    fn rule_hits(&self) -> Vec<RuleHit> {
+        let mut v: Vec<RuleHit> = self.hits.lock().unwrap().values().cloned().collect();
+        v.sort_by(|a, b| b.count.cmp(&a.count).then(b.last_seen.cmp(&a.last_seen)));
+        v
+    }
+
+    fn logs(&self) -> Vec<LogEntry> {
+        self.logs.lock().unwrap().iter().cloned().collect()
+    }
+
+    /// 清空日志与命中缓冲（sub_clear_logs 命令；连接态不动）
+    fn clear_logs(&self) {
+        self.logs.lock().unwrap().clear();
+        self.hits.lock().unwrap().clear();
+    }
+
+    /// 采集任务退出即清零（对齐 traffic 停止清零语义）
+    fn reset(&self) {
+        self.active.lock().unwrap().clear();
+        self.closed.lock().unwrap().clear();
+        self.hits.lock().unwrap().clear();
+        self.logs.lock().unwrap().clear();
+    }
+}
+
+/// 极简 RFC3339 时间戳解析（mihomo start 字段；容忍小数秒与 Z/±HH:MM 偏移，仅取秒）。
+/// 不引入 chrono——控制面数据，解析失败由调用方回落当前时间。
+fn parse_rfc3339_ts(s: &str) -> Option<u64> {
+    let (date, rest) = s.split_once('T')?;
+    let mut it = date.split('-');
+    let y: i64 = it.next()?.parse().ok()?;
+    let mo: i64 = it.next()?.parse().ok()?;
+    let d: i64 = it.next()?.parse().ok()?;
+    // 时区标记只可能出现在 "HH:MM:SS" 第 8 字节之后
+    let tz_at = rest
+        .char_indices()
+        .skip_while(|(i, _)| *i < 8)
+        .find(|(_, c)| matches!(c, 'Z' | '+' | '-'))
+        .map(|(i, _)| i);
+    let (time_s, tz_s) = match tz_at {
+        Some(i) => (&rest[..i], &rest[i..]),
+        None => (rest, "Z"),
+    };
+    let time_s = time_s.split('.').next()?;
+    let mut it = time_s.split(':');
+    let hh: i64 = it.next()?.parse().ok()?;
+    let mm: i64 = it.next().unwrap_or("0").parse().ok()?;
+    let ss: i64 = it.next().unwrap_or("0").parse().ok()?;
+    let off: i64 = match tz_s {
+        "" | "Z" => 0,
+        t => {
+            let sign = if t.starts_with('-') { -1 } else { 1 };
+            let mut it = t[1..].split(':');
+            let h: i64 = it.next()?.parse().ok()?;
+            let m: i64 = it.next().unwrap_or("0").parse().ok()?;
+            sign * (h * 3600 + m * 60)
+        }
+    };
+    // days-from-civil（Howard Hinnant 算法）
+    let y2 = if mo <= 2 { y - 1 } else { y };
+    let era = if y2 >= 0 { y2 } else { y2 - 399 } / 400;
+    let yoe = y2 - era * 400;
+    let mp = (mo + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146097 + doe - 719468;
+    let ts = days * 86400 + hh * 3600 + mm * 60 + ss - off;
+    u64::try_from(ts).ok()
+}
+
 // ==================== 订阅清单操作 ====================
 
 /// 拉取订阅并解析用户/流量信息（subscription-userinfo 头）与节点数。
@@ -1230,7 +1650,13 @@ async fn fetch_subscription(url: &str) -> Result<(u64, u64, u64, Option<u64>, us
         download = used_alt;
     }
     let body = resp.text().await.map_err(|e| e.to_string())?;
-    // 节点数估算与格式嗅探：Clash YAML（proxies: 段内 "name:" 行）或 base64/明文分享链接（含 "://"）
+    let node_count = analyze_subscription(&body)?;
+    Ok((upload, download, total, expire, node_count))
+}
+
+/// 订阅体嗅探与节点数估算（URL 拉取与本地导入共用入口）：
+/// Clash YAML（proxies: 段内 "name:" 行）或 base64/明文分享链接（含 "://"）。
+fn analyze_subscription(body: &str) -> Result<usize, String> {
     let node_count = if body.contains("proxies:") {
         let start = body.find("proxies:").unwrap_or(0);
         let end = body.find("proxy-groups:").unwrap_or(body.len());
@@ -1240,14 +1666,14 @@ async fn fetch_subscription(url: &str) -> Result<(u64, u64, u64, Option<u64>, us
             .filter(|l| l.trim_start().starts_with("name:"))
             .count()
     } else {
-        let decoded = base64_decode_loose(&body);
-        let text = decoded.as_deref().unwrap_or(&body);
+        let decoded = base64_decode_loose(body);
+        let text = decoded.as_deref().unwrap_or(body);
         text.lines().filter(|l| l.contains("://")).count()
     };
     if node_count == 0 {
         return Err("订阅内容无法识别（不是 Clash 配置或分享链接）".into());
     }
-    Ok((upload, download, total, expire, node_count))
+    Ok(node_count)
 }
 
 /// 宽松 base64 解码（处理未填充/换行的订阅体）
@@ -1324,6 +1750,19 @@ pub fn remove_subscription(id: &str) -> Result<(), String> {
     let mut store = load_store();
     let before = store.subscriptions.len();
     let was_active = store.subscriptions.iter().any(|s| s.id == id && s.active);
+    // 本地导入订阅级联清理落盘 YAML（仅本应用内核目录下的 local-*.yaml，防误删用户文件）
+    let local_file = store
+        .subscriptions
+        .iter()
+        .find(|s| s.id == id)
+        .and_then(|s| s.url.strip_prefix("file://"))
+        .map(std::path::PathBuf::from)
+        .filter(|p| {
+            p.parent() == Some(kernel_dir().as_path())
+                && p.file_name()
+                    .map(|n| n.to_string_lossy().starts_with("local-"))
+                    .unwrap_or(false)
+        });
     store.subscriptions.retain(|s| s.id != id);
     if store.subscriptions.len() == before {
         return Err("订阅不存在".into());
@@ -1335,8 +1774,49 @@ pub fn remove_subscription(id: &str) -> Result<(), String> {
         }
     }
     save_store(&store)?;
+    if let Some(p) = local_file {
+        let _ = std::fs::remove_file(p);
+    }
     roles::audit("gui.subscription_remove", serde_json::json!({"id": id}));
     Ok(())
+}
+
+/// 本地 YAML 导入订阅：内容嗅探（与 URL 拉取同一 analyze 入口）→ 落盘
+/// mihomo/local-<id>.yaml → 入库（url 记 file:// 前缀，provider 渲染为 type: file）。
+/// 本地订阅无在线流量信息，upload/download/total 恒 0；不支持在线刷新。
+pub fn add_local_subscription(name: &str, body: &str) -> Result<Subscription, String> {
+    let node_count = analyze_subscription(body)?;
+    let mut store = load_store();
+    ensure_secret(&mut store);
+    let first = store.subscriptions.is_empty();
+    let id = uuid::Uuid::new_v4().simple().to_string();
+    let dir = kernel_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let file = dir.join(format!("local-{id}.yaml"));
+    std::fs::write(&file, body).map_err(|e| format!("订阅文件落盘失败: {e}"))?;
+    let sub = Subscription {
+        id,
+        name: if name.trim().is_empty() {
+            format!("订阅 {}", store.subscriptions.len() + 1)
+        } else {
+            name.trim().to_string()
+        },
+        url: format!("file://{}", file.to_string_lossy()),
+        active: first,
+        updated_at: Some(now_ts()),
+        node_count,
+        upload: 0,
+        download: 0,
+        total: 0,
+        expire: None,
+    };
+    store.subscriptions.push(sub.clone());
+    save_store(&store)?;
+    roles::audit(
+        "gui.subscription_import",
+        serde_json::json!({"name": sub.name, "nodes": node_count}),
+    );
+    Ok(sub)
 }
 
 /// 单选激活：仅一个 active；返回新的激活项。
@@ -1371,6 +1851,9 @@ pub async fn update_subscription(id: &str) -> Result<Subscription, String> {
         .position(|s| s.id == id)
         .ok_or("订阅不存在")?;
     let url = store.subscriptions[idx].url.clone();
+    if url.starts_with("file://") {
+        return Err("本地导入的订阅不支持在线刷新（重新导入即可更新）".into());
+    }
     let (upload, download, total, expire, node_count) = fetch_subscription(&url).await?;
     {
         let s = &mut store.subscriptions[idx];
@@ -1513,6 +1996,35 @@ mod tests {
         });
         let cfg = render_config(&store, "rule", false);
         assert!(cfg.contains("\\\"injected"));
+    }
+
+    #[test]
+    fn config_render_local_file_provider() {
+        // 本地导入订阅（file:// 前缀）渲染为 type: file + path，不经 URL 拉取
+        let mut store = SubStore::default();
+        store.secret = "s".into();
+        store.subscriptions.push(Subscription {
+            id: "a".into(),
+            name: "本地".into(),
+            url: "file://C:/Users/x/local-a.yaml".into(),
+            active: true,
+            updated_at: None,
+            node_count: 0,
+            upload: 0,
+            download: 0,
+            total: 0,
+            expire: None,
+        });
+        let cfg = render_config(&store, "rule", false);
+        assert!(cfg.contains("    type: file\n"));
+        assert!(cfg.contains("    path: \"C:/Users/x/local-a.yaml\"\n"));
+        assert!(!cfg.contains("type: http"));
+        assert!(!cfg.contains("interval: 86400"));
+        assert!(check_no_loop(&cfg, false).is_ok());
+        // TUN 骨架同样支持
+        let cfg = render_config(&store, "rule", true);
+        assert!(cfg.contains("    type: file\n"));
+        assert!(check_no_loop(&cfg, true).is_ok());
     }
 
     #[test]
@@ -1712,6 +2224,108 @@ mod tests {
         assert_eq!(b64_encode(b"foo"), "Zm9v");
         assert_eq!(b64_encode(b"foob"), "Zm9vYg==");
         assert_eq!(ws_key().len(), 24);
+    }
+
+    #[test]
+    fn format_rate_scales() {
+        assert_eq!(format_rate(0), "0 B");
+        assert_eq!(format_rate(512), "512 B");
+        assert_eq!(format_rate(1024), "1.0 KB");
+        assert_eq!(format_rate(1536), "1.5 KB");
+        assert_eq!(format_rate(1048576), "1.0 MB");
+        assert_eq!(format_rate(12 * 1048576 + 524288), "12.5 MB");
+    }
+
+    #[test]
+    fn rfc3339_parse_variants() {
+        assert_eq!(parse_rfc3339_ts("1970-01-01T00:00:00Z"), Some(0));
+        // +08:00 的 08:00 = UTC 00:00
+        assert_eq!(parse_rfc3339_ts("1970-01-01T08:00:00+08:00"), Some(0));
+        assert_eq!(parse_rfc3339_ts("2024-01-01T00:00:00Z"), Some(1704067200));
+        // 小数秒容忍（mihomo 实际格式）
+        assert_eq!(parse_rfc3339_ts("2024-01-01T00:00:00.123456Z"), Some(1704067200));
+        // 负偏移
+        assert_eq!(parse_rfc3339_ts("2023-12-31T19:00:00-05:00"), Some(1704067200));
+        // 非法输入
+        assert!(parse_rfc3339_ts("not-a-time").is_none());
+        assert!(parse_rfc3339_ts("").is_none());
+    }
+
+    #[test]
+    fn conn_tracker_snapshot_lifecycle() {
+        let t = ConnTracker::default();
+        let snap = |conns: serde_json::Value| serde_json::json!({"connections": conns});
+        let conn = |id: &str, up: u64, down: u64| {
+            serde_json::json!({
+                "id": id,
+                "metadata": {"host": "example.com", "process": "chrome.exe", "destinationIP": "93.184.216.34"},
+                "upload": up, "download": down,
+                "start": "1970-01-01T00:00:00Z",
+                "chains": ["AGILE-SUB", "节点A"],
+                "rule": "DomainSuffix", "rulePayload": "example.com"
+            })
+        };
+        // 首个快照：两条活跃
+        t.apply_snapshot(&snap(serde_json::json!([conn("c1", 100, 200), conn("c2", 0, 0)])));
+        let (active, closed) = t.connections();
+        assert_eq!(active.len(), 2);
+        assert!(closed.is_empty());
+        let c1 = active.iter().find(|c| c.id == "c1").unwrap();
+        assert_eq!(c1.host, "example.com");
+        assert_eq!(c1.process, "chrome.exe");
+        assert_eq!(c1.chains, vec!["AGILE-SUB", "节点A"]);
+        assert_eq!(c1.rule, "DomainSuffix");
+        assert_eq!(c1.rule_payload, "example.com");
+        assert_eq!((c1.upload, c1.download), (100, 200));
+        // 命中聚合
+        let hits = t.rule_hits();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].count, 2);
+        assert_eq!(hits[0].last_host, "example.com");
+        // 第二个快照：c1 仍在（累计增长）, c2 消失 → 已关闭环
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        t.apply_snapshot(&snap(serde_json::json!([conn("c1", 300, 500)])));
+        let (active, closed) = t.connections();
+        assert_eq!(active.len(), 1);
+        assert_eq!(closed.len(), 1);
+        assert_eq!(closed[0].id, "c2");
+        assert_eq!((closed[0].up_rate, closed[0].down_rate), (0, 0));
+        let c1 = &active[0];
+        assert_eq!((c1.upload, c1.download), (300, 500));
+        assert!(c1.up_rate > 0 && c1.down_rate > 0, "差分速率应 > 0");
+        assert!(c1.elapsed >= 1, "start=epoch，elapsed 须为大值");
+        // host 缺省回落 destinationIP；rule 空不记命中
+        let bare = serde_json::json!({
+            "id": "c3", "metadata": {"destinationIP": "1.1.1.1"},
+            "upload": 1, "download": 1, "start": "bad-start", "chains": []
+        });
+        t.apply_snapshot(&snap(serde_json::json!([conn("c1", 300, 500), bare])));
+        let (active, _) = t.connections();
+        let c3 = active.iter().find(|c| c.id == "c3").unwrap();
+        assert_eq!(c3.host, "1.1.1.1");
+        assert_eq!(t.rule_hits().len(), 1, "rule 缺失不记命中");
+        // 清空后全空
+        t.reset();
+        let (active, closed) = t.connections();
+        assert!(active.is_empty() && closed.is_empty());
+        assert!(t.rule_hits().is_empty());
+    }
+
+    #[test]
+    fn log_buffer_ring_and_clear() {
+        let t = ConnTracker::default();
+        for i in 0..505 {
+            t.push_log(&serde_json::json!({"type": "info", "payload": format!("log-{i}")}));
+        }
+        let logs = t.logs();
+        assert_eq!(logs.len(), 500, "ring 上限 500");
+        assert_eq!(logs[0].payload, "log-5", "最旧的被挤出（旧→新排列）");
+        assert_eq!(logs[499].payload, "log-504");
+        // 非日志载荷忽略
+        t.push_log(&serde_json::json!({"type": "info"}));
+        assert_eq!(t.logs().len(), 500);
+        t.clear_logs();
+        assert!(t.logs().is_empty());
     }
 
     /// mock 控制面：校验握手请求 → 推两条 /traffic 帧 → close，验证端到端累计

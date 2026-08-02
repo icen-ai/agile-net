@@ -172,6 +172,46 @@ fn new_id(prefix: &str) -> String {
     format!("{}-{}", prefix, &uuid::Uuid::new_v4().simple().to_string()[..8])
 }
 
+/// 规范化主机输入（一键加规则用）：去 scheme/路径/query/端口/末尾点，小写化，
+/// 校验结果为域名或 IP 字面量；非法输入返回中文错误。
+pub fn normalize_host(input: &str) -> Result<String, String> {
+    let mut h = input.trim().to_lowercase();
+    if let Some(i) = h.find("://") {
+        h = h[i + 3..].to_string();
+    }
+    if let Some(i) = h.find(['/', '?', '#']) {
+        h.truncate(i);
+    }
+    // 去端口（仅当冒号后全为数字且前面无冒号——排除 IPv6 字面量）
+    if let Some(i) = h.rfind(':') {
+        if !h[..i].contains(':') && !h[i + 1..].is_empty() && h[i + 1..].chars().all(|c| c.is_ascii_digit()) {
+            h.truncate(i);
+        }
+    }
+    while h.ends_with('.') {
+        h.pop();
+    }
+    const BAD: &str = "主机名不合法（应为域名或 IP，如 example.com）";
+    if h.is_empty() || h.chars().any(|c| c.is_whitespace()) {
+        return Err(BAD.into());
+    }
+    // IPv6 字面量（去掉方括号后直收）
+    let bare = h.trim_start_matches('[').trim_end_matches(']');
+    if bare.parse::<std::net::IpAddr>().is_ok() {
+        return Ok(bare.to_string());
+    }
+    // 域名校验：label 仅字母/数字/连字符，不为空、不超长、连字符不在首尾
+    if !h.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-') {
+        return Err(BAD.into());
+    }
+    if h.split('.')
+        .any(|l| l.is_empty() || l.len() > 63 || l.starts_with('-') || l.ends_with('-'))
+    {
+        return Err(BAD.into());
+    }
+    Ok(h)
+}
+
 /// 新增放行规则（同 pattern 去重；默认启用），返回 id。
 pub fn add_bypass(
     client: &agile_net_client::AgileNetClient,
@@ -575,6 +615,29 @@ mod tests {
             rule_keys: keys.iter().map(|k| k.to_string()).collect(),
             enabled,
         }
+    }
+
+    // ---------- 主机输入规范化 ----------
+
+    #[test]
+    fn normalize_host_strips_noise_and_validates() {
+        // 去 scheme / 端口 / 路径 / query / 末尾点，小写化
+        assert_eq!(normalize_host("https://Example.COM:8443/a/b?x=1#f").unwrap(), "example.com");
+        assert_eq!(normalize_host("api.example.com.").unwrap(), "api.example.com");
+        assert_eq!(normalize_host("  baidu.com  ").unwrap(), "baidu.com");
+        // IP 直收（IPv6 方括号去掉）
+        assert_eq!(normalize_host("1.2.3.4").unwrap(), "1.2.3.4");
+        assert_eq!(normalize_host("[::1]").unwrap(), "::1");
+        // IPv6 字面量不被端口剥离误伤
+        assert_eq!(normalize_host("2001:db8::1").unwrap(), "2001:db8::1");
+        // 非法输入
+        assert!(normalize_host("").is_err());
+        assert!(normalize_host("exa mple.com").is_err());
+        assert!(normalize_host("-bad.com").is_err());
+        assert!(normalize_host("bad-.com").is_err());
+        assert!(normalize_host("a..com").is_err());
+        assert!(normalize_host("under_score.com").is_err());
+        assert!(normalize_host("http://").is_err());
     }
 
     // ---------- 存储读写 ----------

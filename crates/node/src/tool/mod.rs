@@ -7,9 +7,12 @@
 //!   探测失败（超时/拒绝/无权限）是正常输出而非进程错误。
 //! - 除 bandwidth 外全部为本机操作：不走会话校验、不读数据库、不写审计日志；
 //!   bandwidth 经管理 API 在服务端执行（需登录会话），属正常诊断流量不落审计。
+//! - doctor 为独立入口（`anet doctor`，不在 ToolSub 内）：自我诊断引擎，
+//!   与 anet-gui「自我诊断」共用同一实现。
 
 pub mod bandwidth;
 pub mod diag;
+pub mod doctor;
 pub mod dns;
 pub mod fw;
 pub mod http;

@@ -62,6 +62,12 @@ pub struct RoleSettings {
     /// TUN 模式外部上游（anet 未命中规则的流量回落目标，默认 FlClash mixed 入站）
     #[serde(default = "default_external_upstream")]
     pub external_upstream: String,
+    /// 系统代理锁定（硬核模式）：视同托管，巡检发现被改即自动收回（无需 TUN）
+    #[serde(default)]
+    pub sysproxy_lock: bool,
+    /// 悬浮球窗口（仅桌面；开启即常驻右下角小球）
+    #[serde(default)]
+    pub float_ball: bool,
 }
 
 fn default_true() -> bool {
@@ -123,6 +129,8 @@ impl Default for RoleSettings {
             sub_scripts: Vec::new(),
             tun_mode: false,
             external_upstream: default_external_upstream(),
+            sysproxy_lock: false,
+            float_ball: false,
         }
     }
 }

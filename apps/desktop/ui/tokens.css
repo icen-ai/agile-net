@@ -16,6 +16,28 @@
   --chip: #F1F1F1; --hover: #E2E2E2;
   --row-border: #E7E8EA;
   --radius: 12px;
+  /* 阴影层级：1 卡片 / 2 弹层·菜单（卡片 hover 也升到此级）/ 3 模态；深色同层级加深 + 玻璃边框发光补偿 */
+  --shadow-1: 0 1px 2px rgba(0,0,0,.045), 0 2px 6px rgba(0,0,0,.045);
+  --shadow-2: 0 4px 12px rgba(0,0,0,.08), 0 12px 32px rgba(0,0,0,.12);
+  --shadow-3: 0 2px 8px rgba(0,0,0,.06), 0 12px 40px rgba(0,0,0,.14);
+  /* 兼容别名：管理端 crates/node/ui 存量引用 var(--shadow)（此前无定义，模态实际无投影）；新代码一律用 --shadow-3 */
+  --shadow: 0 2px 8px rgba(0,0,0,.06), 0 12px 40px rgba(0,0,0,.14);
+  /* 玻璃拟态（须配合 backdrop-filter blur 使用，浮层边缘发光感） */
+  --glass-bg: rgba(252,252,252,.78); --glass-border: rgba(0,0,0,.08);
+  /* info 语义（日志级别用；主题无蓝，取低饱和钢蓝） */
+  --info: #5484BC; --info-text: #3E6A9E; --info-bg: rgba(84,132,188,.14);
+  /* 表格：粘性表头底 / 行 hover / 极淡斑马纹 */
+  --tbl-head-bg: #F1F1F1; --tbl-row-hover: rgba(0,0,0,.03); --tbl-row-alt: rgba(0,0,0,.015);
+  /* 日志级别文本色（logv 行字 + 左侧色条，深浅两套均保对比度） */
+  --log-debug: #686B72; --log-info: #3E6A9E; --log-warn: #9A7414; --log-error: #CE3F34;
+  /* 主操作渐变（克制：仅侧栏激活胶囊等大激活面） */
+  --accent-grad: linear-gradient(180deg, #45484D, #2E3237);
+  /* 模态遮罩（配 backdrop-filter blur(8px)） */
+  --mask: rgba(0,0,0,.46);
+  /* 开关旋钮（深浅恒白） */
+  --toggle-knob: #FFFFFF;
+  /* 动效时长梯度（--dur 180ms 保留于 style.css；reduced-motion 全局关闭） */
+  --dur-fast: 120ms; --dur-slow: 320ms;
 }
 html[data-theme="dark"] {
   --bg: #2A2828; --bg2: #2F2D2D; --panel: #312F2F; --panel2: #3A3838;
@@ -30,4 +52,15 @@ html[data-theme="dark"] {
   --danger-border: rgba(249,96,87,.40);
   --chip: #2F2D2D; --hover: #3A3838;
   --row-border: #3B3939;
+  --shadow-1: 0 1px 2px rgba(0,0,0,.28), 0 2px 6px rgba(0,0,0,.24);
+  --shadow-2: 0 4px 14px rgba(0,0,0,.36), 0 12px 36px rgba(0,0,0,.40);
+  --shadow-3: 0 2px 10px rgba(0,0,0,.40), 0 16px 48px rgba(0,0,0,.48);
+  --shadow: 0 2px 10px rgba(0,0,0,.40), 0 16px 48px rgba(0,0,0,.48);
+  --glass-bg: rgba(56,54,54,.78); --glass-border: rgba(255,255,255,.10);
+  --info: #7EA6D8; --info-text: #7EA6D8; --info-bg: rgba(126,166,216,.14);
+  --tbl-head-bg: #383636; --tbl-row-hover: rgba(255,255,255,.04); --tbl-row-alt: rgba(255,255,255,.02);
+  --log-debug: #9A9DA3; --log-info: #7EA6D8; --log-warn: #F8CE52; --log-error: #F96057;
+  --accent-grad: linear-gradient(180deg, #F5F5F5, #DFDFDF);
+  --mask: rgba(0,0,0,.58);
+  --toggle-knob: #FFFFFF;
 }

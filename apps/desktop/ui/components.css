@@ -7,7 +7,12 @@
              agchart 图表（.agchart*；JS 在同目录 agchart.js，首个共享 JS 组件，同机制服务）
              ahelp 行内帮助（.ahelp/.ahelp-tip；badge-question-mark + 纯 CSS hover 说明卡，
              两端 JS 各有 ahelp(text) helper，静态 HTML 手写同构 span 即可）
-             agedit 行内编辑（.agedit-*；值 [修改] ↔ 输入框 [保存]，两端 JS 各有 bindInlineEdit） */
+             agedit 行内编辑（.agedit-*；值 [修改] ↔ 输入框 [保存]，两端 JS 各有 bindInlineEdit）
+             ctx-menu / float-menu 上下文菜单（macOS 毛玻璃浮层；float-menu 为悬浮球语义别名）
+             tbl 实时数据表格（粘性表头 + 行 hover + 等宽数字；.tbl-dense 紧凑档）
+             logv 日志流（.lv-* 级别色条与行字着色 + .logv-hl 关键字命中）
+             pill 状态胶囊（.pill-ok/.pill-warn/.pill-danger/.pill-dim）
+             side-foot 侧栏底部区（.side-foot-rate 网速行；折叠态只留速率，≤720px 隐藏） */
 
 /* --- agchart 图表（JS 见共享 agchart.js；本层收录图例/浮层/网格/空态样式） --- */
 /* 结构：el.agchart(.agchart-line|.agchart-spark) > [.agchart-legend] + .agchart-plot > svg + .agchart-tip */
@@ -24,7 +29,7 @@
 .agchart-legend-item { display: inline-flex; align-items: center; gap: 6px; font-variant-numeric: tabular-nums; }
 .agchart-legend-item .c, .agchart-tip .c { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
 /* hover 浮层：组件层统一样式，跟随位移由 JS 只写 transform */
-.agchart-tip { position: absolute; left: 0; top: 0; z-index: 5; pointer-events: none; background: var(--panel2); border: 1px solid var(--border); border-radius: 9px; box-shadow: 0 8px 24px rgba(0,0,0,.14); padding: 7px 10px; font-size: 12px; white-space: nowrap; will-change: transform; }
+.agchart-tip { position: absolute; left: 0; top: 0; z-index: 5; pointer-events: none; background: var(--panel2); border: 1px solid var(--border); border-radius: 9px; box-shadow: var(--shadow-2); padding: 7px 10px; font-size: 12px; white-space: nowrap; will-change: transform; }
 .agchart-tip .t { color: var(--dim2); font-size: 11px; margin-bottom: 4px; }
 .agchart-tip .r { display: flex; align-items: center; gap: 6px; padding: 1px 0; color: var(--text); }
 .agchart-tip .r .v { margin-left: auto; padding-left: 14px; font-variant-numeric: tabular-nums; font-weight: 600; color: var(--text-strong); }
@@ -44,7 +49,7 @@ select.agsel-src { position: absolute !important; width: 1px !important; height:
 /* 紧凑档（行内小下拉，如令牌授权档位；由源 select 的 small 类映射） */
 .agsel-sm .agsel-btn { padding: 4px 10px; font-size: 12px; border-radius: 7px; }
 /* 弹出层 fixed 挂 body：避开模态 overflow 裁剪，z-index 高于两端全部浮层（模态/菜单/岛） */
-.agsel-pop { position: fixed; z-index: 500; background: var(--panel2); border: 1px solid var(--border); border-radius: 11px; box-shadow: 0 12px 36px rgba(0,0,0,.16); padding: 5px; max-height: 260px; overflow-y: auto; animation: agsel-in .15s ease both; }
+.agsel-pop { position: fixed; z-index: 500; background: var(--panel2); border: 1px solid var(--border); border-radius: 11px; box-shadow: var(--shadow-2); padding: 5px; max-height: 260px; overflow-y: auto; animation: agsel-in .15s ease both; }
 .agsel-opt { display: flex; align-items: center; gap: 8px; padding: 8px 11px; border-radius: 7px; font-size: 13px; color: var(--text); cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .agsel-opt:hover { background: var(--hover); }
 .agsel-opt.sel { background: var(--chip); color: var(--text-strong); font-weight: 600; }
@@ -66,7 +71,7 @@ select.agsel-src { position: absolute !important; width: 1px !important; height:
    tooltip 用 panel2/border/阴影质感，z-index 高于卡片、低于 agsel-pop(500)。 */
 .ahelp { position: relative; display: inline-flex; vertical-align: -2px; margin-left: 4px; color: var(--dim2); cursor: help; }
 .ahelp:hover { color: var(--dim); }
-.ahelp-tip { position: absolute; bottom: calc(100% + 7px); left: 50%; transform: translate(-50%, 3px); width: max-content; max-width: 240px; white-space: normal; text-align: left; font-size: 12px; font-weight: 400; line-height: 1.55; color: var(--text); background: var(--panel2); border: 1px solid var(--border); border-radius: 9px; box-shadow: 0 8px 24px rgba(0,0,0,.14); padding: 7px 10px; opacity: 0; pointer-events: none; transition: opacity .15s, transform .15s; z-index: 450; }
+.ahelp-tip { position: absolute; bottom: calc(100% + 7px); left: 50%; transform: translate(-50%, 3px); width: max-content; max-width: 240px; white-space: normal; text-align: left; font-size: 12px; font-weight: 400; line-height: 1.55; color: var(--text); background: var(--panel2); border: 1px solid var(--border); border-radius: 9px; box-shadow: var(--shadow-2); padding: 7px 10px; opacity: 0; pointer-events: none; transition: opacity .15s, transform .15s; z-index: 450; }
 .ahelp:hover .ahelp-tip { opacity: 1; transform: translate(-50%, 0); }
 
 /* --- agedit 行内编辑（值 [修改] ↔ 输入框 [保存]；两端 JS 各有 bindInlineEdit(el, {get, set, validate?}) 驱动） ---
@@ -77,3 +82,73 @@ select.agsel-src { position: absolute !important; width: 1px !important; height:
 .agedit-val { font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .agedit-btn { flex-shrink: 0; }
 .agedit-input { width: 150px; padding: 3px 8px; font-size: 12.5px; border-radius: 7px; }
+
+/* --- ctx-menu 右键上下文菜单 / float-menu 悬浮球小菜单（同构：float-menu 为语义别名，样式完全复用） ---
+   结构：<div class="ctx-menu">（fixed 浮层，JS 写 left/top；transform-origin 默认左上，可按弹出方位覆盖）
+         > <button class="ctx-item"> *n（危险项加 .danger）+ <div class="ctx-sep"> 分隔线；
+   macOS 质感：10px 圆角 + 毛玻璃（--glass-bg + backdrop-filter blur）+ --shadow-2，
+   菜单内缩 5px 间距、item 6px 圆角 hover，出现动画 scale(.96)+fade 120ms（--dur-fast）。
+   z-index 600 高于 agsel-pop(500)/ahelp-tip(450)/岛(300)/模态(100)。 */
+.ctx-menu, .float-menu { position: fixed; z-index: 600; min-width: 180px; padding: 5px; background: var(--glass-bg); -webkit-backdrop-filter: blur(18px) saturate(1.5); backdrop-filter: blur(18px) saturate(1.5); border: 1px solid var(--glass-border); border-radius: 10px; box-shadow: var(--shadow-2); transform-origin: top left; animation: ctx-in var(--dur-fast) ease-out both; }
+.ctx-item { display: flex; align-items: center; gap: 8px; width: 100%; padding: 6px 10px; font: inherit; font-size: 13px; text-align: left; color: var(--text); background: none; border: none; border-radius: 6px; box-shadow: none; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: background var(--dur-fast), color var(--dur-fast); }
+.ctx-item:hover { background: var(--hover); color: var(--text-strong); }
+.ctx-item:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
+.ctx-item.danger { color: var(--danger-text); }
+.ctx-item.danger:hover { background: var(--danger-bg); color: var(--danger-text); }
+.ctx-sep { height: 1px; margin: 5px 10px; background: var(--row-border); }
+@keyframes ctx-in { from { opacity: 0; transform: scale(.96); } to { opacity: 1; transform: scale(1); } }
+
+/* --- tbl 实时数据表格（粘性表头 + 行 hover + 等宽数字；修饰类 .tbl-dense 紧凑档） ---
+   结构：标准 <table class="tbl"><thead><tbody>；table-layout: fixed 保对齐与省略号，
+   列宽在 th 上设 style="width:…"（不设则均分）；border-collapse: separate + spacing 0
+   使粘性表头的 1px 底线随表头吸附不脱落；偶数行极淡斑马纹（hover 覆盖）。 */
+.tbl { width: 100%; border-collapse: separate; border-spacing: 0; table-layout: fixed; font-size: 13px; font-variant-numeric: tabular-nums; }
+.tbl th { position: sticky; top: 0; z-index: 1; height: 34px; padding: 0 12px; background: var(--tbl-head-bg); border-bottom: 1px solid var(--border); color: var(--dim2); font-size: 12px; font-weight: 500; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tbl td { height: 34px; padding: 0 12px; border-bottom: 1px solid var(--row-border); color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tbl tbody tr:nth-child(even) td { background: var(--tbl-row-alt); }
+.tbl tbody tr:hover td { background: var(--tbl-row-hover); }
+.tbl tbody tr:last-child td { border-bottom: none; }
+.tbl-dense th, .tbl-dense td { height: 28px; }
+
+/* --- logv 日志流（等宽 12px/1.6；级别修饰 .lv-* = 左 3px 色条 + 行字着色；.logv-hl 关键字命中） ---
+   结构：<div class="logv"> > <div class="logv-line lv-info">…<mark class="logv-hl">命中</mark>…</div> *n；
+   无色条行与级别行等宽对齐（border-left 恒占 3px）；容器可选中复制。 */
+.logv { background: var(--bg2); border: 1px solid var(--border); border-radius: 10px; padding: 6px 0; overflow-y: auto; font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace; font-size: 12px; line-height: 1.6; color: var(--text); user-select: text; -webkit-user-select: text; }
+.logv-line { padding: 0 12px; border-left: 3px solid transparent; white-space: pre-wrap; word-break: break-all; transition: background var(--dur-fast); }
+.logv-line:hover { background: var(--tbl-row-hover); }
+.logv-line.lv-debug { border-left-color: var(--log-debug); color: var(--log-debug); }
+.logv-line.lv-info { border-left-color: var(--log-info); color: var(--log-info); }
+.logv-line.lv-warn { border-left-color: var(--log-warn); color: var(--log-warn); }
+.logv-line.lv-error { border-left-color: var(--log-error); color: var(--log-error); }
+.logv-hl { background: var(--accent-bg); border-radius: 2px; padding: 0 1px; color: inherit; }
+
+/* --- pill 小状态胶囊（badge 的共享泛化；新代码一律用 pill） ---
+   结构：<span class="pill pill-ok">运行中</span>；修饰 .pill-ok/.pill-warn/.pill-danger/.pill-dim。 */
+.pill { display: inline-flex; align-items: center; gap: 5px; padding: 2px 9px; border-radius: 999px; font-size: 11px; font-weight: 600; line-height: 1.5; white-space: nowrap; }
+.pill-ok { background: var(--ok-bg); color: var(--ok-text); }
+.pill-warn { background: var(--warn-bg); color: var(--warn-text); }
+.pill-danger { background: var(--danger-bg); color: var(--danger-text); }
+.pill-dim { background: var(--accent-bg); color: var(--dim); }
+
+/* --- side-foot 侧栏底部区（桌面外壳侧栏 flex 列内 margin-top:auto 沉底） ---
+   结构：<div class="side-foot">…<div class="side-foot-rate"><span class="up">1.2 MB/s</span>
+         <span class="down">3.4 MB/s</span></div></div>；
+   上下行箭头 = .up/.down 的 ::before 注入 unicode ↑↓ 并着色（不引图标字体），数值等宽数字；
+   折叠态（body.collapsed）只留速率（纵向紧凑排布），≤720px 窄屏整体隐藏。 */
+.side-foot { margin-top: auto; flex-shrink: 0; border-top: 1px solid var(--row-border); padding: 10px 8px 6px; display: flex; flex-direction: column; gap: 8px; }
+.side-foot-rate { display: flex; align-items: center; gap: 14px; font-size: 12px; color: var(--dim); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.side-foot-rate .up, .side-foot-rate .down { display: inline-flex; align-items: baseline; gap: 3px; }
+.side-foot-rate .up::before { content: "↑"; font-size: 11px; color: var(--ok-text); }
+.side-foot-rate .down::before { content: "↓"; font-size: 11px; color: var(--info-text); }
+body.collapsed .side-foot { padding: 10px 4px 6px; align-items: center; }
+body.collapsed .side-foot > *:not(.side-foot-rate) { display: none; }
+body.collapsed .side-foot-rate { flex-direction: column; gap: 2px; font-size: 10.5px; }
+@media (max-width: 720px) {
+  .side-foot { display: none; }
+}
+
+/* prefers-reduced-motion 降级：新组件动画/过渡全部关闭（桌面端另有 style.css 全局兜底） */
+@media (prefers-reduced-motion: reduce) {
+  .ctx-menu, .float-menu { animation: none; }
+  .ctx-item, .logv-line { transition: none; }
+}

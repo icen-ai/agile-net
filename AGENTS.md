@@ -19,9 +19,9 @@
 **当前仓库结构**（双产物统一已完成，见上述计划）：
 
 - `crates/core`：核心网络协议（mux 帧/会话）、TLS 握手（证书固定 pinning）、Relay 穿透（listener/connector）、对端收敛（`relay::PeerAcl`，扇入/扇出数据面钩子 + `ProxyRouter::matches` 复用）、客户端隧道（`ClientTunnel`）、代理入站（SOCKS5/HTTP + 认证）与路由器（`ProxyRouter`）。
-- `crates/node`：服务端/节点库 + 二进制 **`anet-svc` / `anet`**（同一实现双入口：`start` 默认 / `stop` / `restart` / `status` / `init` / `node` / `rule` / `group` / `account` / `token` / `connector` / `admin` / `audit` / `client` / `tui`）：装配根 `service::NodeServer`、扇出管理 `service::connectors::ConnectorManager`（DB 为唯一事实来源，热操作）、对端收敛注册表 `service::acl::PeerAclRegistry`、SQLite（版本化迁移）、Axum REST API、Web 管理后台（`ui`）、TUI（API 优先 + DB 只读兜底）、CLI（`cli` 模块）、服务管理（`svc` 模块 PID 文件）、首装向导（`init` 模块）、内存日志缓冲。
+- `crates/node`：服务端/节点库 + 二进制 **`anet-svc` / `anet`**（同一实现双入口：`start` 默认 / `stop` / `restart` / `status` / `init` / `node` / `rule` / `group` / `account` / `token` / `connector` / `admin` / `audit` / `client` / `tui` / `doctor`）：装配根 `service::NodeServer`、扇出管理 `service::connectors::ConnectorManager`（DB 为唯一事实来源，热操作）、对端收敛注册表 `service::acl::PeerAclRegistry`、SQLite（版本化迁移）、Axum REST API、Web 管理后台（`ui`）、TUI（API 优先 + DB 只读兜底）、CLI（`cli` 模块）、服务管理（`svc` 模块 PID 文件）、首装向导（`init` 模块）、内存日志缓冲、自我诊断（`tool::doctor`：7 节检查 + 自动修复，CLI `anet doctor` 与 GUI `run_doctor` 共用，`run_streaming` 支持逐节流式回调）。
 - `crates/client`：客户端核心引擎（库）：多节点连接（登录/配置/隧道/长轮询/心跳）、规则合并与暂停（`paused_rules`）、本地代理、hosts 管理、凭据存储、管理面 Web API（`api` 模块）、客户端角色守护（`daemon` 模块）。
-- `apps/desktop`：**anet-gui**（Tauri 2 桌面/Android，独立 workspace，前端无 Node 构建链）：三路独立开关（客户端/服务端/Web 远程面）+ 扇出管理（connector 入库 CRUD + 权限组收敛，独立菜单）+ 控制台窗口 + 订阅代理（mihomo sidecar 内核托管，GUI 独享）+ 系统代理托管（冲突巡检提醒）。
+- `apps/desktop`：**anet-gui**（Tauri 2 桌面/Android，独立 workspace，前端无 Node 构建链）：三路独立开关（客户端/服务端/Web 远程面）+ 扇出管理（connector 入库 CRUD + 权限组收敛，独立菜单）+ 控制台窗口 + 订阅代理（mihomo sidecar 内核托管，GUI 独享）+ 系统代理托管（冲突巡检提醒 + 「锁定系统代理」硬核模式）+ 日志视图（实时连接/实时日志/命中追踪三页签，走 mihomo external-controller WS 采集，右键强制打断/一键加规则）+ 托盘弹窗（tray.html：实时网速/代理组速切/连接摘要）+ 桌面悬浮球（float.html：拖拽/单双击/右键菜单/气泡通知）+ 拖拽导入本地 Clash YAML 订阅 + 设置内自我诊断（流式逐节动画）。
 - `.docker`：四级节点链编排测试（`docker-compose.test.yaml`）与常驻演示（`docker-compose.chain.yaml`）。
 - `docs/plan/merge-gui-svc.md`：双产物统一实施计划；`docs/plan/subscription.md`：GUI 独享订阅代理（mihomo sidecar）实施计划；`docs/plan/tun.md`：TUN 模式（anet 在前、FlClash 在后，Windows 桌面）实施计划；`docs/todo/peer-acl.md`：对端收敛（Peer ACL，已实施）设计与实施记录；`docs/todo/island.md`：移动端系统岛规划。
 
@@ -112,6 +112,9 @@ rtk cargo run -p agile-net-node -- client agile-net-client.toml
 
 # 内置网络诊断工具集（anet tool，本机操作、无需 login；实现 crates/node/src/tool/）
 rtk cargo run -p agile-net-node --bin anet -- tool --help
+
+# 自我诊断报告（7 节检查 + 自动修复；--json 机器可读；有错误项退出码 1）
+rtk cargo run -p agile-net-node --bin anet -- doctor
 
 # Docker 四级链断言测试 / 常驻演示
 docker build -f .docker/Dockerfile -t anet:dev .

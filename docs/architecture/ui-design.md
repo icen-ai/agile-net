@@ -20,10 +20,19 @@ AgileNet 有三套用户界面：节点 Web 管理后台、节点 TUI 终端、�
 | `--link` / `--ring` | `#2E3237` / `#2E3237` | `#EEEEEE` / `#EEEEEE` | 链接（带下划线）/ 聚焦环——主题无蓝，激活与焦点一律近黑（深主题近白） |
 | `--ok` / `--warn` / `--danger` | `#61C555` / `#F6BE50` / `#ED6A5F` | `#5FCF65` / `#F8CE52` / `#F96057` | 语义基准色 = **macOS 红绿灯**（仅填充/圆点/进度条/开关等图形场景） |
 | `--ok-text` / `--warn-text` / `--danger-text` | `#3E8E2E` / `#9A7414` / `#CE3F34` | 同基准色 | 语义文本色：基准色直接作文字对比度不足，浅主题用加深变体（深主题亮色可直接作文本） |
+| `--shadow-1` / `--shadow-2` / `--shadow-3` | 双层柔和投影（alpha .045/.08~.12/.06~.14） | 同层级加深（alpha .24~.28/.36~.40/.40~.48） | 阴影层级：1 卡片（hover 微抬升并升至 2 级）/ 2 弹层·菜单·浮层 / 3 模态；深色以 `--glass-border` 发光补偿 |
+| `--glass-bg` / `--glass-border` | `rgba(252,252,252,.78)` / `rgba(0,0,0,.08)` | `rgba(56,54,54,.78)` / `rgba(255,255,255,.10)` | 玻璃拟态（须配合 backdrop-filter blur；ctx-menu/float-menu 浮层） |
+| `--info` / `--info-text` / `--info-bg` | `#5484BC` / `#3E6A9E` / `rgba(84,132,188,.14)` | `#7EA6D8` / 同 / `rgba(126,166,216,.14)` | info 语义（日志级别用；主题无蓝，取低饱和钢蓝） |
+| `--tbl-head-bg` / `--tbl-row-hover` / `--tbl-row-alt` | `#F1F1F1` / `rgba(0,0,0,.03)` / `rgba(0,0,0,.015)` | `#383636` / `rgba(255,255,255,.04)` / `rgba(255,255,255,.02)` | 表格：粘性表头底 / 行 hover / 极淡斑马纹 |
+| `--log-debug` / `--log-info` / `--log-warn` / `--log-error` | `#686B72` / `#3E6A9E` / `#9A7414` / `#CE3F34` | `#9A9DA3` / `#7EA6D8` / `#F8CE52` / `#F96057` | 日志级别文本色（logv 行字 + 左侧色条，深浅两套均保对比度） |
+| `--accent-grad` | `linear-gradient(180deg,#45484D,#2E3237)` | `linear-gradient(180deg,#F5F5F5,#DFDFDF)` | 主操作渐变（克制：仅侧栏激活胶囊等大激活面，小件仍用纯色 `--accent`） |
+| `--mask` | `rgba(0,0,0,.46)` | `rgba(0,0,0,.58)` | 模态遮罩（配 backdrop-filter blur(8px)） |
+| `--toggle-knob` | `#FFFFFF` | 同 | 开关/勾选框旋钮（深浅恒白） |
+| `--dur-fast` / `--dur-slow` | `120ms` / `320ms` | 同 | 动效时长梯度（中档 `--dur` 180ms 保留于 style.css；reduced-motion 全局关闭） |
 
-- 圆角：卡片 12px（`--radius`），按钮/输入框 8px，徽标与胶囊 999px
-- 阴影：仅浮层使用柔和投影（弹窗 `0 12px 40px rgba(0,0,0,.14)`），卡片一律无边框阴影、1px 细边框
-- 侧栏选中项为反相胶囊（浅主题深底浅字，深主题浅底深字），hover 用 `--hover`
+- 圆角：卡片 12px（`--radius`），按钮/输入框 8px，徽标与胶囊 999px，上下文菜单 10px（菜单项 6px）
+- 阴影：三级层级 token —— `--shadow-1` 卡片（hover translateY(-1px) 微抬升并升至 `--shadow-2`）、`--shadow-2` 弹层/菜单/浮层、`--shadow-3` 模态；深色同层级加深，玻璃拟态浮层另以 `--glass-border` 发光补偿。`--shadow` 为管理端 crates/node/ui 存量引用的兼容别名（值 = `--shadow-3`），新代码勿用
+- 侧栏选中项为反相胶囊（`--accent-grad` 微渐变 + `--shadow-1`；浅主题深底浅字，深主题浅底深字），hover 用 `--hover`
 - 默认主题为浅色；深/浅切换持久化于 localStorage（`ag_theme`）
 
 ### 图标规范
@@ -42,6 +51,12 @@ AgileNet 有三套用户界面：节点 Web 管理后台、节点 TUI 终端、�
 - 当前收录 **agchart 图表**（首个共享 JS 组件）：`apps/desktop/ui/agchart.js` 零依赖原生 SVG/JS，桌面端 `<script src>` 引入、管理端经 `/ui/agchart.js` 内嵌服务（机制同 components.css）。两版本：`AgChart.sparkline(el, series, opts)` 省略版（趋势折线 + 渐变面积，无轴无字）与 `AgChart.line(el, {x, series, fmtX?, fmtY?, legend?, empty?})` 完整版（XY 轴刻度网格 / 多序列 / hover 十字 + 每点浮层）；颜色只吃 var(--*)（内联 SVG 呈现属性支持 CSS 变量，默认色板 `--accent`/`--dim2`/语义色），数据签名不变不重绘，数据更新 rAF 数值插值过渡（~400ms ease-out，新增点自基线生长），hover 跟随只动 transform。样式类 `.agchart*` 在 components.css（图例 `.agchart-legend`、浮层 `.agchart-tip`、网格 `.agc-grid`、空态 `.agc-empty`）。应用：管理端概览 24h 流量趋势（完整版）+ 扇入/扇出/中继三张流量卡（sparkline）。
 - 当前收录 **ahelp 行内帮助**：解释性小字的归宿（替代常驻 hint 长文）。结构 `.ahelp`（badge-question-mark 13px 图标，dim 色）> `.ahelp-tip`（纯 CSS hover 上浮说明卡，panel2/border/阴影质感，max-width 240px 正常换行，z-index 高于卡片低于 agsel-pop）；不吃 JS。两端 app.js 各有 `ahelp(text)` 内联 helper，静态 HTML 手写同构 span（图标用 `data-ic="badge-question-mark"` 占位水合）。应用：管理端扇入令牌卡头、客户端远程卡/扇出监听/订阅内核卡头。
 - 当前收录 **agedit 行内编辑**：「值 [修改] ↔ 输入框 [保存]」统一模式（Enter 保存 / Esc 取消，validate 报错 toast 不写入）。JS 驱动：宿主元素（任意容器）调 `bindInlineEdit(el, {get, set, validate?, editValue?})`（两端各自 app.js），返回 `{refresh()}` 供轮询同步显示值（编辑中不打扰，显示值变更检测不重排 DOM）；样式 `.agedit*` 在 components.css（inline-flex 宿主 + `.agedit-val` 截断 + `.agedit-input` 紧凑输入框）。应用：客户端首页代理卡监听行（编辑端口，变更即重启代理生效）、远程卡监听地址。
+- 当前收录 **ctx-menu / float-menu 上下文菜单**：macOS 风格右键菜单（10px 圆角 + `--glass-bg` 毛玻璃 backdrop-filter blur(18px) + `--glass-border` 边缘发光 + `--shadow-2`，z-index 600 高于 agsel-pop(500)）。结构 `.ctx-menu`（fixed 浮层，JS 写 left/top；transform-origin 默认左上，可按弹出方位覆盖）> `.ctx-item`（危险项加 `.danger`，分隔线 `.ctx-sep`）；菜单内缩 5px 间距、item 6px 圆角 hover，出现动画 ctx-in = scale(.96)+fade 120ms。`.float-menu` 为悬浮球场景的语义别名，同一选择器分组、结构与样式完全复用，不重复实现。
+- 当前收录 **tbl 实时数据表格**：`.tbl`（table-layout: fixed 保对齐与省略号，列宽在 th 上设 `style="width:…"`，不设均分；border-collapse: separate + spacing 0 使粘性表头底线随表头吸附不脱落）——th 粘性 + `--tbl-head-bg`，行高 34px、全表 tabular-nums、单元格 nowrap 省略号，tbody 行 hover `--tbl-row-hover`、偶数行极淡斑马纹 `--tbl-row-alt`（hover 覆盖）；修饰类 `.tbl-dense` 行高 28px。
+- 当前收录 **logv 日志流**：`.logv`（`--bg2` 底 + 1px border + 10px 圆角，等宽 12px/1.6，可选中复制）> `.logv-line`（行 hover 微亮 `--tbl-row-hover`），级别修饰 `.lv-debug/.lv-info/.lv-warn/.lv-error` = 左 3px 色条（border-left 恒占 3px，无级别行等宽对齐）+ 整行字着色（`--log-*`）；关键字命中包 `<mark class="logv-hl">`（`--accent-bg` 圆角 2px，`color: inherit` 压 UA mark 样式）。
+- 当前收录 **pill 状态胶囊**：badge 的共享泛化沉淀，新代码一律用 pill。`.pill` + 修饰 `.pill-ok/.pill-warn/.pill-danger/.pill-dim`（语义 bg/text token；dim 档 `--accent-bg` + `--dim`）。
+- 当前收录 **side-foot 侧栏底部区**：桌面外壳侧栏 flex 列内 `margin-top:auto` 沉底，border-top 细分隔 + 纵向堆叠；`.side-foot-rate` 网速行（tabular-nums），上下行箭头 = `.up`/`.down` 的 ::before 注入 unicode ↑↓ 并着色（ok-text/info-text，不引图标字体）；折叠态（body.collapsed）只留速率（纵向紧凑排布），≤720px 窄屏整体 display:none。
+- ctx-menu/float-menu/tbl/logv/pill/side-foot 色值全部走 token 自动适配深色，并内置 prefers-reduced-motion 降级（关闭动画与过渡）。
 
 ## 1. 节点 Web 管理后台（crates/node/src/ui）
 

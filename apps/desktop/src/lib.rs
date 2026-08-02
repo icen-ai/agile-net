@@ -1297,6 +1297,45 @@ async fn add_subscription(
     Ok(sub)
 }
 
+/// 导入本地 YAML 订阅：校验路径（存在/yaml 扩展名/≤5MB）→ 读取内容走与 URL 订阅
+/// 相同的嗅探入库路径（subscription::add_local_subscription，provider 渲染为 type: file）。
+/// 名称取文件名去扩展名；角色开启中且新订阅为激活项时重启内核。
+#[tauri::command]
+async fn import_local_subscription(
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<subscription::Subscription, String> {
+    let p = std::path::PathBuf::from(path.trim());
+    let meta = std::fs::metadata(&p).map_err(|_| "文件不存在或不可读".to_string())?;
+    if !meta.is_file() {
+        return Err("所选路径不是文件".into());
+    }
+    let ext = p
+        .extension()
+        .map(|e| e.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    if ext != "yaml" && ext != "yml" {
+        return Err("仅支持 .yaml / .yml 订阅文件".into());
+    }
+    if meta.len() > 5 * 1024 * 1024 {
+        return Err("文件过大（上限 5MB）".into());
+    }
+    let body = std::fs::read_to_string(&p).map_err(|e| format!("读取文件失败: {e}"))?;
+    let name = p
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let sub = subscription::add_local_subscription(&name, &body)?;
+    if state.roles.lock().await.subscription && sub.active {
+        state.kernel.stop().await;
+        if let Err(e) = state.kernel.start().await {
+            return Err(format!("订阅已导入，但内核重启失败: {e}"));
+        }
+        apply_proxy_fallback(&state).await;
+    }
+    Ok(sub)
+}
+
 /// 删除订阅；角色开启中即重启内核（清空则停机）。
 #[tauri::command]
 async fn remove_subscription(state: State<'_, AppState>, id: String) -> Result<(), String> {
@@ -1363,6 +1402,7 @@ async fn test_delay(group: String) -> Result<std::collections::HashMap<String, u
 /// 内核缺失时不再当场下载：后台开始下载并返回 NEED_DOWNLOAD，前端展示下载卡，完成后自动重试。
 #[tauri::command]
 async fn set_subscription_role(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     enabled: bool,
 ) -> Result<subscription::KernelStatus, String> {
@@ -1377,7 +1417,10 @@ async fn set_subscription_role(
                 subscription::NEED_DOWNLOAD_PREFIX
             ));
         }
-        state.kernel.start().await?;
+        if let Err(e) = state.kernel.start().await {
+            float_notify(&app, format!("订阅内核启动失败：{e}"));
+            return Err(e);
+        }
     } else {
         state.kernel.stop().await;
     }
@@ -1398,6 +1441,91 @@ async fn set_subscription_role(
 #[tauri::command]
 async fn sub_traffic(state: State<'_, AppState>) -> Result<subscription::TrafficSnapshot, String> {
     Ok(state.kernel.traffic())
+}
+
+// ==================== 订阅内核连接/日志采集（/connections、/logs WS） ====================
+
+/// 连接快照返回体（sub_connections 契约）
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct ConnectionsView {
+    /// 活跃连接（up_rate/down_rate 为快照差分速率）
+    pub active: Vec<subscription::ConnectionInfo>,
+    /// 最近已关闭（新的在前，上限 300）
+    pub closed: Vec<subscription::ConnectionInfo>,
+}
+
+/// 连接快照：活跃 + 最近已关闭；内核未运行返回空集而非报错。
+#[tauri::command]
+async fn sub_connections(state: State<'_, AppState>) -> Result<ConnectionsView, String> {
+    if !state.kernel.running().await {
+        return Ok(ConnectionsView::default());
+    }
+    let (active, closed) = state.kernel.connections();
+    Ok(ConnectionsView { active, closed })
+}
+
+/// 内核日志（旧→新排列，上限 500；前端倒序展示自行处理；内核未运行返回空集）。
+#[tauri::command]
+async fn sub_logs(state: State<'_, AppState>) -> Result<Vec<subscription::LogEntry>, String> {
+    if !state.kernel.running().await {
+        return Ok(Vec::new());
+    }
+    Ok(state.kernel.logs())
+}
+
+/// 规则命中聚合（count 降序 top 100；内核未运行返回空集）。
+#[tauri::command]
+async fn sub_rule_hits(state: State<'_, AppState>) -> Result<Vec<subscription::RuleHit>, String> {
+    if !state.kernel.running().await {
+        return Ok(Vec::new());
+    }
+    Ok(state.kernel.rule_hits())
+}
+
+/// 关闭单条连接（DELETE /connections/{id}）。
+#[tauri::command]
+async fn sub_close_connection(id: String) -> Result<(), String> {
+    if id.is_empty() || id.chars().any(|c| c == '/' || c.is_whitespace()) {
+        return Err("连接 id 不合法".into());
+    }
+    subscription::kernel_api().await?.close_connection(&id).await
+}
+
+/// 清空内核日志与规则命中缓冲（连接态不动）。
+#[tauri::command]
+async fn sub_clear_logs(state: State<'_, AppState>) -> Result<(), String> {
+    state.kernel.clear_logs();
+    Ok(())
+}
+
+/// 一键加规则：把主机加入自定义规则（target=direct 直连放行 / subscription 经订阅出口）。
+/// host 自动去 scheme/端口/路径并校验；同主机规则已存在时幂等返回成功。
+#[tauri::command]
+async fn sub_add_rule_for_host(
+    state: State<'_, AppState>,
+    host: String,
+    target: String,
+) -> Result<(), String> {
+    let via_subscription = match target.as_str() {
+        "direct" => false,
+        "subscription" => true,
+        _ => return Err("target 参数须为 direct（直连放行）或 subscription（经订阅出口）".into()),
+    };
+    let host = custom_rules::normalize_host(&host)?;
+    // 幂等：同 pattern 规则已存在即视为成功（不改动既有规则的出口取向）
+    let exists = custom_rules::snapshot()
+        .bypass
+        .iter()
+        .any(|r| r.pattern.eq_ignore_ascii_case(&host));
+    if exists {
+        return Ok(());
+    }
+    custom_rules::add_bypass(&state.client, &host, via_subscription)?;
+    roles::audit(
+        "gui.sub_rule_for_host",
+        serde_json::json!({"host": host, "target": target}),
+    );
+    Ok(())
 }
 
 // ==================== 订阅覆写脚本 / 出站模式 ====================
@@ -1657,10 +1785,10 @@ async fn set_system_proxy(state: State<'_, AppState>, enabled: bool) -> Result<(
 
 #[tauri::command]
 async fn sysproxy_status(state: State<'_, AppState>) -> Result<sysproxy::SysProxyStatus, String> {
-    // TUN 模式视同托管（系统自动代理指向 57890，巡检自动收回）
+    // TUN 模式 / 锁定模式视同托管（系统自动代理指向 57890，巡检自动收回）
     let managed = {
         let r = state.roles.lock().await;
-        r.system_proxy || r.tun_mode
+        r.system_proxy || r.tun_mode || r.sysproxy_lock
     };
     let running = state.client.proxy_port() > 0;
     let expected = expected_sysproxy(&state);
@@ -1681,6 +1809,18 @@ async fn reclaim_sysproxy(state: State<'_, AppState>) -> Result<(), String> {
     tokio::task::spawn_blocking(move || sysproxy::reclaim(&server))
         .await
         .map_err(map_err)?
+}
+
+/// 系统代理锁定（硬核模式）：视同托管，巡检发现系统值被改即自动收回期望值。
+#[tauri::command]
+async fn set_sysproxy_lock(state: State<'_, AppState>, on: bool) -> Result<(), String> {
+    {
+        let mut roles = state.roles.lock().await;
+        roles.sysproxy_lock = on;
+        roles.save()?;
+    }
+    roles::audit("gui.sysproxy_lock", serde_json::json!({"on": on}));
+    Ok(())
 }
 
 // ==================== 网络检测（出口 IP / 内网 IP） ====================
@@ -1725,14 +1865,21 @@ async fn fetch_exit_ip(state: State<'_, AppState>, via_proxy: bool) -> Result<Ex
         .user_agent(concat!("anet-gui/", env!("CARGO_PKG_VERSION")))
         .timeout(std::time::Duration::from_secs(5));
     if via_proxy {
-        // TUN 模式 mixed 口（57892）按防环设计关闭，探测改走订阅出口 socks 口（57893）
-        let port = if state.roles.lock().await.tun_mode {
-            subscription::MIHOMO_SOCKS_PORT
+        // TUN 模式 mixed 口（57892）按防环设计关闭，探测改走订阅出口 socks 口（57893）：
+        // socks5h scheme（域名交代理侧解析，避开 fake-ip 段地址在本机直连失败）；
+        // 非 TUN 走 mixed 口 http 代理。
+        let proxy = if state.roles.lock().await.tun_mode {
+            reqwest::Proxy::all(format!(
+                "socks5h://127.0.0.1:{}",
+                subscription::MIHOMO_SOCKS_PORT
+            ))
         } else {
-            subscription::MIHOMO_MIXED_PORT
-        };
-        let proxy =
-            reqwest::Proxy::all(format!("http://127.0.0.1:{port}")).map_err(map_err)?;
+            reqwest::Proxy::all(format!(
+                "http://127.0.0.1:{}",
+                subscription::MIHOMO_MIXED_PORT
+            ))
+        }
+        .map_err(map_err)?;
         builder = builder.proxy(proxy);
     }
     let client = builder.build().map_err(map_err)?;
@@ -2011,19 +2158,20 @@ async fn restore_subscription_role(app: &tauri::AppHandle) {
 }
 
 /// 系统代理冲突巡检（30s）：托管中系统值 ≠ 期望值即记审计。
-/// TUN 模式（§2.6）升级为自动收回：被抢即重写期望值并记审计（含来源值），每轮处理；
-/// 非 TUN 维持"提醒手动收回"（每轮冲突只记一次，恢复后可再记）。
+/// TUN 模式（§2.6）与锁定模式（sysproxy_lock）升级为自动收回：被抢即重写期望值并记审计
+/// （含来源值；锁定来源 detail 注明 lock:true），每轮处理；
+/// 非自动收回维持"提醒手动收回"（每轮冲突只记一次，恢复后可再记）。
 async fn sysproxy_watch(app: tauri::AppHandle) {
     let mut in_conflict = false;
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(30)).await;
         let state = app.state::<AppState>();
-        let (pref, tun_mode) = {
+        let (pref, tun_mode, lock) = {
             let r = state.roles.lock().await;
-            (r.system_proxy, r.tun_mode)
+            (r.system_proxy, r.tun_mode, r.sysproxy_lock)
         };
-        // TUN 模式视同托管（自动收回策略）；代理未运行时不判冲突（同 sysproxy_status）
-        let managed = pref || tun_mode;
+        // TUN 模式与锁定模式视同托管（自动收回策略）；代理未运行时不判冲突（同 sysproxy_status）
+        let managed = pref || tun_mode || lock;
         if !managed || state.client.proxy_port() == 0 {
             in_conflict = false;
             continue;
@@ -2032,21 +2180,46 @@ async fn sysproxy_watch(app: tauri::AppHandle) {
         if let Ok(Ok(st)) =
             tokio::task::spawn_blocking(move || sysproxy::inspect(true, &expected)).await
         {
-            if st.conflict && tun_mode {
+            if st.conflict && (tun_mode || lock) {
                 roles::audit(
                     "gui.sysproxy_conflict",
-                    serde_json::json!({"expected": st.expected, "current": st.current, "auto_reclaim": true}),
+                    serde_json::json!({"expected": st.expected, "current": st.current, "auto_reclaim": true, "lock": lock}),
                 );
                 let server = st.expected.clone();
                 let _ = tokio::task::spawn_blocking(move || sysproxy::reclaim(&server)).await;
+                float_notify(&app, "系统代理被修改，已自动收回");
             } else if st.conflict && !in_conflict {
                 roles::audit(
                     "gui.sysproxy_conflict",
                     serde_json::json!({"expected": st.expected, "current": st.current}),
                 );
+                float_notify(&app, "检测到系统代理冲突");
             }
             in_conflict = st.conflict;
         }
+    }
+}
+
+/// 托盘 tooltip 实时网速（1s）：内核运行且有速率时显示 ↑/↓，否则回退静态文案；
+/// 平台差异容错（set_tooltip 失败静默，不 panic）。
+async fn tray_speed_watch(app: tauri::AppHandle) {
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        let Some(tray) = app.tray_by_id("anet-tray") else {
+            continue;
+        };
+        let state = app.state::<AppState>();
+        let snap = state.kernel.traffic();
+        let tip = if state.kernel.running().await && (snap.up_rate > 0 || snap.down_rate > 0) {
+            format!(
+                "↑ {}/s ↓ {}/s · AgileNet",
+                subscription::format_rate(snap.up_rate),
+                subscription::format_rate(snap.down_rate)
+            )
+        } else {
+            "AgileNet 客户端".to_string()
+        };
+        let _ = tray.set_tooltip(Some(&tip));
     }
 }
 
@@ -2097,7 +2270,7 @@ fn show_main_window(app: &tauri::AppHandle) {
 /// 弹出/收起托盘面板（懒创建；失焦自动隐藏）
 fn toggle_tray_popup(app: &tauri::AppHandle, anchor: tauri::PhysicalPosition<f64>) {
     const W: f64 = 292.0;
-    const H: f64 = 400.0;
+    const H: f64 = 420.0;
     let x = (anchor.x - W / 2.0).max(0.0);
     let y = (anchor.y - H - 10.0).max(0.0);
     if let Some(w) = app.get_webview_window("tray-popup") {
@@ -2153,6 +2326,100 @@ fn tray_quit(app: tauri::AppHandle) {
     app.exit(0);
 }
 
+// ==================== 悬浮球窗口（仅桌面） ====================
+
+/// 悬浮球气泡通知（窗口不存在时静默忽略；桥接既有告警点与 float_ball_notify 命令共用）
+fn float_notify(app: &tauri::AppHandle, text: impl Into<String>) {
+    use tauri::Emitter;
+    let _ = app.emit_to("float-ball", "ag-float-notify", text.into());
+}
+
+/// 创建悬浮球窗口（幂等）：72×72 无框透明常驻，默认定位主屏右下角偏移
+/// （取主屏方式与 normalize_window_geometry 一致）。
+#[cfg(desktop)]
+fn create_float_ball(app: &tauri::AppHandle) -> Result<(), String> {
+    const SIZE: f64 = 72.0;
+    if app.get_webview_window("float-ball").is_some() {
+        return Ok(());
+    }
+    let mut x = 100.0;
+    let mut y = 100.0;
+    if let Ok(Some(m)) = app.primary_monitor() {
+        let scale = m.scale_factor();
+        let logical_w = m.size().width as f64 / scale;
+        let logical_h = m.size().height as f64 / scale;
+        x = (logical_w - SIZE - 24.0).max(0.0);
+        y = (logical_h - SIZE - 96.0).max(0.0);
+    }
+    tauri::WebviewWindowBuilder::new(
+        app,
+        "float-ball",
+        tauri::WebviewUrl::App("float.html".into()),
+    )
+    .title("AgileNet")
+    .inner_size(SIZE, SIZE)
+    .decorations(false)
+    .transparent(true)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .resizable(false)
+    .position(x, y)
+    .build()
+    .map_err(map_err)?;
+    Ok(())
+}
+
+/// 移动端不支持悬浮球（平台判定返回不支持；保持 mobile 目标编译不破）。
+#[cfg(not(desktop))]
+fn create_float_ball(_app: &tauri::AppHandle) -> Result<(), String> {
+    Err("悬浮球仅支持桌面端".into())
+}
+
+/// 悬浮球开关：on=创建窗口，off=销毁；持久化 + 审计（setup 恢复读取同一字段）。
+#[tauri::command]
+async fn set_float_ball(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    on: bool,
+) -> Result<(), String> {
+    if on {
+        create_float_ball(&app)?;
+    } else if let Some(w) = app.get_webview_window("float-ball") {
+        let _ = w.close();
+    }
+    {
+        let mut roles = state.roles.lock().await;
+        roles.float_ball = on;
+        roles.save()?;
+    }
+    roles::audit("gui.float_ball", serde_json::json!({"on": on}));
+    Ok(())
+}
+
+/// 悬浮球气泡通知通道（前端主窗 → 悬浮球）。
+#[tauri::command]
+fn float_ball_notify(app: tauri::AppHandle, text: String) -> Result<(), String> {
+    float_notify(&app, text);
+    Ok(())
+}
+
+/// 自我诊断（与 `anet doctor` 共用同一引擎；检查含 netstat/注册表/文件 IO 等阻塞操作，
+/// 整体丢进 spawn_blocking 再 block_on 驱动异步探测，避免占住运行时线程）
+#[tauri::command]
+async fn run_doctor(app: tauri::AppHandle) -> Result<agile_net_node::tool::doctor::DoctorReport, String> {
+    use agile_net_node::tool::doctor as doc;
+    use tauri::Emitter as _;
+    // 流式诊断：先发检查节计划（前端渲染骨架），每完成一节推一个事件，最后返回完整报告
+    let _ = app.emit("ag-doctor-begin", doc::SECTION_PLAN);
+    tauri::async_runtime::spawn_blocking(move || {
+        tauri::async_runtime::block_on(doc::run_streaming(doc::DoctorContext::gui(), |sec| {
+            let _ = app.emit("ag-doctor-section", sec);
+        }))
+    })
+    .await
+    .map_err(map_err)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tracing_subscriber::fmt()
@@ -2185,6 +2452,9 @@ pub fn run() {
             open_url,
             tray_show_main,
             tray_quit,
+            set_float_ball,
+            float_ball_notify,
+            run_doctor,
             set_autostart,
             get_autostart,
             get_role_settings,
@@ -2215,12 +2485,18 @@ pub fn run() {
             dl_cancel,
             dl_install_manual,
             activate_subscription_feature,
-            subscription_status,
             proxy_groups,
             select_proxy,
             test_delay,
             set_subscription_role,
             sub_traffic,
+            sub_connections,
+            sub_logs,
+            sub_rule_hits,
+            sub_close_connection,
+            sub_clear_logs,
+            sub_add_rule_for_host,
+            import_local_subscription,
             list_sub_scripts,
             add_sub_script,
             update_sub_script,
@@ -2232,6 +2508,7 @@ pub fn run() {
             set_system_proxy,
             sysproxy_status,
             reclaim_sysproxy,
+            set_sysproxy_lock,
             tun_status,
             set_tun_mode,
             tun_relaunch_elevated,
@@ -2270,6 +2547,15 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 sysproxy_watch(handle).await;
             });
+            // 托盘 tooltip 实时网速（1s）
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                tray_speed_watch(handle).await;
+            });
+            // 恢复悬浮球（上次退出时处于开启状态；仅桌面，移动端 create 返回不支持）
+            if roles::RoleSettings::load().float_ball {
+                let _ = create_float_ball(app.handle());
+            }
 
             // 窗口尺寸与定位：主屏逻辑宽 1/2、4:3、屏幕居中（与控制台统一规格）；
             // 创建即隐藏（conf visible:false），定位完成后再显示，杜绝左上角闪帧

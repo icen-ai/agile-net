@@ -55,6 +55,8 @@ pub enum Commands {
     Audit(AuditArgs),
     /// 内置网络诊断工具集（tcping/curl/dns/scan/ping…，本机诊断；bandwidth 除外需登录）
     Tool(crate::tool::ToolArgs),
+    /// 自我诊断（端口/系统代理/内核/网络/配置/规则体检，自动修复可修项；本机操作无需登录）
+    Doctor,
     /// 启动本地 TUI 控制台（直连数据库）
     Tui,
 }
@@ -661,6 +663,20 @@ pub async fn dispatch(command: Commands, api: Option<String>, json_out: bool) ->
         // （bandwidth 臂例外：经管理 API 在服务端执行，arm 内自行检查会话）
         Commands::Tool(args) => {
             let code = crate::tool::run(args, json_out, api).await;
+            if code != 0 {
+                std::process::exit(code);
+            }
+            Ok(())
+        }
+        // 自我诊断同为会话校验前分流：本机操作，不登录、不写审计
+        Commands::Doctor => {
+            let report = crate::tool::doctor::run(crate::tool::doctor::DoctorContext::cli()).await;
+            if json_out {
+                print_json(&serde_json::to_value(&report).unwrap_or_default());
+            } else {
+                println!("{}", crate::tool::doctor::render(&report));
+            }
+            let code = crate::tool::doctor::exit_code(&report);
             if code != 0 {
                 std::process::exit(code);
             }
