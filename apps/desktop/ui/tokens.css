@@ -20,8 +20,6 @@
   --shadow-1: 0 1px 2px rgba(0,0,0,.045), 0 2px 6px rgba(0,0,0,.045);
   --shadow-2: 0 4px 12px rgba(0,0,0,.08), 0 12px 32px rgba(0,0,0,.12);
   --shadow-3: 0 2px 8px rgba(0,0,0,.06), 0 12px 40px rgba(0,0,0,.14);
-  /* 兼容别名：管理端 crates/node/ui 存量引用 var(--shadow)（此前无定义，模态实际无投影）；新代码一律用 --shadow-3 */
-  --shadow: 0 2px 8px rgba(0,0,0,.06), 0 12px 40px rgba(0,0,0,.14);
   /* 玻璃拟态（须配合 backdrop-filter blur 使用，浮层边缘发光感） */
   --glass-bg: rgba(252,252,252,.78); --glass-border: rgba(0,0,0,.08);
   /* info 语义（日志级别用；主题无蓝，取低饱和钢蓝） */
@@ -55,7 +53,6 @@ html[data-theme="dark"] {
   --shadow-1: 0 1px 2px rgba(0,0,0,.28), 0 2px 6px rgba(0,0,0,.24);
   --shadow-2: 0 4px 14px rgba(0,0,0,.36), 0 12px 36px rgba(0,0,0,.40);
   --shadow-3: 0 2px 10px rgba(0,0,0,.40), 0 16px 48px rgba(0,0,0,.48);
-  --shadow: 0 2px 10px rgba(0,0,0,.40), 0 16px 48px rgba(0,0,0,.48);
   --glass-bg: rgba(56,54,54,.78); --glass-border: rgba(255,255,255,.10);
   --info: #7EA6D8; --info-text: #7EA6D8; --info-bg: rgba(126,166,216,.14);
   --tbl-head-bg: #383636; --tbl-row-hover: rgba(255,255,255,.04); --tbl-row-alt: rgba(255,255,255,.02);
