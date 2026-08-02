@@ -6,6 +6,7 @@
 <title>AgileNet 客户端</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%233C3F43' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z'/></svg>">
 <link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="components.css">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -136,46 +137,47 @@
 
     </section>
 
-    <!-- 扇出：服务端角色的扇出连接（路由再发布；多目标扇出/容灾） -->
+    <!-- 扇出：本机内嵌端点作为扇出方连接目标端点（路由再发布；多目标扇出/容灾） -->
     <section class="view" id="view-upstreams" hidden>
       <div class="page-title"><i data-ic="git-fork" data-sz="19"></i>扇出</div>
-      <div class="page-desc">内嵌端点作为扇出方连接目标端点（多目标扇出/容灾）；客户端隧道规则将转售给扇入端点。需服务端角色开启后生效，变更即热生效</div>
-      <!-- 服务端角色（扇出能力本体）：内嵌完整端点 -->
-      <div class="card">
-        <div class="role-list">
-          <div class="role-row">
-            <div class="role-info"><b>服务端角色</b><span class="hint">内嵌完整端点（Relay / 账号 / 规则 / 审计），本机可作为转发机或留守管理端</span></div>
-            <label class="switch"><input type="checkbox" id="r-server"><span class="slider"></span></label>
-          </div>
-          <div id="server-panel" style="display:none">
-            <div class="kv"><span class="k">管理 API</span><span class="mono" id="sv-api">-</span></div>
-            <div class="kv"><span class="k">Relay 监听</span><span class="mono" id="sv-relay">-</span></div>
-            <div class="row" style="margin-top:8px">
-              <button id="btn-open-console" class="ghost small"><i data-ic="external-link" data-sz="13"></i> 打开控制台</button>
-              <span class="hint inline">控制台在主窗口内嵌管理内嵌端点</span>
+      <div class="page-desc">内嵌端点作为扇出方连接目标端点（多目标扇出/容灾）；客户端隧道规则将转售给扇入端点。需扇出监听开启后生效，变更即热生效</div>
+      <div class="agtabs" id="fo-tabs">
+        <div class="agtabs-pill">
+          <button class="agtab active" data-agtab="listen">监听</button>
+          <button class="agtab" data-agtab="conn">连接</button>
+        </div>
+      </div>
+
+      <!-- 扇出监听（扇出能力本体）：内嵌完整端点 -->
+      <div data-agpanel="listen">
+        <div class="card">
+          <div class="role-list">
+            <div class="role-row">
+              <div class="role-info"><b>扇出监听</b><span class="hint">内嵌完整端点（Relay / 账号 / 规则 / 审计），本机可作为转发机或留守管理端</span></div>
+              <label class="switch"><input type="checkbox" id="r-server"><span class="slider"></span></label>
+            </div>
+            <div id="server-panel" style="display:none">
+              <div class="kv"><span class="k">管理 API</span><span class="mono" id="sv-api">-</span></div>
+              <div class="kv"><span class="k">Relay 监听</span><span class="mono" id="sv-relay">-</span></div>
+              <div class="row" style="margin-top:8px">
+                <button id="btn-open-console" class="ghost small"><i data-ic="external-link" data-sz="13"></i> 打开控制台</button>
+                <span class="hint inline">控制台在主窗口内嵌管理内嵌端点</span>
+              </div>
             </div>
           </div>
         </div>
       </div>
-      <div class="card">
-        <h3><i data-ic="git-fork"></i>扇出连接
-          <span class="h3-tools"><button class="ghost small icon-btn" id="btn-fo-refresh" title="刷新"><i data-ic="refresh-cw" data-sz="13"></i></button></span>
-        </h3>
-        <div id="fo-list"><div class="empty">尚未配置扇出连接</div></div>
-      </div>
-      <div class="card">
-        <h3><i data-ic="plus"></i><span id="fo-form-title">添加扇出连接</span></h3>
-        <div class="grid2">
-          <div><label>目标地址</label><input id="fo-addr" class="mono" placeholder="root.example.com:54430"></div>
-          <div><label>Relay Token <span class="hint inline" id="fo-token-hint" style="display:none">留空保留原 Token</span></label><input id="fo-token" type="password" class="mono" placeholder="psk_..."></div>
-          <div><label>SNI 域名</label><input id="fo-sni" class="mono" value="cdn.cloudflare.com"></div>
-          <div><label>权限组 <span class="hint inline">留空 = 不收敛（放行一切）</span></label><select id="fo-group"><option value="">不收敛（放行一切）</option></select></div>
-          <div><label class="chk" style="margin-top:22px"><input type="checkbox" id="fo-insecure"> 跳过证书校验（仅开发）</label></div>
-        </div>
-        <div class="row" style="margin-top:8px">
-          <button id="btn-fo-add" class="ghost small">添加</button>
-          <button id="btn-fo-cancel" class="ghost small" style="display:none">取消编辑</button>
-          <span class="hint" id="fo-err"></span>
+
+      <!-- 扇出连接：列表 + 弹窗新建/编辑 -->
+      <div data-agpanel="conn" hidden>
+        <div class="card">
+          <h3><i data-ic="git-fork"></i>扇出连接
+            <span class="h3-tools"><button class="ghost small icon-btn" id="btn-fo-refresh" title="刷新"><i data-ic="refresh-cw" data-sz="13"></i></button></span>
+          </h3>
+          <div class="row" style="margin-bottom:12px;justify-content:flex-end">
+            <button id="btn-fo-add" class="small"><i data-ic="plus" data-sz="13"></i> 添加扇出连接</button>
+          </div>
+          <div id="fo-list"><div class="empty">尚未配置扇出连接</div></div>
         </div>
       </div>
     </section>
@@ -402,6 +404,41 @@
     <div class="row" style="justify-content:flex-end">
       <button id="sub-cancel" class="ghost">取消</button>
       <button id="sub-ok">拉取并添加</button>
+    </div>
+  </div>
+</div>
+
+<!-- 新建/编辑扇出弹窗（字段对齐管理端「新建扇出」模态） -->
+<div class="modal-mask" id="fo-modal" style="display:none">
+  <div class="modal sub-modal fo-modal">
+    <div class="sm-head">
+      <span class="sm-logo"><i data-ic="git-fork" data-sz="20"></i></span>
+      <div>
+        <h3 id="fo-modal-title">新建扇出</h3>
+        <div class="hint">Relay Token 加密落库、创建后不回显；保存即热生效</div>
+      </div>
+    </div>
+    <div class="sm-body">
+      <label>名称（可空，留空 = 取目标地址）</label>
+      <input id="fo-name" placeholder="例如：分公司跳板机">
+      <label>目标地址</label>
+      <input id="fo-addr" class="mono" placeholder="root.example.com:54430">
+      <label>Relay Token <span class="hint inline" id="fo-token-hint" style="display:none">留空 = 保留原 Token</span></label>
+      <input id="fo-token" type="password" class="mono" placeholder="psk_...">
+      <div class="grid2">
+        <div><label>SNI 域名</label><input id="fo-sni" class="mono" placeholder="cdn.cloudflare.com"></div>
+        <div><label>权限组 <span class="hint inline">留空 = 不收敛（放行一切）</span></label><select id="fo-group"><option value="">不收敛（放行一切）</option></select></div>
+      </div>
+      <label class="chk" style="margin-top:12px"><input type="checkbox" id="fo-insecure"> 跳过 TLS 证书校验（insecure，仅调试用）</label>
+      <label>路由再发布 advertise（每行一条 CIDR/域名，可空）</label>
+      <textarea id="fo-advertise" class="mono" rows="3" placeholder="10.12.0.0/16&#10;git.internal"></textarea>
+      <label>备注</label>
+      <input id="fo-remark" placeholder="可空">
+      <div class="hint sm-err" id="fo-err"></div>
+    </div>
+    <div class="row" style="justify-content:flex-end">
+      <button id="fo-cancel" class="ghost">取消</button>
+      <button id="fo-ok">创建</button>
     </div>
   </div>
 </div>

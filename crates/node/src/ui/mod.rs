@@ -2,7 +2,8 @@
 //!
 //! - 文件布局：`crates/node/ui/`（index.html / app.js / style.css），经 `include_str!` 内嵌，
 //!   严禁再把界面代码写进 Rust 字符串（AGENTS.md §6）
-//! - 设计 token 唯一权威文件为 `apps/desktop/ui/tokens.css`，经 `/ui/tokens.css` 共享服务
+//! - 设计 token 唯一权威文件为 `apps/desktop/ui/tokens.css`，经 `/ui/tokens.css` 共享服务；
+//!   共享组件样式 `apps/desktop/ui/components.css` 同机制经 `/ui/components.css` 服务
 //! - 安全响应头：CSP 放行桌面壳 iframe 内嵌（frame-ancestors 含 tauri 源）+ nosniff 等
 //! - 主窗内嵌时 `?embed=1`：SPA 隐藏自身侧栏与标题栏，导航/主题经 postMessage 由主窗驱动
 
@@ -18,6 +19,8 @@ const ADMIN_JS: &str = include_str!("../../ui/app.js");
 const ADMIN_CSS: &str = include_str!("../../ui/style.css");
 /// 共享设计 token（唯一权威文件在桌面端，AGENTS.md §6）
 const TOKENS_CSS: &str = include_str!("../../../../apps/desktop/ui/tokens.css");
+/// 共享组件样式（与 tokens.css 同机制沉淀在桌面端）
+const COMPONENTS_CSS: &str = include_str!("../../../../apps/desktop/ui/components.css");
 
 /// 基础安全响应头（全部静态响应统一附加）。
 fn base_headers(resp: &mut Response) {
@@ -68,6 +71,12 @@ async fn tokens_css_handler() -> impl IntoResponse {
     resp
 }
 
+async fn components_css_handler() -> impl IntoResponse {
+    let mut resp = ([(header::CONTENT_TYPE, "text/css; charset=utf-8")], COMPONENTS_CSS).into_response();
+    base_headers(&mut resp);
+    resp
+}
+
 pub fn create_ui_router() -> Router {
     Router::new()
         .route("/", get(admin_page_handler))
@@ -75,4 +84,5 @@ pub fn create_ui_router() -> Router {
         .route("/ui/app.js", get(admin_js_handler))
         .route("/ui/style.css", get(admin_css_handler))
         .route("/ui/tokens.css", get(tokens_css_handler))
+        .route("/ui/components.css", get(components_css_handler))
 }

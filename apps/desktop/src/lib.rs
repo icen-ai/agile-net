@@ -635,10 +635,13 @@ pub struct ServerConnectorView {
     pub token_prefix: String,
     pub sni_hostname: String,
     pub insecure: bool,
+    /// 路由再发布（逗号分隔入库；编辑回显拆行）
+    pub advertise: String,
     /// 收敛权限组（None = 不收敛，放行一切）
     pub group_id: Option<String>,
     pub group_name: Option<String>,
     pub enabled: bool,
+    pub remark: String,
     /// 实时状态（connected/connecting/reconnecting/disconnected；内嵌节点未运行恒 disconnected）
     pub state: String,
 }
@@ -703,9 +706,11 @@ async fn list_server_connectors(
                 token_prefix: v.token_prefix,
                 sni_hostname: v.sni_hostname,
                 insecure: v.insecure,
+                advertise: v.advertise,
                 group_id: v.group_id,
                 group_name: v.group_name,
                 enabled: v.enabled,
+                remark: v.remark,
                 state: state_str.into(),
             }
         })
@@ -720,39 +725,48 @@ async fn add_server_connector(
     sni_hostname: String,
     insecure: bool,
     group_id: Option<String>,
+    name: Option<String>,
+    advertise: Option<String>,
+    remark: Option<String>,
 ) -> Result<(), String> {
     let addr = upstream_addr.trim();
     if addr.is_empty() || token.trim().is_empty() {
         return Err("扇出目标地址与 Relay Token 不能为空".into());
     }
+    // 名称可空：留空 = 取目标地址（沿用 TOML 导入惯例；connector.name 唯一约束）
+    let name = name
+        .map(|n| n.trim().to_string())
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| addr.to_string());
+    let advertise = advertise.unwrap_or_default().trim().to_string();
+    let remark = remark.unwrap_or_default().trim().to_string();
     let group_id = group_id.filter(|g| !g.trim().is_empty());
     let db = roles::open_embedded_db()?;
     validate_group(&db, group_id.as_deref())?;
-    // 显示名沿用 TOML 导入惯例 = 目标地址（connector.name 唯一约束；GUI 无独立名称字段）
     if db
         .list_connectors()
         .map_err(map_err)?
         .iter()
-        .any(|c| c.name == addr)
+        .any(|c| c.name == name)
     {
-        return Err("该扇出目标已存在".into());
+        return Err("同名扇出连接已存在".into());
     }
     let rec = db
         .create_connector(
-            addr,
+            &name,
             addr,
             token.trim(),
             sni_hostname.trim(),
             insecure,
             "",
             "",
-            "",
+            &advertise,
             group_id.as_deref(),
-            "",
+            &remark,
         )
         .map_err(map_err)?;
-    roles::audit("gui.fanout_change", serde_json::json!({"action": "add", "name": addr}));
-    hot_upsert_connector(&state, &rec.id, addr).await;
+    roles::audit("gui.fanout_change", serde_json::json!({"action": "add", "name": name}));
+    hot_upsert_connector(&state, &rec.id, &name).await;
     Ok(())
 }
 
@@ -765,11 +779,19 @@ async fn update_server_connector(
     sni_hostname: String,
     insecure: bool,
     group_id: Option<String>,
+    name: Option<String>,
+    advertise: Option<String>,
+    remark: Option<String>,
 ) -> Result<(), String> {
     let addr = upstream_addr.trim();
     if addr.is_empty() {
         return Err("扇出目标地址不能为空".into());
     }
+    // 名称可空：留空 = 取目标地址（与 add 同惯例）
+    let name = name
+        .map(|n| n.trim().to_string())
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| addr.to_string());
     let group_id = group_id.filter(|g| !g.trim().is_empty());
     let db = roles::open_embedded_db()?;
     let Some(old) = db.get_connector(&id).map_err(map_err)? else {
@@ -780,33 +802,39 @@ async fn update_server_connector(
         .list_connectors()
         .map_err(map_err)?
         .iter()
-        .any(|c| c.name == addr && c.id != id)
+        .any(|c| c.name == name && c.id != id)
     {
-        return Err("该扇出目标已存在".into());
+        return Err("同名扇出连接已存在".into());
     }
-    // token 留空 = 保留原值；advertise / 证书路径 / 备注 GUI 不编辑，原样保留；
-    // 名称同步跟随目标地址（GUI 无独立名称字段，与 add 同惯例）
+    // token / advertise / remark 三态：token 留空 = 保留原值；advertise/remark 缺省(None) = 保留，
+    // 前端恒传（空串 = 用户显式清空）；证书路径 GUI 不编辑，原样保留
     let token_reset = if token.trim().is_empty() {
         None
     } else {
         Some(token.trim().to_string())
     };
+    let advertise = advertise
+        .map(|a| a.trim().to_string())
+        .unwrap_or_else(|| old.advertise.clone());
+    let remark = remark
+        .map(|r| r.trim().to_string())
+        .unwrap_or_else(|| old.remark.clone());
     db.update_connector(
         &id,
-        addr,
+        &name,
         addr,
         token_reset.as_deref(),
         sni_hostname.trim(),
         insecure,
         &old.ca_cert_path,
         &old.pinned_cert_path,
-        &old.advertise,
+        &advertise,
         group_id.as_deref(),
-        &old.remark,
+        &remark,
     )
     .map_err(map_err)?;
-    roles::audit("gui.fanout_change", serde_json::json!({"action": "update", "name": addr}));
-    hot_upsert_connector(&state, &id, addr).await;
+    roles::audit("gui.fanout_change", serde_json::json!({"action": "update", "name": name}));
+    hot_upsert_connector(&state, &id, &name).await;
     Ok(())
 }
 

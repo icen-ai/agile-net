@@ -34,6 +34,12 @@ AgileNet 有三套用户界面：节点 Web 管理后台、节点 TUI 终端、�
 - 两个图标表均只收录实际用到的图标（无构建链下等价于 tree-shaking，未引用的图标不进入产物）。新增图标时把对应 Lucide 图标的 SVG 内部节点追加进表即可。
 - 严禁使用文字表情符号（Emoji）充当图标；状态标识一律用 `.dot` / `.badge` / `.rdot` 等 CSS 元素。
 
+### 共享组件层（components.css）
+
+- `apps/desktop/ui/components.css` 是两端共用组件样式的唯一来源（桌面 `<link>`，管理端经 `/ui/components.css` 内嵌服务，机制同 tokens.css）；端特有覆盖留在各自 style.css。
+- 当前收录 **ag-select 统一自定义下拉**：原生 select 保留为数据/逻辑载体（视觉隐藏），`agSelectEnhance(root)` 幂等增强、`agSelectRefresh(sel)` 程序化变更后刷新；类名 `.agsel` / `.agsel-btn` / `.agsel-label` / `.agsel-pop` / `.agsel-opt`（修饰类 `.open` / `.sel` / `.agsel-sm`），弹出层 fixed 挂 body、只吃 var(--*)。
+- 当前收录 **ag-tabs 横向页签条**：页内分区切换（质感泛化自段控 `.group-tab`），结构 `.agtabs` > `.agtabs-pill` > `button.agtab[data-agtab]`（`.active` 反相胶囊），可选右侧工具位 `.agtabs-tools`（搜索/按钮右对齐）；两端 app.js 各自 `agTabsBind(bar, onSwitch)` 驱动——面板 = 与页签条同容器直属 `[data-agpanel]`，纯显隐切换不重渲染。应用：管理端扇入页（监听|连接|令牌 + 跨页签联动搜索）、客户端扇出页（监听|连接）。
+
 ## 1. 节点 Web 管理后台（crates/node/src/ui）
 
 单文件嵌入式 SPA（原生 JS，无构建链），浅色中性风，左侧边栏导航。

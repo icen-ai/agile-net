@@ -83,6 +83,8 @@ tr:hover td { background: var(--row-hover); }
 .toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 14px; flex-wrap: wrap; }
 .toolbar .spacer { flex: 1; }
 .toolbar input, .toolbar select { min-width: 150px; }
+/* ag-select 端特有覆盖：工具条内下拉与原生 select 同宽 */
+.toolbar .agsel { min-width: 150px; }
 .pager { display: flex; gap: 8px; align-items: center; justify-content: flex-end; margin-top: 12px; color: var(--dim); font-size: 12px; }
 
 .modal-mask { position: fixed; inset: 0; background: rgba(20,20,20,.38); display: flex; align-items: center; justify-content: center; z-index: 200; backdrop-filter: blur(3px); animation: mask-in .18s ease both; }

@@ -67,6 +67,7 @@
 6. **前端共享与组件沉淀（两端一致性唯一来源）**：
    - **共享 token**：`apps/desktop/ui/tokens.css` 是设计 token 的唯一权威文件（颜色/语义色/边框/文字梯度，深浅两套）。桌面端 `<link>` 引入；管理端经 `include_str!` 内嵌服务（`crates/node/src/ui/mod.rs` 引用相对路径）。**严禁在任一端的 style.css 里另起同名 token 或硬编码色值**，新增 token 一律进 tokens.css 并在 `docs/architecture/ui-design.md` 登记。
    - **管理端 SPA 文件布局**：`crates/node/ui/`（`index.html` / `app.js` / `style.css`），`mod.rs` 只做路由与内嵌（`include_str!`），**严禁再把界面代码写进 Rust 字符串**。
+   - **共享组件层**：`apps/desktop/ui/components.css` 是两端共用组件样式唯一来源（桌面 `<link>`、管理端 `/ui/components.css` 同机制内嵌），当前收录 ag-select 自定义下拉（两端各自 app.js 的 `agSelectEnhance(root)` / `agSelectRefresh(sel)` 驱动）；端特有覆盖留各自 style.css。
    - **组件沉淀流程**：新组件先在本端页面内实现并验证；第二次需要（或明确两端共用）时，先**泛化**（class 命名语义化、尺寸/状态走修饰类、色值只吃 token）再沉淀到共享层（tokens.css / 共享组件样式 / icons.js），随后各端改为引用共享实现。禁止把页面级一次性样式直接拷给另一端。
    - 端文案：AgileNet 对端一律称「端点」；连接方向用「扇出」（本端点主动连出，原上游）/「扇入」（对端连入本端点，原下游）；「节点」仅指订阅代理节点。
 

@@ -151,6 +151,133 @@ function esc(s) {
   }[c]));
 }
 
+/* ================= ag-select 统一自定义下拉（共享组件，样式在 components.css） =================
+   渐进增强：原生 select 保留为数据/逻辑载体（视觉隐藏），自定义 UI 与其双向同步——
+   选择自定义项 = 写回 sel.value 并 dispatch change（冒泡，既有绑定照常触发）；
+   程序化改选项/值后调 agSelectRefresh(sel) 刷新标签；sel.disabled 同步禁用态。
+   弹出层 fixed 挂 body（避开 overflow 裁剪），点击外部 / Esc / 滚动 / 缩放关闭。 */
+let agselOpen = null; // 当前打开的下拉 {root, btn, pop, cleanup}（全局同时只开一个）
+
+function agSelClose() {
+  if (!agselOpen) return;
+  const o = agselOpen; agselOpen = null;
+  o.root.classList.remove('open');
+  o.btn.setAttribute('aria-expanded', 'false');
+  o.pop.remove();
+  o.cleanup();
+}
+
+/* 标签与禁用态同步（增强/打开/选择/refresh 时调用） */
+function agSelSyncLabel(sel) {
+  const root = sel._agsel; if (!root) return;
+  const opt = sel.options[sel.selectedIndex];
+  root.querySelector('.agsel-label').textContent = opt ? opt.textContent : '';
+  root.querySelector('.agsel-btn').disabled = sel.disabled;
+}
+
+/* 打开时重建选项列表（天然兼容动态选项变更）并定位弹出层 */
+function agSelOpenPop(sel, root, btn) {
+  const pop = document.createElement('div');
+  pop.className = 'agsel-pop';
+  pop.setAttribute('role', 'listbox');
+  [...sel.options].forEach((o, i) => {
+    const d = document.createElement('div');
+    d.className = 'agsel-opt' + (i === sel.selectedIndex ? ' sel' : '');
+    d.setAttribute('role', 'option');
+    d.setAttribute('aria-selected', i === sel.selectedIndex ? 'true' : 'false');
+    d.textContent = o.textContent;
+    d.addEventListener('click', () => {
+      sel.selectedIndex = i;
+      agSelSyncLabel(sel);
+      agSelClose();
+      sel.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    pop.appendChild(d);
+  });
+  document.body.appendChild(pop);
+  root.classList.add('open');
+  btn.setAttribute('aria-expanded', 'true');
+  // 定位：默认按钮下方，下方空间不足翻上方；右缘越界则左移
+  const r = btn.getBoundingClientRect();
+  pop.style.minWidth = r.width + 'px';
+  const pw = pop.offsetWidth;
+  pop.style.left = Math.max(8, Math.min(r.left, window.innerWidth - pw - 8)) + 'px';
+  const below = window.innerHeight - r.bottom - 8, above = r.top - 8;
+  if (below >= 160 || below >= above) {
+    pop.style.top = (r.bottom + 4) + 'px';
+    pop.style.maxHeight = Math.max(120, Math.min(260, below - 4)) + 'px';
+  } else {
+    pop.style.bottom = (window.innerHeight - r.top + 4) + 'px';
+    pop.style.maxHeight = Math.max(120, Math.min(260, above - 4)) + 'px';
+  }
+  const cur = pop.querySelector('.agsel-opt.sel');
+  if (cur) cur.scrollIntoView({ block: 'nearest' });
+  const onDocDown = (e) => { if (!pop.contains(e.target) && !root.contains(e.target)) agSelClose(); };
+  const onKey = (e) => { if (e.key === 'Escape') { agSelClose(); btn.focus(); } };
+  const onScroll = (e) => { if (!pop.contains(e.target)) agSelClose(); };
+  const onResize = () => agSelClose();
+  document.addEventListener('pointerdown', onDocDown, true);
+  document.addEventListener('keydown', onKey, true);
+  document.addEventListener('scroll', onScroll, true);
+  window.addEventListener('resize', onResize);
+  agselOpen = { root, btn, pop, cleanup() {
+    document.removeEventListener('pointerdown', onDocDown, true);
+    document.removeEventListener('keydown', onKey, true);
+    document.removeEventListener('scroll', onScroll, true);
+    window.removeEventListener('resize', onResize);
+  } };
+}
+
+/* 扫描 root 内未增强的 select 并增强（幂等）；动态内容渲染后再调一次即可 */
+function agSelectEnhance(root) {
+  (root || document).querySelectorAll('select:not([data-agsel])').forEach(sel => {
+    sel.dataset.agsel = '1';
+    sel.classList.add('agsel-src');
+    sel.setAttribute('aria-hidden', 'true');
+    sel.tabIndex = -1;
+    const wrap = document.createElement('span');
+    wrap.className = 'agsel' + (sel.classList.contains('small') ? ' agsel-sm' : '');
+    if (sel.style.width) wrap.style.width = sel.style.width;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'agsel-btn';
+    btn.setAttribute('aria-haspopup', 'listbox');
+    btn.setAttribute('aria-expanded', 'false');
+    btn.innerHTML = '<span class="agsel-label"></span>' + AgIcon('chevron-down', 14);
+    wrap.appendChild(btn);
+    sel.parentNode.insertBefore(wrap, sel.nextSibling);
+    sel._agsel = wrap;
+    btn.addEventListener('click', () => {
+      if (sel.disabled) return;
+      if (agselOpen && agselOpen.root === wrap) { agSelClose(); return; }
+      agSelClose();
+      agSelOpenPop(sel, wrap, btn);
+    });
+    // 外部代码直接改值并派发 change 时同步标签
+    sel.addEventListener('change', () => agSelSyncLabel(sel));
+    agSelSyncLabel(sel);
+  });
+}
+
+/* 程序化改选项/值/disabled 后刷新自定义 UI（未增强时安全 no-op） */
+function agSelectRefresh(sel) { if (sel && sel._agsel) agSelSyncLabel(sel); }
+
+/* ================= ag-tabs 横向页签条（共享组件，样式在 components.css） =================
+   结构：<div class="agtabs"><div class="agtabs-pill"><button class="agtab" data-agtab="k">…
+         面板 = 与页签条同容器内的直属 [data-agpanel="k"]；点击置 active 并显示对应面板。
+   纯显隐切换不重渲染；onSwitch(key) 供页面同步状态。 */
+function agTabsBind(bar, onSwitch) {
+  const scope = bar.parentElement;
+  const apply = (key, fire) => {
+    bar.querySelectorAll('.agtab').forEach(t => t.classList.toggle('active', t.dataset.agtab === key));
+    scope.querySelectorAll(':scope > [data-agpanel]').forEach(p => { p.hidden = p.dataset.agpanel !== key; });
+    if (fire && onSwitch) onSwitch(key);
+  };
+  bar.querySelectorAll('.agtab').forEach(t => { t.onclick = () => apply(t.dataset.agtab, true); });
+  const cur = bar.querySelector('.agtab.active') || bar.querySelector('.agtab');
+  if (cur) apply(cur.dataset.agtab, false);
+}
+
 /* ================= 灵动岛（状态 + 通知 + 异常详情） =================
    形变原则：容器显式宽高动画（overflow:hidden 全程包裹内容），
    旧内容即刻退场、新内容延迟淡入——任何中间帧都不会出现内容溢出岛体。 */
@@ -510,6 +637,12 @@ function initAdminMode() {
   document.querySelectorAll('#nav-admin .nav-item[data-aview]').forEach(n => {
     n.onclick = () => adminNavActivate(n.dataset.aview);
   });
+  // 内嵌管理端（SPA）toast 统一接入灵动岛（origin 校验，只收当前管理 iframe）
+  window.addEventListener('message', (e) => {
+    if (ADMIN && e.origin === ADMIN.origin && e.data && e.data.type === 'ag-toast') {
+      toast(String(e.data.msg || ''), typeof e.data.kind === 'string' ? e.data.kind : 'info');
+    }
+  });
   const menu = $('admin-menu');
   $('btn-admin').onclick = (e) => {
     e.stopPropagation();
@@ -718,6 +851,7 @@ async function foLoadGroups() {
     $('fo-group').innerHTML = '<option value="">不收敛（放行一切）</option>' +
       groups.map(g => '<option value="' + esc(g.id) + '">' + esc(g.name) + '</option>').join('');
     if (groups.some(g => g.id === cur)) $('fo-group').value = cur;
+    agSelectRefresh($('fo-group'));
   } catch (e) { /* 组清单加载失败不阻断扇出列表 */ }
 }
 
@@ -732,8 +866,8 @@ async function refreshUpstreams() {
   }
   $('fo-list').innerHTML = FO_ITEMS.map(c =>
     '<div class="node-card"><div class="info">' +
-    '<div class="name">' + esc(c.upstream_addr) + ' ' + foBadge(c) + '</div>' +
-    '<div class="addr mono">' + esc(c.token_prefix) + ' · SNI ' + esc(c.sni_hostname) +
+    '<div class="name">' + esc(c.name || c.upstream_addr) + ' ' + foBadge(c) + '</div>' +
+    '<div class="addr mono">' + esc(c.upstream_addr) + ' · ' + esc(c.token_prefix) + ' · SNI ' + esc(c.sni_hostname) +
     (c.insecure ? ' · <span class="badge b-warn">insecure</span>' : '') +
     ' · 组 ' + (c.group_name ? esc(c.group_name) : '不收敛') + '</div>' +
     '</div><div class="card-actions">' +
@@ -743,38 +877,53 @@ async function refreshUpstreams() {
   ).join('');
 }
 
-function foResetForm() {
-  FO_EDIT_ID = null;
-  $('fo-form-title').textContent = '添加扇出连接';
-  $('fo-token-hint').style.display = 'none';
-  $('btn-fo-add').textContent = '添加';
-  $('btn-fo-cancel').style.display = 'none';
-  $('fo-addr').value = ''; $('fo-token').value = '';
-  $('fo-sni').value = 'cdn.cloudflare.com'; $('fo-insecure').checked = false;
-  $('fo-group').value = '';
+/* ---- 新建/编辑扇出模态（字段对齐管理端「新建扇出」；advertise 每行一条，逗号拼接入库） ---- */
+function foOpenModal(c) {
+  FO_EDIT_ID = c ? c.id : null;
+  $('fo-modal-title').textContent = c ? '编辑扇出' : '新建扇出';
+  $('fo-ok').textContent = c ? '保存' : '创建';
+  $('fo-token-hint').style.display = c ? '' : 'none';
+  $('fo-name').value = c ? c.name : '';
+  $('fo-addr').value = c ? c.upstream_addr : '';
+  $('fo-token').value = '';
+  $('fo-sni').value = c ? c.sni_hostname : 'cdn.cloudflare.com';
+  $('fo-insecure').checked = c ? !!c.insecure : false;
+  $('fo-advertise').value = c ? (c.advertise || '').split(',').filter(Boolean).join('\n') : '';
+  $('fo-group').value = c ? (c.group_id || '') : '';
+  agSelectRefresh($('fo-group'));
+  $('fo-remark').value = c ? (c.remark || '') : '';
+  $('fo-err').textContent = '';
+  $('fo-modal').style.display = 'flex';
+  $(c ? 'fo-name' : 'fo-addr').focus();
 }
+function foCloseModal() { $('fo-modal').style.display = 'none'; FO_EDIT_ID = null; }
 
 function initUpstreams() {
+  agTabsBind($('fo-tabs'));
   $('btn-fo-refresh').onclick = refreshUpstreams;
-  $('btn-fo-cancel').onclick = foResetForm;
-  $('btn-fo-add').onclick = async () => {
+  $('btn-fo-add').onclick = () => foOpenModal(null);
+  $('fo-cancel').onclick = foCloseModal;
+  $('fo-ok').onclick = async () => {
+    const name = $('fo-name').value.trim();
     const addr = $('fo-addr').value.trim();
     const token = $('fo-token').value.trim();
     const sni = $('fo-sni').value.trim() || 'cdn.cloudflare.com';
     const insecure = $('fo-insecure').checked;
     const groupId = $('fo-group').value || null;
+    const advertise = $('fo-advertise').value.split('\n').map(s => s.trim()).filter(Boolean).join(',');
+    const remark = $('fo-remark').value.trim();
     if (!addr) { $('fo-err').textContent = '请填写目标地址'; return; }
     if (!FO_EDIT_ID && !token) { $('fo-err').textContent = '请填写 Relay Token'; return; }
     $('fo-err').textContent = '';
     try {
       if (FO_EDIT_ID) {
-        await invoke('update_server_connector', { id: FO_EDIT_ID, upstreamAddr: addr, token, sniHostname: sni, insecure, groupId });
+        await invoke('update_server_connector', { id: FO_EDIT_ID, name, upstreamAddr: addr, token, sniHostname: sni, insecure, groupId, advertise, remark });
         toast('扇出连接已更新（热生效）', 'ok');
       } else {
-        await invoke('add_server_connector', { upstreamAddr: addr, token, sniHostname: sni, insecure, groupId });
+        await invoke('add_server_connector', { name, upstreamAddr: addr, token, sniHostname: sni, insecure, groupId, advertise, remark });
         toast('扇出连接已添加（热生效）', 'ok');
       }
-      foResetForm();
+      foCloseModal();
       refreshUpstreams();
     } catch (e) { $('fo-err').textContent = friendlyError(e); }
   };
@@ -783,25 +932,14 @@ function initUpstreams() {
     const delBtn = e.target.closest('[data-fo-del]');
     if (editBtn) {
       const c = FO_ITEMS.find(x => x.id === editBtn.dataset.foEdit);
-      if (!c) return;
-      FO_EDIT_ID = c.id;
-      $('fo-form-title').textContent = '编辑扇出连接';
-      $('fo-token-hint').style.display = '';
-      $('btn-fo-add').textContent = '保存';
-      $('btn-fo-cancel').style.display = '';
-      $('fo-addr').value = c.upstream_addr;
-      $('fo-token').value = '';
-      $('fo-sni').value = c.sni_hostname;
-      $('fo-insecure').checked = c.insecure;
-      $('fo-group').value = c.group_id || '';
-      $('fo-addr').focus();
+      if (c) foOpenModal(c);
       return;
     }
     if (delBtn) {
       try {
         await invoke('remove_server_connector', { id: delBtn.dataset.foDel });
         toast('扇出连接已删除（热生效）', 'ok');
-        if (FO_EDIT_ID === delBtn.dataset.foDel) foResetForm();
+        if (FO_EDIT_ID === delBtn.dataset.foDel) foCloseModal();
         refreshUpstreams();
       } catch (err) { toast(friendlyError(err), 'err'); }
     }
@@ -1539,6 +1677,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   refreshSysproxy();
   $('s-lang').value = localStorage.getItem('ag_lang') || 'zh';
   $('s-theme').value = localStorage.getItem('ag_theme') || 'light';
+  agSelectEnhance(document);
   $('s-lang').onchange = (e) => { localStorage.setItem('ag_lang', e.target.value); applyLanguage(); };
   $('s-theme').onchange = (e) => {
     localStorage.setItem('ag_theme', e.target.value);

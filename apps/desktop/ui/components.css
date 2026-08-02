@@ -1,0 +1,38 @@
+/* AgileNet 共享组件样式（与 tokens.css 同机制共享：桌面端 <link> 引入，管理端经
+   crates/node/src/ui/mod.rs 内嵌服务于 /ui/components.css；AGENTS.md §6 组件沉淀层）。
+   只吃 tokens.css 的 var(--*)，严禁硬编码色值；新增共享组件先泛化再沉淀于此。
+
+   当前收录：ag-select 统一自定义下拉（.agsel-*；原生 select 保留为数据/逻辑载体）
+             ag-tabs 横向页签条（.agtabs/.agtab；页内分区切换，可带右侧工具位） */
+
+/* --- ag-select 统一自定义下拉 --- */
+/* 源 select 视觉隐藏但保留在 DOM：脚本可读值/改选项，change 事件照常派发 */
+select.agsel-src { position: absolute !important; width: 1px !important; height: 1px !important; padding: 0 !important; margin: -1px !important; border: 0 !important; opacity: 0 !important; pointer-events: none !important; }
+.agsel { display: inline-block; vertical-align: middle; }
+.agsel-btn { display: inline-flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; font: inherit; text-align: left; background: var(--panel2); border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: 8px 12px; cursor: pointer; transition: border-color .15s, box-shadow .15s; }
+.agsel-btn:hover { background: var(--panel2); border-color: var(--border2); }
+.agsel-btn:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
+.agsel.open .agsel-btn { border-color: var(--ring); box-shadow: 0 0 0 3px var(--ring-bg); }
+.agsel-btn:disabled { opacity: .5; cursor: not-allowed; }
+.agsel-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agsel-btn .ic { flex-shrink: 0; color: var(--dim2); transition: transform .2s ease; }
+.agsel.open .agsel-btn .ic { transform: rotate(180deg); }
+/* 紧凑档（行内小下拉，如令牌授权档位；由源 select 的 small 类映射） */
+.agsel-sm .agsel-btn { padding: 4px 10px; font-size: 12px; border-radius: 7px; }
+/* 弹出层 fixed 挂 body：避开模态 overflow 裁剪，z-index 高于两端全部浮层（模态/菜单/岛） */
+.agsel-pop { position: fixed; z-index: 500; background: var(--panel2); border: 1px solid var(--border); border-radius: 11px; box-shadow: 0 12px 36px rgba(0,0,0,.16); padding: 5px; max-height: 260px; overflow-y: auto; animation: agsel-in .15s ease both; }
+.agsel-opt { display: flex; align-items: center; gap: 8px; padding: 8px 11px; border-radius: 7px; font-size: 13px; color: var(--text); cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.agsel-opt:hover { background: var(--hover); }
+.agsel-opt.sel { background: var(--chip); color: var(--text-strong); font-weight: 600; }
+@keyframes agsel-in { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: none; } }
+
+/* --- ag-tabs 横向页签条（页内分区切换；质感泛化自页内段控 .group-tab，语义化独立命名） ---
+   结构：<div class="agtabs"><div class="agtabs-pill"><button class="agtab active>…
+         可选右侧工具位 <div class="agtabs-tools">（搜索框/按钮，右对齐）；面板显隐由端内 JS 驱动 */
+.agtabs { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
+.agtabs-pill { display: inline-flex; gap: 4px; background: var(--chip); border-radius: 999px; padding: 3px; }
+.agtab { padding: 6px 16px; font: inherit; font-size: 13px; font-weight: 600; color: var(--dim); cursor: pointer; border-radius: 999px; background: none; border: none; box-shadow: none; user-select: none; transition: background .15s, color .15s; }
+.agtab:hover { background: none; color: var(--text-strong); }
+.agtab.active { background: var(--accent); color: var(--accent-fg); }
+.agtab:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
+.agtabs-tools { margin-left: auto; display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }

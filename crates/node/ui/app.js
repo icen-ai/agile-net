@@ -23,6 +23,7 @@ const ICONS = {
   'square': '<rect width="18" height="18" x="3" y="3" rx="2"/>',
   'x': '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
   'panel-left': '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/>',
+  'chevron-down': '<path d="m6 9 6 6 6-6"/>',
 };
 function ic(name, size) {
   const s = size || 16;
@@ -37,6 +38,133 @@ function hydrateIcons() {
   });
 }
 
+/* ================= ag-select 统一自定义下拉（共享组件，样式在 /ui/components.css） =================
+   渐进增强：原生 select 保留为数据/逻辑载体（视觉隐藏），自定义 UI 与其双向同步——
+   选择自定义项 = 写回 sel.value 并 dispatch change（冒泡，既有内联 onchange 照常触发）；
+   程序化改选项/值后调 agSelectRefresh(sel) 刷新标签；sel.disabled 同步禁用态。
+   弹出层 fixed 挂 body（避开模态 overflow 裁剪，z-index 高于模态），点击外部 / Esc / 滚动 / 缩放关闭。 */
+let agselOpen = null; // 当前打开的下拉 {root, btn, pop, cleanup}（全局同时只开一个）
+
+function agSelClose() {
+  if (!agselOpen) return;
+  const o = agselOpen; agselOpen = null;
+  o.root.classList.remove('open');
+  o.btn.setAttribute('aria-expanded', 'false');
+  o.pop.remove();
+  o.cleanup();
+}
+
+/* 标签与禁用态同步（增强/打开/选择/refresh 时调用） */
+function agSelSyncLabel(sel) {
+  const root = sel._agsel; if (!root) return;
+  const opt = sel.options[sel.selectedIndex];
+  root.querySelector('.agsel-label').textContent = opt ? opt.textContent : '';
+  root.querySelector('.agsel-btn').disabled = sel.disabled;
+}
+
+/* 打开时重建选项列表（天然兼容动态选项变更）并定位弹出层 */
+function agSelOpenPop(sel, root, btn) {
+  const pop = document.createElement('div');
+  pop.className = 'agsel-pop';
+  pop.setAttribute('role', 'listbox');
+  [...sel.options].forEach((o, i) => {
+    const d = document.createElement('div');
+    d.className = 'agsel-opt' + (i === sel.selectedIndex ? ' sel' : '');
+    d.setAttribute('role', 'option');
+    d.setAttribute('aria-selected', i === sel.selectedIndex ? 'true' : 'false');
+    d.textContent = o.textContent;
+    d.addEventListener('click', () => {
+      sel.selectedIndex = i;
+      agSelSyncLabel(sel);
+      agSelClose();
+      sel.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    pop.appendChild(d);
+  });
+  document.body.appendChild(pop);
+  root.classList.add('open');
+  btn.setAttribute('aria-expanded', 'true');
+  // 定位：默认按钮下方，下方空间不足翻上方；右缘越界则左移
+  const r = btn.getBoundingClientRect();
+  pop.style.minWidth = r.width + 'px';
+  const pw = pop.offsetWidth;
+  pop.style.left = Math.max(8, Math.min(r.left, window.innerWidth - pw - 8)) + 'px';
+  const below = window.innerHeight - r.bottom - 8, above = r.top - 8;
+  if (below >= 160 || below >= above) {
+    pop.style.top = (r.bottom + 4) + 'px';
+    pop.style.maxHeight = Math.max(120, Math.min(260, below - 4)) + 'px';
+  } else {
+    pop.style.bottom = (window.innerHeight - r.top + 4) + 'px';
+    pop.style.maxHeight = Math.max(120, Math.min(260, above - 4)) + 'px';
+  }
+  const cur = pop.querySelector('.agsel-opt.sel');
+  if (cur) cur.scrollIntoView({ block: 'nearest' });
+  const onDocDown = (e) => { if (!pop.contains(e.target) && !root.contains(e.target)) agSelClose(); };
+  const onKey = (e) => { if (e.key === 'Escape') { agSelClose(); btn.focus(); } };
+  const onScroll = (e) => { if (!pop.contains(e.target)) agSelClose(); };
+  const onResize = () => agSelClose();
+  document.addEventListener('pointerdown', onDocDown, true);
+  document.addEventListener('keydown', onKey, true);
+  document.addEventListener('scroll', onScroll, true);
+  window.addEventListener('resize', onResize);
+  agselOpen = { root, btn, pop, cleanup() {
+    document.removeEventListener('pointerdown', onDocDown, true);
+    document.removeEventListener('keydown', onKey, true);
+    document.removeEventListener('scroll', onScroll, true);
+    window.removeEventListener('resize', onResize);
+  } };
+}
+
+/* 扫描 root 内未增强的 select 并增强（幂等）；innerHTML 渲染出入口之后调用 */
+function agSelectEnhance(root) {
+  (root || document).querySelectorAll('select:not([data-agsel])').forEach(sel => {
+    sel.dataset.agsel = '1';
+    sel.classList.add('agsel-src');
+    sel.setAttribute('aria-hidden', 'true');
+    sel.tabIndex = -1;
+    const wrap = document.createElement('span');
+    wrap.className = 'agsel' + (sel.classList.contains('small') ? ' agsel-sm' : '');
+    if (sel.style.width) wrap.style.width = sel.style.width;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'agsel-btn';
+    btn.setAttribute('aria-haspopup', 'listbox');
+    btn.setAttribute('aria-expanded', 'false');
+    btn.innerHTML = '<span class="agsel-label"></span>' + ic('chevron-down', 14);
+    wrap.appendChild(btn);
+    sel.parentNode.insertBefore(wrap, sel.nextSibling);
+    sel._agsel = wrap;
+    btn.addEventListener('click', () => {
+      if (sel.disabled) return;
+      if (agselOpen && agselOpen.root === wrap) { agSelClose(); return; }
+      agSelClose();
+      agSelOpenPop(sel, wrap, btn);
+    });
+    // 外部代码直接改值并派发 change 时同步标签
+    sel.addEventListener('change', () => agSelSyncLabel(sel));
+    agSelSyncLabel(sel);
+  });
+}
+
+/* 程序化改选项/值/disabled 后刷新自定义 UI（未增强时安全 no-op） */
+function agSelectRefresh(sel) { if (sel && sel._agsel) agSelSyncLabel(sel); }
+
+/* ================= ag-tabs 横向页签条（共享组件，样式在 /ui/components.css） =================
+   结构：<div class="agtabs"><div class="agtabs-pill"><button class="agtab" data-agtab="k">…
+         面板 = 与页签条同容器内的直属 [data-agpanel="k"]；点击置 active 并显示对应面板。
+   纯显隐切换不重渲染（轮询签名检测不受影响）；onSwitch(key) 供页面同步状态。 */
+function agTabsBind(bar, onSwitch) {
+  const scope = bar.parentElement;
+  const apply = (key, fire) => {
+    bar.querySelectorAll('.agtab').forEach(t => t.classList.toggle('active', t.dataset.agtab === key));
+    scope.querySelectorAll(':scope > [data-agpanel]').forEach(p => { p.hidden = p.dataset.agpanel !== key; });
+    if (fire && onSwitch) onSwitch(key);
+  };
+  bar.querySelectorAll('.agtab').forEach(t => { t.onclick = () => apply(t.dataset.agtab, true); });
+  const cur = bar.querySelector('.agtab.active') || bar.querySelector('.agtab');
+  if (cur) apply(cur.dataset.agtab, false);
+}
+
 /* ================= 基础设施 ================= */
 const $ = (id) => document.getElementById(id);
 const S = {
@@ -46,6 +174,8 @@ const S = {
   page: { accounts: 1, groups: 1, rules: 1, audit: 1 },
   size: { accounts: 10, groups: 10, rules: 10, audit: 15 },
   filter: { accounts: '', accountsEnabled: '', accountsGroup: '', rules: '', rulesType: '', auditAction: '' },
+  faninTab: 'listen',   // 扇入页当前页签：listen | peers | tokens
+  faninQuery: '',       // 扇入页搜索词：连接/令牌两页签共享（一脉相承，切页签保留）
   groups: [],
   timers: [],
   ws: null,
@@ -69,6 +199,13 @@ function fmtUptime(s) {
   return (d? d+'天 ':'') + (h? h+'时 ':'') + m + '分';
 }
 function toast(msg, type) {
+  // 内嵌进 GUI 时通知统一走外壳灵动岛（避免新旧两套通知组件并存）
+  if (window.parent !== window) {
+    try {
+      window.parent.postMessage({ type: 'ag-toast', msg: String(msg), kind: type || 'info' }, '*');
+      return;
+    } catch (e) { /* postMessage 不可用时回退本地 toast */ }
+  }
   const el = document.createElement('div');
   el.className = 'toast ' + (type||'');
   el.textContent = msg;
@@ -138,6 +275,7 @@ function openModal(title, bodyHtml, actions) {
   modal.appendChild(bar);
   mask.appendChild(modal);
   root.appendChild(mask);
+  agSelectEnhance(modal);
 }
 function closeModal() { $('modal-root').innerHTML = ''; }
 function confirmAction(text, onYes) {
@@ -198,6 +336,8 @@ function switchView(v) {
 }
 async function loadGroupsCache() {
   try { const d = await api('GET', '/api/v1/admin/groups?page_size=100'); S.groups = d.items || []; } catch(e) { S.groups = []; }
+  // 组缓存刷新后同步现存自定义下拉标签（选项列表随各渲染入口重建）
+  document.querySelectorAll('select[data-agsel]').forEach(agSelectRefresh);
 }
 function groupName(id) {
   const g = S.groups.find(g => g.id === id);
@@ -331,6 +471,7 @@ async function renderAccounts() {
       '<button onclick="openCreateAccount()">' + ic('plus', 15) + '新建账号</button>' +
     '</div>' +
     '<div class="card table-wrap"><table><thead><tr><th>账号</th><th>权限组</th><th>在线</th><th>状态</th><th>最后在线</th><th>备注</th><th>操作</th></tr></thead><tbody id="acc-body"></tbody></table><div id="acc-pager"></div></div>';
+  agSelectEnhance($('view'));
   await loadAccounts();
   S.timers.push(setInterval(loadAccounts, 20000));
 }
@@ -559,6 +700,7 @@ async function renderRules() {
       '<button onclick="openCreateRule()">' + ic('plus', 15) + '新建规则</button>' +
     '</div>' +
     '<div class="card table-wrap"><table><thead><tr><th>类型</th><th>匹配值</th><th>解析</th><th>引用组</th><th>备注</th><th>操作</th></tr></thead><tbody id="rule-body"></tbody></table><div id="rule-pager"></div></div>';
+  agSelectEnhance($('view'));
   await loadRules();
 }
 async function loadRules() {
@@ -669,14 +811,36 @@ function openBatchImport() {
 }
 
 /* ================= 扇入（谁连着本端点：监听 / 连接 / 令牌） ================= */
+/* 列表最近数据缓存：轮询签名检测外，搜索过滤与页签切换直接复用（不重新拉取） */
+let FANIN_PEERS = [];
+let FANIN_TOKENS = [];
 async function renderFanIn() {
+  const tab = S.faninTab;
   $('view').innerHTML = '<div class="page-title">' + ic('globe', 20) + '扇入</div><div class="page-desc">谁连着本端点：扇入监听状态、在线扇入连接与扇入令牌管理（生成令牌是扇入能力之一，归本页）</div>' +
-    '<div class="card"><h3>扇入监听</h3><div id="fanin-listener"></div></div>' +
-    '<div class="card"><h3>扇入连接</h3><div class="table-wrap"><table><thead><tr><th>对端 node_id</th><th>上行</th><th>下行</th></tr></thead><tbody id="fanin-peers"></tbody></table></div></div>' +
-    '<div class="card"><h3>扇入令牌</h3>' +
+    '<div class="agtabs" id="fanin-tabs">' +
+      '<div class="agtabs-pill">' +
+        '<button class="agtab' + (tab === 'listen' ? ' active' : '') + '" data-agtab="listen">监听</button>' +
+        '<button class="agtab' + (tab === 'peers' ? ' active' : '') + '" data-agtab="peers">连接</button>' +
+        '<button class="agtab' + (tab === 'tokens' ? ' active' : '') + '" data-agtab="tokens">令牌</button>' +
+      '</div>' +
+      '<div class="agtabs-tools"><input id="fanin-q" style="width:230px" placeholder="搜索连接 / 令牌（同词联动过滤）" value="' + esc(S.faninQuery) + '"' + (tab === 'listen' ? ' hidden' : '') + '></div>' +
+    '</div>' +
+    '<div data-agpanel="listen"><div class="card"><h3>扇入监听</h3><div id="fanin-listener"></div></div></div>' +
+    '<div data-agpanel="peers" hidden><div class="card"><h3>扇入连接</h3><div class="table-wrap"><table><thead><tr><th>对端 node_id</th><th>上行</th><th>下行</th></tr></thead><tbody id="fanin-peers"></tbody></table></div></div></div>' +
+    '<div data-agpanel="tokens" hidden><div class="card"><h3>扇入令牌</h3>' +
       '<div class="page-desc" style="margin-bottom:12px">令牌 = 允许对端扇入本端点的预共享密钥（psk_ 48 位），服务端只存哈希，全文仅创建时展示一次</div>' +
       '<div class="toolbar"><div class="spacer"></div><button onclick="openCreateToken()">' + ic('plus', 15) + '生成令牌</button></div>' +
-      '<div class="table-wrap"><table><thead><tr><th>前缀</th><th>权限组</th><th>备注</th><th>暴露控制面</th><th>最近使用</th><th>创建时间</th><th>操作</th></tr></thead><tbody id="tok-body"></tbody></table></div></div>';
+      '<div class="table-wrap"><table><thead><tr><th>前缀</th><th>权限组</th><th>备注</th><th>暴露控制面</th><th>最近使用</th><th>创建时间</th><th>操作</th></tr></thead><tbody id="tok-body"></tbody></table></div></div></div>';
+  agTabsBind($('fanin-tabs'), (k) => {
+    S.faninTab = k;
+    $('fanin-q').hidden = (k === 'listen');
+  });
+  // 连接/令牌一脉相承的相关搜索：输入即过滤两表，切页签搜索词保留并各自生效
+  $('fanin-q').oninput = (e) => {
+    S.faninQuery = e.target.value;
+    renderFaninPeers();
+    renderFaninTokens();
+  };
   await Promise.all([loadFaninStatus(), loadTokens()]);
   S.timers.push(setInterval(loadFaninStatus, 10000));
 }
@@ -705,30 +869,50 @@ async function loadFaninStatus() {
   const rows = traffic.slice();
   const seen = new Set(traffic.map(t => t.node_id));
   peers.filter(p => !seen.has(p)).forEach(p => rows.push({ node_id: p, bytes_up: 0, bytes_down: 0 }));
-  $('fanin-peers').innerHTML = rows.map(t =>
+  FANIN_PEERS = rows;
+  renderFaninPeers();
+}
+function renderFaninPeers() {
+  const body = $('fanin-peers'); if (!body) return;
+  const q = S.faninQuery.trim().toLowerCase();
+  const rows = q ? FANIN_PEERS.filter(t => (t.node_id || '').toLowerCase().includes(q)) : FANIN_PEERS;
+  body.innerHTML = rows.map(t =>
     '<tr><td class="mono"><span class="dot on"></span>' + esc(t.node_id) + '</td>' +
     '<td class="mono">' + fmtBytes(t.bytes_up) + '</td>' +
     '<td class="mono">' + fmtBytes(t.bytes_down) + '</td></tr>'
-  ).join('') || '<tr><td colspan="3" class="empty">暂无扇入连接</td></tr>';
+  ).join('') || '<tr><td colspan="3" class="empty">' + (q ? '无匹配的扇入连接' : '暂无扇入连接') + '</td></tr>';
 }
 async function loadTokens() {
   const body = $('tok-body'); if (!body) return;
   try {
     const d = await api('GET', '/api/v1/admin/node/relay-tokens');
-    body.innerHTML = (d.items||[]).map(t =>
-      '<tr><td class="mono">' + esc(t.token_prefix) + '</td>' +
-      '<td>' + (t.group_id ? esc(t.group_name || groupName(t.group_id)) : '<span style="color:var(--dim2)">不收敛</span>') + '</td>' +
-      '<td>' + esc(t.remark || '-') + '</td>' +
-      '<td><label class="chk" style="display:flex;align-items:center;gap:5px"><input type="checkbox" ' + (t.expose_control ? 'checked' : '') +
-        ' onchange="toggleExpose(\'' + esc(t.id) + '\', this.checked)"><span style="font-size:12px">允许管理</span></label>' +
-        (t.expose_control ? '<select class="ghost small" onchange="setScope(\'' + esc(t.id) + '\', this.value)">' +
-          ['ro','rules','full'].map(sc => '<option value="' + sc + '" ' + (t.control_scope === sc ? 'selected' : '') + '>' + ({ro:'只读',rules:'规则',full:'全权'})[sc] + '</option>').join('') + '</select>' : '') + '</td>' +
-      '<td style="color:var(--dim)">' + esc(t.last_used_at || '未使用') + '</td>' +
-      '<td style="color:var(--dim)">' + esc(t.created_at) + '</td>' +
-      '<td style="white-space:nowrap"><button class="ghost small" onclick="openEditToken(\'' + esc(t.id) + '\',\'' + esc(t.group_id||'') + '\',' + t.expose_control + ',\'' + esc(t.control_scope) + '\')">编辑</button> ' +
-      '<button class="danger small" onclick="delToken(\'' + esc(t.id) + '\')">吊销</button></td></tr>'
-    ).join('') || '<tr><td colspan="7" class="empty">暂无扇入令牌</td></tr>';
+    FANIN_TOKENS = d.items || [];
+    renderFaninTokens();
   } catch(e) { toast(e.message, 'err'); }
+}
+/* 令牌过滤维度：前缀 / 备注 / 组名（与连接表共用同一搜索词） */
+function renderFaninTokens() {
+  const body = $('tok-body'); if (!body) return;
+  const q = S.faninQuery.trim().toLowerCase();
+  const items = q ? FANIN_TOKENS.filter(t =>
+    (t.token_prefix || '').toLowerCase().includes(q) ||
+    (t.remark || '').toLowerCase().includes(q) ||
+    (t.group_id && (t.group_name || groupName(t.group_id)).toLowerCase().includes(q))
+  ) : FANIN_TOKENS;
+  body.innerHTML = items.map(t =>
+    '<tr><td class="mono">' + esc(t.token_prefix) + '</td>' +
+    '<td>' + (t.group_id ? esc(t.group_name || groupName(t.group_id)) : '<span style="color:var(--dim2)">不收敛</span>') + '</td>' +
+    '<td>' + esc(t.remark || '-') + '</td>' +
+    '<td><label class="chk" style="display:flex;align-items:center;gap:5px"><input type="checkbox" ' + (t.expose_control ? 'checked' : '') +
+      ' onchange="toggleExpose(\'' + esc(t.id) + '\', this.checked)"><span style="font-size:12px">允许管理</span></label>' +
+      (t.expose_control ? '<select class="ghost small" onchange="setScope(\'' + esc(t.id) + '\', this.value)">' +
+        ['ro','rules','full'].map(sc => '<option value="' + sc + '" ' + (t.control_scope === sc ? 'selected' : '') + '>' + ({ro:'只读',rules:'规则',full:'全权'})[sc] + '</option>').join('') + '</select>' : '') + '</td>' +
+    '<td style="color:var(--dim)">' + esc(t.last_used_at || '未使用') + '</td>' +
+    '<td style="color:var(--dim)">' + esc(t.created_at) + '</td>' +
+    '<td style="white-space:nowrap"><button class="ghost small" onclick="openEditToken(\'' + esc(t.id) + '\',\'' + esc(t.group_id||'') + '\',' + t.expose_control + ',\'' + esc(t.control_scope) + '\')">编辑</button> ' +
+    '<button class="danger small" onclick="delToken(\'' + esc(t.id) + '\')">吊销</button></td></tr>'
+  ).join('') || '<tr><td colspan="7" class="empty">' + (q ? '无匹配的扇入令牌' : '暂无扇入令牌') + '</td></tr>';
+  agSelectEnhance(body);
 }
 async function toggleExpose(id, on) {
   try {
@@ -935,6 +1119,7 @@ async function renderAudit() {
       '</select>' +
     '</div>' +
     '<div class="card table-wrap"><table><thead><tr><th>时间</th><th>操作人</th><th>动作</th><th>目标</th><th>详情</th><th>来源 IP</th></tr></thead><tbody id="audit-body"></tbody></table><div id="audit-pager"></div></div>';
+  agSelectEnhance($('view'));
   await loadAudit();
 }
 async function loadAudit() {
