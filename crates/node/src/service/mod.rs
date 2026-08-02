@@ -21,6 +21,7 @@ use agile_net_core::config::NodeConfig;
 use agile_net_core::proxy::inbound::ProxyInbound;
 use agile_net_core::proxy::router::{Outbound, ProxyRouter};
 use agile_net_core::relay::RelayListener;
+use agile_net_core::relay::transit::TransitMeter;
 use agile_net_core::tunnel::opener::{ChannelOpener, PeerAutoOpener};
 use agile_net_core::tunnel::tls::load_or_generate_self_signed;
 
@@ -144,6 +145,9 @@ impl NodeServer {
         let acl_registry = Arc::new(PeerAclRegistry::new());
         acl_registry.rebuild(&db);
 
+        // 中继途径核算表（listener/connector/proxy 三处共享打点；status transit 段数据源）
+        let transit_meter = TransitMeter::new();
+
         // 4. Relay Listener
         let mut relay_listener: Option<Arc<RelayListener>> = None;
         let mut cert_fingerprint: Option<String> = None;
@@ -212,7 +216,8 @@ impl NodeServer {
             };
 
             let listener = {
-                let l = RelayListener::with_validator(addr, validator, tls_acceptor);
+                let l = RelayListener::with_validator(addr, validator, tls_acceptor)
+                    .with_transit_meter(transit_meter.clone());
                 match &config.limits {
                     Some(lim) => Arc::new(l.with_limits(
                         lim.max_connections,
@@ -270,7 +275,8 @@ impl NodeServer {
                 .with_listener(relay_listener.clone())
                 .with_client_routes(opts.client_routes.clone())
                 .with_acl_registry(acl_registry.clone())
-                .with_manageable(manageable_registry.clone()),
+                .with_manageable(manageable_registry.clone())
+                .with_transit_meter(transit_meter.clone()),
         );
         connector_manager.start_all().await;
 
@@ -279,7 +285,8 @@ impl NodeServer {
         let mut proxy_listen = None;
         if let Some(proxy_cfg) = &config.proxy {
             let proxy_addr: SocketAddr = proxy_cfg.addr.parse()?;
-            let mut inbound = ProxyInbound::new(proxy_addr, shared_router.clone());
+            let mut inbound = ProxyInbound::new(proxy_addr, shared_router.clone())
+                .with_transit_meter(transit_meter.clone());
             if let (Some(u), Some(p)) = (&proxy_cfg.username, &proxy_cfg.password) {
                 inbound = inbound.with_auth(u.clone(), p.clone());
             }
@@ -309,6 +316,7 @@ impl NodeServer {
             cert_fingerprint,
             manageable: manageable_registry.clone(),
             client_proxy_slot: opts.client_proxy_slot.clone(),
+            transit_meter: transit_meter.clone(),
         });
 
         // 路由热更新监视：config_version 变化即重建节点本地代理路由表与对端收敛组路由。
@@ -339,7 +347,57 @@ impl NodeServer {
             }));
         }
 
-        // 数据留存清理任务：审计日志 90 天 + 过期 refresh token，每 24h 执行
+        // 节点级流量采样：分钟级把实时计数差分入 node_traffic_log（扇入对端/扇出/中继三维）。
+        // 各源计数均为累计值：fanin/fanout 随会话重连归零（回退视为重置，按当前值入账）；
+        // transit meter 进程内只增不减；三维互为独立视角（同一字节可在多个维度各计一次）。
+        {
+            let db = db.clone();
+            let listener = relay_listener.clone();
+            let connector_manager = connector_manager.clone();
+            let meter = transit_meter.clone();
+            tasks.push(tokio::spawn(async move {
+                let mut last_fanin: std::collections::HashMap<String, (u64, u64)> =
+                    Default::default();
+                let mut last_fanout: std::collections::HashMap<String, (u64, u64)> =
+                    Default::default();
+                let mut last_transit: std::collections::HashMap<(String, String), (u64, u64)> =
+                    Default::default();
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                loop {
+                    interval.tick().await;
+
+                    // 扇入对端（last 表随当前在线对端收敛，防无界增长）
+                    if let Some(l) = &listener {
+                        let cur: Vec<(String, u64, u64)> = l.peer_traffic();
+                        last_fanin.retain(|k, _| cur.iter().any(|(id, _, _)| id == k));
+                        for (node_id, up, down) in cur {
+                            let (du, dd) = counter_delta(&mut last_fanin, node_id.clone(), up, down);
+                            let _ = db.add_node_traffic("fanin", &node_id, "", du, dd);
+                        }
+                    }
+
+                    // 扇出 connector（同上按当前句柄收敛）
+                    let cur = connector_manager.traffic();
+                    last_fanout.retain(|k, _| cur.iter().any(|(name, _, _)| name == k));
+                    for (name, up, down) in cur {
+                        let (du, dd) = counter_delta(&mut last_fanout, name.clone(), up, down);
+                        let _ = db.add_node_traffic("fanout", &name, "", du, dd);
+                    }
+
+                    // 中继途径对
+                    let (_, _, pairs) = meter.snapshot();
+                    for p in pairs {
+                        let key = (p.from, p.to);
+                        let (du, dd) =
+                            counter_delta(&mut last_transit, key.clone(), p.bytes_up, p.bytes_down);
+                        let _ = db.add_node_traffic("transit", &key.0, &key.1, du, dd);
+                    }
+                }
+            }));
+        }
+
+        // 数据留存清理任务：审计日志 90 天 + 节点级流量 30 天 + 过期 refresh token，每 24h 执行
         {
             let db = db.clone();
             tasks.push(tokio::spawn(async move {
@@ -350,6 +408,12 @@ impl NodeServer {
                     match db.cleanup_audit_log(90) {
                         Ok(n) if n > 0 => {
                             tracing::info!(removed = n, "audit log retention cleanup")
+                        }
+                        _ => {}
+                    }
+                    match db.cleanup_node_traffic(30) {
+                        Ok(n) if n > 0 => {
+                            tracing::info!(removed = n, "node traffic retention cleanup")
                         }
                         _ => {}
                     }
@@ -525,6 +589,19 @@ impl NodeServer {
     }
 }
 
+/// 累计计数差分：回退视为会话重置（按当前值入账），返回 (up, down) 增量。
+fn counter_delta<K: Eq + std::hash::Hash>(
+    map: &mut std::collections::HashMap<K, (u64, u64)>,
+    key: K,
+    up: u64,
+    down: u64,
+) -> (i64, i64) {
+    let prev = map.insert(key, (up, down)).unwrap_or((0, 0));
+    let du = if up >= prev.0 { up - prev.0 } else { up };
+    let dd = if down >= prev.1 { down - prev.1 } else { down };
+    (du as i64, dd as i64)
+}
+
 /// 从配置文件路径加载节点配置（文件缺失时回落默认配置）。
 pub fn load_config(path: &str) -> Result<NodeConfig> {
     match std::fs::read_to_string(path) {
@@ -665,4 +742,28 @@ async fn resolve_upstream(addr: &str) -> Result<SocketAddr> {
         .or_else(|| resolved.first())
         .copied()
         .ok_or_else(|| anyhow::anyhow!("cannot resolve upstream: {addr}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::counter_delta;
+    use std::collections::HashMap;
+
+    /// 采样差分：常规递增 / 会话重置（计数回退按当前值入账）/ 双零
+    #[test]
+    fn counter_delta_handles_growth_reset_and_zero() {
+        let mut map: HashMap<String, (u64, u64)> = HashMap::new();
+
+        // 首次：全额为增量
+        assert_eq!(counter_delta(&mut map, "a".into(), 100, 200), (100, 200));
+        // 递增：差额入账
+        assert_eq!(counter_delta(&mut map, "a".into(), 130, 260), (30, 60));
+        // 回退（会话重连计数归零）：按当前值入账
+        assert_eq!(counter_delta(&mut map, "a".into(), 10, 5), (10, 5));
+        // 双零：无增量
+        assert_eq!(counter_delta(&mut map, "a".into(), 10, 5), (0, 0));
+        // 多 key 互不影响
+        assert_eq!(counter_delta(&mut map, "b".into(), 7, 8), (7, 8));
+        assert_eq!(counter_delta(&mut map, "a".into(), 12, 9), (2, 4));
+    }
 }

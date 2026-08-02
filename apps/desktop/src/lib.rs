@@ -476,8 +476,10 @@ fn spa_assets() -> agile_net_client::api::SpaAssets {
         index: include_str!("../ui/index.html"),
         app_js: include_str!("../ui/app.js"),
         icons_js: include_str!("../ui/icons.js"),
+        agchart_js: include_str!("../ui/agchart.js"),
         style_css: include_str!("../ui/style.css"),
         tokens_css: include_str!("../ui/tokens.css"),
+        components_css: include_str!("../ui/components.css"),
     }
 }
 

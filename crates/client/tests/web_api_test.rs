@@ -310,8 +310,10 @@ async fn spa_assets_served() {
             index: "<html>spa</html>",
             app_js: "app",
             icons_js: "icons",
+            agchart_js: "agchart",
             style_css: "css",
             tokens_css: "tokens",
+            components_css: "components",
         }),
     )
     .await
@@ -325,5 +327,13 @@ async fn spa_assets_served() {
     assert_eq!(r.text().await.unwrap(), "app");
     let r = http.get(format!("{base}/tokens.css")).send().await.unwrap();
     assert_eq!(r.text().await.unwrap(), "tokens");
+    let r = http
+        .get(format!("{base}/components.css"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.text().await.unwrap(), "components");
+    let r = http.get(format!("{base}/agchart.js")).send().await.unwrap();
+    assert_eq!(r.text().await.unwrap(), "agchart");
     handle.stop().await;
 }

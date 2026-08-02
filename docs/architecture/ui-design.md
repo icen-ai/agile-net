@@ -39,6 +39,7 @@ AgileNet 有三套用户界面：节点 Web 管理后台、节点 TUI 终端、�
 - `apps/desktop/ui/components.css` 是两端共用组件样式的唯一来源（桌面 `<link>`，管理端经 `/ui/components.css` 内嵌服务，机制同 tokens.css）；端特有覆盖留在各自 style.css。
 - 当前收录 **ag-select 统一自定义下拉**：原生 select 保留为数据/逻辑载体（视觉隐藏），`agSelectEnhance(root)` 幂等增强、`agSelectRefresh(sel)` 程序化变更后刷新；类名 `.agsel` / `.agsel-btn` / `.agsel-label` / `.agsel-pop` / `.agsel-opt`（修饰类 `.open` / `.sel` / `.agsel-sm`），弹出层 fixed 挂 body、只吃 var(--*)。
 - 当前收录 **ag-tabs 横向页签条**：页内分区切换（质感泛化自段控 `.group-tab`），结构 `.agtabs` > `.agtabs-pill` > `button.agtab[data-agtab]`（`.active` 反相胶囊），可选右侧工具位 `.agtabs-tools`（搜索/按钮右对齐）；两端 app.js 各自 `agTabsBind(bar, onSwitch)` 驱动——面板 = 与页签条同容器直属 `[data-agpanel]`，纯显隐切换不重渲染。应用：管理端扇入页（监听|连接|令牌 + 跨页签联动搜索）、客户端扇出页（监听|连接）。
+- 当前收录 **agchart 图表**（首个共享 JS 组件）：`apps/desktop/ui/agchart.js` 零依赖原生 SVG/JS，桌面端 `<script src>` 引入、管理端经 `/ui/agchart.js` 内嵌服务（机制同 components.css）。两版本：`AgChart.sparkline(el, series, opts)` 省略版（趋势折线 + 渐变面积，无轴无字）与 `AgChart.line(el, {x, series, fmtX?, fmtY?, legend?, empty?})` 完整版（XY 轴刻度网格 / 多序列 / hover 十字 + 每点浮层）；颜色只吃 var(--*)（内联 SVG 呈现属性支持 CSS 变量，默认色板 `--accent`/`--dim2`/语义色），数据签名不变不重绘，数据更新 rAF 数值插值过渡（~400ms ease-out，新增点自基线生长），hover 跟随只动 transform。样式类 `.agchart*` 在 components.css（图例 `.agchart-legend`、浮层 `.agchart-tip`、网格 `.agc-grid`、空态 `.agc-empty`）。应用：管理端概览 24h 流量趋势（完整版）+ 扇入/扇出/中继三张流量卡（sparkline）。
 
 ## 1. 节点 Web 管理后台（crates/node/src/ui）
 
@@ -49,7 +50,8 @@ AgileNet 有三套用户界面：节点 Web 管理后台、节点 TUI 终端、�
 ```
 ├── 登录页（不预填凭据，错误统一提示）
 └── 主界面（侧边栏 + 内容区）
-    ├── 概览       — 状态卡片 / 24h 流量趋势图 / WebSocket 实时事件流
+    ├── 概览       — 状态卡片 / 扇入·扇出·中继途径流量卡（AgChart sparkline）/
+    │                24h 流量趋势图（AgChart 完整版）/ WebSocket 实时事件流
     ├── 客户端账号 — 搜索/组过滤/状态过滤/分页；新建(组选择→sk-密码+connect_url+二维码)
     │                重置密码 / 启停 / 删除
     ├── 权限组     — 列表(规则数/账号数)；详情 / 绑定规则(勾选) / 编辑 / 删除(占用时强制)

@@ -50,6 +50,44 @@
 }
 ```
 
+### 流量核算字段（roles.fanout_traffic / roles.transit / traffic_24h）
+
+`data.roles` 另含两个流量字段，`data` 顶层另含 24h 序列：
+
+```json
+{
+  "code": 0,
+  "data": {
+    "roles": {
+      "fanout_traffic": [
+        { "name": "site-a", "bytes_up": 1048576, "bytes_down": 2097152 }
+      ],
+      "transit": {
+        "bytes_up": 3145728,
+        "bytes_down": 6291456,
+        "pairs": [
+          { "from": "proxy", "to": "node-c", "bytes_up": 1024, "bytes_down": 2048 },
+          { "from": "node-a", "to": "local", "bytes_up": 512, "bytes_down": 512 }
+        ]
+      }
+    },
+    "traffic_24h": {
+      "fanin":   [ { "hour": "2026-08-02 09:00", "up": 100, "down": 200 } ],
+      "fanout":  [ { "hour": "2026-08-02 09:00", "up": 7, "down": 8 } ],
+      "transit": [ { "hour": "2026-08-02 09:00", "up": 3, "down": 4 } ]
+    }
+  }
+}
+```
+
+- `roles.fanout_traffic`：扇出逐条当前会话实时累计（connector name；断连为 0）。
+- `roles.transit`：中继途径实时快照（自节点启动累计，桥接关闭时入账）。
+  - `from` = 扇入对端 node_id / `proxy`（本地代理入站）/ connector name（上游经扇出 connector 的反向来流）
+  - `to` = 下游对端 node_id / `local`（本机终结；代理 Forward 出站按本机终结计）
+- `traffic_24h`：最近 24 小时按小时聚合（本地时间 `YYYY-MM-DD HH:00`；无数据小时缺省；
+  fanin/fanout 跨标识汇总、transit 跨途径对汇总；数据源 `node_traffic_log` 表分钟级采样差分）。
+- 三维互为独立视角：同一字节可能在 fanin 与 transit 中各计一次（前者按对端会话、后者按途径对）。
+
 ---
 
 ## GET `/api/v1/admin/node/stats`

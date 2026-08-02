@@ -13,6 +13,7 @@ use crate::error::{Error, Result};
 use crate::proxy::outbound::{DirectOutbound, Socks5ForwardOutbound, TunnelOutbound};
 use crate::proxy::router::{Outbound, ProxyRouter};
 use crate::relay::listener::RelayListener;
+use crate::relay::transit::{FROM_PROXY, TO_LOCAL, TransitMeter};
 use crate::tunnel::opener::ChannelOpener;
 use arc_swap::ArcSwap;
 
@@ -52,6 +53,8 @@ pub struct ProxyInbound {
     /// 可选用户名密码认证
     auth: Option<(String, String)>,
     stats: Arc<ProxyStats>,
+    /// 中继途径核算（None = 不打点；代理入站转发按 from="proxy" 入账）
+    transit: Option<Arc<TransitMeter>>,
 }
 
 impl ProxyInbound {
@@ -63,6 +66,7 @@ impl ProxyInbound {
             default_opener: None,
             auth: None,
             stats: Arc::new(ProxyStats::default()),
+            transit: None,
         }
     }
 
@@ -106,6 +110,13 @@ impl ProxyInbound {
     /// 启用用户名密码认证（SOCKS5 RFC1929 / HTTP Basic）。
     pub fn with_auth(mut self, username: impl Into<String>, password: impl Into<String>) -> Self {
         self.auth = Some((username.into(), password.into()));
+        self
+    }
+
+    /// 挂接中继途径核算表（代理入站转发按 from="proxy" 入账；
+    /// 去向标识：隧道=开启器 transit_label，直连/转发="local"）。
+    pub fn with_transit_meter(mut self, meter: Arc<TransitMeter>) -> Self {
+        self.transit = Some(meter);
         self
     }
 
@@ -160,6 +171,7 @@ impl ProxyInbound {
                 default_opener: self.default_opener.clone(),
                 auth: self.auth.clone(),
                 stats: self.stats.clone(),
+                transit: self.transit.clone(),
             };
 
             tokio::spawn(async move {
@@ -181,6 +193,14 @@ struct InboundCtx {
     default_opener: Option<Arc<dyn ChannelOpener>>,
     auth: Option<(String, String)>,
     stats: Arc<ProxyStats>,
+    transit: Option<Arc<TransitMeter>>,
+}
+
+/// 途径核算入账（from="proxy"）；未挂 meter 时为空操作。
+fn record_transit(ctx: &InboundCtx, to: &str, up: u64, down: u64) {
+    if let Some(m) = &ctx.transit {
+        m.record(FROM_PROXY, to, up, down);
+    }
 }
 
 /// 自连环防护：目标是代理自身监听地址时拒绝（否则 CONNECT 自身会无限递归新建连接）。
@@ -378,6 +398,7 @@ async fn handle_socks5(
                         tokio::io::copy_bidirectional(&mut stream, &mut target_stream).await?;
                     ctx.stats.bytes_up.fetch_add(up, Ordering::Relaxed);
                     ctx.stats.bytes_down.fetch_add(down, Ordering::Relaxed);
+                    record_transit(&ctx, TO_LOCAL, up, down);
                     Ok(())
                 }
                 Err(e) => {
@@ -394,12 +415,15 @@ async fn handle_socks5(
                     .write_all(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
                     .await?;
 
+                // 去向标识与 open 同一解析口径（自动选路时取实际对端）
+                let to_label = opener.transit_label(&node_id, &target_host);
                 let tunnel_outbound = TunnelOutbound::new(opener);
                 let (up, down) = tunnel_outbound
                     .proxy_stream(&node_id, &target_host, target_port, stream)
                     .await?;
                 ctx.stats.bytes_up.fetch_add(up, Ordering::Relaxed);
                 ctx.stats.bytes_down.fetch_add(down, Ordering::Relaxed);
+                record_transit(&ctx, &to_label, up, down);
                 Ok(())
             } else {
                 let _ = stream
@@ -420,6 +444,8 @@ async fn handle_socks5(
                 Ok((up, down)) => {
                     ctx.stats.bytes_up.fetch_add(up, Ordering::Relaxed);
                     ctx.stats.bytes_down.fetch_add(down, Ordering::Relaxed);
+                    // 回环上游转发由本机发起，按本机终结计
+                    record_transit(&ctx, TO_LOCAL, up, down);
                     Ok(())
                 }
                 Err(e) => Err(e),
@@ -566,6 +592,7 @@ async fn handle_http(
                         tokio::io::copy_bidirectional(&mut stream, &mut target_stream).await?;
                     ctx.stats.bytes_up.fetch_add(up, Ordering::Relaxed);
                     ctx.stats.bytes_down.fetch_add(down, Ordering::Relaxed);
+                    record_transit(&ctx, TO_LOCAL, up, down);
                     Ok(())
                 }
                 Err(e) => {
@@ -576,6 +603,8 @@ async fn handle_http(
         }
         Outbound::Tunnel { node_id } => {
             if let Some(opener) = resolve_opener(&ctx, &node_id) {
+                // 去向标识与 open 同一解析口径（自动选路时取实际对端）
+                let to_label = opener.transit_label(&node_id, &target_host);
                 let channel = opener.open(&node_id, &target_host, target_port).await?;
                 let mut channel = channel;
 
@@ -594,6 +623,7 @@ async fn handle_http(
                 let (up, down) = crate::relay::bridge::bridge(stream, channel).await?;
                 ctx.stats.bytes_up.fetch_add(up, Ordering::Relaxed);
                 ctx.stats.bytes_down.fetch_add(down, Ordering::Relaxed);
+                record_transit(&ctx, &to_label, up, down);
                 Ok(())
             } else {
                 let _ = stream
@@ -622,6 +652,8 @@ async fn handle_http(
                         tokio::io::copy_bidirectional(&mut stream, &mut upstream).await?;
                     ctx.stats.bytes_up.fetch_add(up, Ordering::Relaxed);
                     ctx.stats.bytes_down.fetch_add(down, Ordering::Relaxed);
+                    // 回环上游转发由本机发起，按本机终结计
+                    record_transit(&ctx, TO_LOCAL, up, down);
                     Ok(())
                 }
                 Err(e) => {

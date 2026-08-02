@@ -8,6 +8,7 @@ use crate::db::Database;
 use crate::relay_auth::ManageableRegistry;
 use crate::service::acl::PeerAclRegistry;
 use crate::service::{ClientRoutes, load_pem_certs, resolve_upstream};
+use agile_net_core::relay::transit::TransitMeter;
 use agile_net_core::relay::{ConnectionState, PeerEvent, RelayConnector, RelayListener};
 use agile_net_core::tunnel::tls::TlsConfigBuilder;
 use anyhow::Result;
@@ -34,6 +35,8 @@ pub struct ConnectorManager {
     acl: Arc<PeerAclRegistry>,
     /// 可管理上游注册表（握手 v2 发现同步）
     manageable: ManageableRegistry,
+    /// 中继途径核算（None = 装配的 connector 不打点）
+    transit: Option<Arc<TransitMeter>>,
     handles: DashMap<String, ConnectorHandle>,
 }
 
@@ -47,6 +50,7 @@ impl ConnectorManager {
             client_routes: None,
             acl: Arc::new(PeerAclRegistry::new()),
             manageable: Arc::new(DashMap::new()),
+            transit: None,
             handles: DashMap::new(),
         }
     }
@@ -73,6 +77,12 @@ impl ConnectorManager {
 
     pub fn with_manageable(mut self, registry: ManageableRegistry) -> Self {
         self.manageable = registry;
+        self
+    }
+
+    /// 挂接中继途径核算表（装配的 connector 以自身名作为来源标识入账）。
+    pub fn with_transit_meter(mut self, meter: Arc<TransitMeter>) -> Self {
+        self.transit = Some(meter);
         self
     }
 
@@ -138,6 +148,27 @@ impl ConnectorManager {
     /// 单条 connector 的实时状态（无运行时句柄 = None，调用方按 disconnected 展示）。
     pub fn state_of(&self, id: &str) -> Option<&'static str> {
         self.handles.get(id).map(|h| state_str(h.connector.state()))
+    }
+
+    /// 各 connector 的当前会话流量（connector name, 出向字节, 入向字节）；
+    /// 断连的 connector 为 (0, 0)（仅当前会话计数，历史累计见 node_traffic_log 采样）。
+    pub fn traffic(&self) -> Vec<(String, u64, u64)> {
+        let views = self.db.list_connectors().unwrap_or_default();
+        let mut out: Vec<(String, u64, u64)> = self
+            .handles
+            .iter()
+            .map(|h| {
+                let name = views
+                    .iter()
+                    .find(|c| c.id == *h.key())
+                    .map(|c| c.name.clone())
+                    .unwrap_or_else(|| h.connector.upstream_addr().to_string());
+                let (up, down) = h.connector.traffic();
+                (name, up, down)
+            })
+            .collect();
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out
     }
 
     /// 扇出汇总状态：任一连通则 connected，全无扇出则 disabled。
@@ -246,6 +277,11 @@ impl ConnectorManager {
         )?
         .with_advertise(parse_advertise(&rec.advertise))
         .with_acl(self.acl.handle(rec.group_id.as_deref()));
+
+        // 途径核算：上游反向来流按 from=connector 名入账
+        if let Some(m) = &self.transit {
+            connector = connector.with_transit_meter(m.clone(), rec.name.clone());
+        }
 
         if let Some(l) = &self.listener {
             connector = connector.with_peer_router(l.clone());

@@ -55,10 +55,11 @@ pub struct ApiState {
 pub struct NodeRuntime {
     started_at: Instant,
     listener: Option<Arc<RelayListener>>,
-    connectors: Vec<Arc<RelayConnector>>,  // 扇出连接（多目标扇出/容灾）
+    connector_manager: Arc<ConnectorManager>,  // 扇出管理（DB 为唯一事实来源，热操作）
     proxy_stats: Option<Arc<ProxyStats>>,
     proxy_listen: Option<String>,
     log_buffer: LogBuffer,
+    transit_meter: Arc<TransitMeter>,       // 中继途径核算（listener/connector/proxy 三处打点）
 }
 ```
 

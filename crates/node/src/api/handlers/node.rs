@@ -97,6 +97,40 @@ pub async fn status(AdminAuth(_): AdminAuth, State(state): State<ApiState>) -> R
         },
     };
 
+    // 扇出逐条流量（当前会话实时累计；断连 connector 为 0，历史见 traffic_24h）
+    let fanout_traffic: Vec<serde_json::Value> = state
+        .runtime
+        .connector_manager
+        .traffic()
+        .into_iter()
+        .map(|(name, up, down)| {
+            json!({
+                "name": name,
+                "bytes_up": up,
+                "bytes_down": down,
+            })
+        })
+        .collect();
+
+    // 中继途径（实时快照：汇总 + 起始端→结束端途径对；本节点可见的相邻两跳）
+    let (t_up, t_down, t_pairs) = state.runtime.transit_meter.snapshot();
+    let transit_json = json!({
+        "bytes_up": t_up,
+        "bytes_down": t_down,
+        "pairs": t_pairs.into_iter().map(|p| json!({
+            "from": p.from,
+            "to": p.to,
+            "bytes_up": p.bytes_up,
+            "bytes_down": p.bytes_down,
+        })).collect::<Vec<_>>(),
+    });
+
+    // 24h 三维流量序列（node_traffic_log 小时聚合；查询失败回落空序列不阻断 status）
+    let traffic_24h = db
+        .node_traffic_24h()
+        .map(|v| serde_json::to_value(v).unwrap_or_else(|_| empty_traffic_24h()))
+        .unwrap_or_else(|_| empty_traffic_24h());
+
     ok(json!({
         "node_name": node_name,
         "version": env!("CARGO_PKG_VERSION"),
@@ -106,7 +140,10 @@ pub async fn status(AdminAuth(_): AdminAuth, State(state): State<ApiState>) -> R
             "listener": listener_json,
             "connectors": connectors_json,
             "connector_status": state.runtime.connector_status(),
+            "fanout_traffic": fanout_traffic,
+            "transit": transit_json,
         },
+        "traffic_24h": traffic_24h,
         "proxy": proxy_json,
         "accounts": {
             "total": accounts_total,
@@ -116,6 +153,11 @@ pub async fn status(AdminAuth(_): AdminAuth, State(state): State<ApiState>) -> R
         "system": system_stats(),
         "cert_fingerprint": state.runtime.cert_fingerprint,
     }))
+}
+
+/// traffic_24h 空序列（DB 异常时回落，保持契约字段结构完整）。
+fn empty_traffic_24h() -> serde_json::Value {
+    json!({"fanin": [], "fanout": [], "transit": []})
 }
 
 /// 系统资源占用（跨平台 sysinfo）。

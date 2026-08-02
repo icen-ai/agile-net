@@ -121,6 +121,22 @@ pub struct TrafficPoint {
     pub bytes_rx: i64,
 }
 
+/// 节点级流量小时序列点（traffic_24h 契约：hour 为本地时间 "YYYY-MM-DD HH:00"）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NodeTrafficPoint {
+    pub hour: String,
+    pub up: i64,
+    pub down: i64,
+}
+
+/// 节点级三维流量 24h 聚合（扇入/扇出/中继途径）
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct NodeTraffic24h {
+    pub fanin: Vec<NodeTrafficPoint>,
+    pub fanout: Vec<NodeTrafficPoint>,
+    pub transit: Vec<NodeTrafficPoint>,
+}
+
 /// 管理引导票据核销结果（不含哈希/明文）。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AdminTicketRecord {

@@ -358,13 +358,20 @@ function shortId(id) { return esc(String(id||'').substring(0,8)); }
 async function renderDashboard() {
   $('view').innerHTML = '<div class="page-title">' + ic('layout-dashboard', 20) + '<span id="dash-title">端点概览</span></div><div class="page-desc">运行状态、连接拓扑与流量统计</div>' +
     '<div class="stat-grid" id="dash-stats"></div>' +
-    '<div class="card"><h3>流量趋势（24h，按小时）</h3><div class="chart-wrap"><canvas class="chart" id="traffic-chart"></canvas></div></div>' +
+    '<div class="tf-grid" id="dash-tf">' +
+      tfCard('fanin', '扇入流量', 'fanin') +
+      tfCard('fanout', '扇出流量', 'connectors') +
+      tfCard('transit', '中继途径', 'fanin') +
+    '</div>' +
+    '<div class="card"><h3>流量趋势（24h，按小时）</h3><div class="chart-wrap" id="traffic-chart"></div></div>' +
     '<div class="card"><h3>实时事件</h3><div id="events-list" class="mono" style="max-height:180px;overflow-y:auto;color:var(--dim)">连接事件中…</div></div>';
-  // 卡片点击跳转（事件委托：#dash-stats 常驻，load 重写 innerHTML 不影响绑定；embed 模式同链路）
-  $('dash-stats').onclick = (e) => {
-    const card = e.target.closest('.stat[data-goto]');
+  // 卡片点击跳转（事件委托：容器常驻，load 重写 innerHTML 不影响绑定；embed 模式同链路）
+  const gotoView = (e) => {
+    const card = e.target.closest('[data-goto]');
     if (card) switchView(card.dataset.goto);
   };
+  $('dash-stats').onclick = gotoView;
+  $('dash-tf').onclick = gotoView;
 
   async function load() {
     try {
@@ -397,11 +404,23 @@ async function renderDashboard() {
         cards += statCard('在线扇入端点', (L.peers||[]).map(p => '<div class="mono"><span class="dot on"></span>' + esc(p) + '</div>').join(''), '');
       }
       $('dash-stats').innerHTML = cards;
+      // 三张流量卡：扇入（今日 + 24h 趋势）/ 扇出（汇总 + 逐条明细）/ 中继途径（汇总 + pairs）
+      updateTfCards(st);
     } catch(e) { toast(e.message, 'err'); }
 
     try {
       const t = await api('GET', '/api/v1/admin/node/stats?period=24h&group_by=time');
-      drawChart($('traffic-chart'), t.points || []);
+      const pts = t.points || [];
+      AgChart.line($('traffic-chart'), {
+        x: pts.map(p => p.time),
+        series: [
+          { name: 'RX', values: pts.map(p => p.bytes_rx) },
+          { name: 'TX', values: pts.map(p => p.bytes_tx) },
+        ],
+        fmtY: fmtBytes,
+        fmtX: h => String(h || '').slice(11, 16),
+        empty: '暂无流量数据',
+      });
     } catch(e) {}
   }
   function statCard(k, v, sub, view) {
@@ -435,36 +454,75 @@ async function renderDashboard() {
   } catch(e) {}
 }
 
-function drawChart(canvas, points) {
-  if (!canvas) return;
-  const cs = getComputedStyle(document.documentElement);
-  const cDim = cs.getPropertyValue('--dim2').trim() || '#8C8E94';
-  const cRx = cs.getPropertyValue('--ring').trim() || '#417CDD';
-  const ctx = canvas.getContext('2d');
-  const W = canvas.width = canvas.offsetWidth * 2;
-  const H = canvas.height = canvas.offsetHeight * 2;
-  ctx.clearRect(0, 0, W, H);
-  if (!points.length) {
-    ctx.fillStyle = cDim; ctx.font = '24px sans-serif';
-    ctx.fillText('暂无流量数据', 20, H/2);
-    return;
-  }
-  const tx = points.map(p => p.bytes_tx), rx = points.map(p => p.bytes_rx);
-  const max = Math.max(1, ...tx, ...rx);
-  const pad = 30;
-  function drawLine(vals, color) {
-    ctx.strokeStyle = color; ctx.lineWidth = 3; ctx.beginPath();
-    vals.forEach((v, i) => {
-      const x = pad + i * (W - 2*pad) / Math.max(1, vals.length - 1);
-      const y = H - pad - (v / max) * (H - 2*pad);
-      i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
-    });
-    ctx.stroke();
-  }
-  drawLine(rx, cRx);
-  drawLine(tx, cDim);
-  ctx.fillStyle = cDim; ctx.font = '20px sans-serif';
-  ctx.fillText('RX ' + fmtBytes(rx.reduce((a,b)=>a+b,0)) + '（蓝）  TX ' + fmtBytes(tx.reduce((a,b)=>a+b,0)) + '（灰）', pad, 26);
+/* ================= 流量卡（扇入/扇出/中继途径；sparkline 用共享组件 AgChart） =================
+   数据源：status 契约 st.roles.fanout_traffic / st.roles.transit / st.traffic_24h，
+   扇入今日合计由 traffic_24h.fanin 按本地日期聚合；契约字段缺失（旧端点）时优雅降级为「-」。
+   变更检测：数字/明细区各自签名对比，图表签名在 AgChart 内部，均不变更不重写。 */
+function tfCard(key, title, gotoView) {
+  return '<div class="card tf-card link" data-goto="' + gotoView + '"><h3>' + title + '</h3>' +
+    '<div class="tf-nums" id="tf-' + key + '-nums"></div>' +
+    '<div class="tf-spark" id="tf-' + key + '-spark"></div>' +
+    '<div class="tf-detail" id="tf-' + key + '-detail"></div></div>';
+}
+function tfNums(key, up, down, scope) {
+  const el = $('tf-' + key + '-nums'); if (!el) return;
+  const html = (up == null)
+    ? '<div class="n"><div class="k">暂无数据</div></div>'
+    : '<div class="n"><div class="k">下行' + scope + '</div><div class="v">' + fmtBytes(down) + '</div></div>' +
+      '<div class="n"><div class="k">上行' + scope + '</div><div class="v">' + fmtBytes(up) + '</div></div>';
+  if (el.dataset.sig !== html) { el.dataset.sig = html; el.innerHTML = html; }
+}
+function tfSpark(key, points) {
+  const el = $('tf-' + key + '-spark'); if (!el) return;
+  const pts = Array.isArray(points) ? points : [];
+  AgChart.sparkline(el, [
+    { name: '下行', values: pts.map(p => +p.down || 0) },
+    { name: '上行', values: pts.map(p => +p.up || 0) },
+  ]);
+}
+function tfDetail(key, rows) {
+  const el = $('tf-' + key + '-detail'); if (!el) return;
+  const html = rows.length
+    ? rows.slice(0, 5).map(r =>
+        '<div class="row"><span class="l">' + esc(r.l) + '</span><span class="v mono">' + esc(r.v) + '</span></div>').join('') +
+      (rows.length > 5 ? '<div class="row"><span class="l">…等 ' + rows.length + ' 条</span><span></span></div>' : '')
+    : '<div class="row"><span class="l" style="color:var(--dim2)">暂无数据</span></div>';
+  if (el.dataset.sig !== html) { el.dataset.sig = html; el.innerHTML = html; }
+}
+/* 今日合计：hour 为 "YYYY-MM-DD HH:00" 本地时间字符串，按本地日期前缀过滤 */
+function tfTodaySum(points) {
+  const d = new Date();
+  const pfx = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  let up = 0, down = 0;
+  (points || []).forEach(p => {
+    if (String(p.hour || '').slice(0, 10) === pfx) { up += +p.up || 0; down += +p.down || 0; }
+  });
+  return { up, down };
+}
+function tfUpDown(up, down) { return '↑ ' + fmtBytes(up) + ' · ↓ ' + fmtBytes(down); }
+function updateTfCards(st) {
+  const R = st.roles || {}, T24 = st.traffic_24h || {};
+  // 扇入：今日 up/down + 24h 趋势；明细 = 当前各扇入对端累计（peer_traffic）
+  const fi = Array.isArray(T24.fanin) ? tfTodaySum(T24.fanin) : null;
+  tfNums('fanin', fi ? fi.up : null, fi ? fi.down : 0, '（今日）');
+  tfSpark('fanin', T24.fanin);
+  tfDetail('fanin', ((R.listener || {}).peer_traffic || []).map(p => ({
+    l: p.node_id, v: tfUpDown(p.bytes_up, p.bytes_down),
+  })));
+  // 扇出：fanout_traffic 汇总 + 逐条 connector 明细
+  const fo = Array.isArray(R.fanout_traffic) ? R.fanout_traffic : null;
+  let foUp = 0, foDown = 0;
+  (fo || []).forEach(c => { foUp += +c.bytes_up || 0; foDown += +c.bytes_down || 0; });
+  tfNums('fanout', fo ? foUp : null, foDown, '（累计）');
+  tfSpark('fanout', T24.fanout);
+  tfDetail('fanout', (fo || []).map(c => ({ l: c.name, v: tfUpDown(c.bytes_up, c.bytes_down) })));
+  // 中继途径：transit 汇总 + pairs（起始端 → 结束端；主权域边界内仅相邻两跳可见）
+  const tr = R.transit || null;
+  tfNums('transit', tr ? +tr.bytes_up || 0 : null, tr ? +tr.bytes_down || 0 : 0, '（累计）');
+  tfSpark('transit', T24.transit);
+  tfDetail('transit', ((tr && tr.pairs) || []).map(p => ({
+    l: (p.from || '?') + ' → ' + (p.to || '?'), v: tfUpDown(p.bytes_up, p.bytes_down),
+  })));
 }
 
 /* ================= 客户端账号 ================= */

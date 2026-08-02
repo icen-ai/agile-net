@@ -15,6 +15,7 @@ use crate::proto::message::{
 use crate::proxy::router::{Outbound, ProxyRouter};
 use crate::relay::acl::PeerAcl;
 use crate::relay::mux::{MuxChannel, MuxSession, OpenRequest};
+use crate::relay::transit::{TO_LOCAL, TransitMeter};
 use crate::tunnel::tls::TlsConfigBuilder;
 
 use bytes::Bytes;
@@ -166,6 +167,8 @@ pub struct RelayListener {
     max_connections: usize,
     max_pending_auth: usize,
     max_auth_failures_per_minute: u32,
+    /// 中继途径核算（None = 不打点；扇入对端发起的转发按 from=node_id 入账）
+    transit: Option<Arc<TransitMeter>>,
 }
 
 impl RelayListener {
@@ -215,7 +218,14 @@ impl RelayListener {
             max_connections: DEFAULT_MAX_CONNECTIONS,
             max_pending_auth: DEFAULT_MAX_PENDING_AUTH,
             max_auth_failures_per_minute: DEFAULT_MAX_AUTH_FAILURES_PER_MINUTE,
+            transit: None,
         }
+    }
+
+    /// 挂接中继途径核算表（扇入对端发起的转发按 from=node_id 入账）。
+    pub fn with_transit_meter(mut self, meter: Arc<TransitMeter>) -> Self {
+        self.transit = Some(meter);
+        self
     }
 
     /// 覆盖默认限流参数（对应 agile-net.toml [limits]）。
@@ -658,7 +668,8 @@ impl RelayListener {
             return;
         }
 
-        self.route_open(mux, req, open_req, target).await;
+        // 客户端账号流量已有按账号核算（traffic_log），途径对不再重复打点（from 传 None）
+        self.route_open(mux, req, open_req, target, None).await;
     }
 
     /// 处理扇入对端 Open：PeerAcl 收敛 → 下游路由 → 直连，随后桥接。
@@ -703,18 +714,23 @@ impl RelayListener {
             return;
         }
 
-        self.route_open(mux, req, open_req, target).await;
+        // 途径核算：扇入对端发起的转发按 from=node_id 入账
+        self.route_open(mux, req, open_req, target, Some(&node_id))
+            .await;
     }
 
     /// Open 路由与桥接：优先走下游节点通告路由，否则本机直连。
+    /// `from` 为途径核算的来源标识（扇入对端 node_id；None = 不打点）。
     async fn route_open(
         self: &Arc<Self>,
         mux: Arc<MuxSession>,
         req: OpenRequest,
         open_req: OpenChannel,
         target: String,
+        from: Option<&str>,
     ) {
         let channel = mux.accept_channel(req.channel_id);
+        let meter_from = self.transit.clone().zip(from.map(str::to_string));
 
         // 优先走下游节点通告路由，否则本机直连
         let bridged = if let Some(peer_id) = self.resolve_peer(&open_req.target_addr) {
@@ -730,9 +746,12 @@ impl RelayListener {
                     {
                         return;
                     }
-                    crate::relay::bridge::bridge(channel, peer_channel)
-                        .await
-                        .ok();
+                    // bridge(channel, peer)：up = 来源→去向（下游对端）
+                    if let Ok((up, down)) = crate::relay::bridge::bridge(channel, peer_channel).await
+                        && let Some((m, f)) = &meter_from
+                    {
+                        m.record(f, &peer_id, up, down);
+                    }
                     true
                 }
                 Err(e) => {
@@ -750,7 +769,12 @@ impl RelayListener {
                     {
                         return;
                     }
-                    crate::relay::bridge::bridge(channel, local).await.ok();
+                    // bridge(channel, local)：up = 来源→去向（本机终结）
+                    if let Ok((up, down)) = crate::relay::bridge::bridge(channel, local).await
+                        && let Some((m, f)) = &meter_from
+                    {
+                        m.record(f, TO_LOCAL, up, down);
+                    }
                     true
                 }
                 Err(e) => {

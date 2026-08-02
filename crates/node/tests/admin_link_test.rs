@@ -29,6 +29,7 @@ async fn test_app() -> (Router, Database) {
         cert_fingerprint: None,
         manageable: Default::default(),
         client_proxy_slot: Default::default(),
+        transit_meter: agile_net_core::relay::transit::TransitMeter::new(),
     });
     let state = ApiState::new(db.clone(), jwt, runtime, "127.0.0.1".into(), 59090, 54430);
     (create_app(state), db)

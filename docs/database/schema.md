@@ -232,6 +232,28 @@ CREATE INDEX idx_traffic_account ON traffic_log(account_id);
 
 流量在内存中实时累加，每分钟 flush 到此表（按小时聚合 upsert）。
 
+### node_traffic_log — 节点级三维流量序列（v6）
+
+```sql
+CREATE TABLE node_traffic_log (
+    id         TEXT PRIMARY KEY,
+    dim        TEXT NOT NULL CHECK(dim IN ('fanin','fanout','transit')),
+    src        TEXT NOT NULL DEFAULT '',  -- fanin=对端 node_id / fanout=connector name / transit=起始端
+    dst        TEXT NOT NULL DEFAULT '',  -- 仅 transit 使用：结束端（下游对端 node_id / "local"）
+    hour       TEXT NOT NULL,             -- 本地时间桶 '2026-08-02 09:00'
+    bytes_up   INTEGER NOT NULL DEFAULT 0,
+    bytes_down INTEGER NOT NULL DEFAULT 0,
+
+    UNIQUE(dim, src, dst, hour)
+);
+
+CREATE INDEX idx_node_traffic_hour ON node_traffic_log(hour);
+```
+
+按账号流量仍在 `traffic_log`（客户端心跳上报），本表为节点数据面视角：
+后台采样任务每分钟把实时计数（扇入对端会话 / 扇出 connector 会话 / 中继途径对 TransitMeter）
+差分入库，status API 的 `traffic_24h` 按 dim 跨标识汇总输出；留存 30 天（日级清理任务）。
+
 ## 迁移策略
 
 ```rust
@@ -296,6 +318,7 @@ let pool = Pool::builder().max_size(8).build(manager)?;
 | relay_token | 1-10 | 下游节点数 |
 | audit_log | 持续增长 | 90 天清理 |
 | traffic_log | 持续增长 | 24h * account_count / 小时 |
+| node_traffic_log | 持续增长 | 24h * (对端+connector+途径对) / 小时，30 天清理 |
 | node_config | 10-30 | KV |
 
 SQLite 完全胜任，无需 PostgreSQL。

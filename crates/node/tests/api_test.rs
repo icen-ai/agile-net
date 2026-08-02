@@ -29,6 +29,7 @@ async fn test_app() -> (Router, Database) {
         cert_fingerprint: None,
         manageable: Default::default(),
         client_proxy_slot: Default::default(),
+        transit_meter: agile_net_core::relay::transit::TransitMeter::new(),
     });
     let state = ApiState::new(db.clone(), jwt, runtime, "127.0.0.1".into(), 59090, 54430);
     (create_app(state), db)
@@ -867,6 +868,40 @@ async fn audit_logs_and_node_status() {
 
     let (_, body) = req(&app, "GET", "/api/v1/admin/node/status", Some(&token), None).await;
     assert_eq!(body["data"]["node_name"], "办公网跳板");
+}
+
+/// status 流量契约字段：roles.fanout_traffic / roles.transit / traffic_24h
+#[tokio::test]
+async fn node_status_traffic_contract() {
+    let (app, db) = test_app().await;
+    let token = init_and_login(&app).await;
+
+    // 造一点 24h 序列数据（采样任务不在本测试内运行，直接落库验证聚合输出）
+    db.add_node_traffic("fanin", "n1", "", 100, 200).unwrap();
+    db.add_node_traffic("fanout", "up-a", "", 7, 8).unwrap();
+    db.add_node_traffic("transit", "n1", "n2", 3, 4).unwrap();
+
+    let (status, body) = req(&app, "GET", "/api/v1/admin/node/status", Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let data = &body["data"];
+
+    // roles.fanout_traffic：逐条数组（无 connector 时为空数组）
+    assert!(data["roles"]["fanout_traffic"].is_array());
+    // roles.transit：汇总 + pairs（实时 meter 快照，本测试无数据面流量 → 全零/空）
+    assert_eq!(data["roles"]["transit"]["bytes_up"], 0);
+    assert_eq!(data["roles"]["transit"]["bytes_down"], 0);
+    assert!(data["roles"]["transit"]["pairs"].is_array());
+    // traffic_24h：三维小时序列（hour 为本地时间 "YYYY-MM-DD HH:00"）
+    let t24 = &data["traffic_24h"];
+    assert_eq!(t24["fanin"][0]["up"], 100);
+    assert_eq!(t24["fanin"][0]["down"], 200);
+    let hour = t24["fanin"][0]["hour"].as_str().unwrap();
+    assert_eq!(hour.len(), 16);
+    assert!(hour.ends_with(":00"));
+    assert_eq!(t24["fanout"][0]["up"], 7);
+    assert_eq!(t24["fanout"][0]["down"], 8);
+    assert_eq!(t24["transit"][0]["up"], 3);
+    assert_eq!(t24["transit"][0]["down"], 4);
 }
 
 /// 密码哈希使用 Argon2id 且可验证

@@ -26,6 +26,11 @@ pub trait ChannelOpener: Send + Sync {
         target_host: &'a str,
         target_port: u16,
     ) -> Pin<Box<dyn Future<Output = Result<MuxChannel>> + Send + 'a>>;
+
+    /// 途径核算用的去向标识（默认取规则 node_id；自动选路的开启器覆盖为实际对端）。
+    fn transit_label<'a>(&'a self, node_id: &'a str, _target_host: &'a str) -> String {
+        node_id.to_string()
+    }
 }
 
 impl ChannelOpener for RelayListener {
@@ -83,5 +88,16 @@ impl ChannelOpener for PeerAutoOpener {
                 .open_channel(&peer, target_host, target_port)
                 .await
         })
+    }
+
+    fn transit_label<'a>(&'a self, node_id: &'a str, target_host: &'a str) -> String {
+        // 与 open 同一解析口径：规则指定优先，否则按通告路由自动解析
+        if !node_id.is_empty() {
+            node_id.to_string()
+        } else {
+            self.listener
+                .resolve_peer(target_host)
+                .unwrap_or_else(|| "?".to_string())
+        }
     }
 }

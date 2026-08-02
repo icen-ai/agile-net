@@ -194,6 +194,27 @@ const MIGRATIONS: &[(u32, &str, &str)] = &[
     ALTER TABLE connector ADD COLUMN pinned_cert_path TEXT NOT NULL DEFAULT '';
     "#,
     ),
+    (
+        6,
+        "node_traffic_log",
+        r#"
+    -- 节点级流量小时序列（扇入对端/扇出/中继途径三维；按账号流量仍在 traffic_log，互不影响）
+    -- dim: fanin=扇入对端(src=对端 node_id) / fanout=扇出(src=connector name)
+    --      / transit=中继途径(src=起始端, dst=结束端)
+    -- hour 为本地时间桶 'YYYY-MM-DD HH:00'（status traffic_24h 契约格式）
+    CREATE TABLE node_traffic_log (
+        id         TEXT PRIMARY KEY,
+        dim        TEXT NOT NULL CHECK(dim IN ('fanin','fanout','transit')),
+        src        TEXT NOT NULL DEFAULT '',
+        dst        TEXT NOT NULL DEFAULT '',
+        hour       TEXT NOT NULL,
+        bytes_up   INTEGER NOT NULL DEFAULT 0,
+        bytes_down INTEGER NOT NULL DEFAULT 0,
+        UNIQUE(dim, src, dst, hour)
+    );
+    CREATE INDEX idx_node_traffic_hour ON node_traffic_log(hour);
+    "#,
+    ),
 ];
 
 impl Database {
@@ -1876,6 +1897,90 @@ impl Database {
         Ok(items)
     }
 
+    // ==================== Node Traffic Log（节点级三维流量序列） ====================
+
+    /// 节点级流量差分入库（dim+src+dst+小时桶 upsert 累加；双零增量直接跳过）
+    pub fn add_node_traffic(
+        &self,
+        dim: &str,
+        src: &str,
+        dst: &str,
+        bytes_up: i64,
+        bytes_down: i64,
+    ) -> Result<()> {
+        if bytes_up <= 0 && bytes_down <= 0 {
+            return Ok(());
+        }
+        let conn = self.conn();
+        let hour = local_hour_bucket();
+        conn.execute(
+            "INSERT INTO node_traffic_log (id, dim, src, dst, hour, bytes_up, bytes_down)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(dim, src, dst, hour) DO UPDATE SET
+                bytes_up = bytes_up + ?6,
+                bytes_down = bytes_down + ?7",
+            params![
+                uuid::Uuid::new_v4().to_string(),
+                dim,
+                src,
+                dst,
+                hour,
+                bytes_up,
+                bytes_down
+            ],
+        )
+        .map_err(db_err)?;
+        Ok(())
+    }
+
+    /// 最近 24h 节点级流量序列（按小时聚合；fanin/fanout 跨标识汇总，transit 跨途径对汇总）
+    pub fn node_traffic_24h(&self) -> Result<NodeTraffic24h> {
+        let conn = self.conn();
+        let since = local_hours_ago(24);
+        let mut stmt = conn
+            .prepare(
+                "SELECT dim, hour, SUM(bytes_up), SUM(bytes_down) FROM node_traffic_log
+                 WHERE hour >= ?1 GROUP BY dim, hour ORDER BY hour ASC",
+            )
+            .map_err(db_err)?;
+        let rows = stmt
+            .query_map(params![since], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    NodeTrafficPoint {
+                        hour: r.get(1)?,
+                        up: r.get::<_, Option<i64>>(2)?.unwrap_or(0),
+                        down: r.get::<_, Option<i64>>(3)?.unwrap_or(0),
+                    },
+                ))
+            })
+            .map_err(db_err)?;
+        let mut out = NodeTraffic24h::default();
+        for r in rows {
+            let (dim, point) = r.map_err(db_err)?;
+            match dim.as_str() {
+                "fanin" => out.fanin.push(point),
+                "fanout" => out.fanout.push(point),
+                "transit" => out.transit.push(point),
+                _ => {}
+            }
+        }
+        Ok(out)
+    }
+
+    /// 清理过期的节点级流量序列（保留 days 天；随日级留存任务调用）
+    pub fn cleanup_node_traffic(&self, days: i64) -> Result<usize> {
+        let conn = self.conn();
+        let cutoff = local_hours_ago(days * 24);
+        let n = conn
+            .execute(
+                "DELETE FROM node_traffic_log WHERE hour < ?1",
+                params![cutoff],
+            )
+            .map_err(db_err)?;
+        Ok(n)
+    }
+
     // ==================== Refresh Token ====================
 
     pub fn store_refresh_token(
@@ -2003,6 +2108,17 @@ fn current_hour_bucket() -> String {
 fn hours_ago(hours: i64) -> String {
     let t = chrono::Utc::now() - chrono::Duration::hours(hours);
     t.format("%Y-%m-%dT%H:00:00Z").to_string()
+}
+
+/// 当前本地小时桶 'YYYY-MM-DD HH:00'（node_traffic_log / traffic_24h 契约格式）
+fn local_hour_bucket() -> String {
+    chrono::Local::now().format("%Y-%m-%d %H:00").to_string()
+}
+
+/// hours 前的本地小时桶（24h 窗口过滤用）
+fn local_hours_ago(hours: i64) -> String {
+    let t = chrono::Local::now() - chrono::Duration::hours(hours);
+    t.format("%Y-%m-%d %H:00").to_string()
 }
 
 // ==================== 密码与令牌 ====================
@@ -2430,5 +2546,56 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(path.with_extension("db-wal"));
         let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    }
+
+    #[test]
+    fn node_traffic_add_aggregate_and_cleanup() {
+        let db = Database::in_memory().unwrap();
+
+        // 双零增量跳过（不落库）
+        db.add_node_traffic("fanin", "n1", "", 0, 0).unwrap();
+        assert!(db.node_traffic_24h().unwrap().fanin.is_empty());
+
+        // 同桶累加 + 跨标识/途径对写入
+        db.add_node_traffic("fanin", "n1", "", 100, 200).unwrap();
+        db.add_node_traffic("fanin", "n1", "", 1, 2).unwrap();
+        db.add_node_traffic("fanin", "n2", "", 50, 60).unwrap();
+        db.add_node_traffic("fanout", "up-a", "", 7, 8).unwrap();
+        db.add_node_traffic("transit", "n1", "n2", 3, 4).unwrap();
+        db.add_node_traffic("transit", "proxy", "local", 5, 6).unwrap();
+
+        let agg = db.node_traffic_24h().unwrap();
+        // fanin 跨对端汇总为同一小时桶
+        assert_eq!(agg.fanin.len(), 1);
+        assert_eq!(agg.fanin[0].up, 151);
+        assert_eq!(agg.fanin[0].down, 262);
+        // 小时桶为本地时间格式 'YYYY-MM-DD HH:00'
+        assert_eq!(agg.fanin[0].hour.len(), 16);
+        assert!(agg.fanin[0].hour.ends_with(":00"));
+        assert_eq!(&agg.fanin[0].hour[10..11], " ");
+        assert_eq!(agg.fanout.len(), 1);
+        assert_eq!(agg.fanout[0].up, 7);
+        // transit 跨途径对汇总
+        assert_eq!(agg.transit.len(), 1);
+        assert_eq!(agg.transit[0].up, 8);
+        assert_eq!(agg.transit[0].down, 10);
+
+        // 留存清理：40 天前的旧行删除，当前行保留
+        let old_hour = (chrono::Local::now() - chrono::Duration::days(40))
+            .format("%Y-%m-%d %H:00")
+            .to_string();
+        db.conn()
+            .execute(
+                "INSERT INTO node_traffic_log (id, dim, src, dst, hour, bytes_up, bytes_down)
+                 VALUES (?1, 'fanin', 'old-peer', '', ?2, 9, 9)",
+                params![uuid::Uuid::new_v4().to_string(), old_hour],
+            )
+            .unwrap();
+        let removed = db.cleanup_node_traffic(30).unwrap();
+        assert_eq!(removed, 1);
+        // 24h 聚合不含旧行
+        let agg = db.node_traffic_24h().unwrap();
+        assert_eq!(agg.fanin.len(), 1);
+        assert_eq!(agg.fanin[0].up, 151);
     }
 }

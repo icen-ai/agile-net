@@ -12,6 +12,7 @@ use crate::logs::LogBuffer;
 use crate::service::connectors::ConnectorManager;
 use agile_net_core::proxy::inbound::ProxyStats;
 use agile_net_core::relay::listener::RelayListener;
+use agile_net_core::relay::transit::TransitMeter;
 use axum::{
     Router,
     routing::{any, delete, get, post, put},
@@ -37,6 +38,8 @@ pub struct NodeRuntime {
     pub manageable: crate::relay_auth::ManageableRegistry,
     /// 客户端角色代理状态槽（GUI 宿主写入；有值时 status 的 proxy 段以它为准）
     pub client_proxy_slot: crate::service::ClientProxySlot,
+    /// 中继途径核算表（listener/connector/proxy 三处打点；status transit 段数据源）
+    pub transit_meter: Arc<TransitMeter>,
 }
 
 impl NodeRuntime {

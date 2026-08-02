@@ -3,7 +3,28 @@
    只吃 tokens.css 的 var(--*)，严禁硬编码色值；新增共享组件先泛化再沉淀于此。
 
    当前收录：ag-select 统一自定义下拉（.agsel-*；原生 select 保留为数据/逻辑载体）
-             ag-tabs 横向页签条（.agtabs/.agtab；页内分区切换，可带右侧工具位） */
+             ag-tabs 横向页签条（.agtabs/.agtab；页内分区切换，可带右侧工具位）
+             agchart 图表（.agchart*；JS 在同目录 agchart.js，首个共享 JS 组件，同机制服务） */
+
+/* --- agchart 图表（JS 见共享 agchart.js；本层收录图例/浮层/网格/空态样式） --- */
+/* 结构：el.agchart(.agchart-line|.agchart-spark) > [.agchart-legend] + .agchart-plot > svg + .agchart-tip */
+.agchart { position: relative; }
+.agchart-line { display: flex; flex-direction: column; }
+.agchart-plot { position: relative; flex: 1; min-height: 0; }
+.agchart-svg { display: block; width: 100%; height: 100%; overflow: visible; }
+.agchart-svg text { font-size: 11px; fill: var(--dim2); user-select: none; }
+.agchart-svg .agc-grid { stroke: var(--row-border); stroke-width: 1; }
+.agchart-svg .agc-cross { stroke: var(--border2); stroke-width: 1; stroke-dasharray: 3 3; }
+.agchart-svg .agc-dot { fill: var(--panel2); stroke-width: 2; }
+.agchart-svg .agc-empty { fill: var(--dim2); font-size: 12px; }
+.agchart-legend { display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 6px; font-size: 12px; color: var(--dim); }
+.agchart-legend-item { display: inline-flex; align-items: center; gap: 6px; font-variant-numeric: tabular-nums; }
+.agchart-legend-item .c, .agchart-tip .c { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+/* hover 浮层：组件层统一样式，跟随位移由 JS 只写 transform */
+.agchart-tip { position: absolute; left: 0; top: 0; z-index: 5; pointer-events: none; background: var(--panel2); border: 1px solid var(--border); border-radius: 9px; box-shadow: 0 8px 24px rgba(0,0,0,.14); padding: 7px 10px; font-size: 12px; white-space: nowrap; will-change: transform; }
+.agchart-tip .t { color: var(--dim2); font-size: 11px; margin-bottom: 4px; }
+.agchart-tip .r { display: flex; align-items: center; gap: 6px; padding: 1px 0; color: var(--text); }
+.agchart-tip .r .v { margin-left: auto; padding-left: 14px; font-variant-numeric: tabular-nums; font-weight: 600; color: var(--text-strong); }
 
 /* --- ag-select 统一自定义下拉 --- */
 /* 源 select 视觉隐藏但保留在 DOM：脚本可读值/改选项，change 事件照常派发 */

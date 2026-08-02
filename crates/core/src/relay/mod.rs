@@ -8,6 +8,7 @@ pub mod bridge;
 pub mod connector;
 pub mod listener;
 pub mod mux;
+pub mod transit;
 
 pub use acl::PeerAcl;
 pub use bridge::bridge;
@@ -17,3 +18,4 @@ pub use listener::{
     constant_time_eq,
 };
 pub use mux::{MuxChannel, MuxSession};
+pub use transit::{FROM_PROXY, TO_LOCAL, TransitMeter, TransitPair};

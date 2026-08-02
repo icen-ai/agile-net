@@ -14,6 +14,7 @@ use crate::relay::acl::PeerAcl;
 use crate::relay::bridge::bridge;
 use crate::relay::listener::{AUTH_TIMEOUT, PeerEvent, RelayListener};
 use crate::relay::mux::{MuxChannel, MuxSession, OpenRequest};
+use crate::relay::transit::{TO_LOCAL, TransitMeter};
 use crate::tunnel::opener::ChannelOpener;
 use crate::tunnel::tls::TlsConfigBuilder;
 
@@ -75,6 +76,8 @@ pub struct RelayConnector {
     acl: Option<Arc<PeerAcl>>,
     /// 当前会话 mux 句柄（connected 期间可用；管理面诊断开流用）
     current_mux: Arc<arc_swap::ArcSwapOption<MuxSession>>,
+    /// 中继途径核算（meter + 来源标识 = connector 名；上游反向来流按 from=该标识入账）
+    transit: Option<(Arc<TransitMeter>, String)>,
     /// 收敛拒绝等可观测事件（供管理面订阅写审计）
     events: broadcast::Sender<PeerEvent>,
     state: Arc<AtomicU8>,
@@ -123,6 +126,7 @@ impl RelayConnector {
             openers: None,
             acl: None,
             current_mux: Arc::new(arc_swap::ArcSwapOption::from_pointee(None)),
+            transit: None,
             events,
             state: Arc::new(AtomicU8::new(ConnectionState::Disconnected as u8)),
             shutdown_notify: Arc::new(Notify::new()),
@@ -165,6 +169,20 @@ impl RelayConnector {
     /// 当前会话的 mux 句柄（未连接时为 None）。
     pub fn current_mux(&self) -> Option<Arc<MuxSession>> {
         self.current_mux.load_full()
+    }
+
+    /// 当前会话流量（出向字节, 入向字节）；未连接返回 (0, 0)。
+    pub fn traffic(&self) -> (u64, u64) {
+        self.current_mux
+            .load_full()
+            .map(|m| m.traffic())
+            .unwrap_or((0, 0))
+    }
+
+    /// 挂接中继途径核算表（上游反向来流按 from=`from_label` 入账，取 connector 名）。
+    pub fn with_transit_meter(mut self, meter: Arc<TransitMeter>, from_label: String) -> Self {
+        self.transit = Some((meter, from_label));
+        self
     }
 
     /// 经当前隧道向对端发起一条到指定目标的流（管理面诊断用；未连接返回 NotFound）。
@@ -333,6 +351,7 @@ impl RelayConnector {
         let openers = self.openers.clone();
         let acl = self.acl.clone();
         let events = self.events.clone();
+        let transit = self.transit.clone();
         let peer_label = self.upstream_addr.to_string();
         let mux_task = mux.clone();
         let current_mux = self.current_mux.clone();
@@ -378,9 +397,10 @@ impl RelayConnector {
                         let openers = openers.clone();
                         let acl = acl.clone();
                         let events = events.clone();
+                        let transit = transit.clone();
                         let peer_label = peer_label.clone();
                         tokio::spawn(async move {
-                            if let Err(e) = Self::handle_open(mux_inner, req, peer_router, client_router, openers, acl, events, peer_label).await {
+                            if let Err(e) = Self::handle_open(mux_inner, req, peer_router, client_router, openers, acl, events, transit, peer_label).await {
                                 debug!(error = %e, "open channel handling finished with error");
                             }
                         });
@@ -481,6 +501,7 @@ impl RelayConnector {
         openers: Option<Arc<dashmap::DashMap<String, Arc<dyn ChannelOpener>>>>,
         acl: Option<Arc<PeerAcl>>,
         events: broadcast::Sender<PeerEvent>,
+        transit: Option<(Arc<TransitMeter>, String)>,
         peer_label: String,
     ) -> Result<()> {
         let open_req: OpenChannel = serde_json::from_slice(&req.payload)
@@ -522,7 +543,11 @@ impl RelayConnector {
                 Ok(peer_channel) => {
                     mux.send_frame(Frame::empty(FrameType::OpenOk, req.channel_id))
                         .await?;
+                    // bridge(channel, peer)：up = 上游→下游对端（途径 from=本 connector）
                     let (up, down) = bridge(channel, peer_channel).await?;
+                    if let Some((m, f)) = &transit {
+                        m.record(f, &next_peer, up, down);
+                    }
                     debug!(
                         channel_id = req.channel_id,
                         up, down, "chained channel closed"
@@ -554,7 +579,11 @@ impl RelayConnector {
                             Ok(tunnel_channel) => {
                                 mux.send_frame(Frame::empty(FrameType::OpenOk, req.channel_id))
                                     .await?;
+                                // bridge(channel, tunnel)：up = 上游→客户端隧道
                                 let (up, down) = bridge(channel, tunnel_channel).await?;
+                                if let Some((m, f)) = &transit {
+                                    m.record(f, &node_id, up, down);
+                                }
                                 debug!(channel_id = req.channel_id, via = %node_id, up, down, "re-published channel closed");
                                 mux.close_channel(req.channel_id);
                                 return Ok(());
@@ -584,7 +613,12 @@ impl RelayConnector {
             Ok(local_stream) => {
                 mux.send_frame(Frame::empty(FrameType::OpenOk, req.channel_id))
                     .await?;
+                // bridge(local, channel)：bytes_ab = 本机→上游，bytes_ba = 上游→本机；
+                // 途径 up = from(上游)→to(本机) 方向，即 bytes_ba
                 let (bytes_ab, bytes_ba) = bridge(local_stream, channel).await?;
+                if let Some((m, f)) = &transit {
+                    m.record(f, TO_LOCAL, bytes_ba, bytes_ab);
+                }
                 debug!(
                     channel_id = req.channel_id,
                     bytes_sent = bytes_ab,

@@ -74,6 +74,7 @@ async fn start_full_node() -> (String, SocketAddr, SocketAddr) {
         cert_fingerprint: None,
         manageable: Default::default(),
         client_proxy_slot: Default::default(),
+        transit_meter: agile_net_core::relay::transit::TransitMeter::new(),
     });
     let state = ApiState::new(
         db,

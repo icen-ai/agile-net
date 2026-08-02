@@ -46,6 +46,10 @@ pub struct SpaAssets {
     pub style_css: &'static str,
     /// 共享设计 token（AGENTS.md §6；桌面 index.html 引用，缺失则全站变量失效）
     pub tokens_css: &'static str,
+    /// 共享组件样式（ag-select/ag-tabs/agchart；缺失则下拉双 UI、图表浮层无样式）
+    pub components_css: &'static str,
+    /// 共享图表组件 JS（桌面 index.html 引用，缺失则 AgChart 未定义）
+    pub agchart_js: &'static str,
 }
 
 #[derive(Clone)]
@@ -171,6 +175,8 @@ fn spa_router(spa: SpaAssets) -> Router {
     let icons_js = spa.icons_js;
     let style_css = spa.style_css;
     let tokens_css = spa.tokens_css;
+    let components_css = spa.components_css;
+    let agchart_js = spa.agchart_js;
     Router::new()
         .route("/", get(move || serve(index, "text/html; charset=utf-8")))
         .route(
@@ -186,12 +192,20 @@ fn spa_router(spa: SpaAssets) -> Router {
             get(move || serve(icons_js, "text/javascript; charset=utf-8")),
         )
         .route(
+            "/agchart.js",
+            get(move || serve(agchart_js, "text/javascript; charset=utf-8")),
+        )
+        .route(
             "/style.css",
             get(move || serve(style_css, "text/css; charset=utf-8")),
         )
         .route(
             "/tokens.css",
             get(move || serve(tokens_css, "text/css; charset=utf-8")),
+        )
+        .route(
+            "/components.css",
+            get(move || serve(components_css, "text/css; charset=utf-8")),
         )
 }
 
