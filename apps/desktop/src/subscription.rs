@@ -69,6 +69,45 @@ fn download_urls(asset: &str) -> Vec<String> {
     ]
 }
 
+/// wintun zip 下载镜像（官方源 + 两个 GitHub 系反代；SHA-256 钉死校验兜底防篡改）
+fn wintun_urls() -> Vec<String> {
+    vec![
+        format!("https://{WINTUN_ZIP_PATH}"),
+        format!("https://gh-proxy.com/https://{WINTUN_ZIP_PATH}"),
+        format!("https://ghfast.top/https://{WINTUN_ZIP_PATH}"),
+    ]
+}
+
+/// 下载字节流：依次尝试各 URL；每个 URL 先直连，失败再走本地代理 57890
+/// （受限网络兜底：订阅/隧道出口已可用时经它出网；失败信息含最后一次错误）。
+async fn download_bytes(urls: &[String]) -> Result<Vec<u8>, String> {
+    let ua = format!("anet-gui/{MIHOMO_VERSION}");
+    let mk = |proxy: bool| {
+        let mut b = reqwest::Client::builder()
+            .user_agent(&ua)
+            .timeout(std::time::Duration::from_secs(60));
+        if proxy {
+            b = b.proxy(reqwest::Proxy::all("http://127.0.0.1:57890").expect("valid proxy url"));
+        }
+        b.build().map_err(|e| e.to_string())
+    };
+    let (direct, via_proxy) = (mk(false)?, mk(true)?);
+    let mut last_err = String::new();
+    for url in urls {
+        for (label, c) in [("直连", &direct), ("本地代理", &via_proxy)] {
+            match c.get(url).send().await {
+                Ok(resp) if resp.status().is_success() => match resp.bytes().await {
+                    Ok(b) => return Ok(b.to_vec()),
+                    Err(e) => last_err = format!("{label}下载中断: {e}"),
+                },
+                Ok(resp) => last_err = format!("{label} HTTP {}", resp.status()),
+                Err(e) => last_err = format!("{label}: {e}"),
+            }
+        }
+    }
+    Err(last_err)
+}
+
 // ==================== wintun.dll 钉版本下发（TUN 模式，Windows x64） ====================
 
 /// 钉死的 wintun 版本（升级 = 改这里 + 更新哈希）
@@ -76,8 +115,8 @@ pub const WINTUN_VERSION: &str = "0.14.1";
 /// wintun-0.14.1.zip 的 SHA-256（与内核同策略钉死；哈希与 wintun.net 官网、
 /// wireguard-windows 构建脚本等多源交叉验证一致）
 const WINTUN_ZIP_SHA256: &str = "07c256185d6ee3652e09fa55c0b673e2624b565e02c4b9091c79ca7d2f24ef51";
-/// 官方源（wintun 无镜像；完整性由 SHA-256 钉死保证）
-const WINTUN_ZIP_URL: &str = "https://download.wireguard.com/wintun/wintun-0.14.1.zip";
+/// 官方源路径（完整性由 SHA-256 钉死保证；下载镜像见 wintun_urls）
+const WINTUN_ZIP_PATH: &str = "download.wireguard.com/wintun/wintun-0.14.1.zip";
 
 /// wintun.dll 落盘位置（与 mihomo.exe 同目录，wintun 按 exe 相邻加载）。
 pub fn wintun_dll_path() -> PathBuf {
@@ -99,20 +138,9 @@ pub async fn ensure_wintun() -> Result<PathBuf, String> {
         }
         let dir = kernel_dir();
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-        let client = reqwest::Client::builder()
-            .user_agent(format!("anet-gui/{MIHOMO_VERSION}"))
-            .timeout(std::time::Duration::from_secs(60))
-            .build()
-            .map_err(|e| e.to_string())?;
-        let resp = client
-            .get(WINTUN_ZIP_URL)
-            .send()
+        let bytes = download_bytes(&wintun_urls())
             .await
             .map_err(|e| format!("wintun 下载失败: {e}"))?;
-        if !resp.status().is_success() {
-            return Err(format!("wintun 下载失败 (HTTP {})", resp.status()));
-        }
-        let bytes = resp.bytes().await.map_err(|e| format!("wintun 下载中断: {e}"))?;
 
         // SHA-256 校验（钉死值，篡改可检出）
         use sha2::Digest;
@@ -126,7 +154,7 @@ pub async fn ensure_wintun() -> Result<PathBuf, String> {
         }
 
         // 解包 amd64/wintun.dll 到临时文件后原子改名
-        let reader = std::io::Cursor::new(bytes.as_ref());
+        let reader = std::io::Cursor::new(bytes.as_slice());
         let mut zip = zip::ZipArchive::new(reader).map_err(|e| e.to_string())?;
         let mut inner = None;
         for i in 0..zip.len() {
@@ -429,28 +457,9 @@ pub async fn ensure_kernel() -> Result<PathBuf, String> {
     let dir = kernel_dir();
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
 
-    let client = reqwest::Client::builder()
-        .user_agent(format!("anet-gui/{MIHOMO_VERSION}"))
-        .build()
-        .map_err(|e| e.to_string())?;
-    let mut last_err = String::new();
-    let mut bytes = None;
-    for url in download_urls(asset) {
-        match client.get(&url).send().await {
-            Ok(resp) if resp.status().is_success() => {
-                match resp.bytes().await {
-                    Ok(b) => {
-                        bytes = Some(b);
-                        break;
-                    }
-                    Err(e) => last_err = format!("下载中断: {e}"),
-                }
-            }
-            Ok(resp) => last_err = format!("HTTP {}", resp.status()),
-            Err(e) => last_err = e.to_string(),
-        }
-    }
-    let bytes = bytes.ok_or_else(|| format!("内核下载失败: {last_err}"))?;
+    let bytes = download_bytes(&download_urls(asset))
+        .await
+        .map_err(|e| format!("内核下载失败: {e}"))?;
 
     // SHA-256 校验（钉死值，镜像篡改可检出）
     use sha2::Digest;
@@ -466,14 +475,14 @@ pub async fn ensure_kernel() -> Result<PathBuf, String> {
     // 解包到临时文件后原子改名
     let tmp = dir.join("mihomo.download");
     let inner_bytes = if asset.ends_with(".zip") {
-        let reader = std::io::Cursor::new(bytes.as_ref());
+        let reader = std::io::Cursor::new(bytes.as_slice());
         let mut zip = zip::ZipArchive::new(reader).map_err(|e| e.to_string())?;
         let mut file = zip.by_name(inner).map_err(|e| e.to_string())?;
         let mut buf = Vec::with_capacity(file.size() as usize);
         std::io::Read::read_to_end(&mut file, &mut buf).map_err(|e| e.to_string())?;
         buf
     } else {
-        let mut gz = flate2::read::GzDecoder::new(bytes.as_ref());
+        let mut gz = flate2::read::GzDecoder::new(bytes.as_slice());
         let mut buf = Vec::new();
         std::io::Read::read_to_end(&mut gz, &mut buf).map_err(|e| e.to_string())?;
         buf
