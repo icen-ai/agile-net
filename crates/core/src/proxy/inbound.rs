@@ -359,13 +359,24 @@ async fn handle_socks5(
         return Err(Error::Protocol("invalid target port 0".into()));
     }
 
+    // 自定义规则层（GUI 自定义规则）：hosts 映射先改写解析目标，放行命中优先于一切合并路由与回落；
+    // 空层时为零开销（map_host / custom_bypass_match 空表短路）
+    let (target_host, outbound) = {
+        let router_ref = ctx.router.load();
+        let host = match router_ref.map_host(&target_host) {
+            Some(ip) => ip.to_string(),
+            None => target_host,
+        };
+        let outbound = match router_ref.custom_bypass_match(&host) {
+            Some(o) => o.clone(),
+            None => router_ref
+                .route_target(&format!("{host}:{target_port}"))
+                .clone(),
+        };
+        (host, outbound)
+    };
     let target_str = format!("{target_host}:{target_port}");
     debug!(client = %client_addr, target = %target_str, "SOCKS5 request received");
-
-    let outbound = {
-        let router_ref = ctx.router.load();
-        router_ref.route_target(&target_str).clone()
-    };
 
     match outbound {
         Outbound::Direct => {
@@ -548,13 +559,23 @@ async fn handle_http(
         return Err(Error::Protocol("invalid target port 0".into()));
     }
 
+    // 自定义规则层（GUI 自定义规则）：hosts 映射先改写解析目标，放行命中优先于一切合并路由与回落
+    let (target_host, outbound) = {
+        let router_ref = ctx.router.load();
+        let host = match router_ref.map_host(&target_host) {
+            Some(ip) => ip.to_string(),
+            None => target_host,
+        };
+        let outbound = match router_ref.custom_bypass_match(&host) {
+            Some(o) => o.clone(),
+            None => router_ref
+                .route_target(&format!("{host}:{target_port}"))
+                .clone(),
+        };
+        (host, outbound)
+    };
     let target_str = format!("{target_host}:{target_port}");
     debug!(client = %client_addr, target = %target_str, "HTTP Proxy request received");
-
-    let outbound = {
-        let router_ref = ctx.router.load();
-        router_ref.route_target(&target_str).clone()
-    };
 
     match outbound {
         Outbound::Direct => {

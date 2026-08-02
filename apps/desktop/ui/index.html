@@ -105,15 +105,11 @@
           <div class="dc-head"><i data-ic="power" data-sz="15"></i>代理 <span id="d-proxy-badge"></span>
             <label class="switch dc-switch"><input type="checkbox" id="d-proxy"><span class="slider"></span></label>
           </div>
-          <div class="row">
-            <div class="group-tabs" id="proxy-mode" style="margin-bottom:0">
-              <button class="group-tab" data-proxy-mode="system">系统代理</button>
-              <button class="group-tab" data-proxy-mode="local">本地代理</button>
-            </div>
-            <label style="margin:0">端口</label>
-            <input id="proxy-port" type="number" value="57890" style="width:90px">
+          <div class="group-tabs" id="proxy-mode" style="margin-bottom:0">
+            <button class="group-tab" data-proxy-mode="system">系统代理</button>
+            <button class="group-tab" data-proxy-mode="local">本地代理</button>
           </div>
-          <div class="dc-kv"><span class="k">监听</span><span class="mono v2" id="d-proxy-addr">-</span></div>
+          <div class="dc-kv"><span class="k">监听</span><span id="d-proxy-addr" class="v2"></span></div>
           <div class="hint" id="proxy-hint" style="margin-top:0"></div>
           <div class="net-banner" id="sysproxy-banner" style="display:none;margin-top:0">
             <i data-ic="triangle-alert" data-sz="14"></i><span id="sysproxy-banner-text">系统代理已被外部修改</span>
@@ -149,6 +145,8 @@
           <div id="d-sub-body">
             <div class="dc-val" id="d-sub-val">-</div>
             <div class="dc-sub" id="d-sub-sub">订阅加载中…</div>
+            <div class="dc-tf" id="d-sub-tf" style="display:none"></div>
+            <div class="dc-spark" id="d-sub-spark" style="display:none"></div>
           </div>
           <div id="d-sub-guide" style="display:none">
             <div class="dc-sub">订阅代理（mihomo 内核）未启用</div>
@@ -162,7 +160,7 @@
             <label class="switch dc-switch"><input type="checkbox" id="r-web"><span class="slider"></span></label>
           </div>
           <div id="web-panel" style="display:none">
-            <div class="dc-kv"><span class="k">监听地址</span><span><input id="web-listen" class="mono" style="width:150px"> <button id="btn-web-listen-save" class="ghost small">保存</button></span></div>
+            <div class="dc-kv"><span class="k">监听地址</span><span id="web-listen" class="v2"></span></div>
             <div class="hint" id="web-status" style="margin-top:4px"></div>
           </div>
         </div>
@@ -272,17 +270,50 @@
       </div>
     </section>
 
-    <!-- 规则：合并视图（可暂停单条规则自由组合；长表粘性表头 + 内部滚动） -->
+    <!-- 规则：全部（自定义 放行/映射 + 端点拉取 统一表格）与组合（成组启停）；长表粘性表头 + 内部滚动 -->
     <section class="view" id="view-routes" hidden>
       <div class="page-title"><i data-ic="route" data-sz="19"></i>路由规则</div>
-      <div class="page-desc">全部端点下发规则的合并视图；关闭开关可暂停单条规则（立即生效并本地记忆）</div>
-      <div class="card" id="rules-card">
-        <h3><i data-ic="route"></i>生效规则（合并视图）
-          <span class="h3-tools"><button class="ghost small icon-btn search-toggle" data-search="rules" title="搜索"><i data-ic="search" data-sz="13"></i></button></span>
-        </h3>
-        <div class="list-search" id="search-rules" hidden><input placeholder="搜索类型 / 匹配值 / 端点"></div>
-        <div class="table-scroll">
-          <table><thead><tr><th>类型</th><th>匹配值</th><th>端点</th><th>启用</th></tr></thead><tbody id="rules-body"></tbody></table>
+      <div class="page-desc">放行/映射为本地自定义规则，优先级高于订阅与端点规则；组合 = 成组启停的规则集合；开关立即生效并本地记忆</div>
+      <div class="agtabs" id="rl-tabs">
+        <div class="agtabs-pill">
+          <button class="agtab active" data-agtab="all">全部</button>
+          <button class="agtab local-only" data-agtab="combo">组合</button>
+        </div>
+      </div>
+
+      <!-- 全部：统一表格（自定义 + 拉取），工具行 = 类型过滤 chips + 新建按钮 + 搜索 -->
+      <div data-agpanel="all">
+        <div class="card" id="rules-card">
+          <h3><i data-ic="route"></i>生效规则 <span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip">hosts 映射先改写解析；放行命中后直连或经订阅；两者优先级高于订阅与端点规则</span></span>
+            <span class="h3-tools"><button class="ghost small icon-btn search-toggle" data-search="rules" title="搜索"><i data-ic="search" data-sz="13"></i></button></span>
+          </h3>
+          <div class="rl-toolbar">
+            <div class="agtabs-pill" id="rl-filter">
+              <button class="agtab active" data-rfilter="all">全部</button>
+              <button class="agtab" data-rfilter="bypass">放行</button>
+              <button class="agtab" data-rfilter="host">映射</button>
+              <button class="agtab" data-rfilter="pulled">拉取</button>
+            </div>
+            <span class="rl-tools">
+              <button id="btn-add-bypass" class="small local-only"><i data-ic="plus" data-sz="13"></i> 放行</button>
+              <button id="btn-add-host" class="small local-only"><i data-ic="plus" data-sz="13"></i> 映射</button>
+            </span>
+          </div>
+          <div class="list-search" id="search-rules" hidden><input placeholder="搜索类型 / 匹配值 / 来源"></div>
+          <div class="table-scroll">
+            <table><thead><tr><th>类型</th><th>匹配值</th><th>方式</th><th>来源</th><th>启用</th><th>操作</th></tr></thead><tbody id="rules-body"></tbody></table>
+          </div>
+        </div>
+      </div>
+
+      <!-- 组合：命名规则集合（成员 = 自定义规则 + 拉取规则），整体启停 -->
+      <div data-agpanel="combo" hidden>
+        <div class="card">
+          <h3><i data-ic="layers"></i>规则组合 <span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip">启用组合 = 成员规则全部生效（拉取成员自动取消暂停）；停用 = 拉取成员暂停，但被其他已启用组合覆盖的成员不动</span></span></h3>
+          <div class="row" style="margin-bottom:12px;justify-content:flex-end">
+            <button id="btn-add-combo" class="small"><i data-ic="plus" data-sz="13"></i> 新建组合</button>
+          </div>
+          <div id="combo-list"><div class="empty">尚未创建组合</div></div>
         </div>
       </div>
     </section>
@@ -300,6 +331,8 @@
         <div class="kv"><span class="k">本地出口</span><span class="mono">127.0.0.1:57892（mixed）</span></div>
         <div class="kv"><span class="k">出口 IP</span><span class="mono" id="sub-exit-ip">内核未运行</span></div>
         <div class="hint" id="sub-exit-geo" style="margin-top:4px"></div>
+        <div class="kv" id="sub-traffic-row" style="display:none"><span class="k">流量</span><span class="mono" id="sub-traffic-total">-</span></div>
+        <div class="dc-spark" id="sub-spark" style="display:none"></div>
         <div style="display:flex;align-items:center;margin-top:8px"><label class="chk" style="margin-top:0"><input type="checkbox" id="s-unified" checked> 未命中 AgileNet 规则的流量经订阅出口</label><span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip">开启后本地代理 57890 单端口同时承接订阅出口流量，应用无需区分端口</span></span></div>
       </div>
 
@@ -495,6 +528,98 @@
     <div class="row" style="justify-content:flex-end">
       <button id="fo-cancel" class="ghost">取消</button>
       <button id="fo-ok">创建</button>
+    </div>
+  </div>
+</div>
+
+<!-- 新增放行规则弹窗（命中流量绕过隧道：直连或经订阅，优先级最高） -->
+<div class="modal-mask" id="bypass-modal" style="display:none">
+  <div class="modal sub-modal">
+    <div class="sm-head">
+      <span class="sm-logo"><i data-ic="shield" data-sz="20"></i></span>
+      <div>
+        <h3>新增放行规则</h3>
+        <div class="hint">命中的流量绕过隧道：默认直连，或经订阅出口；优先级高于订阅与端点规则</div>
+      </div>
+    </div>
+    <div class="sm-body">
+      <label>匹配值（域名/IP 通配）</label>
+      <input id="bp-pattern" class="mono" placeholder="*.baidu.com / 127.*">
+      <label>方式</label>
+      <select id="bp-via">
+        <option value="direct">直连（默认）</option>
+        <option value="sub">经过订阅</option>
+      </select>
+      <div class="hint">新建后默认启用，可在列表中随时停用</div>
+      <div class="hint sm-err" id="bp-err"></div>
+    </div>
+    <div class="row" style="justify-content:flex-end">
+      <button id="bp-cancel" class="ghost">取消</button>
+      <button id="bp-ok">添加</button>
+    </div>
+  </div>
+</div>
+
+<!-- 新增 hosts 映射弹窗（主机名 → IP 解析改写，SwitchHosts 语义） -->
+<div class="modal-mask" id="host-modal" style="display:none">
+  <div class="modal sub-modal">
+    <div class="sm-head">
+      <span class="sm-logo"><i data-ic="earth" data-sz="20"></i></span>
+      <div>
+        <h3>新增 hosts 映射</h3>
+        <div class="hint">主机名 → IP 的本地解析改写，先于一切规则生效</div>
+      </div>
+    </div>
+    <div class="sm-body">
+      <label>主机名</label>
+      <input id="hm-name" class="mono" placeholder="git.internal">
+      <label>IP 地址</label>
+      <input id="hm-ip" class="mono" placeholder="10.0.0.9">
+      <label class="chk" style="margin-top:12px"><input type="checkbox" id="hm-system" checked> 尽量写入系统 hosts（无权限则仅本软件内生效）</label>
+      <div class="hint sm-err" id="hm-err"></div>
+    </div>
+    <div class="row" style="justify-content:flex-end">
+      <button id="hm-cancel" class="ghost">取消</button>
+      <button id="hm-ok">添加</button>
+    </div>
+  </div>
+</div>
+
+<!-- 新建组合弹窗（输名称直接建，成员在编辑弹窗勾选） -->
+<div class="modal-mask" id="combo-modal" style="display:none">
+  <div class="modal">
+    <h3><i data-ic="layers" data-sz="16"></i> 新建规则组合</h3>
+    <div class="hint" style="margin:6px 0 12px">组合 = 一组规则的命名集合，可整体启停；创建后点「编辑」勾选成员</div>
+    <div><label>组合名称</label><input id="cb-name" placeholder="例如：办公网段"></div>
+    <div class="hint sm-err" id="cb-err"></div>
+    <div class="row" style="justify-content:flex-end;margin-top:14px">
+      <button id="cb-cancel" class="ghost">取消</button>
+      <button id="cb-ok">创建</button>
+    </div>
+  </div>
+</div>
+
+<!-- 编辑组合弹窗（名称 + 全部规则简洁清单复选；清单内部滚动） -->
+<div class="modal-mask" id="combo-edit-modal" style="display:none">
+  <div class="modal sub-modal">
+    <div class="sm-head">
+      <span class="sm-logo"><i data-ic="layers" data-sz="20"></i></span>
+      <div>
+        <h3>编辑组合</h3>
+        <div class="hint">勾选成员规则（自定义 + 拉取）；组合启用 = 成员全部生效，停用 = 拉取成员暂停</div>
+      </div>
+    </div>
+    <div class="sm-body">
+      <label>组合名称</label>
+      <input id="ce-name">
+      <label>成员规则</label>
+      <div class="list-search" style="margin:0 0 8px"><input id="ce-search" placeholder="搜索类型 / 匹配值 / 来源"></div>
+      <div class="combo-rules" id="ce-list"></div>
+      <div class="hint sm-err" id="ce-err"></div>
+    </div>
+    <div class="row" style="justify-content:flex-end">
+      <button id="ce-cancel" class="ghost">取消</button>
+      <button id="ce-ok">保存</button>
     </div>
   </div>
 </div>

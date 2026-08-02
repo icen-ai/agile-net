@@ -9,7 +9,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use crate::roles;
 
@@ -322,6 +322,9 @@ pub struct KernelManager {
     stop_tx: Arc<std::sync::Mutex<Option<tokio::sync::mpsc::Sender<()>>>>,
     restart_count: Arc<AtomicU32>,
     last_error: Arc<std::sync::Mutex<String>>,
+    /// /traffic WS 累计器（内核启动时挂任务，停止即清零）
+    traffic: Arc<TrafficStats>,
+    traffic_stop: Arc<std::sync::Mutex<Option<tokio::sync::mpsc::Sender<()>>>>,
 }
 
 impl Default for KernelManager {
@@ -330,6 +333,8 @@ impl Default for KernelManager {
             stop_tx: Arc::new(std::sync::Mutex::new(None)),
             restart_count: Arc::new(AtomicU32::new(0)),
             last_error: Arc::new(std::sync::Mutex::new(String::new())),
+            traffic: Arc::new(TrafficStats::default()),
+            traffic_stop: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 }
@@ -369,8 +374,34 @@ impl KernelManager {
             self.stop().await;
             return Err("内核启动后控制面未就绪（57892/59292 端口被占用？）".into());
         }
+        self.start_traffic();
         roles::audit("gui.kernel_start", serde_json::json!({}));
         Ok(())
+    }
+
+    /// 挂 /traffic WS 流量累计任务（幂等；内核停止时经信号终止并清零）。
+    fn start_traffic(&self) {
+        if self.traffic_stop.lock().unwrap().is_some() {
+            return;
+        }
+        let store = load_store();
+        if store.secret.is_empty() {
+            return;
+        }
+        self.traffic.reset();
+        let (tx, rx) = tokio::sync::mpsc::channel::<()>(1);
+        *self.traffic_stop.lock().unwrap() = Some(tx);
+        let stats = self.traffic.clone();
+        let slot = self.traffic_stop.clone();
+        tokio::spawn(async move {
+            traffic_ws_loop(store.secret, stats, rx).await;
+            *slot.lock().unwrap() = None;
+        });
+    }
+
+    /// 当前流量快照（内核停止后为零值）。
+    pub fn traffic(&self) -> TrafficSnapshot {
+        self.traffic.snapshot()
     }
 
     fn spawn(bin: &PathBuf) -> Result<tokio::process::Child, String> {
@@ -457,6 +488,19 @@ impl KernelManager {
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             }
         }
+        // 流量累计任务随内核停止：发信号并等待任务退出自清槽位（上限 5s；
+        // 保证 stop→start 快速重启时 start_traffic 看到的是已清槽位，新旧任务不打架）
+        let ttx = self.traffic_stop.lock().unwrap().clone();
+        if let Some(tx) = ttx {
+            let _ = tx.send(()).await;
+            for _ in 0..50 {
+                if self.traffic_stop.lock().unwrap().is_none() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        }
+        self.traffic.reset();
         roles::audit("gui.kernel_stop", serde_json::json!({}));
     }
 
@@ -611,6 +655,241 @@ pub async fn kernel_api() -> Result<KernelApi, String> {
         return Err("内核尚未初始化".into());
     }
     Ok(KernelApi::new(store.secret))
+}
+
+// ==================== 流量统计（/traffic WS 累计） ====================
+
+/// 内核流量累计器：/traffic WS 每秒推送 {up,down}（该秒字节数），此处累计会话总量并记录最近秒速率。
+/// 全 Atomic 无锁；内核停止即清零（任务退出时统一 reset）。
+#[derive(Debug, Default)]
+pub struct TrafficStats {
+    up_total: AtomicU64,
+    down_total: AtomicU64,
+    up_rate: AtomicU64,
+    down_rate: AtomicU64,
+}
+
+/// 流量快照（sub_traffic 命令返回体）
+#[derive(Debug, Clone, Copy, Default, Serialize)]
+pub struct TrafficSnapshot {
+    pub up_total: u64,
+    pub down_total: u64,
+    pub up_rate: u64,
+    pub down_rate: u64,
+}
+
+impl TrafficStats {
+    fn add(&self, up: u64, down: u64) {
+        self.up_total.fetch_add(up, Ordering::Relaxed);
+        self.down_total.fetch_add(down, Ordering::Relaxed);
+        self.up_rate.store(up, Ordering::Relaxed);
+        self.down_rate.store(down, Ordering::Relaxed);
+    }
+    fn clear_rates(&self) {
+        self.up_rate.store(0, Ordering::Relaxed);
+        self.down_rate.store(0, Ordering::Relaxed);
+    }
+    fn reset(&self) {
+        self.up_total.store(0, Ordering::Relaxed);
+        self.down_total.store(0, Ordering::Relaxed);
+        self.clear_rates();
+    }
+    pub fn snapshot(&self) -> TrafficSnapshot {
+        TrafficSnapshot {
+            up_total: self.up_total.load(Ordering::Relaxed),
+            down_total: self.down_total.load(Ordering::Relaxed),
+            up_rate: self.up_rate.load(Ordering::Relaxed),
+            down_rate: self.down_rate.load(Ordering::Relaxed),
+        }
+    }
+}
+
+/// /traffic WS 累计任务：断线指数退避重连（1s 起、30s 封顶，会话稳定 10s 后断线重置退避）；
+/// 停止信号（含发送端被丢弃）即退出并清零计数。
+async fn traffic_ws_loop(secret: String, stats: Arc<TrafficStats>, mut stop: tokio::sync::mpsc::Receiver<()>) {
+    let mut backoff = 1u64;
+    loop {
+        let started = std::time::Instant::now();
+        tokio::select! {
+            _ = stop.recv() => break,
+            _ = traffic_ws_session(&secret, &stats) => {}
+        }
+        // 断线：速率归零（总量保留，重连后续累计）
+        stats.clear_rates();
+        if started.elapsed() >= std::time::Duration::from_secs(10) {
+            backoff = 1;
+        }
+        if tokio::time::timeout(std::time::Duration::from_secs(backoff), stop.recv())
+            .await
+            .is_ok()
+        {
+            break;
+        }
+        backoff = (backoff * 2).min(30);
+    }
+    stats.reset();
+}
+
+/// 单段 WS 会话：握手 → 帧循环（text 累计 / ping→pong / close 正常结束）。
+/// 极简 RFC 6455 客户端，仅面向 loopback mihomo 控制面，不引入额外依赖。
+async fn traffic_ws_session(secret: &str, stats: &TrafficStats) -> Result<(), String> {
+    traffic_ws_session_on(MIHOMO_CTRL_PORT, secret, stats).await
+}
+
+/// 端口可参数化的会话本体（生产走控制面端口；测试注入 mock 端口）。
+async fn traffic_ws_session_on(port: u16, secret: &str, stats: &TrafficStats) -> Result<(), String> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .map_err(|e| e.to_string())?;
+    let req = format!(
+        "GET /traffic HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {}\r\nSec-WebSocket-Version: 13\r\nAuthorization: Bearer {secret}\r\n\r\n",
+        ws_key()
+    );
+    stream.write_all(req.as_bytes()).await.map_err(|e| e.to_string())?;
+    // HTTP 101 响应头（到 \r\n\r\n 为止）
+    let mut head = Vec::with_capacity(256);
+    let mut b = [0u8; 1];
+    while !head.ends_with(b"\r\n\r\n") {
+        stream.read_exact(&mut b).await.map_err(|e| e.to_string())?;
+        head.push(b[0]);
+        if head.len() > 8192 {
+            return Err("WS 握手响应头过长".into());
+        }
+    }
+    let head = String::from_utf8_lossy(&head);
+    if !head.starts_with("HTTP/1.1 101") && !head.starts_with("HTTP/1.0 101") {
+        return Err(format!(
+            "WS 握手失败: {}",
+            head.lines().next().unwrap_or("无状态行")
+        ));
+    }
+    let mut buf: Vec<u8> = Vec::with_capacity(4096);
+    let mut chunk = [0u8; 4096];
+    loop {
+        let n = stream.read(&mut chunk).await.map_err(|e| e.to_string())?;
+        if n == 0 {
+            return Err("WS 连接已关闭".into());
+        }
+        buf.extend_from_slice(&chunk[..n]);
+        while let Some(frame) = parse_ws_frame(&buf)? {
+            buf.drain(..frame.consumed);
+            match frame.opcode {
+                0x1 | 0x2 => {
+                    if !frame.fin {
+                        return Err("不支持分片帧".into());
+                    }
+                    if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&frame.payload) {
+                        stats.add(
+                            v["up"].as_u64().unwrap_or(0),
+                            v["down"].as_u64().unwrap_or(0),
+                        );
+                    }
+                }
+                0x8 => return Ok(()), // close
+                0x9 => {
+                    // ping → pong（客户端帧须掩码）
+                    let pong = build_ws_frame(0xA, &frame.payload);
+                    stream.write_all(&pong).await.map_err(|e| e.to_string())?;
+                }
+                _ => {} // pong / 其他忽略
+            }
+        }
+        if buf.len() > 1 << 20 {
+            return Err("WS 帧缓冲超限".into());
+        }
+    }
+}
+
+struct WsFrame {
+    fin: bool,
+    opcode: u8,
+    payload: Vec<u8>,
+    consumed: usize,
+}
+
+/// 解析一帧服务端 WS 帧（RFC 6455）：Ok(None)=数据不足；
+/// 带掩码/保留位/非法控制帧视为协议错误（服务端→客户端帧不允许掩码）。
+fn parse_ws_frame(buf: &[u8]) -> Result<Option<WsFrame>, String> {
+    if buf.len() < 2 {
+        return Ok(None);
+    }
+    let fin = buf[0] & 0x80 != 0;
+    if buf[0] & 0x70 != 0 {
+        return Err("WS 帧带保留位（不支持扩展）".into());
+    }
+    let opcode = buf[0] & 0x0f;
+    if buf[1] & 0x80 != 0 {
+        return Err("服务端帧不允许掩码".into());
+    }
+    let mut len = (buf[1] & 0x7f) as u64;
+    let mut pos = 2;
+    if len == 126 {
+        if buf.len() < 4 {
+            return Ok(None);
+        }
+        len = u16::from_be_bytes([buf[2], buf[3]]) as u64;
+        pos = 4;
+    } else if len == 127 {
+        if buf.len() < 10 {
+            return Ok(None);
+        }
+        len = u64::from_be_bytes(buf[2..10].try_into().unwrap());
+        pos = 10;
+    }
+    if opcode >= 0x8 && (!fin || len > 125) {
+        return Err("非法控制帧".into());
+    }
+    let total = pos + len as usize;
+    if buf.len() < total {
+        return Ok(None);
+    }
+    Ok(Some(WsFrame {
+        fin,
+        opcode,
+        payload: buf[pos..total].to_vec(),
+        consumed: total,
+    }))
+}
+
+/// 构造客户端 WS 帧（FIN 置位；RFC 6455 要求客户端帧掩码）。
+fn build_ws_frame(opcode: u8, payload: &[u8]) -> Vec<u8> {
+    let mask: [u8; 4] = uuid::Uuid::new_v4().as_bytes()[..4].try_into().unwrap();
+    let mut out = Vec::with_capacity(payload.len() + 14);
+    out.push(0x80 | opcode);
+    if payload.len() < 126 {
+        out.push(0x80 | payload.len() as u8);
+    } else if payload.len() <= u16::MAX as usize {
+        out.push(0x80 | 126);
+        out.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+    } else {
+        out.push(0x80 | 127);
+        out.extend_from_slice(&(payload.len() as u64).to_be_bytes());
+    }
+    out.extend_from_slice(&mask);
+    out.extend(payload.iter().enumerate().map(|(i, b)| b ^ mask[i % 4]));
+    out
+}
+
+/// Sec-WebSocket-Key（16 随机字节 base64）
+fn ws_key() -> String {
+    b64_encode(uuid::Uuid::new_v4().as_bytes())
+}
+
+fn b64_encode(data: &[u8]) -> String {
+    const TBL: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for c in data.chunks(3) {
+        let b0 = c[0] as u32;
+        let b1 = *c.get(1).unwrap_or(&0) as u32;
+        let b2 = *c.get(2).unwrap_or(&0) as u32;
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(TBL[(n >> 18) as usize & 63] as char);
+        out.push(TBL[(n >> 12) as usize & 63] as char);
+        out.push(if c.len() > 1 { TBL[(n >> 6) as usize & 63] as char } else { '=' });
+        out.push(if c.len() > 2 { TBL[n as usize & 63] as char } else { '=' });
+    }
+    out
 }
 
 // ==================== 订阅清单操作 ====================
@@ -953,6 +1232,126 @@ mod tests {
             "https://sub.example.com/…api/v1/c"
         );
         assert_eq!(mask_url("not-a-url"), "…");
+    }
+
+    #[test]
+    fn traffic_stats_accumulate_and_reset() {
+        let st = TrafficStats::default();
+        st.add(100, 200);
+        st.add(50, 60);
+        let snap = st.snapshot();
+        assert_eq!((snap.up_total, snap.down_total), (150, 260));
+        assert_eq!((snap.up_rate, snap.down_rate), (50, 60));
+        st.clear_rates();
+        let snap = st.snapshot();
+        assert_eq!((snap.up_total, snap.down_total), (150, 260));
+        assert_eq!((snap.up_rate, snap.down_rate), (0, 0));
+        st.reset();
+        let snap = st.snapshot();
+        assert_eq!(
+            (snap.up_total, snap.down_total, snap.up_rate, snap.down_rate),
+            (0, 0, 0, 0)
+        );
+    }
+
+    #[test]
+    fn ws_frame_parse_text_and_close() {
+        // 短文本帧
+        let payload = br#"{"up":3,"down":5}"#;
+        let mut buf = vec![0x81, payload.len() as u8];
+        buf.extend_from_slice(payload);
+        let f = parse_ws_frame(&buf).unwrap().expect("应解析出完整帧");
+        assert!(f.fin);
+        assert_eq!(f.opcode, 0x1);
+        assert_eq!(f.payload, payload);
+        assert_eq!(f.consumed, buf.len());
+        // close 帧
+        let f = parse_ws_frame(&[0x88, 0x00]).unwrap().unwrap();
+        assert_eq!(f.opcode, 0x8);
+        // 数据不足 → None
+        assert!(parse_ws_frame(&[0x81]).unwrap().is_none());
+        assert!(parse_ws_frame(&[0x81, 20, b'{']).unwrap().is_none());
+    }
+
+    #[test]
+    fn ws_frame_parse_extended_len() {
+        let payload = vec![7u8; 300];
+        let mut buf = vec![0x82, 126];
+        buf.extend_from_slice(&300u16.to_be_bytes());
+        buf.extend_from_slice(&payload);
+        let f = parse_ws_frame(&buf).unwrap().unwrap();
+        assert_eq!(f.opcode, 0x2);
+        assert_eq!(f.payload.len(), 300);
+        assert_eq!(f.consumed, 304);
+        // 16 位长度头不全 → None
+        assert!(parse_ws_frame(&[0x82, 126, 0x01]).unwrap().is_none());
+    }
+
+    #[test]
+    fn ws_frame_rejects_masked_and_bad_control() {
+        // 服务端帧带掩码 → 协议错误
+        assert!(parse_ws_frame(&[0x81, 0x80]).is_err());
+        // 保留位 → 协议错误
+        assert!(parse_ws_frame(&[0xC1, 0x00]).is_err());
+        // 分片控制帧 → 协议错误
+        assert!(parse_ws_frame(&[0x08, 0x00]).is_err());
+    }
+
+    #[test]
+    fn ws_client_frame_is_masked() {
+        let out = build_ws_frame(0xA, b"hi");
+        assert_eq!(out[0], 0x8A); // FIN + pong
+        assert_eq!(out[1] & 0x80, 0x80); // 掩码位
+        assert_eq!(out[1] & 0x7f, 2);
+        let mask = &out[2..6];
+        assert_eq!(out[6] ^ mask[0], b'h');
+        assert_eq!(out[7] ^ mask[1], b'i');
+    }
+
+    #[test]
+    fn b64_vectors() {
+        assert_eq!(b64_encode(b""), "");
+        assert_eq!(b64_encode(b"f"), "Zg==");
+        assert_eq!(b64_encode(b"fo"), "Zm8=");
+        assert_eq!(b64_encode(b"foo"), "Zm9v");
+        assert_eq!(b64_encode(b"foob"), "Zm9vYg==");
+        assert_eq!(ws_key().len(), 24);
+    }
+
+    /// mock 控制面：校验握手请求 → 推两条 /traffic 帧 → close，验证端到端累计
+    #[tokio::test]
+    async fn ws_session_accumulates_from_mock_server() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move {
+            let (mut s, _) = listener.accept().await.unwrap();
+            let mut head = Vec::new();
+            let mut b = [0u8; 1];
+            while !head.ends_with(b"\r\n\r\n") {
+                s.read_exact(&mut b).await.unwrap();
+                head.push(b[0]);
+            }
+            let head = String::from_utf8_lossy(&head);
+            assert!(head.starts_with("GET /traffic HTTP/1.1\r\n"), "握手请求行: {head}");
+            assert!(head.contains("Authorization: Bearer sek"), "缺鉴权头: {head}");
+            assert!(head.contains("Sec-WebSocket-Key: "), "缺 WS Key: {head}");
+            s.write_all(b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n")
+                .await
+                .unwrap();
+            for msg in [r#"{"up":10,"down":20}"#, r#"{"up":5,"down":7}"#] {
+                let mut f = vec![0x81, msg.len() as u8];
+                f.extend_from_slice(msg.as_bytes());
+                s.write_all(&f).await.unwrap();
+            }
+            s.write_all(&[0x88, 0x00]).await.unwrap(); // close
+        });
+        let stats = TrafficStats::default();
+        traffic_ws_session_on(port, "sek", &stats).await.unwrap();
+        server.await.unwrap();
+        let snap = stats.snapshot();
+        assert_eq!((snap.up_total, snap.down_total), (15, 27));
+        assert_eq!((snap.up_rate, snap.down_rate), (5, 7));
     }
 
     /// 真实订阅全链路 E2E：AG_E2E_SUB_URL=<订阅地址> cargo test real_sub_e2e -- --ignored --nocapture

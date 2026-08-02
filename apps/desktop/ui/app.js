@@ -160,6 +160,54 @@ function ahelp(text) {
 function setText(id, s) { const el = $(id); if (el && el.textContent !== s) el.textContent = s; }
 function setHtml(id, h) { const el = $(id); if (el && el.innerHTML !== h) el.innerHTML = h; }
 
+/* ================= 行内编辑（.agedit，共享样式在 components.css） =================
+   通用小模式：显示「值 [修改]」→ 点击变输入框 + [保存]；Enter 保存 / Esc 取消。
+   opts: { get(): 显示值, editValue?(): 输入框初值（默认同 get）, validate?(v): 错误文案|null, set(v): Promise }
+   validate 报错 → toast 且不写入（保持编辑态）；轮询侧用返回句柄 refresh() 同步显示值（编辑中不打扰）。 */
+function bindInlineEdit(el, opts) {
+  let editing = false, lastVal = null;
+  el.classList.add('agedit');
+  function render() {
+    if (editing) return;
+    const v = opts.get();
+    if (v === lastVal && el.firstChild) return; // 变更检测：显示值未变不动 DOM
+    lastVal = v;
+    el.innerHTML = '<span class="agedit-val">' + esc(v) + '</span>' +
+      '<button type="button" class="ghost small agedit-btn">修改</button>';
+    el.querySelector('.agedit-btn').onclick = () => {
+      editing = true;
+      el.innerHTML = '<input type="text" class="agedit-input" autocomplete="off" spellcheck="false">' +
+        '<button type="button" class="ghost small agedit-btn">保存</button>';
+      const input = el.querySelector('.agedit-input');
+      const btn = el.querySelector('.agedit-btn');
+      input.value = opts.editValue ? opts.editValue() : v;
+      input.focus(); input.select();
+      const cancel = () => { editing = false; lastVal = null; render(); };
+      const save = async () => {
+        const val = input.value.trim();
+        const err = opts.validate ? opts.validate(val) : null;
+        if (err) { toast(err, 'err'); input.focus(); return; }
+        btn.disabled = true;
+        try {
+          await opts.set(val);
+          editing = false; lastVal = null;
+          render();
+        } catch (e) {
+          toast(friendlyError(e), 'err');
+          btn.disabled = false;
+        }
+      };
+      btn.onclick = save;
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); save(); }
+        if (e.key === 'Escape') cancel();
+      });
+    };
+  }
+  render();
+  return { refresh: render };
+}
+
 /* ================= ag-select 统一自定义下拉（共享组件，样式在 components.css） =================
    渐进增强：原生 select 保留为数据/逻辑载体（视觉隐藏），自定义 UI 与其双向同步——
    选择自定义项 = 写回 sel.value 并 dispatch change（冒泡，既有绑定照常触发）；
@@ -471,7 +519,7 @@ function statusBadgeHtml(s) {
   return '<span class="badge b-off">' + T('st-disconnected') + '</span>';
 }
 
-/* ---- 路由合并视图（可暂停单条规则） ---- */
+/* ---- 规则统一表格（自定义 放行/映射 + 端点拉取合并；类型过滤 RL_FILTER 与搜索 FILTERS.rules 叠加） ---- */
 function ruleKey(r) { return (r.type + ':' + r.value).toLowerCase(); }
 async function loadPaused(nodes) {
   const map = {};
@@ -500,22 +548,62 @@ function persistPaused() {
 }
 function renderMergedRules(nodes) {
   const f = FILTERS.rules;
+  const tf = RL_FILTER;
   const pausedMap = window._paused || {};
+  const custom = window._custom || { bypass: [], hosts: [] };
+  const hit = (...xs) => !f || xs.some(x => x && String(x).toLowerCase().includes(f));
   const rows = [];
-  for (const n of nodes) {
-    const dot = n.status === 'Connected' ? 'ok' : (n.status === 'Disconnected' ? 'down' : 'warn');
-    const pset = pausedMap[n.node_id] || new Set();
-    for (const r of (n.rules || [])) {
-      const key = ruleKey(r);
-      if (f && !(r.value.toLowerCase().includes(f) || r.type.toLowerCase().includes(f) || n.node_name.toLowerCase().includes(f))) continue;
-      const paused = pset.has(key);
-      rows.push('<tr class="' + (paused ? 'rule-paused' : '') + '"><td><span class="rdot ' + dot + '"></span><span class="badge b-ok">' + esc(r.type) + '</span></td>' +
-        '<td class="mono">' + esc(r.value) + '</td>' +
-        '<td style="color:var(--dim)">' + esc(n.node_name) + '</td>' +
-        '<td><label class="switch"><input type="checkbox" data-node="' + esc(n.node_id) + '" data-rule="' + esc(key) + '"' + (paused ? '' : ' checked') + '><span class="slider"></span></label></td></tr>');
+  // 自定义放行（引擎优先级最高，排在最前）
+  if (tf === 'all' || tf === 'bypass') {
+    for (const r of custom.bypass) {
+      const way = r.via_subscription ? '经过订阅' : '直连';
+      if (!hit(r.pattern, '放行', way, '自定义')) continue;
+      rows.push('<tr class="' + (r.enabled ? '' : 'rule-paused') + '">' +
+        '<td><span class="badge b-ok">放行</span></td>' +
+        '<td class="mono">' + esc(r.pattern) + '</td>' +
+        '<td>' + way + '</td>' +
+        '<td class="dim">自定义</td>' +
+        '<td><label class="switch"><input type="checkbox" data-cr="' + esc(r.id) + '"' + (r.enabled ? ' checked' : '') + '><span class="slider"></span></label></td>' +
+        '<td><button class="danger small icon-btn" title="删除该放行规则" data-crdel="' + esc(r.id) + '">' + AgIcon('trash-2', 13) + '</button></td></tr>');
     }
   }
-  $('rules-body').innerHTML = rows.join('') || '<tr><td colspan="4" class="empty">' + (f ? '无匹配结果' : T('no-rules')) + '</td></tr>';
+  // hosts 映射（用户自建可启停/删除；系统既有只读不显示操作）
+  if (tf === 'all' || tf === 'host') {
+    for (const r of custom.hosts) {
+      const sys = r.source === 'system';
+      const src = sys ? '系统 hosts' : '自定义';
+      if (!hit(r.hostname, r.ip, '映射', src)) continue;
+      rows.push('<tr class="' + (r.enabled ? '' : 'rule-paused') + '">' +
+        '<td><span class="badge b-gray">映射</span></td>' +
+        '<td class="mono">' + esc(r.hostname) + '</td>' +
+        '<td class="mono">→ ' + esc(r.ip) + '</td>' +
+        '<td class="dim">' + src + '</td>' +
+        (sys
+          ? '<td><span class="dim">只读</span></td><td></td>'
+          : '<td><label class="switch"><input type="checkbox" data-cr="' + esc(r.id) + '"' + (r.enabled ? ' checked' : '') + '><span class="slider"></span></label></td>' +
+            '<td><button class="danger small icon-btn" title="删除该映射" data-crdel="' + esc(r.id) + '">' + AgIcon('trash-2', 13) + '</button></td>') +
+        '</tr>');
+    }
+  }
+  // 端点拉取（来源即端点名；启停走既有暂停语义）
+  if (tf === 'all' || tf === 'pulled') {
+    for (const n of nodes) {
+      const dot = n.status === 'Connected' ? 'ok' : (n.status === 'Disconnected' ? 'down' : 'warn');
+      const pset = pausedMap[n.node_id] || new Set();
+      for (const r of (n.rules || [])) {
+        const key = ruleKey(r);
+        if (!hit(r.value, r.type, n.node_name)) continue;
+        const paused = pset.has(key);
+        rows.push('<tr class="' + (paused ? 'rule-paused' : '') + '"><td><span class="rdot ' + dot + '"></span><span class="badge b-ok">' + esc(r.type) + '</span></td>' +
+          '<td class="mono">' + esc(r.value) + '</td>' +
+          '<td class="dim">—</td>' +
+          '<td class="dim">' + esc(n.node_name) + '</td>' +
+          '<td><label class="switch"><input type="checkbox" data-node="' + esc(n.node_id) + '" data-rule="' + esc(key) + '"' + (paused ? '' : ' checked') + '><span class="slider"></span></label></td>' +
+          '<td></td></tr>');
+      }
+    }
+  }
+  $('rules-body').innerHTML = rows.join('') || '<tr><td colspan="6" class="empty">' + ((f || tf !== 'all') ? '无匹配结果' : T('no-rules')) + '</td></tr>';
 }
 async function toggleRule(nodeId, key, paused) {
   try {
@@ -531,6 +619,376 @@ async function toggleRule(nodeId, key, paused) {
     toast(friendlyError(e), 'err');
     refreshNodes(true);
   }
+}
+
+/* ================= 自定义规则（放行 / hosts 映射）与组合 =================
+   后端契约（apps/desktop/src/custom_rules.rs + lib.rs 命令层，GUI 本机能力，Web 远程面隐藏）：
+   list_custom_rules() -> { bypass:[{id,pattern,via_subscription,enabled}],
+                            hosts:[{id,hostname,ip,enabled,source}] }（source=user|system，system 只读）；
+   组合 rule_keys：自定义 = 其 id，拉取 = ruleKey(r)（type:value 小写）。
+   组合中的拉取 key 引擎忽略，由本模块经既有暂停接口编排（orchestrateCombo）。 */
+let RL_FILTER = 'all';    // 类型过滤（与搜索叠加）：all | bypass | host | pulled
+let CUSTOM_SIG = null;    // list_custom_rules 轮询变更检测签名
+let COMBO_ITEMS = [];
+let COMBO_SIG = null;
+let COMBO_EDIT_ID = null;
+let CE_MEMBERS = new Set(); // 组合编辑弹窗成员工作集（搜索重渲染不丢勾选）
+
+/* ---- 自定义规则数据（10s 轮询 + 变更后调用；签名一致不重绘） ---- */
+async function refreshCustomRules(force) {
+  if (HTTP_MODE) return;
+  let data;
+  try { data = await invoke('list_custom_rules'); } catch (e) { return; }
+  const sig = JSON.stringify(data);
+  if (!force && sig === CUSTOM_SIG) return;
+  CUSTOM_SIG = sig;
+  window._custom = data;
+  renderMergedRules(window._nodes || []);
+}
+
+/* ---- 单条启停 / 删除（立即生效；后端落盘并热更引擎） ---- */
+async function toggleCustomRule(id, enabled, cb) {
+  try {
+    await invoke('set_custom_rule_enabled', { id, enabled });
+    const c = window._custom;
+    if (c) {
+      const r = (c.bypass || []).find(x => x.id === id) || (c.hosts || []).find(x => x.id === id);
+      if (r) { r.enabled = enabled; CUSTOM_SIG = JSON.stringify(c); }
+    }
+    const tr = cb.closest('tr');
+    if (tr) tr.classList.toggle('rule-paused', !enabled);
+    toast(enabled ? '规则已启用（立即生效）' : '规则已停用（立即生效）', 'ok');
+  } catch (e) {
+    cb.checked = !enabled;
+    toast(friendlyError(e), 'err');
+  }
+}
+async function deleteCustomRule(id, btn) {
+  if (btn.dataset.confirm === '1') {
+    try {
+      await invoke('remove_custom_rule', { id });
+      toast('规则已删除', 'ok');
+      refreshCustomRules(true);
+      refreshCombos(true); // 后端级联清理组合成员中的失效 key
+    } catch (e) { toast(friendlyError(e), 'err'); }
+    return;
+  }
+  btn.dataset.confirm = '1';
+  const old = btn.innerHTML;
+  btn.innerHTML = '<span style="font-size:11px">确认</span>';
+  setTimeout(() => { if (btn.isConnected) { btn.dataset.confirm = ''; btn.innerHTML = old; } }, 2500);
+}
+
+/* ---- 前端预校验（后端仍兜底；错误就地展示在弹窗内） ---- */
+function validIPv4(ip) {
+  const m = ip.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  return !!m && m.slice(1).every(o => +o <= 255);
+}
+function validIP(ip) {
+  return validIPv4(ip) || (ip.includes(':') && /^[0-9a-fA-F:]+$/.test(ip));
+}
+
+/* ---- 组合数据与列表 ---- */
+async function refreshCombos(force) {
+  if (HTTP_MODE) return;
+  let items;
+  try { items = await invoke('list_rule_combos'); } catch (e) { return; }
+  const sig = JSON.stringify(items);
+  if (!force && sig === COMBO_SIG) return;
+  COMBO_SIG = sig;
+  COMBO_ITEMS = items;
+  renderComboList();
+}
+function renderComboList() {
+  const list = $('combo-list');
+  if (!COMBO_ITEMS.length) {
+    list.innerHTML = '<div class="empty">尚未创建组合（组合 = 成组启停的命名规则集合）</div>';
+    return;
+  }
+  list.innerHTML = COMBO_ITEMS.map(c =>
+    '<div class="node-card"><div class="info">' +
+    '<div class="name">' + esc(c.name) + ' ' + (c.enabled ? '<span class="badge b-ok">已启用</span>' : '<span class="badge b-gray">已停用</span>') + '</div>' +
+    '<div class="addr">成员 ' + c.rule_keys.length + ' 条</div>' +
+    '</div><div class="card-actions">' +
+    '<label class="switch"><input type="checkbox" data-combo-toggle="' + esc(c.id) + '"' + (c.enabled ? ' checked' : '') + '><span class="slider"></span></label>' +
+    '<button class="ghost small" data-combo-edit="' + esc(c.id) + '">编辑</button>' +
+    '<button class="danger small" data-combo-del="' + esc(c.id) + '">删除</button>' +
+    '</div></div>').join('');
+}
+
+/* 组合启停编排：组合中的拉取成员（type:value key）引擎忽略，由前端经既有暂停接口处理——
+   启用 → 拉取成员全部取消暂停；停用 → 拉取成员暂停，
+   但成员同时被另一个已启用组合覆盖则不动（交叉组网语义）。
+   作用于当前持有该规则的端点；window._paused 缓存同步并本地持久。 */
+function comboPulledKeys(ruleKeys) {
+  const ids = new Set();
+  const c = window._custom;
+  if (c) { (c.bypass || []).forEach(r => ids.add(r.id)); (c.hosts || []).forEach(r => ids.add(r.id)); }
+  return (ruleKeys || []).filter(k => !ids.has(k));
+}
+async function orchestrateCombo(combo, enabling) {
+  let keys = comboPulledKeys(combo.rule_keys);
+  if (!keys.length) return;
+  if (!enabling) {
+    // 交叉覆盖保护：仍被其他已启用组合引用的成员保持现状
+    const covered = new Set();
+    for (const o of COMBO_ITEMS) {
+      if (o.id !== combo.id && o.enabled) (o.rule_keys || []).forEach(k => covered.add(k));
+    }
+    keys = keys.filter(k => !covered.has(k));
+    if (!keys.length) return;
+  }
+  const pausedMap = window._paused || (window._paused = {});
+  for (const n of (window._nodes || [])) {
+    const have = new Set((n.rules || []).map(ruleKey));
+    const targets = keys.filter(k => have.has(k));
+    if (!targets.length) continue;
+    const set = pausedMap[n.node_id] || (pausedMap[n.node_id] = new Set());
+    for (const k of targets) {
+      try {
+        await invoke('set_rule_paused', { nodeId: n.node_id, ruleKey: k, paused: !enabling });
+        if (enabling) set.delete(k); else set.add(k);
+      } catch (e) { /* 单条失败不阻断其余成员编排 */ }
+    }
+  }
+  persistPaused();
+}
+
+async function toggleCombo(id, enabled, cb) {
+  const combo = COMBO_ITEMS.find(c => c.id === id);
+  if (!combo) { if (cb) cb.checked = !enabled; return; }
+  try {
+    await invoke('set_combo_enabled', { id, enabled });
+    await refreshCombos(true);
+    await orchestrateCombo(combo, enabled);
+    renderMergedRules(window._nodes || []);
+    toast(enabled ? '组合已启用（成员规则生效）' : '组合已停用（拉取成员已暂停）', 'ok');
+  } catch (e) {
+    if (cb) cb.checked = !enabled;
+    toast(friendlyError(e), 'err');
+  }
+}
+async function deleteCombo(id, btn) {
+  if (btn.dataset.confirm === '1') {
+    const combo = COMBO_ITEMS.find(c => c.id === id);
+    try {
+      await invoke('remove_combo', { id });
+      await refreshCombos(true);
+      // 删除已启用组合 ≈ 停用：其拉取成员按交叉覆盖保护暂停
+      if (combo && combo.enabled) {
+        await orchestrateCombo(combo, false);
+        renderMergedRules(window._nodes || []);
+      }
+      if (COMBO_EDIT_ID === id) { $('combo-edit-modal').style.display = 'none'; COMBO_EDIT_ID = null; }
+      toast('组合已删除', 'ok');
+    } catch (e) { toast(friendlyError(e), 'err'); }
+    return;
+  }
+  btn.dataset.confirm = '1';
+  const old = btn.innerHTML;
+  btn.innerHTML = '<span style="font-size:11px">确认</span>';
+  setTimeout(() => { if (btn.isConnected) { btn.dataset.confirm = ''; btn.innerHTML = old; } }, 2500);
+}
+
+/* ---- 编辑组合弹窗（名称 + 全部规则简洁清单复选） ---- */
+function comboEditOpen(c) {
+  COMBO_EDIT_ID = c.id;
+  CE_MEMBERS = new Set(c.rule_keys);
+  $('ce-name').value = c.name;
+  $('ce-search').value = '';
+  $('ce-err').textContent = '';
+  renderComboEditList('');
+  $('combo-edit-modal').style.display = 'flex';
+  $('ce-name').focus();
+}
+/* 全部规则简洁清单（自定义 + 拉取；系统 hosts 只读不可选；拉取跨端点同 key 去重） */
+function allRuleChoices() {
+  const out = [];
+  const c = window._custom || { bypass: [], hosts: [] };
+  (c.bypass || []).forEach(r => out.push({ key: r.id, badge: '放行', cls: 'b-ok', value: r.pattern, source: '自定义' }));
+  (c.hosts || []).forEach(r => {
+    if (r.source !== 'system') out.push({ key: r.id, badge: '映射', cls: 'b-gray', value: r.hostname + ' → ' + r.ip, source: '自定义' });
+  });
+  const seen = new Set(out.map(o => o.key));
+  for (const n of (window._nodes || [])) {
+    for (const r of (n.rules || [])) {
+      const key = ruleKey(r);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ key, badge: r.type, cls: 'b-ok', value: r.value, source: n.node_name });
+    }
+  }
+  return out;
+}
+function renderComboEditList(f) {
+  const items = allRuleChoices().filter(it => !f ||
+    it.value.toLowerCase().includes(f) || it.badge.toLowerCase().includes(f) || it.source.toLowerCase().includes(f));
+  $('ce-list').innerHTML = items.length ? items.map(it =>
+    '<label class="combo-rule-row"><input type="checkbox" data-ce-key="' + esc(it.key) + '"' + (CE_MEMBERS.has(it.key) ? ' checked' : '') + '>' +
+    '<span class="badge ' + it.cls + '">' + esc(it.badge) + '</span>' +
+    '<span class="mono combo-rule-val">' + esc(it.value) + '</span>' +
+    '<span class="combo-rule-src">' + esc(it.source) + '</span></label>').join('')
+    : '<div class="empty">' + (f ? '无匹配结果' : '暂无可选规则（先连接扇入或新建放行/映射）') + '</div>';
+}
+async function comboEditSave() {
+  const name = $('ce-name').value.trim();
+  if (!name) { $('ce-err').textContent = '组合名称不能为空'; return; }
+  const combo = COMBO_ITEMS.find(c => c.id === COMBO_EDIT_ID);
+  const before = new Set(combo ? combo.rule_keys : []);
+  const btn = $('ce-ok');
+  btn.disabled = true;
+  try {
+    await invoke('update_combo', { id: COMBO_EDIT_ID, name, ruleKeys: [...CE_MEMBERS] });
+    $('combo-edit-modal').style.display = 'none';
+    COMBO_EDIT_ID = null;
+    await refreshCombos(true);
+    // 已启用组合成员变更同步编排：新增拉取成员取消暂停，移除的按交叉覆盖保护暂停
+    if (combo && combo.enabled) {
+      const added = [...CE_MEMBERS].filter(k => !before.has(k));
+      const removed = [...before].filter(k => !CE_MEMBERS.has(k));
+      if (added.length) await orchestrateCombo({ id: combo.id, rule_keys: added }, true);
+      if (removed.length) await orchestrateCombo({ id: combo.id, rule_keys: removed }, false);
+      if (added.length || removed.length) renderMergedRules(window._nodes || []);
+    }
+    toast('组合已保存', 'ok');
+  } catch (e) {
+    $('ce-err').textContent = friendlyError(e);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+/* ---- 规则页全部事件绑定（CSP 禁内联事件，统一显式绑定/委托） ---- */
+function initRules() {
+  agTabsBind($('rl-tabs'), (key) => { if (key === 'combo') refreshCombos(true); });
+  // 类型过滤 chips（与搜索叠加）
+  $('rl-filter').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-rfilter]');
+    if (!b || b.classList.contains('active')) return;
+    RL_FILTER = b.dataset.rfilter;
+    $('rl-filter').querySelectorAll('.agtab').forEach(t => t.classList.toggle('active', t === b));
+    renderMergedRules(window._nodes || []);
+  });
+  // 统一表格事件委托：自定义行启停 / 删除（拉取行启停见启动区既有绑定）
+  $('rules-body').addEventListener('change', (e) => {
+    const cb = e.target.closest('input[data-cr]');
+    if (cb) toggleCustomRule(cb.dataset.cr, cb.checked, cb);
+  });
+  $('rules-body').addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-crdel]');
+    if (btn) deleteCustomRule(btn.dataset.crdel, btn);
+  });
+
+  /* ---- 新增放行弹窗 ---- */
+  $('btn-add-bypass').onclick = () => {
+    $('bp-pattern').value = '';
+    $('bp-via').value = 'direct';
+    agSelectRefresh($('bp-via'));
+    $('bp-err').textContent = '';
+    $('bypass-modal').style.display = 'flex';
+    $('bp-pattern').focus();
+  };
+  $('bp-cancel').onclick = () => { $('bypass-modal').style.display = 'none'; };
+  $('bp-pattern').addEventListener('keydown', e => { if (e.key === 'Enter') $('bp-ok').click(); });
+  $('bp-ok').onclick = async () => {
+    const pattern = $('bp-pattern').value.trim();
+    if (!pattern || /\s/.test(pattern)) { $('bp-err').textContent = '匹配值不能为空且不含空白字符'; return; }
+    const btn = $('bp-ok');
+    btn.disabled = true;
+    try {
+      await invoke('add_bypass_rule', { pattern, viaSubscription: $('bp-via').value === 'sub' });
+      $('bypass-modal').style.display = 'none';
+      toast('放行规则已添加（默认启用，立即生效）', 'ok');
+      refreshCustomRules(true);
+    } catch (e) {
+      $('bp-err').textContent = friendlyError(e);
+    } finally {
+      btn.disabled = false;
+    }
+  };
+
+  /* ---- 新增映射弹窗 ---- */
+  $('btn-add-host').onclick = () => {
+    $('hm-name').value = '';
+    $('hm-ip').value = '';
+    $('hm-system').checked = true;
+    $('hm-err').textContent = '';
+    $('host-modal').style.display = 'flex';
+    $('hm-name').focus();
+  };
+  $('hm-cancel').onclick = () => { $('host-modal').style.display = 'none'; };
+  $('hm-ip').addEventListener('keydown', e => { if (e.key === 'Enter') $('hm-ok').click(); });
+  $('hm-ok').onclick = async () => {
+    const hostname = $('hm-name').value.trim().toLowerCase();
+    const ip = $('hm-ip').value.trim();
+    if (!hostname || /\s/.test(hostname) || hostname.includes('*') || hostname.includes('#')) {
+      $('hm-err').textContent = '主机名不合法（不含空白、*、#）'; return;
+    }
+    if (validIP(hostname)) { $('hm-err').textContent = '主机名不能是 IP'; return; }
+    if (!validIP(ip)) { $('hm-err').textContent = 'IP 地址不合法'; return; }
+    const btn = $('hm-ok');
+    btn.disabled = true;
+    try {
+      const r = await invoke('add_host_mapping', { hostname, ip, toSystem: $('hm-system').checked });
+      $('host-modal').style.display = 'none';
+      toast(r.persisted === 'system' ? '映射已添加，已写入系统 hosts' : '映射已添加，仅本软件内生效（无系统 hosts 写权限）', 'ok');
+      refreshCustomRules(true);
+    } catch (e) {
+      $('hm-err').textContent = friendlyError(e);
+    } finally {
+      btn.disabled = false;
+    }
+  };
+
+  /* ---- 新建组合弹窗 ---- */
+  $('btn-add-combo').onclick = () => {
+    $('cb-name').value = '';
+    $('cb-err').textContent = '';
+    $('combo-modal').style.display = 'flex';
+    $('cb-name').focus();
+  };
+  $('cb-cancel').onclick = () => { $('combo-modal').style.display = 'none'; };
+  $('cb-name').addEventListener('keydown', e => { if (e.key === 'Enter') $('cb-ok').click(); });
+  $('cb-ok').onclick = async () => {
+    const name = $('cb-name').value.trim();
+    if (!name) { $('cb-err').textContent = '请填写组合名称'; return; }
+    const btn = $('cb-ok');
+    btn.disabled = true;
+    try {
+      await invoke('add_combo', { name });
+      $('combo-modal').style.display = 'none';
+      toast('组合已创建，点「编辑」勾选成员', 'ok');
+      refreshCombos(true);
+    } catch (e) {
+      $('cb-err').textContent = friendlyError(e);
+    } finally {
+      btn.disabled = false;
+    }
+  };
+
+  /* ---- 组合列表（启停 / 编辑 / 删除）与编辑弹窗 ---- */
+  $('combo-list').addEventListener('change', (e) => {
+    const cb = e.target.closest('input[data-combo-toggle]');
+    if (cb) toggleCombo(cb.dataset.comboToggle, cb.checked, cb);
+  });
+  $('combo-list').addEventListener('click', (e) => {
+    const eb = e.target.closest('[data-combo-edit]');
+    if (eb) {
+      const c = COMBO_ITEMS.find(x => x.id === eb.dataset.comboEdit);
+      if (c) comboEditOpen(c);
+      return;
+    }
+    const db = e.target.closest('[data-combo-del]');
+    if (db) deleteCombo(db.dataset.comboDel, db);
+  });
+  $('ce-search').addEventListener('input', () => renderComboEditList($('ce-search').value.trim().toLowerCase()));
+  $('ce-list').addEventListener('change', (e) => {
+    const cb = e.target.closest('input[data-ce-key]');
+    if (!cb) return;
+    if (cb.checked) CE_MEMBERS.add(cb.dataset.ceKey); else CE_MEMBERS.delete(cb.dataset.ceKey);
+  });
+  $('ce-cancel').onclick = () => { $('combo-edit-modal').style.display = 'none'; COMBO_EDIT_ID = null; };
+  $('ce-ok').onclick = comboEditSave;
 }
 
 async function disconnectNode(nodeId) {
@@ -559,8 +1017,7 @@ async function connectWith(input, btn) {
       try {
         const ps = await invoke('proxy_status');
         if (!ps.running) {
-          const port = parseInt($('proxy-port').value || '57890', 10);
-          await invoke('start_proxy', { port });
+          await invoke('start_proxy', { port: proxyPort() });
         }
       } catch (e) { /* 代理自启失败不阻塞连接 */ }
     }
@@ -716,9 +1173,26 @@ async function pasteFromClipboard() {
 }
 
 /* ================= 代理控制 ================= */
+/* 本地代理端口：运行中以 proxy_status 为准；未运行取本地保存值（默认 57890）。
+   端口修改走代理卡监听行 inline-edit（bindInlineEdit），变更即重启代理生效。 */
+let PROXY_ST = { running: false, port: 0 };
+let proxyAddrEdit = null;
+function proxyPort() {
+  if (PROXY_ST.running && PROXY_ST.port) return PROXY_ST.port;
+  const p = parseInt(localStorage.getItem('ag_proxy_port') || '57890', 10);
+  return p >= 1 && p <= 65535 ? p : 57890;
+}
+function validPort(v) {
+  if (!/^\d+$/.test(v)) return '端口须为 1-65535 的数字';
+  const p = parseInt(v, 10);
+  return (p >= 1 && p <= 65535) ? null : '端口须为 1-65535';
+}
 async function refreshProxy() {
   try {
     const st = await invoke('proxy_status');
+    PROXY_ST = st;
+    // 运行中的实际端口同步为本地基准（外部变更也能对齐）
+    if (st.running && st.port) localStorage.setItem('ag_proxy_port', String(st.port));
     const nodes = await invoke('list_nodes').catch(() => []);
     const degraded = nodes.filter(n => n.status !== 'Connected');
     let mode, text;
@@ -733,10 +1207,10 @@ async function refreshProxy() {
       text = T('proxy-stopped');
     }
     Island.setStatus(mode, text, degraded);
-    // 仪表盘代理卡：开关态 / 状态徽标 / 监听地址（变更检测写入）
+    // 仪表盘代理卡：开关态 / 状态徽标 / 监听地址（inline-edit 自行变更检测）
     if ($('d-proxy').checked !== st.running) $('d-proxy').checked = st.running;
     setHtml('d-proxy-badge', st.running ? '<span class="badge b-ok">运行中</span>' : '<span class="badge b-gray">未启动</span>');
-    setText('d-proxy-addr', st.running ? '127.0.0.1:' + st.port : '-');
+    if (proxyAddrEdit) proxyAddrEdit.refresh();
     const hint = st.running
       ? (CUR_PROXY_MODE === 'system'
         ? '已接管系统代理 127.0.0.1:' + st.port + '，浏览器即开即用'
@@ -749,8 +1223,7 @@ async function toggleProxy(e) {
   const on = e.target.checked;
   try {
     if (on) {
-      const port = parseInt($('proxy-port').value || '57890', 10);
-      const actual = await invoke('start_proxy', { port });
+      const actual = await invoke('start_proxy', { port: proxyPort() });
       toast(T('proxy-on') + ' 127.0.0.1:' + actual, 'ok');
     } else {
       await invoke('stop_proxy');
@@ -1098,6 +1571,45 @@ function refreshWebPanel() {
   $('web-panel').style.display = on ? 'block' : 'none';
   $('web-status').textContent = on ? '监听地址保存后生效；浏览器访问需输入管理密码' : '';
 }
+/* Web 远程面监听地址（inline-edit 数据源；initRoles 自 get_role_settings 载入） */
+let WEB_LISTEN = '127.0.0.1:59291';
+function validListenAddr(v) {
+  const m = v.match(/^(.+):(\d+)$/);
+  if (!m || !m[1].trim()) return '监听地址格式须为 IP:端口';
+  const p = parseInt(m[2], 10);
+  return (p >= 1 && p <= 65535) ? null : '端口须为 1-65535';
+}
+/* 代理卡监听行 / 远程卡监听地址：统一 inline-edit（显示 ip:port [修改] → 输入框 + [保存]） */
+function initInlineEdits() {
+  proxyAddrEdit = bindInlineEdit($('d-proxy-addr'), {
+    get: () => '127.0.0.1:' + proxyPort(),
+    editValue: () => String(proxyPort()),
+    validate: validPort,
+    set: async (v) => {
+      const port = parseInt(v, 10);
+      localStorage.setItem('ag_proxy_port', String(port));
+      const st = await invoke('proxy_status');
+      if (st.running && st.port !== port) {
+        await invoke('stop_proxy');
+        const actual = await invoke('start_proxy', { port });
+        toast('端口已修改为 ' + actual + '，代理已重启生效', 'ok');
+      } else {
+        toast(st.running ? '端口未变更' : '端口已保存，下次启动代理生效', 'ok');
+      }
+      refreshProxy();
+      refreshSysproxy();
+    },
+  });
+  bindInlineEdit($('web-listen'), {
+    get: () => WEB_LISTEN,
+    validate: validListenAddr,
+    set: async (v) => {
+      await invoke('set_web_role', { enabled: $('r-web').checked, listen: v });
+      WEB_LISTEN = v;
+      toast('监听地址已保存', 'ok');
+    },
+  });
+}
 async function initRoles() {
   let settings = { client: true, server: false, web: false, web_listen: '127.0.0.1:59291' };
   try { settings = await invoke('get_role_settings'); } catch (e) {}
@@ -1107,7 +1619,7 @@ async function initRoles() {
   $('r-web').checked = settings.web;
   $('s-unified').checked = settings.subscription_unified !== false;
   applySubFeature(!!settings.subscription_feature);
-  $('web-listen').value = settings.web_listen;
+  WEB_LISTEN = settings.web_listen;
   applyClientRole(settings.client);
   refreshServerPanel();
   refreshWebPanel();
@@ -1142,20 +1654,13 @@ async function initRoles() {
         e.target.checked = true;
         toast('管理密码已设置', 'ok');
       }
-      await invoke('set_web_role', { enabled: on, listen: $('web-listen').value.trim() || null });
+      await invoke('set_web_role', { enabled: on, listen: WEB_LISTEN || null });
       refreshWebPanel();
       toast(on ? 'Web 远程面已开启' : 'Web 远程面已关闭', 'ok');
     } catch (err) {
       e.target.checked = !on;
       toast(friendlyError(err), 'err');
     }
-  };
-
-  $('btn-web-listen-save').onclick = async () => {
-    try {
-      await invoke('set_web_role', { enabled: $('r-web').checked, listen: $('web-listen').value.trim() });
-      toast('监听地址已保存', 'ok');
-    } catch (err) { toast(friendlyError(err), 'err'); }
   };
 
   $('btn-open-console').onclick = () => enterAdmin(null, null, '本机服务端');
@@ -1279,6 +1784,45 @@ async function refreshSubStatus() {
   // 无论内核是否运行都刷新代理页（未运行时回落缓存快照，方便查看节点情况）
   refreshGroups();
 }
+
+/* ---------- 订阅内核流量（后端 /traffic WS 单任务累计，前端 2s 轮询同一数据源） ----------
+   订阅页内核卡与首页订阅卡共用本模块序列，不另起轮询；
+   速率序列照 trackFaninTraffic 的 delta 保护：累计倒退 = 内核重启清零，按新基准。 */
+const SubTraffic = {
+  data: null, _last: null, series: [], _sig: '',
+  async poll() {
+    if (HTTP_MODE) return;
+    let t;
+    try { t = await invoke('sub_traffic'); } catch (e) { return; }
+    const total = t.up_total + t.down_total;
+    if (this._last !== null) {
+      let delta = total - this._last;
+      if (delta < 0) delta = total;
+      this.series.push(delta);
+      if (this.series.length > 90) this.series.shift();
+    }
+    this._last = total;
+    this.data = t;
+    this.render();
+  },
+  render() {
+    const t = this.data, show = !!window._subRunning && !!t;
+    // 显隐先行（不受变更检测拦截）
+    const row = $('sub-traffic-row'), spark = $('sub-spark');
+    const dtf = $('d-sub-tf'), dspark = $('d-sub-spark');
+    [row, spark, dtf, dspark].forEach(el => { if (el) el.style.display = show ? '' : 'none'; });
+    const sig = show ? (t.up_total + '/' + t.down_total) : 'off';
+    if (sig === this._sig) return; // 变更检测：总量未变不重绘
+    this._sig = sig;
+    if (!show) return;
+    const text = '↑ ' + fmtBytes(t.up_total) + ' · ↓ ' + fmtBytes(t.down_total);
+    setText('sub-traffic-total', text);
+    setText('d-sub-tf', text);
+    const series = this.series.length > 1 ? this.series : [0, 0];
+    if (spark) AgChart.sparkline(spark, series);
+    if (dspark) AgChart.sparkline(dspark, series);
+  },
+};
 
 /* ---------- 代理页 ---------- */
 async function refreshGroups() {
@@ -1592,14 +2136,13 @@ function initSysproxy() {
         // 代理未启动则先按当前端口启动（后端 set_system_proxy 亦会兜底拉起）
         const st = await invoke('proxy_status');
         if (!st.running) {
-          const port = parseInt($('proxy-port').value || '57890', 10);
-          await invoke('start_proxy', { port });
+          await invoke('start_proxy', { port: proxyPort() });
         }
         await invoke('set_system_proxy', { enabled: true });
         toast('已切换到系统代理（自动接管系统流量）', 'ok');
       } else {
         await invoke('set_system_proxy', { enabled: false });
-        toast('已切换到本地代理（手动指向 127.0.0.1:' + ($('proxy-port').value || '57890') + '）', 'ok');
+        toast('已切换到本地代理（手动指向 127.0.0.1:' + proxyPort() + '）', 'ok');
       }
       refreshSysproxy();
       refreshProxy();
@@ -1740,9 +2283,9 @@ function switchView(v) {
   document.querySelectorAll('.view').forEach(s => { s.hidden = s.id !== 'view-' + v; });
   if (v === 'connect') { refreshNodes(); refreshProxy(); renderDashFanout(); NetProbe.render(); }
   if (v === 'nodes') { refreshNodes(true); refreshCreds(); }
-  if (v === 'routes') refreshNodes();
+  if (v === 'routes') { refreshNodes(); refreshCustomRules(); refreshCombos(); }
   if (v === 'upstreams') refreshUpstreams();
-  if (v === 'subscription') { refreshSubs(); refreshSubStatus(); }
+  if (v === 'subscription') { refreshSubs(); refreshSubStatus(); SubTraffic.poll(); }
   if (v === 'proxy') { refreshSubs(); refreshGroups(); }
   if (v === 'settings') { refreshSysproxy(); refreshSubFeature(); }
 }
@@ -1768,6 +2311,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   document.querySelectorAll('#nav-client .nav-item').forEach(n => n.onclick = () => switchView(n.dataset.view));
   initAdminMode();
   initUpstreams();
+  initRules();
 
   // 浏览器模式（Web 远程面）：本机专属卡片/开关经 .local-only 隐藏，未登录先出登录框
   if (HTTP_MODE) {
@@ -1865,6 +2409,7 @@ window.addEventListener('DOMContentLoaded', async () => {
 
   await loadSettings();
   await initRoles();
+  initInlineEdits();
   initSubscription();
   initSubFeature();
   refreshSubFeature();
@@ -1892,6 +2437,8 @@ window.addEventListener('DOMContentLoaded', async () => {
   renderDashFanout();
   NetProbe.refresh();
   NetProbe.refreshLan();
+  refreshCustomRules();
+  refreshCombos();
   await refreshCreds();
 
   // 启动时自动重连已保存的扇入
@@ -1905,7 +2452,9 @@ window.addEventListener('DOMContentLoaded', async () => {
     }
   }
 
-  setInterval(() => { refreshNodes(); refreshProxy(); refreshSubStatus(); refreshSysproxy(); renderDashFanout(); }, 10000);
+  setInterval(() => { refreshNodes(); refreshProxy(); refreshSubStatus(); refreshSysproxy(); renderDashFanout(); refreshCustomRules(); refreshCombos(); }, 10000);
+  // 订阅内核流量 2s 轮询（sub_traffic 读 Atomic 快照，廉价；内部变更检测不重绘）
+  setInterval(() => { SubTraffic.poll(); }, 2000);
   // 出口 IP 探测 30s 轮询（结果带签名对比，不变不重绘）
   setInterval(() => { NetProbe.refresh(); }, 30000);
 });

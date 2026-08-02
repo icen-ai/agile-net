@@ -40,6 +40,38 @@ pub struct ProxyRouter {
     host_suffixes: Vec<(String, Outbound)>,
     /// 默认出站
     default: Outbound,
+    /// 自定义规则层：hosts 映射（hostname 小写 → IP；仅本地代理入站评估，见 map_host）
+    hosts_map: HashMap<String, IpAddr>,
+    /// 自定义规则层：放行（通配 pattern → 出站；仅本地代理入站评估，见 custom_bypass_match）
+    custom_bypass: Vec<(String, Outbound)>,
+}
+
+/// 通配匹配（自定义放行规则；大小写不敏感）：
+/// - 无通配符：精确匹配（`foo.com` 仅命中 `foo.com`）
+/// - 前通配 `*.baidu.com`：后缀匹配（含裸域 `baidu.com` 本身；不带点的 `*foo.com` 退化为纯后缀）
+/// - 后通配 `127.*`：前缀匹配
+/// - 前后通配 `*.alibaba.*`：包含匹配（内核去掉两侧 `.`，即包含 `alibaba`，裸串 `alibaba.cn` 亦命中）
+///
+/// 域名与 IP 字符串同口径（IP 场景用精确/前缀，如 `10.0.0.1` / `127.*`）。
+pub fn wildcard_match(pattern: &str, target: &str) -> bool {
+    let pat = pattern.trim().to_lowercase();
+    let target = target.trim().to_lowercase();
+    let leading = pat.starts_with('*');
+    let trailing = pat.ends_with('*') && pat.len() > 1;
+    match (leading, trailing) {
+        (false, false) => pat == target,
+        (true, false) => {
+            let rest = &pat[1..];
+            if let Some(dom) = rest.strip_prefix('.') {
+                // "*.baidu.com"：命中裸域与全部子域，不误伤 evilbaidu.com
+                target == dom || target.ends_with(rest)
+            } else {
+                target.ends_with(rest)
+            }
+        }
+        (false, true) => target.starts_with(&pat[..pat.len() - 1]),
+        (true, true) => target.contains(pat[1..pat.len() - 1].trim_matches('.')),
+    }
 }
 
 impl ProxyRouter {
@@ -50,6 +82,8 @@ impl ProxyRouter {
             host_exact: HashMap::new(),
             host_suffixes: Vec::new(),
             default: Outbound::Direct,
+            hosts_map: HashMap::new(),
+            custom_bypass: Vec::new(),
         }
     }
 
@@ -114,6 +148,45 @@ impl ProxyRouter {
             }
         }
 
+        None
+    }
+
+    // ==================== 自定义规则层（客户端 GUI 自定义规则） ====================
+    //
+    // 仅本地代理入站（ProxyInbound）评估：hosts 映射先改写解析目标（map_host），
+    // 放行命中（custom_bypass_match）优先于一切合并路由与默认出站。
+    // route_target / rule_values / matches 均不感知本层——中继 connector 的
+    // 扇入数据面与路由再发布不受本机自定义规则影响。
+
+    /// 整体替换 hosts 映射（键须为小写 hostname；空表 = 清除）。
+    pub fn set_hosts_map(&mut self, map: HashMap<String, IpAddr>) {
+        self.hosts_map = map;
+    }
+
+    /// 追加一条放行规则（pattern 通配语义见 wildcard_match；先加先判）。
+    pub fn add_custom_bypass(&mut self, pattern: &str, outbound: Outbound) {
+        self.custom_bypass.push((pattern.to_lowercase(), outbound));
+    }
+
+    /// 查询 hosts 映射（大小写不敏感；入参为纯主机名，不含端口）。
+    pub fn map_host(&self, host: &str) -> Option<IpAddr> {
+        if self.hosts_map.is_empty() {
+            return None;
+        }
+        self.hosts_map.get(host.to_lowercase().as_str()).copied()
+    }
+
+    /// 放行规则匹配（大小写不敏感；入参为纯主机名或 IP 字符串，不含端口）。
+    pub fn custom_bypass_match(&self, host: &str) -> Option<&Outbound> {
+        if self.custom_bypass.is_empty() {
+            return None;
+        }
+        let target = host.to_lowercase();
+        for (pattern, outbound) in &self.custom_bypass {
+            if wildcard_match(pattern, &target) {
+                return Some(outbound);
+            }
+        }
         None
     }
 
@@ -190,6 +263,8 @@ impl ProxyRouter {
         self.cidr_table = IpNetworkTable::new();
         self.host_exact.clear();
         self.host_suffixes.clear();
+        self.hosts_map.clear();
+        self.custom_bypass.clear();
     }
 }
 
@@ -285,5 +360,102 @@ mod tests {
         // 默认出站不参与判定
         router.set_default(Outbound::Direct);
         assert!(!router.matches("8.8.8.8"));
+    }
+
+    #[test]
+    fn wildcard_exact_and_case() {
+        // 无通配 = 精确（大小写不敏感）
+        assert!(wildcard_match("foo.com", "foo.com"));
+        assert!(wildcard_match("Foo.COM", "foo.com"));
+        assert!(wildcard_match("foo.com", "FOO.COM"));
+        assert!(!wildcard_match("foo.com", "www.foo.com"));
+        assert!(!wildcard_match("foo.com", "foo.com.cn"));
+        // IP 精确
+        assert!(wildcard_match("10.0.0.1", "10.0.0.1"));
+        assert!(!wildcard_match("10.0.0.1", "10.0.0.2"));
+    }
+
+    #[test]
+    fn wildcard_suffix() {
+        // "*.baidu.com" 后缀匹配：含裸域，不误伤同尾异名
+        assert!(wildcard_match("*.baidu.com", "baidu.com"));
+        assert!(wildcard_match("*.baidu.com", "www.baidu.com"));
+        assert!(wildcard_match("*.baidu.com", "a.b.baidu.com"));
+        assert!(!wildcard_match("*.baidu.com", "evilbaidu.com"));
+        assert!(!wildcard_match("*.baidu.com", "baidu.com.cn"));
+        // 不带点的前通配退化为纯后缀
+        assert!(wildcard_match("*baidu.com", "evilbaidu.com"));
+    }
+
+    #[test]
+    fn wildcard_prefix_and_contains() {
+        // "127.*" 前缀匹配（IP 场景）
+        assert!(wildcard_match("127.*", "127.0.0.1"));
+        assert!(wildcard_match("127.*", "127.255.255.254"));
+        assert!(!wildcard_match("127.*", "128.0.0.1"));
+        assert!(!wildcard_match("127.*", "2127.0.0.1"));
+        // "*.alibaba.*" 前后通配 = 包含
+        assert!(wildcard_match("*.alibaba.*", "www.alibaba.com"));
+        assert!(wildcard_match("*.alibaba.*", "alibaba.cn"));
+        assert!(wildcard_match("*.alibaba.*", "a.alibaba.b.c"));
+        assert!(!wildcard_match("*.alibaba.*", "alibab.com"));
+        assert!(!wildcard_match("*.alibaba.*", "example.com"));
+    }
+
+    #[test]
+    fn wildcard_edge_patterns() {
+        // "*" 匹配一切；"**" 同理；空 pattern 仅命中空目标
+        assert!(wildcard_match("*", "anything.example"));
+        assert!(wildcard_match("*", "1.2.3.4"));
+        assert!(wildcard_match("**", "x.y"));
+        assert!(!wildcard_match("", "x.y"));
+    }
+
+    #[test]
+    fn custom_bypass_layer() {
+        let mut router = ProxyRouter::new();
+        router.add_host_exact("a.com", Outbound::tunnel("n1"));
+        router.add_custom_bypass("*.corp.internal", Outbound::Direct);
+        router.add_custom_bypass("10.*", Outbound::Direct);
+
+        // 放行命中（后缀 / 前缀）
+        assert!(matches!(
+            router.custom_bypass_match("app.corp.internal"),
+            Some(Outbound::Direct)
+        ));
+        assert!(matches!(
+            router.custom_bypass_match("10.1.2.3"),
+            Some(Outbound::Direct)
+        ));
+        // 未命中返回 None（调用方继续走 route_target）
+        assert!(router.custom_bypass_match("a.com").is_none());
+        // 自定义层不进 route_target：扇入数据面与路由再发布不受影响
+        assert!(matches!(
+            router.route_target("app.corp.internal:443"),
+            Outbound::Direct
+        )); // 默认出站
+        assert!(router.rule_values().iter().all(|v| !v.contains("corp")));
+        // clear 一并清空自定义层
+        router.clear();
+        assert!(router.custom_bypass_match("app.corp.internal").is_none());
+    }
+
+    #[test]
+    fn hosts_map_lookup() {
+        let mut router = ProxyRouter::new();
+        let mut map = HashMap::new();
+        map.insert(
+            "foo.internal".to_string(),
+            "10.9.9.9".parse::<IpAddr>().unwrap(),
+        );
+        router.set_hosts_map(map);
+        assert_eq!(
+            router.map_host("FOO.internal"),
+            Some("10.9.9.9".parse().unwrap())
+        );
+        assert_eq!(router.map_host("other.internal"), None);
+        // 空映射零开销路径
+        router.set_hosts_map(HashMap::new());
+        assert_eq!(router.map_host("foo.internal"), None);
     }
 }
