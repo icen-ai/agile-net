@@ -444,7 +444,53 @@ pub(crate) fn check_no_loop(cfg: &str, tun: bool) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(all(test, windows))]
+mod job_tests {
+    #[test]
+    fn job_set_kill_on_close() {
+        use windows_sys::Win32::System::JobObjects::*;
+        unsafe {
+            let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+            assert!(!job.is_null());
+            let mut info: super::JobObjectExtendedLimitInformation = std::mem::zeroed();
+            info.basic.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            let ok = SetInformationJobObject(
+                job,
+                JobObjectExtendedLimitInformation,
+                &info as *const _ as *const _,
+                std::mem::size_of::<super::JobObjectExtendedLimitInformation>() as u32,
+            );
+            let err = std::io::Error::last_os_error();
+            windows_sys::Win32::Foundation::CloseHandle(job);
+            assert!(ok != 0, "SetInformationJobObject failed: {err}");
+        }
+    }
+}
+
 // ==================== 内核下载（钉版本 + SHA-256 校验 + 原子落盘） ====================
+
+/// JOBOBJECT_EXTENDED_LIMIT_INFORMATION（windows-sys 0.59 未收录，按 SDK 布局自绘；
+/// KILL_ON_JOB_CLOSE 实测必须用 Extended 类，Basic 类报 ERROR_INVALID_PARAMETER）
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct IoCounters {
+    read_ops: u64,
+    write_ops: u64,
+    other_ops: u64,
+    read_bytes: u64,
+    write_bytes: u64,
+    other_bytes: u64,
+}
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct JobObjectExtendedLimitInformation {
+    basic: windows_sys::Win32::System::JobObjects::JOBOBJECT_BASIC_LIMIT_INFORMATION,
+    io: IoCounters,
+    process_memory_limit: usize,
+    job_memory_limit: usize,
+    peak_process_memory_used: usize,
+    peak_job_memory_used: usize,
+}
 
 /// Windows：把内核子进程挂进带 KILL_ON_JOB_CLOSE 的 Job——GUI 以任何方式退出
 /// （崩溃、强杀、提权重启 app.exit）系统都会连带终止内核，杜绝孤儿 mihomo。
@@ -458,17 +504,18 @@ fn bind_kill_on_close(child: &tokio::process::Child) {
             tracing::warn!("CreateJobObjectW failed; kernel not bound to GUI lifetime");
             return;
         }
-        let mut info: JOBOBJECT_BASIC_LIMIT_INFORMATION = std::mem::zeroed();
-        info.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        let mut info: JobObjectExtendedLimitInformation = std::mem::zeroed();
+        info.basic.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
         let ok = SetInformationJobObject(
             job,
-            JobObjectBasicLimitInformation,
+            JobObjectExtendedLimitInformation,
             &info as *const _ as *const _,
-            std::mem::size_of::<JOBOBJECT_BASIC_LIMIT_INFORMATION>() as u32,
+            std::mem::size_of::<JobObjectExtendedLimitInformation>() as u32,
         );
         if ok == 0 {
+            let err = std::io::Error::last_os_error();
             windows_sys::Win32::Foundation::CloseHandle(job);
-            tracing::warn!("SetInformationJobObject failed; kernel not bound");
+            tracing::warn!(error = %err, "SetInformationJobObject failed; kernel not bound");
             return;
         }
         if let Some(h) = child.raw_handle() {
