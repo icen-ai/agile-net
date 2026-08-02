@@ -3627,6 +3627,226 @@ async function loadSettings() {
 
   // 自我诊断（可重复点击重新诊断）
   $('btn-doctor-run').onclick = runDoctor;
+
+  // 同步与备份：通道切换显隐配置区；PIN 输入数字过滤；各按钮绑定（内部均防重入）
+  $('sync-target').onchange = () => syncShowTarget($('sync-target').value);
+  $('sync-pin').addEventListener('input', e => { e.target.value = e.target.value.replace(/\D/g, ''); });
+  $('btn-sync-save').onclick = syncSave;
+  $('btn-sync-check').onclick = syncCheck;
+  $('btn-sync-upload').onclick = syncUpload;
+  $('btn-sync-restore').onclick = syncRestoreAsk;
+  $('btn-sync-export').onclick = syncExportFile;
+  $('btn-sync-import').onclick = syncImportAsk;
+  $('sync-restore-cancel').onclick = () => { $('sync-restore-modal').style.display = 'none'; };
+  $('sync-restore-ok').onclick = syncRestoreDo;
+}
+
+/* ================= 同步与备份（WebDAV/S3/手动文件；PIN 不落盘，每次操作取卡上输入框） =================
+   后端 apps/desktop/src/sync.rs：按版本号比对新旧（上传 = max(远端,本地)+1）；恢复/导入成功后 500ms 应用自动重启。
+   set_sync_config 入参为嵌套结构 {target, webdav:{url,user,pass}, s3:{endpoint,bucket,ak,sk,region,prefix}, pin_set}，
+   pass/sk 传空串 = 保留原值（回显掩码如 **ab，重新编辑时留空即可）。 */
+let SYNC_CFG = null;     // get_sync_config 缓存（掩码回显 / pin_set 保留 / 状态行）
+let SYNC_RESTORE = null; // 恢复确认弹窗上下文 {kind:'remote', st} | {kind:'file', path}
+
+function syncPin() { return $('sync-pin').value.trim(); }
+/* PIN 校验：空 或正好 4 位数字；非法 toast 并返回 null（空串是有效值，勿用 falsy 判断） */
+function syncPinValid() {
+  const p = syncPin();
+  if (p && !/^\d{4}$/.test(p)) { toast('PIN 须为 4 位数字或留空', 'err'); return null; }
+  return p;
+}
+/* 后端 target 仅 none/webdav/s3；「手动导入导出」为前端纯文件通道，落盘 none（UI 选择另记 localStorage） */
+function syncTargetBackend() {
+  const v = $('sync-target').value;
+  return v === 'file' ? 'none' : v;
+}
+function syncShowTarget(v) {
+  $('sync-cfg-webdav').style.display = v === 'webdav' ? 'block' : 'none';
+  $('sync-cfg-s3').style.display = v === 's3' ? 'block' : 'none';
+  $('sync-cfg-file').style.display = v === 'file' ? 'block' : 'none';
+  // 检查/上传/拉取仅网络通道有意义；文件通道用配置区内的导出/导入按钮
+  const ops = v === 'webdav' || v === 's3';
+  ['btn-sync-check', 'btn-sync-upload', 'btn-sync-restore'].forEach(id => { $(id).style.display = ops ? '' : 'none'; });
+}
+/* 按钮防重入：进行中 disabled + spinner，结束还原原 innerHTML（含图标） */
+function syncBusy(btn, on, text) {
+  if (!btn) return;
+  btn.disabled = on;
+  if (on) { btn._html = btn.innerHTML; btn.innerHTML = '<span class="spinner"></span>' + text; }
+  else if (btn._html) { btn.innerHTML = btn._html; btn._html = null; }
+}
+
+/* 进设置视图时渲染：target 选中、字段回填（掩码进 placeholder）、状态行 */
+async function loadSyncConfig() {
+  if (HTTP_MODE) return; // 整卡已隐藏，且 Web 远程面无此命令
+  let cfg;
+  try { cfg = await invoke('get_sync_config'); } catch (e) { return; }
+  SYNC_CFG = cfg;
+  let ui = ['none', 'webdav', 's3'].includes(cfg.target) ? cfg.target : 'none';
+  if (ui === 'none' && localStorage.getItem('ag_sync_target_ui') === 'file') ui = 'file';
+  const sel = $('sync-target');
+  if (sel.value !== ui) { sel.value = ui; agSelectRefresh(sel); }
+  syncShowTarget(ui);
+  $('sync-wd-url').value = cfg.webdav_url || '';
+  $('sync-wd-user').value = cfg.webdav_user || '';
+  $('sync-wd-pass').value = '';
+  $('sync-wd-pass').placeholder = cfg.webdav_pass_mask ? '已配置（' + cfg.webdav_pass_mask + '），留空保持不变' : '留空保持不变';
+  $('sync-s3-endpoint').value = cfg.s3_endpoint || '';
+  $('sync-s3-bucket').value = cfg.s3_bucket || '';
+  $('sync-s3-ak').value = cfg.s3_ak || '';
+  $('sync-s3-sk').value = '';
+  $('sync-s3-sk').placeholder = cfg.s3_sk_mask ? '已配置（' + cfg.s3_sk_mask + '），留空保持不变' : '留空保持不变';
+  $('sync-s3-region').value = cfg.s3_region || '';
+  $('sync-s3-prefix').value = cfg.s3_prefix || '';
+  renderSyncState(cfg);
+  $('sync-check-result').style.display = 'none';
+}
+
+/* 状态行：版本号走 odo 滚动（odoSet 内部签名对比，未变不动 DOM），其余文本变更检测写入 */
+function renderSyncState(cfg) {
+  odoSet($('sync-ver'), 'v' + (cfg.version || 0));
+  let rest = cfg.last_upload_at
+    ? ' · 上次上传 ' + fmtAgo(cfg.last_upload_at) + (cfg.last_device ? '（' + cfg.last_device + '）' : '')
+    : ' · 尚未上传过存档';
+  if (cfg.last_restore_at) rest += ' · 上次恢复 ' + fmtAgo(cfg.last_restore_at);
+  setText('sync-state-rest', rest);
+}
+
+async function syncSave() {
+  const pin = syncPin();
+  if (pin && !/^\d{4}$/.test(pin)) { toast('PIN 须为 4 位数字或留空', 'err'); return; }
+  const cfg = {
+    target: syncTargetBackend(),
+    webdav: { url: $('sync-wd-url').value.trim(), user: $('sync-wd-user').value.trim(), pass: $('sync-wd-pass').value },
+    s3: {
+      endpoint: $('sync-s3-endpoint').value.trim(), bucket: $('sync-s3-bucket').value.trim(),
+      ak: $('sync-s3-ak').value.trim(), sk: $('sync-s3-sk').value,
+      region: $('sync-s3-region').value.trim(), prefix: $('sync-s3-prefix').value.trim(),
+    },
+    // pin_set 仅 UI 提示位：本卡输满 4 位记 true；留空保留原值（PIN 本身不落盘；上传用过 PIN 后端也会置 true）
+    pin_set: pin.length === 4 ? true : !!(SYNC_CFG && SYNC_CFG.pin_set),
+  };
+  if (cfg.target === 'webdav' && !cfg.webdav.url) { toast('请填写 WebDAV 地址', 'err'); return; }
+  if (cfg.target === 's3' && (!cfg.s3.endpoint || !cfg.s3.bucket)) { toast('请填写 S3 Endpoint 与 Bucket', 'err'); return; }
+  const btn = $('btn-sync-save');
+  syncBusy(btn, true, '保存中…');
+  try {
+    await invoke('set_sync_config', { cfg });
+    localStorage.setItem('ag_sync_target_ui', $('sync-target').value);
+    toast('同步配置已保存', 'ok');
+    await loadSyncConfig(); // 重拉刷新掩码与状态行
+  } catch (e) { toast(friendlyError(e), 'err'); }
+  syncBusy(btn, false);
+}
+
+/* relation → 状态行下方小字（检查远端 / 上传成功后渲染） */
+function renderSyncCheck(st) {
+  const el = $('sync-check-result');
+  let s;
+  switch (st.relation) {
+    case 'newer': s = '远端 v' + st.remote_version + ' 更新（' + (st.remote_device || '未知设备') + ' · ' + fmtAgo(st.remote_at) + '）'; break;
+    case 'same': s = '本地已是最新 v' + st.local_version; break;
+    case 'older': s = '本地 v' + st.local_version + ' 比远端 v' + st.remote_version + ' 新'; break;
+    case 'empty': s = '远端还没有存档'; break;
+    case 'unconfigured': s = '请先保存通道配置'; break;
+    case 'need-pin': s = '远端存档已加密，请输入 PIN'; break;
+    default: s = st.relation;
+  }
+  el.textContent = s;
+  el.style.display = '';
+}
+
+async function syncCheck() {
+  const pin = syncPinValid(); if (pin === null) return;
+  const btn = $('btn-sync-check');
+  syncBusy(btn, true, '检查中…');
+  try { renderSyncCheck(await invoke('sync_check', { pin })); }
+  catch (e) { $('sync-check-result').style.display = 'none'; toast(friendlyError(e), 'err'); }
+  syncBusy(btn, false);
+}
+
+async function syncUpload() {
+  const pin = syncPinValid(); if (pin === null) return;
+  const btn = $('btn-sync-upload');
+  syncBusy(btn, true, '上传中…');
+  try {
+    const st = await invoke('sync_upload', { pin });
+    toast('已上传 v' + st.local_version, 'ok');
+    await loadSyncConfig(); // version 已 +1，状态行 odo 滚动更新
+    renderSyncCheck(st);
+  } catch (e) { toast(friendlyError(e), 'err'); }
+  syncBusy(btn, false);
+}
+
+/* 拉取恢复：先 sync_check 再弹确认 modal；不可恢复的关系（无配置/无存档/缺 PIN）直接 toast 拦截 */
+async function syncRestoreAsk() {
+  const pin = syncPinValid(); if (pin === null) return;
+  const btn = $('btn-sync-restore');
+  syncBusy(btn, true, '检查中…');
+  try {
+    const st = await invoke('sync_check', { pin });
+    if (st.relation === 'unconfigured') { toast('请先保存通道配置', 'err'); return; }
+    if (st.relation === 'empty') { toast('远端还没有存档', 'err'); return; }
+    if (st.relation === 'need-pin') { toast('远端存档已加密，请输入正确 PIN', 'err'); return; }
+    openSyncRestoreModal({ kind: 'remote', st });
+  } catch (e) { toast(friendlyError(e), 'err'); }
+  finally { syncBusy(btn, false); }
+}
+
+/* 恢复确认弹窗：远端（版本对比 + older 黄色警告）与文件导入（来源文案改为文件路径）共用 */
+function openSyncRestoreModal(req) {
+  SYNC_RESTORE = req;
+  const isRemote = req.kind === 'remote';
+  setText('sync-restore-src', isRemote
+    ? '来自 ' + ($('sync-target').value === 's3' ? 'S3' : 'WebDAV') + ' 远端存档'
+    : '来自本地文件');
+  setText('sync-restore-remote-k', isRemote ? '远端存档' : '存档文件');
+  setText('sync-restore-remote', isRemote
+    ? 'v' + req.st.remote_version + ' · ' + (req.st.remote_device || '未知设备') + ' · ' + fmtAgo(req.st.remote_at)
+    : req.path);
+  setText('sync-restore-local', 'v' + (isRemote ? req.st.local_version : (SYNC_CFG ? SYNC_CFG.version : 0)));
+  $('sync-restore-warn').style.display = isRemote && req.st.relation === 'older' ? '' : 'none';
+  $('sync-restore-err').textContent = '';
+  syncBusy($('sync-restore-ok'), false); // 复开时还原（上次失败遗留 busy 态）
+  $('sync-restore-modal').style.display = 'flex';
+}
+
+/* 确认恢复：成功后后端 500ms 自动重启应用，前端无需任何后续动作 */
+async function syncRestoreDo() {
+  if (!SYNC_RESTORE) return;
+  const pin = syncPinValid(); if (pin === null) return;
+  const btn = $('sync-restore-ok');
+  syncBusy(btn, true, '正在恢复…');
+  try {
+    if (SYNC_RESTORE.kind === 'remote') await invoke('sync_restore', { pin });
+    else await invoke('sync_import', { path: SYNC_RESTORE.path, pin });
+  } catch (e) {
+    syncBusy(btn, false);
+    $('sync-restore-err').textContent = friendlyError(e);
+  }
+}
+
+/* 文件通道导出：toast 显示完整路径；导出同样版本 +1，刷新状态行 */
+async function syncExportFile() {
+  const path = $('sync-file-export').value.trim();
+  if (!path) { toast('请填写导出路径', 'err'); return; }
+  const pin = syncPinValid(); if (pin === null) return;
+  const btn = $('btn-sync-export');
+  syncBusy(btn, true, '导出中…');
+  try {
+    await invoke('sync_export', { path, pin });
+    toast('已导出到 ' + path, 'ok');
+    await loadSyncConfig();
+  } catch (e) { toast(friendlyError(e), 'err'); }
+  syncBusy(btn, false);
+}
+
+/* 文件通道导入：同恢复确认流程（来源文案为文件路径） */
+function syncImportAsk() {
+  const path = $('sync-file-import').value.trim();
+  if (!path) { toast('请填写导入路径', 'err'); return; }
+  if (syncPinValid() === null) return;
+  openSyncRestoreModal({ kind: 'file', path });
 }
 
 /* ================= 标题栏（折叠 / 更多菜单 / 关于） ================= */
@@ -3686,7 +3906,7 @@ function switchView(v) {
   if (v === 'subscription') { refreshSubs(); refreshSubStatus(); refreshSubScripts(); SubTraffic.poll(); }
   if (v === 'proxy') { refreshSubs(); refreshGroups(); }
   if (v === 'logs') LogsView.enter();
-  if (v === 'settings') { refreshSysproxy(); refreshSubFeature(); }
+  if (v === 'settings') { refreshSysproxy(); refreshSubFeature(); loadSyncConfig(); }
 }
 function initTitlebar() {
   if (!TAURI || !TAURI.window) return;
@@ -3726,7 +3946,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     if (logsNav) logsNav.style.display = 'none';
     // 窄屏底部导航含日志等桌面端入口，Web 远程面整体隐藏（内联 none 覆盖 ≤720px 断点的 flex）
     $('bnav').style.display = 'none';
-    ['row-sysproxy-lock', 'row-doctor', 'row-float-ball', 'row-notify-float', 'row-reduce-effects'].forEach(id => {
+    ['row-sysproxy-lock', 'row-doctor', 'row-float-ball', 'row-notify-float', 'row-reduce-effects', 'sync-card'].forEach(id => {
       const r = $(id); if (r) r.style.display = 'none';
     });
     // 管理端控制台为本机专属能力（票据/转发器仅 loopback），Web 远程面隐藏入口

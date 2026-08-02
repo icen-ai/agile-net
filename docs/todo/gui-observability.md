@@ -72,3 +72,12 @@
 - **偏好**：`notify_float_ball`（气泡开关，emit 收口门控）、`reduce_effects`（性能模式：`html.no-blur` 关玻璃动画，低配/国产 Linux，首帧 localStorage 预应用）。
 - **窄屏底部导航 .bnav**（≤720px：首页/扇入/日志/设置；侧栏整体隐藏联动；管理端/HTTP_MODE 隐藏；z-index 90 低于模态）。
 - 设计系统二期 token/组件：--chart-*/--lat-*/--power-*/--skel-*/--glass-hi；.odo/.skel/.empty-state/.power-btn/.lat/.ev-list/.bnav；玻璃组件全部 no-blur 兜底；agchart.js 主题色实色解析。
+
+## 三期：设置同步（Netcatty 式版本化存档）
+
+- 三通道：WebDAV（Basic auth GET/PUT）/ S3 兼容存储（手写 SigV4 约 120 行，path-style，MinIO/B2/R2）/ 手动导入导出文件；远端固定文件名 agile-net-sync.json。**零包体积代价**：仅 ring+base64 显式声明（本就在依赖树），无 aws-sdk/webdav 库。
+- 存档：版本号单调递增 + 时间戳 + 设备名；上传 = max(远端,本地)+1；拉取按版本号比对（newer/same/older/empty/need-pin）。加密：4 位数字 PIN（PBKDF2 100k + AES-256-GCM）或留空明文；PIN 不落盘。
+- 同步内容：gui-settings（含覆写脚本）/ gui-custom-rules / subscriptions（剔除本机 secret，恢复保留本机原值）；不同步 web-auth/凭据库。恢复前自动备份 backup-pre-restore-<ts>/，恢复后 500ms 自动重启。
+- 状态：sync-state.json（version/last_upload_at/last_device/last_restore_at）；sync-config.json 0600（凭据掩码回显，空串=保留原值）。
+- 前端：设置页「同步与备份」卡（系统卡后）——通道切换/WebDAV/S3/文件三区、PIN 输入（数字过滤）、版本状态行（odo 滚动）、检查远端六态文案、恢复确认 modal（版本对比+older 警告+自动重启提示）；HTTP_MODE 隐藏、Android 可见。
+- 文档：wiki「同步与备份」指南页（含 PIN 仅混淆级的如实说明）。

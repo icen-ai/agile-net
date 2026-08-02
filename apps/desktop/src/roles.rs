@@ -229,7 +229,7 @@ pub fn audit(action: &str, detail: serde_json::Value) {
 pub struct GuiEvent {
     /// Unix 秒
     pub ts: u64,
-    /// 事件类别（白名单：role_toggle/kernel/sysproxy/custom_rule/sub_script/doctor/install/uninstall/connector）
+    /// 事件类别（白名单：role_toggle/kernel/sysproxy/custom_rule/sub_script/doctor/install/uninstall/connector/sync）
     pub kind: String,
     /// 人类可读描述（由白名单字段拼装，绝不回显原始 detail，天然过滤敏感字段）
     pub detail: String,
@@ -275,6 +275,7 @@ fn event_kind(action: &str) -> Option<&'static str> {
         "gui.dl_start" | "gui.dl_done" | "gui.dl_cancel" | "gui.dl_manual_install" => "install",
         "gui.uninstall" => "uninstall",
         "gui.fanout_change" => "connector",
+        "gui.sync_config" | "gui.sync_upload" | "gui.sync_restore" => "sync",
         _ => return None,
     })
 }
@@ -361,6 +362,13 @@ fn human_detail(action: &str, d: &serde_json::Value) -> String {
             };
             format!("{verb}扇出「{}」", s("name"))
         }
+        "gui.sync_config" => format!("同步通道设置为 {}", s("target")),
+        "gui.sync_upload" => format!("配置存档已上传（版本 {}）", d["version"].as_u64().unwrap_or(0)),
+        "gui.sync_restore" => format!(
+            "已从版本 {} 恢复配置（来自 {}）",
+            d["version"].as_u64().unwrap_or(0),
+            s("device")
+        ),
         _ => action.to_string(),
     }
 }

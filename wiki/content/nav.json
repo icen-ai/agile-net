@@ -27,6 +27,7 @@
       { "title": "Docker 链路与演示", "path": "guides/docker", "icon": "box" },
       { "title": "Clash / FlClash 共存", "path": "guides/clash", "icon": "route" },
       { "title": "自我诊断", "path": "guides/doctor", "icon": "stethoscope" },
+      { "title": "同步与备份", "path": "guides/sync-backup", "icon": "refresh-cw" },
       { "title": "故障排查与诊断", "path": "guides/troubleshooting", "icon": "wrench" },
       { "title": "网络工具 anet tool", "path": "guides/tools", "icon": "network" }
     ]

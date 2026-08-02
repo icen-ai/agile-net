@@ -15,6 +15,7 @@ mod download;
 mod roles;
 mod subscription;
 mod sub_script;
+mod sync;
 mod sysproxy;
 mod tun;
 use roles::RoleSettings;
@@ -2654,6 +2655,13 @@ pub fn run() {
             update_combo,
             remove_combo,
             set_combo_enabled,
+            sync::get_sync_config,
+            sync::set_sync_config,
+            sync::sync_check,
+            sync::sync_upload,
+            sync::sync_restore,
+            sync::sync_export,
+            sync::sync_import,
         ])
         .setup(|app| {
             setup_tray(app)?;

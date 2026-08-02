@@ -541,7 +541,7 @@
       <iframe id="admin-frame" title="管理端"></iframe>
     </section>
 
-    <!-- 设置（分区：通用 → 连接 → 订阅内核 → 系统 → 关于与卸载；元素 id 不变，JS 绑定不受影响） -->
+    <!-- 设置（分区：通用 → 连接 → 订阅内核 → 系统 → 同步与备份 → 关于与卸载；元素 id 不变，JS 绑定不受影响） -->
     <section class="view" id="view-settings" hidden>
       <div class="page-title"><i data-ic="settings" data-sz="19"></i>设置</div>
       <div class="page-desc">通用、连接、订阅内核与系统项（角色开关：扇入/远程在首页，服务端在扇出页）</div>
@@ -610,6 +610,72 @@
           </div>
         </div>
         <div id="doctor-panel" style="display:none"></div>
+      </div>
+
+      <!-- 同步与备份：设置/规则/订阅同步到 WebDAV/S3 或手动文件导入导出（PIN 不落盘，每次操作取卡上输入） -->
+      <div class="card" id="sync-card">
+        <h3><i data-ic="refresh-cw"></i>同步与备份 <span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip">设置/规则/订阅加密同步到 WebDAV/S3 或导出文件；版本号+1 即上传成功；拉取按版本号比对新旧</span></span></h3>
+        <div class="role-list">
+          <div class="role-row">
+            <div class="role-info"><b>同步通道</b></div>
+            <select id="sync-target" class="small" style="width:152px">
+              <option value="none">关闭</option>
+              <option value="webdav">WebDAV</option>
+              <option value="s3">S3</option>
+              <option value="file">手动导入导出</option>
+            </select>
+          </div>
+        </div>
+        <!-- WebDAV 通道配置（密码回显掩码，留空 = 保留原值） -->
+        <div id="sync-cfg-webdav" style="display:none;margin-top:4px">
+          <div class="row" style="align-items:flex-start">
+            <div class="grow"><label>WebDAV 地址</label><input id="sync-wd-url" class="mono" placeholder="https://dav.jianguoyun.com/dav/"></div>
+            <div class="grow"><label>用户名</label><input id="sync-wd-user"></div>
+            <div class="grow"><label>密码</label><input id="sync-wd-pass" type="password" placeholder="留空保持不变"></div>
+          </div>
+        </div>
+        <!-- S3 通道配置（SK 同掩码语义） -->
+        <div id="sync-cfg-s3" style="display:none;margin-top:4px">
+          <div class="row" style="align-items:flex-start">
+            <div class="grow"><label>Endpoint</label><input id="sync-s3-endpoint" class="mono" placeholder="s3.amazonaws.com 或 minio.example.com"></div>
+            <div class="grow"><label>Bucket</label><input id="sync-s3-bucket" class="mono"></div>
+          </div>
+          <div class="row" style="align-items:flex-start;margin-top:8px">
+            <div class="grow"><label>Access Key</label><input id="sync-s3-ak" class="mono"></div>
+            <div class="grow"><label>Secret Key</label><input id="sync-s3-sk" type="password" placeholder="留空保持不变"></div>
+          </div>
+          <div class="row" style="align-items:flex-start;margin-top:8px">
+            <div class="grow"><label>Region</label><input id="sync-s3-region" placeholder="可选，默认 auto"></div>
+            <div class="grow"><label>Prefix</label><input id="sync-s3-prefix" class="mono" placeholder="可选，默认根目录"></div>
+          </div>
+        </div>
+        <!-- 手动文件通道（导出 = 版本+1 写本地存档；导入 = 恢复确认弹窗后重启） -->
+        <div id="sync-cfg-file" style="display:none;margin-top:4px">
+          <label>导出路径</label>
+          <div class="row" style="flex-wrap:nowrap">
+            <input id="sync-file-export" class="mono" placeholder="如 D:\backup\agile-net-sync.json">
+            <button id="btn-sync-export" class="ghost small" style="flex-shrink:0">导出存档</button>
+          </div>
+          <label style="margin-top:8px">导入路径</label>
+          <div class="row" style="flex-wrap:nowrap">
+            <input id="sync-file-import" class="mono" placeholder="要恢复的存档文件路径">
+            <button id="btn-sync-import" class="ghost small" style="flex-shrink:0">导入并恢复</button>
+          </div>
+        </div>
+        <div class="row" style="align-items:flex-end;margin-top:10px">
+          <div class="grow" style="max-width:280px">
+            <label>PIN <span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip">PIN 仅混淆级保护，忘记无法找回；空=存档明文</span></span></label>
+            <input id="sync-pin" maxlength="4" inputmode="numeric" placeholder="4 位数字密码，留空不加密">
+          </div>
+        </div>
+        <div class="hint" id="sync-state" style="margin-top:10px">当前版本 <span class="odo" id="sync-ver">v0</span><span id="sync-state-rest"> · 尚未上传过存档</span></div>
+        <div class="hint" id="sync-check-result" style="display:none"></div>
+        <div class="row" style="margin-top:10px">
+          <button id="btn-sync-save" class="ghost small">保存配置</button>
+          <button id="btn-sync-check" class="ghost small" style="display:none">检查远端</button>
+          <button id="btn-sync-upload" class="small" style="display:none"><i data-ic="upload" data-sz="13"></i> 立即上传</button>
+          <button id="btn-sync-restore" class="ghost small" style="display:none"><i data-ic="download" data-sz="13"></i> 拉取恢复</button>
+        </div>
       </div>
 
       <!-- 关于与卸载 -->
@@ -948,6 +1014,24 @@
     <div class="row" style="justify-content:flex-end;margin-top:14px">
       <button id="un-cancel" class="ghost">取消</button>
       <button id="un-ok" class="danger">卸载</button>
+    </div>
+  </div>
+</div>
+
+<!-- 同步恢复确认弹窗（拉取远端 / 导入文件共用；确认后覆盖本机配置，500ms 后应用自动重启） -->
+<div class="modal-mask" id="sync-restore-modal" style="display:none">
+  <div class="modal">
+    <h3><i data-ic="triangle-alert" data-sz="16"></i> 恢复确认</h3>
+    <div class="hint" style="margin:6px 0 4px" id="sync-restore-src"></div>
+    <div class="kv"><span class="k" id="sync-restore-remote-k">远端存档</span><span class="mono" id="sync-restore-remote"></span></div>
+    <div class="kv"><span class="k">本机当前</span><span class="mono" id="sync-restore-local"></span></div>
+    <div class="net-banner" id="sync-restore-warn" style="display:none;margin:10px 0 0"><i data-ic="triangle-alert" data-sz="14"></i><span>远端比本地旧，确认覆盖？</span></div>
+    <div class="net-banner" style="margin:10px 0 0;border-color:var(--danger-border);background:var(--danger-bg);color:var(--danger-text)"><i data-ic="triangle-alert" data-sz="14"></i><span>将覆盖本机配置并自动重启（现有配置自动备份）</span></div>
+    <div class="hint" id="sync-restore-pin-hint">PIN 取卡上输入框；存档已加密时须与上传时一致</div>
+    <div class="hint sm-err" id="sync-restore-err"></div>
+    <div class="row" style="justify-content:flex-end;margin-top:14px">
+      <button id="sync-restore-cancel" class="ghost">取消</button>
+      <button id="sync-restore-ok" class="danger">覆盖并重启</button>
     </div>
   </div>
 </div>
