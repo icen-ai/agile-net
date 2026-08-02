@@ -440,7 +440,10 @@ function toast(msg, type) { Island.notify(msg, type); }
 
 /** 把底层错误翻译成用户友好的中文提示 */
 function friendlyError(e) {
-  const s = String(e);
+  let s = String(e);
+  // 命令契约前缀（具体页面已按前缀分流；兜底场景剥掉前缀再展示）
+  if (s.indexOf('NEED_DOWNLOAD:') === 0) s = s.slice('NEED_DOWNLOAD:'.length);
+  if (s.indexOf('NEED_ELEVATION:') === 0) s = s.slice('NEED_ELEVATION:'.length);
   if (/login failed|401|invalid username|invalid_credentials/i.test(s)) return '账号或密码错误，请核对接入信息';
   if (/tunnel_token|not a client/i.test(s)) return '该账号不是客户端账号，请向管理员确认';
   if (/certificate|tls|TLS|certificate verify/i.test(s)) return '证书校验失败：请检查证书固定配置，或仅在受信网络开启 insecure';
@@ -2193,7 +2196,18 @@ function initSubscription() {
       refreshSubStatus();
     } catch (err) {
       el.checked = !on;
-      toast(friendlyError(err), 'err');
+      if (on && String(err).indexOf('NEED_DOWNLOAD:') === 0) {
+        /* 内核未安装：后端已自动开始下载；done 后自动重试开启 */
+        handleNeedDownload(async () => {
+          try {
+            await invoke('set_subscription_role', { enabled: true });
+            toast('订阅代理已开启（内核运行中）', 'ok');
+            refreshSubStatus();
+          } catch (e2) { toast(friendlyError(e2), 'err'); }
+        });
+      } else {
+        toast(friendlyError(err), 'err');
+      }
     } finally {
       el.disabled = false;
     }
@@ -2264,18 +2278,18 @@ async function refreshSubFeature() {
   $('btn-activate-sub').disabled = !st.installed;
 }
 function initSubFeature() {
+  /* 下载并安装内核：后端开始后台下载即返回；进度在订阅页下载卡展示，完成后刷新安装状态 */
   $('btn-install-kernel').onclick = async (e) => {
     const btn = e.target.closest('button');
     btn.disabled = true;
-    const old = btn.innerHTML;
-    btn.innerHTML = AgIcon('download', 13) + ' 下载校验中…';
     try {
       await invoke('install_kernel');
-      toast('内核安装完成', 'ok');
-      refreshSubFeature();
+      handleNeedDownload(() => { refreshSubFeature(); });
     } catch (err) { toast(friendlyError(err), 'err'); }
-    finally { btn.disabled = false; btn.innerHTML = old; }
+    finally { btn.disabled = false; }
   };
+  /* 手动安装：用户自行下载官方文件，给完整路径，钉值校验通过才落盘 */
+  $('btn-manual-kernel').onclick = () => openDlManual('kernel');
   $('btn-activate-sub').onclick = async () => {
     try {
       await invoke('activate_subscription_feature', { enabled: true });
@@ -2413,6 +2427,17 @@ function initTun() {
     } catch (err) {
       el.checked = !on;
       if (String(err).indexOf('NEED_ELEVATION:') === 0) openTunElevateModal();
+      else if (on && String(err).indexOf('NEED_DOWNLOAD:') === 0) {
+        /* 内核/wintun 未安装：后端已自动开始下载；done 后自动重试开启 TUN */
+        handleNeedDownload(async () => {
+          try {
+            const st2 = await invoke('set_tun_mode', { enabled: true });
+            applyTunStatus(st2);
+            toast('TUN 模式已开启（系统代理已托管 127.0.0.1:57890）', 'ok');
+            warnTunUpstream(st2);
+          } catch (e2) { toast(friendlyError(e2), 'err'); refreshTun(); }
+        });
+      }
       else toast(friendlyError(err), 'err');
     } finally {
       el.disabled = !TUN_SUPPORTED;
@@ -2447,6 +2472,151 @@ function initTun() {
       $('tun-elevate-err').textContent = friendlyError(err);
     }
   };
+}
+
+/* ================= 制品下载管理（mihomo 内核 / wintun；进度卡 + 手动安装 + 哈希确认） =================
+   后端 dl_state 2s 轮询（与 SubTraffic 同槽）；状态机 idle/downloading/done/failed。
+   开启动作遇 NEED_DOWNLOAD：后端已自动开始下载，前端展示下载卡并记下原动作，
+   done 自动重试一次；failed 由用户决策（重试/手动安装/取消）。渲染全部走签名变更检测。 */
+const DL_LABEL = { kernel: '订阅内核', wintun: 'wintun 组件' };
+/* 官方下载页（版本钉值见 subscription.rs MIHOMO_VERSION / WINTUN_VERSION，升级时同步） */
+const DL_OFFICIAL = {
+  kernel: 'https://github.com/MetaCubeX/mihomo/releases/tag/v1.19.29',
+  wintun: 'https://www.wintun.net/',
+};
+let _dlSig = '';       // 渲染签名（变更检测）
+let _dlRetry = null;   // 下载/手动安装完成后自动重试的原开启动作
+let _dlDoneSeen = '';  // 已消费的 done 签名（防重复重试）
+let _dlManualArtifact = 'kernel';
+
+async function pollDl() {
+  if (HTTP_MODE) return;
+  let st;
+  try { st = await invoke('dl_state'); } catch (e) { return; }
+  renderDlCard(st);
+  if (st.phase === 'downloading') _dlDoneSeen = ''; // 新一轮下载开始，重置 done 消费标记
+  if (st.phase === 'done') {
+    const sig = 'done:' + st.artifact;
+    if (_dlDoneSeen !== sig) {
+      _dlDoneSeen = sig;
+      toast(DL_LABEL[st.artifact] + ' 下载安装完成', 'ok');
+      const retry = _dlRetry; _dlRetry = null;
+      if (retry) retry();
+    }
+  }
+}
+
+function renderDlCard(st) {
+  const card = $('dl-card');
+  if (!card) return;
+  const show = st.phase === 'downloading' || st.phase === 'failed';
+  if (!show) {
+    if (card.style.display !== 'none') { card.style.display = 'none'; _dlSig = ''; }
+    return;
+  }
+  const sig = JSON.stringify(st);
+  if (sig === _dlSig) return; // 变更检测：进度未变不重绘
+  _dlSig = sig;
+  card.style.display = '';
+  const label = DL_LABEL[st.artifact] || st.artifact;
+  const downloading = st.phase === 'downloading';
+  setText('dl-title', downloading ? '正在下载' + label : label + ' 下载失败');
+  $('dl-cancel-x').style.display = downloading ? '' : 'none';
+  const bar = $('dl-progress').firstElementChild;
+  if (downloading) {
+    const pct = st.total ? Math.min(100, st.downloaded / st.total * 100) : 0;
+    bar.style.width = pct.toFixed(1) + '%';
+    const sizeTxt = st.total
+      ? fmtBytes(st.downloaded) + ' / ' + fmtBytes(st.total) + '（' + pct.toFixed(0) + '%）'
+      : fmtBytes(st.downloaded) + '（大小未知）';
+    setText('dl-detail', sizeTxt + ' · ' + (st.mirror || '连接中…'));
+  } else {
+    bar.style.width = '0%';
+    setText('dl-detail', '可重试下载，或从官方渠道自行下载后手动安装');
+  }
+  $('dl-err').style.display = downloading ? 'none' : '';
+  setText('dl-err', downloading ? '' : (st.reason || '下载失败'));
+  $('dl-actions').style.display = downloading ? 'none' : 'flex';
+  if (!downloading) $('dl-manual').dataset.artifact = st.artifact;
+}
+
+/* 开启动作遇 NEED_DOWNLOAD：提示 + 跳订阅页展示下载卡 + 登记完成后自动重试 */
+function handleNeedDownload(retry) {
+  _dlRetry = retry;
+  toast('制品未安装，正在后台下载（进度见下载卡）', 'ok');
+  switchView('subscription');
+  pollDl();
+}
+
+function openDlManual(artifact) {
+  _dlManualArtifact = artifact;
+  const k = artifact === 'kernel';
+  setText('dl-manual-title', '手动安装' + (DL_LABEL[artifact] || artifact));
+  setText('dl-manual-hint', k
+    ? '支持官方 zip/gz 包（推荐，可对钉校验）或裸 mihomo 二进制（无法对钉，需确认风险）'
+    : '支持官方 wintun zip 包或 wintun.dll（Clash 系客户端通常自带同版本 dll）');
+  const inp = $('dl-manual-path');
+  inp.value = '';
+  inp.placeholder = k ? 'D:\\dl\\mihomo-windows-amd64-compatible-v1.19.29.zip' : 'D:\\dl\\wintun-0.14.1.zip 或 wintun.dll';
+  $('dl-manual-err').textContent = '';
+  $('dl-manual-modal').style.display = 'flex';
+  inp.focus();
+}
+
+async function submitDlManual(allowMismatch) {
+  const path = $('dl-manual-path').value.trim();
+  if (!path) { $('dl-manual-err').textContent = '请填写文件完整路径'; return; }
+  const btn = $('dl-manual-ok');
+  btn.disabled = true;
+  $('dl-manual-err').textContent = '';
+  try {
+    const res = await invoke('dl_install_manual', { artifact: _dlManualArtifact, path, allowMismatch: !!allowMismatch });
+    if (res.result === 'installed') {
+      $('dl-manual-modal').style.display = 'none';
+      $('dl-mismatch-modal').style.display = 'none';
+      toast((DL_LABEL[_dlManualArtifact] || '制品') + ' 已安装', 'ok');
+      refreshSubFeature(); refreshSubStatus();
+      const retry = _dlRetry; _dlRetry = null;
+      if (retry) retry();
+    } else if (res.result === 'hash_mismatch') {
+      // 钉值对不上/无法对钉：明示风险，用户确认才强装
+      setText('dl-mm-version', res.expect_version || '-');
+      setText('dl-mm-hash', (res.actual_hash || '').slice(0, 12) + '…');
+      $('dl-mismatch-modal').style.display = 'flex';
+    }
+  } catch (err) {
+    $('dl-manual-err').textContent = friendlyError(err);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function initDl() {
+  /* 下载卡：取消（下载中）/ 重试 / 手动安装 / 取消（失败后放弃） */
+  $('dl-cancel-x').onclick = async () => {
+    _dlRetry = null;
+    try { await invoke('dl_cancel'); } catch (e) {}
+    pollDl();
+  };
+  $('dl-retry').onclick = async () => {
+    const artifact = $('dl-manual').dataset.artifact || 'kernel';
+    try { await invoke('dl_start', { artifact }); pollDl(); }
+    catch (err) { toast(friendlyError(err), 'err'); }
+  };
+  $('dl-manual').onclick = () => openDlManual($('dl-manual').dataset.artifact || 'kernel');
+  $('dl-dismiss').onclick = async () => {
+    _dlRetry = null;
+    try { await invoke('dl_cancel'); } catch (e) {}
+    pollDl();
+  };
+  /* 手动安装弹窗 */
+  $('dl-manual-cancel').onclick = () => { $('dl-manual-modal').style.display = 'none'; };
+  $('dl-manual-open').onclick = () => { invoke('open_url', { url: DL_OFFICIAL[_dlManualArtifact] }).catch(() => {}); };
+  $('dl-manual-path').addEventListener('keydown', e => { if (e.key === 'Enter') $('dl-manual-ok').click(); });
+  $('dl-manual-ok').onclick = () => submitDlManual(false);
+  /* 哈希不符确认弹窗：仍然使用 = 带 allow_mismatch 重调；放弃 = 回手动安装弹窗 */
+  $('dl-mm-cancel').onclick = () => { $('dl-mismatch-modal').style.display = 'none'; };
+  $('dl-mm-ok').onclick = () => submitDlManual(true);
 }
 
 /* ================= 网络检测（出口 IP / 文字归属地 / 内网 IP） =================
@@ -2710,6 +2880,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   refreshSubFeature();
   initSysproxy();
   initTun();
+  initDl();
   refreshSubs();
   refreshSubStatus();
   refreshSubScripts();
@@ -2751,8 +2922,8 @@ window.addEventListener('DOMContentLoaded', async () => {
   }
 
   setInterval(() => { refreshNodes(); refreshProxy(); refreshSubStatus(); refreshSysproxy(); refreshTun(); renderDashFanout(); refreshCustomRules(); refreshCombos(); }, 10000);
-  // 订阅内核流量 2s 轮询（sub_traffic 读 Atomic 快照，廉价；内部变更检测不重绘）
-  setInterval(() => { SubTraffic.poll(); }, 2000);
+  // 订阅内核流量 + 制品下载状态 2s 轮询（sub_traffic 读 Atomic 快照、dl_state 读内存状态，廉价；内部变更检测不重绘）
+  setInterval(() => { SubTraffic.poll(); pollDl(); }, 2000);
   // 出口 IP 探测 30s 轮询（结果带签名对比，不变不重绘）
   setInterval(() => { NetProbe.refresh(); }, 30000);
 });

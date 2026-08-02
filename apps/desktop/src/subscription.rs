@@ -15,6 +15,8 @@ use crate::roles;
 
 /// 钉死的内核版本与资产（升级内核 = 改这里 + 更新哈希）
 pub const MIHOMO_VERSION: &str = "1.19.29";
+/// 制品缺失时的错误前缀：前端据此转下载流程（展示下载进度卡，不当作失败 toast）
+pub const NEED_DOWNLOAD_PREFIX: &str = "NEED_DOWNLOAD:";
 /// mixed 入站（避让 Clash 7890 系、本地代理 57890 与常见占用 57891）
 pub const MIHOMO_MIXED_PORT: u16 = 57892;
 /// TUN 模式：mihomo socks 入站（anet 未命中流量的回落点，经 IN-TYPE 规则直达订阅出口）
@@ -25,7 +27,7 @@ pub const MIHOMO_CTRL_PORT: u16 = 59292;
 /// 当前平台的 (资产文件名, SHA-256, 包内二进制名)。
 /// 哈希来源：官方 Release 文件经两个独立镜像交叉下载验证一致。
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-fn kernel_asset() -> Option<(&'static str, &'static str, &'static str)> {
+pub(crate) fn kernel_asset() -> Option<(&'static str, &'static str, &'static str)> {
     Some((
         "mihomo-windows-amd64-compatible-v1.19.29.zip",
         "322aaa5957ba9e72afdda9b71cc4329f691d2d45ec39e70bbca3f7bf5aa93d52",
@@ -33,7 +35,7 @@ fn kernel_asset() -> Option<(&'static str, &'static str, &'static str)> {
     ))
 }
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-fn kernel_asset() -> Option<(&'static str, &'static str, &'static str)> {
+pub(crate) fn kernel_asset() -> Option<(&'static str, &'static str, &'static str)> {
     Some((
         "mihomo-darwin-arm64-v1.19.29.gz",
         "4dc25df9e899f14161911302a8ee5fc9e202ed9c976fc405bf82c50ff27466ca",
@@ -41,7 +43,7 @@ fn kernel_asset() -> Option<(&'static str, &'static str, &'static str)> {
     ))
 }
 #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
-fn kernel_asset() -> Option<(&'static str, &'static str, &'static str)> {
+pub(crate) fn kernel_asset() -> Option<(&'static str, &'static str, &'static str)> {
     Some((
         "mihomo-darwin-amd64-v1-v1.19.29.gz",
         "addf68bf604e05cce5334e949bb8915dd68b25744669b320f7d4c1e240ab92a0",
@@ -53,15 +55,13 @@ fn kernel_asset() -> Option<(&'static str, &'static str, &'static str)> {
     all(target_os = "macos", target_arch = "aarch64"),
     all(target_os = "macos", target_arch = "x86_64"),
 )))]
-fn kernel_asset() -> Option<(&'static str, &'static str, &'static str)> {
+pub(crate) fn kernel_asset() -> Option<(&'static str, &'static str, &'static str)> {
     None
 }
 
 /// 官方 Release URL + 镜像回退（镜像仅为 CDN，完整性由 SHA-256 钉死保证）
-fn download_urls(asset: &str) -> Vec<String> {
-    let path = format!(
-        "MetaCubeX/mihomo/releases/download/v{MIHOMO_VERSION}/{asset}"
-    );
+pub(crate) fn download_urls(asset: &str) -> Vec<String> {
+    let path = format!("MetaCubeX/mihomo/releases/download/v{MIHOMO_VERSION}/{asset}");
     vec![
         format!("https://github.com/{path}"),
         format!("https://gh-proxy.com/https://github.com/{path}"),
@@ -71,38 +71,8 @@ fn download_urls(asset: &str) -> Vec<String> {
 
 /// wintun zip 下载源（官方源直连 + 本地代理兜底；gh-proxy/ghfast 仅镜像 github.com，
 /// 不能代理任意域名，已从候移除——受限网络主路径是本地候选复用 reuse_local_wintun）
-fn wintun_urls() -> Vec<String> {
+pub(crate) fn wintun_urls() -> Vec<String> {
     vec![format!("https://{WINTUN_ZIP_PATH}")]
-}
-
-/// 下载字节流：依次尝试各 URL；每个 URL 先直连，失败再走本地代理 57890
-/// （受限网络兜底：订阅/隧道出口已可用时经它出网；失败信息含最后一次错误）。
-async fn download_bytes(urls: &[String]) -> Result<Vec<u8>, String> {
-    let ua = format!("anet-gui/{MIHOMO_VERSION}");
-    let mk = |proxy: bool| {
-        let mut b = reqwest::Client::builder()
-            .user_agent(&ua)
-            .timeout(std::time::Duration::from_secs(60));
-        if proxy {
-            b = b.proxy(reqwest::Proxy::all("http://127.0.0.1:57890").expect("valid proxy url"));
-        }
-        b.build().map_err(|e| e.to_string())
-    };
-    let (direct, via_proxy) = (mk(false)?, mk(true)?);
-    let mut last_err = String::new();
-    for url in urls {
-        for (label, c) in [("直连", &direct), ("本地代理", &via_proxy)] {
-            match c.get(url).send().await {
-                Ok(resp) if resp.status().is_success() => match resp.bytes().await {
-                    Ok(b) => return Ok(b.to_vec()),
-                    Err(e) => last_err = format!("{label}下载中断: {e}"),
-                },
-                Ok(resp) => last_err = format!("{label} HTTP {}", resp.status()),
-                Err(e) => last_err = format!("{label}: {e}"),
-            }
-        }
-    }
-    Err(last_err)
 }
 
 // ==================== wintun.dll 钉版本下发（TUN 模式，Windows x64） ====================
@@ -111,12 +81,14 @@ async fn download_bytes(urls: &[String]) -> Result<Vec<u8>, String> {
 pub const WINTUN_VERSION: &str = "0.14.1";
 /// wintun-0.14.1.zip 的 SHA-256（与内核同策略钉死；哈希与 wintun.net 官网、
 /// wireguard-windows 构建脚本等多源交叉验证一致）
-const WINTUN_ZIP_SHA256: &str = "07c256185d6ee3652e09fa55c0b673e2624b565e02c4b9091c79ca7d2f24ef51";
+pub(crate) const WINTUN_ZIP_SHA256: &str =
+    "07c256185d6ee3652e09fa55c0b673e2624b565e02c4b9091c79ca7d2f24ef51";
 /// 官方源路径（完整性由 SHA-256 钉死保证；下载镜像见 wintun_urls）
 const WINTUN_ZIP_PATH: &str = "download.wireguard.com/wintun/wintun-0.14.1.zip";
 /// wintun.dll 0.14.1 (amd64, 427,552 B) 本体的 SHA-256——本地候选复用时的校验钉
 /// （取自 FlClash 分发的同版本官方 dll；zip 内层 dll 与整包哈希不同，勿混用）
-const WINTUN_DLL_SHA256: &str = "e5da8447dc2c320edc0fc52fa01885c103de8c118481f683643cacc3220dafce";
+pub(crate) const WINTUN_DLL_SHA256: &str =
+    "e5da8447dc2c320edc0fc52fa01885c103de8c118481f683643cacc3220dafce";
 
 /// wintun.dll 落盘位置（与 mihomo.exe 同目录，wintun 按 exe 相邻加载）。
 pub fn wintun_dll_path() -> PathBuf {
@@ -161,8 +133,9 @@ fn reuse_local_wintun(dll: &PathBuf) -> Result<bool, String> {
     Ok(false)
 }
 
-/// 确保 wintun.dll 存在（缺失则下载 + SHA-256 校验 + 原子落盘），仅 Windows x64 需要。
-/// 校验失败拒绝落盘并审计 gui.wintun_tamper（同内核 gui.kernel_tamper 策略）。
+/// 确保 wintun.dll 存在（已存在 / 本地候选复用即返回），仅 Windows x64 需要。
+/// 缺失时**不再当场下载**——返回 NEED_DOWNLOAD 错误，由下载管理器（download.rs）
+/// 后台流式下载 + 进度展示，完成后前端重试原动作（见 set_tun_mode）。
 pub async fn ensure_wintun() -> Result<PathBuf, String> {
     #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
     {
@@ -176,48 +149,11 @@ pub async fn ensure_wintun() -> Result<PathBuf, String> {
         }
         let dir = kernel_dir();
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-        // 优先本地候选复用（受限网络下 wireguard.com 不可达时的主路径）
+        // 优先本地候选复用（受限网络下 wireguard.com 不可达时的主路径，免下载）
         if reuse_local_wintun(&dll)? {
             return Ok(dll);
         }
-        let bytes = download_bytes(&wintun_urls())
-            .await
-            .map_err(|e| format!("wintun 下载失败: {e}"))?;
-
-        // SHA-256 校验（钉死值，篡改可检出）
-        use sha2::Digest;
-        let actual = format!("{:x}", sha2::Sha256::digest(&bytes));
-        if actual != WINTUN_ZIP_SHA256 {
-            roles::audit(
-                "gui.wintun_tamper",
-                serde_json::json!({"expect": WINTUN_ZIP_SHA256, "actual": actual}),
-            );
-            return Err("wintun 校验失败（SHA-256 不匹配，已拒绝落盘并记录审计）".into());
-        }
-
-        // 解包 amd64/wintun.dll 到临时文件后原子改名
-        let reader = std::io::Cursor::new(bytes.as_slice());
-        let mut zip = zip::ZipArchive::new(reader).map_err(|e| e.to_string())?;
-        let mut inner = None;
-        for i in 0..zip.len() {
-            let name = zip.by_index(i).map_err(|e| e.to_string())?.name().to_string();
-            if name.replace('\\', "/").ends_with("bin/amd64/wintun.dll") {
-                inner = Some(name);
-                break;
-            }
-        }
-        let inner = inner.ok_or("wintun 包内未找到 amd64/wintun.dll")?;
-        let mut file = zip.by_name(&inner).map_err(|e| e.to_string())?;
-        let mut buf = Vec::with_capacity(file.size() as usize);
-        std::io::Read::read_to_end(&mut file, &mut buf).map_err(|e| e.to_string())?;
-        let tmp = dir.join("wintun.download");
-        std::fs::write(&tmp, buf).map_err(|e| e.to_string())?;
-        std::fs::rename(&tmp, &dll).map_err(|e| e.to_string())?;
-        roles::audit(
-            "gui.wintun_download",
-            serde_json::json!({"version": WINTUN_VERSION}),
-        );
-        Ok(dll)
+        Err(format!("{NEED_DOWNLOAD_PREFIX}wintun 组件未安装"))
     }
 }
 
@@ -266,7 +202,7 @@ pub fn kernel_dir() -> PathBuf {
     roles::data_dir().join("mihomo")
 }
 
-fn kernel_bin_path() -> PathBuf {
+pub(crate) fn kernel_bin_path() -> PathBuf {
     let name = if cfg!(windows) { "mihomo.exe" } else { "mihomo" };
     kernel_dir().join(name)
 }
@@ -586,60 +522,17 @@ pub fn sweep_orphan_kernels() {
 
 // ==================== 内核下载（钉版本 + SHA-256 校验 + 原子落盘） ====================
 
-/// 确保内核二进制存在（缺失则下载校验），返回二进制路径。
+/// 确保内核二进制存在；缺失时**不再当场下载**——返回 NEED_DOWNLOAD 错误，
+/// 由下载管理器（download.rs）后台流式下载 + 进度展示，完成后前端重试原动作。
 pub async fn ensure_kernel() -> Result<PathBuf, String> {
     let bin = kernel_bin_path();
     if bin.exists() {
         return Ok(bin);
     }
-    let (asset, expect_sha, inner) =
-        kernel_asset().ok_or("当前平台不支持订阅内核（仅 Windows x64 / macOS）")?;
-    let dir = kernel_dir();
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-
-    let bytes = download_bytes(&download_urls(asset))
-        .await
-        .map_err(|e| format!("内核下载失败: {e}"))?;
-
-    // SHA-256 校验（钉死值，镜像篡改可检出）
-    use sha2::Digest;
-    let actual = format!("{:x}", sha2::Sha256::digest(&bytes));
-    if actual != expect_sha {
-        roles::audit(
-            "gui.kernel_tamper",
-            serde_json::json!({"expect": expect_sha, "actual": actual}),
-        );
-        return Err("内核校验失败（SHA-256 不匹配，已拒绝落盘并记录审计）".into());
+    if kernel_asset().is_none() {
+        return Err("当前平台不支持订阅内核（仅 Windows x64 / macOS）".into());
     }
-
-    // 解包到临时文件后原子改名
-    let tmp = dir.join("mihomo.download");
-    let inner_bytes = if asset.ends_with(".zip") {
-        let reader = std::io::Cursor::new(bytes.as_slice());
-        let mut zip = zip::ZipArchive::new(reader).map_err(|e| e.to_string())?;
-        let mut file = zip.by_name(inner).map_err(|e| e.to_string())?;
-        let mut buf = Vec::with_capacity(file.size() as usize);
-        std::io::Read::read_to_end(&mut file, &mut buf).map_err(|e| e.to_string())?;
-        buf
-    } else {
-        let mut gz = flate2::read::GzDecoder::new(bytes.as_slice());
-        let mut buf = Vec::new();
-        std::io::Read::read_to_end(&mut gz, &mut buf).map_err(|e| e.to_string())?;
-        buf
-    };
-    std::fs::write(&tmp, inner_bytes).map_err(|e| e.to_string())?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))
-            .map_err(|e| e.to_string())?;
-    }
-    std::fs::rename(&tmp, &bin).map_err(|e| e.to_string())?;
-    roles::audit(
-        "gui.kernel_download",
-        serde_json::json!({"version": MIHOMO_VERSION}),
-    );
-    Ok(bin)
+    Err(format!("{NEED_DOWNLOAD_PREFIX}订阅内核未安装"))
 }
 
 // ==================== 内核生命周期 ====================
@@ -1949,6 +1842,13 @@ mod tests {
         });
         save_store(&store).unwrap();
 
+        // 内核缺失时先经下载管理器落盘（ensure_kernel 不再当场下载）
+        if !kernel_bin_exists() {
+            let st = std::sync::Arc::new(std::sync::Mutex::new(crate::download::DlState::default()));
+            crate::download::run_download(crate::download::Artifact::Kernel, st)
+                .await
+                .unwrap();
+        }
         let km = KernelManager::default();
         let result = async {
             km.start().await.map_err(|e| format!("start: {e}"))?;
@@ -2044,7 +1944,27 @@ mod tests {
 
         let km = KernelManager::default();
         let result = async {
-            ensure_wintun().await.map_err(|e| format!("wintun: {e}"))?;
+            // 内核/wintun 缺失时先经下载管理器落盘（ensure_* 不再当场下载）
+            if !kernel_bin_exists() {
+                let st = std::sync::Arc::new(std::sync::Mutex::new(
+                    crate::download::DlState::default(),
+                ));
+                crate::download::run_download(crate::download::Artifact::Kernel, st)
+                    .await
+                    .map_err(|e| format!("内核下载: {e}"))?;
+            }
+            if let Err(e) = ensure_wintun().await {
+                if e.starts_with(NEED_DOWNLOAD_PREFIX) {
+                    let st = std::sync::Arc::new(std::sync::Mutex::new(
+                        crate::download::DlState::default(),
+                    ));
+                    crate::download::run_download(crate::download::Artifact::Wintun, st)
+                        .await
+                        .map_err(|e2| format!("wintun 下载: {e2}"))?;
+                } else {
+                    return Err(format!("wintun: {e}"));
+                }
+            }
             assert!(wintun_dll_path().exists(), "wintun.dll 未落盘");
             km.start().await.map_err(|e| format!("start: {e}"))?;
             let api = kernel_api().await?;

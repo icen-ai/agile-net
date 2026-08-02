@@ -10,6 +10,7 @@ use serde::Serialize;
 use std::sync::Arc;
 use tauri::{Manager, State};
 
+mod download;
 mod roles;
 mod subscription;
 mod sub_script;
@@ -37,6 +38,8 @@ pub struct AppState {
     consoles: Arc<tokio::sync::Mutex<std::collections::HashMap<String, u16>>>,
     /// 订阅内核（mihomo sidecar）
     kernel: Arc<subscription::KernelManager>,
+    /// 制品下载管理器（mihomo 内核 / wintun.dll；进度状态机 + 手动安装）
+    dl: download::DownloadManager,
     /// 客户端代理真实状态槽（传给内嵌节点；管理端「本地代理」卡数据源）
     client_proxy_slot: agile_net_node::service::ClientProxySlot,
     /// TUN 最近一次外部上游拨测结果（None = 未拨测；前端状态行/灵动岛告警数据源）
@@ -65,6 +68,7 @@ impl AppState {
             server: Arc::new(tokio::sync::Mutex::new(None)),
             consoles: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
             kernel: Arc::new(subscription::KernelManager::default()),
+            dl: download::DownloadManager::default(),
             client_proxy_slot,
             tun_upstream_ok: Arc::new(tokio::sync::Mutex::new(None)),
             tun_notice: Arc::new(tokio::sync::Mutex::new(None)),
@@ -1057,8 +1061,25 @@ async fn set_tun_mode(
     if enabled {
         // §2.2 管理员提权：非管理员 → NEED_ELEVATION（前端弹对话框走 runas 重启路径）
         tun::precheck(&tun::SystemElevation)?;
-        // §2.1 wintun.dll 钉版本下发（SHA-256 校验，失败拒落盘 + gui.wintun_tamper）
-        subscription::ensure_wintun().await?;
+        // 制品缺失不再当场下载：后台开始下载并返回 NEED_DOWNLOAD，前端展示下载卡，完成后自动重试
+        if !subscription::kernel_bin_exists() {
+            state.dl.start(download::Artifact::Kernel)?;
+            return Err(format!(
+                "{}订阅内核未安装，正在后台下载",
+                subscription::NEED_DOWNLOAD_PREFIX
+            ));
+        }
+        // §2.1 wintun.dll：已存在/本地候选复用即过；仍缺失 → 后台下载
+        if let Err(e) = subscription::ensure_wintun().await {
+            if e.starts_with(subscription::NEED_DOWNLOAD_PREFIX) {
+                state.dl.start(download::Artifact::Wintun)?;
+                return Err(format!(
+                    "{}wintun 组件未安装，正在后台下载",
+                    subscription::NEED_DOWNLOAD_PREFIX
+                ));
+            }
+            return Err(e);
+        }
         if subscription::list_subscriptions().is_empty() {
             return Err("请先添加订阅".into());
         }
@@ -1155,12 +1176,61 @@ async fn list_subscriptions() -> Result<Vec<subscription::Subscription>, String>
     Ok(subscription::list_subscriptions())
 }
 
-/// 安装订阅内核（下载钉版本 + 校验；成功后才允许激活订阅功能）。
+/// 安装订阅内核：开始后台下载（流式进度经 dl_state 轮询展示，完成自动校验落盘）。
+/// 内核运行中禁止重装（Windows 文件锁会让落盘失败）。
 #[tauri::command]
-async fn install_kernel(state: State<'_, AppState>) -> Result<subscription::KernelStatus, String> {
-    subscription::ensure_kernel().await?;
-    roles::audit("gui.kernel_install", serde_json::json!({}));
-    Ok(state.kernel.status().await)
+async fn install_kernel(state: State<'_, AppState>) -> Result<(), String> {
+    if state.kernel.running().await {
+        return Err("内核运行中，请先关闭订阅代理再重新下载".into());
+    }
+    state.dl.start(download::Artifact::Kernel)
+}
+
+// ==================== 制品下载管理（mihomo 内核 / wintun.dll） ====================
+
+/// 下载状态机快照（前端 2s 轮询渲染下载卡）
+#[tauri::command]
+async fn dl_state(state: State<'_, AppState>) -> Result<download::DlState, String> {
+    Ok(state.dl.state())
+}
+
+/// 开始/重试下载（同制品下载中幂等）
+#[tauri::command]
+async fn dl_start(state: State<'_, AppState>, artifact: String) -> Result<(), String> {
+    let artifact = download::Artifact::parse(&artifact)?;
+    if artifact == download::Artifact::Kernel && state.kernel.running().await {
+        return Err("内核运行中，请先关闭订阅代理再下载".into());
+    }
+    state.dl.start(artifact)
+}
+
+/// 取消下载（回 idle；前端同时放弃「完成后自动重试」）
+#[tauri::command]
+async fn dl_cancel(state: State<'_, AppState>) -> Result<(), String> {
+    state.dl.cancel();
+    Ok(())
+}
+
+/// 手动安装本地制品文件：钉值校验通过才落盘；
+/// 不符返回 hash_mismatch（前端弹确认框明示风险），用户确认后带 allow_mismatch=true 重调强装。
+#[tauri::command]
+async fn dl_install_manual(
+    state: State<'_, AppState>,
+    artifact: String,
+    path: String,
+    allow_mismatch: bool,
+) -> Result<download::ManualInstallResult, String> {
+    let artifact = download::Artifact::parse(&artifact)?;
+    if artifact == download::Artifact::Kernel && state.kernel.running().await {
+        return Err("内核运行中，请先关闭订阅代理再安装".into());
+    }
+    let p = std::path::PathBuf::from(path.trim());
+    if p.as_os_str().is_empty() {
+        return Err("请填写文件完整路径".into());
+    }
+    tokio::task::spawn_blocking(move || download::install_manual(artifact, &p, allow_mismatch))
+        .await
+        .map_err(map_err)?
 }
 
 /// 激活/停用订阅功能入口（侧栏「订阅/代理」可见性；停用即停机并关角色）。
@@ -1289,7 +1359,8 @@ async fn test_delay(group: String) -> Result<std::collections::HashMap<String, u
     subscription::kernel_api().await?.group_delay(&group).await
 }
 
-/// 开关D：订阅代理角色。开启即下载/启动内核（崩溃自动退避重启），关闭即停机。
+/// 开关D：订阅代理角色。开启即启动内核（崩溃自动退避重启），关闭即停机。
+/// 内核缺失时不再当场下载：后台开始下载并返回 NEED_DOWNLOAD，前端展示下载卡，完成后自动重试。
 #[tauri::command]
 async fn set_subscription_role(
     state: State<'_, AppState>,
@@ -1299,6 +1370,13 @@ async fn set_subscription_role(
         return Err("TUN 模式开启中，请先关闭 TUN 模式".into());
     }
     if enabled {
+        if !subscription::kernel_bin_exists() {
+            state.dl.start(download::Artifact::Kernel)?;
+            return Err(format!(
+                "{}订阅内核未安装，正在后台下载",
+                subscription::NEED_DOWNLOAD_PREFIX
+            ));
+        }
         state.kernel.start().await?;
     } else {
         state.kernel.stop().await;
@@ -1874,6 +1952,15 @@ async fn restore_subscription_role(app: &tauri::AppHandle) {
         tracing::warn!("subscription role was enabled but no subscription exists — keeping kernel stopped");
         return;
     }
+    // 内核缺失：后台下载（不再阻塞恢复流程；完成后用户重开订阅角色即生效）
+    if !subscription::kernel_bin_exists() {
+        if let Err(e) = state.dl.start(download::Artifact::Kernel) {
+            tracing::error!(error = %e, "failed to start kernel download on restore");
+        } else {
+            tracing::info!("kernel missing on restore — background download started");
+        }
+        return;
+    }
     // 提权重启后被用户取消（UAC 拒绝）或权限已丢失：放弃 TUN 改普通模式恢复，不影响使用
     let mut tun_mode = tun_mode;
     if tun_mode && !tun::SystemElevation.is_admin() {
@@ -1883,9 +1970,14 @@ async fn restore_subscription_role(app: &tauri::AppHandle) {
     }
     if tun_mode {
         if let Err(e) = subscription::ensure_wintun().await {
-            // wintun 不可用同样只放弃 TUN，不阻断普通模式恢复
-            tracing::error!(error = %e, "failed to ensure wintun for persisted TUN mode");
-            abandon_tun(&state, &format!("wintun 组件不可用（{e}）")).await;
+            // wintun 缺失：后台下载（完成后用户重开 TUN 即可）；其它错误同样只放弃 TUN，不阻断普通模式恢复
+            if e.starts_with(subscription::NEED_DOWNLOAD_PREFIX) {
+                let _ = state.dl.start(download::Artifact::Wintun);
+                abandon_tun(&state, "wintun 组件未安装，已转为后台下载").await;
+            } else {
+                tracing::error!(error = %e, "failed to ensure wintun for persisted TUN mode");
+                abandon_tun(&state, &format!("wintun 组件不可用（{e}）")).await;
+            }
             tun_mode = false;
         }
     }
@@ -2118,6 +2210,10 @@ pub fn run() {
             set_active_subscription,
             subscription_status,
             install_kernel,
+            dl_state,
+            dl_start,
+            dl_cancel,
+            dl_install_manual,
             activate_subscription_feature,
             subscription_status,
             proxy_groups,

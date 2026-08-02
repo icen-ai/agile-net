@@ -343,6 +343,21 @@
         <div class="hint" style="margin-top:6px">未命中 AgileNet 规则的流量自动经订阅出口</div>
       </div>
 
+      <!-- 制品下载卡（mihomo 内核 / wintun 共用；dl_state 轮询驱动，仅下载中/失败时可见） -->
+      <div class="card" id="dl-card" style="display:none">
+        <h3><i data-ic="download"></i><span id="dl-title">下载制品</span>
+          <span class="h3-tools"><button class="ghost small icon-btn" id="dl-cancel-x" title="取消下载"><i data-ic="x" data-sz="14"></i></button></span>
+        </h3>
+        <div class="sub-progress" id="dl-progress"><i style="width:0%"></i></div>
+        <div class="hint mono" id="dl-detail">-</div>
+        <div class="hint sm-err" id="dl-err" style="display:none"></div>
+        <div class="row" id="dl-actions" style="display:none;margin-top:8px">
+          <button id="dl-retry" class="ghost small"><i data-ic="refresh-cw" data-sz="13"></i> 重试下载</button>
+          <button id="dl-manual" class="ghost small"><i data-ic="download" data-sz="13"></i> 手动安装</button>
+          <button id="dl-dismiss" class="ghost small">取消</button>
+        </div>
+      </div>
+
       <!-- TUN 模式（docs/plan/tun.md P1：网卡层接管，anet 在前 FlClash 在后；仅 Windows x64，需管理员） -->
       <div class="card" id="tun-card">
         <h3><i data-ic="layers"></i>TUN 模式 <span class="hint inline" id="tun-status-text">未开启</span>
@@ -422,6 +437,7 @@
         <h3><i data-ic="satellite"></i>订阅内核 <span class="hint inline" id="sub-install-status">未安装</span> <span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip">导入 Clash 系订阅的可选附加服务；内核（mihomo）钉版本下载并 SHA-256 校验，仅在本地运行</span></span></h3>
         <div class="row">
           <button id="btn-install-kernel" class="ghost small"><i data-ic="download" data-sz="13"></i> 下载并安装内核</button>
+          <button id="btn-manual-kernel" class="ghost small">手动安装（本地文件）</button>
           <button id="btn-activate-sub" class="small" disabled>激活订阅功能</button>
           <button id="btn-deactivate-sub" class="danger small" style="display:none">停用订阅功能</button>
         </div>
@@ -568,6 +584,54 @@
     <div class="row" style="justify-content:flex-end">
       <button id="tun-elevate-cancel" class="ghost">取消</button>
       <button id="tun-elevate-ok">以管理员身份重启</button>
+    </div>
+  </div>
+</div>
+
+<!-- 制品手动安装弹窗（用户自行下载官方文件 → 给完整路径 → 钉值校验通过才落盘） -->
+<div class="modal-mask" id="dl-manual-modal" style="display:none">
+  <div class="modal sub-modal">
+    <div class="sm-head">
+      <span class="sm-logo"><i data-ic="download" data-sz="20"></i></span>
+      <div>
+        <h3 id="dl-manual-title">手动安装</h3>
+        <div class="hint">从官方渠道下载后提供文件完整路径，校验通过才安装</div>
+      </div>
+    </div>
+    <div class="sm-body">
+      <div class="hint" id="dl-manual-hint"></div>
+      <label>文件完整路径</label>
+      <input id="dl-manual-path" class="mono" placeholder="D:\dl\mihomo-windows-amd64-compatible-v1.19.29.zip">
+      <div class="row" style="margin-top:8px">
+        <button id="dl-manual-open" class="ghost small"><i data-ic="external-link" data-sz="13"></i> 打开官方下载页</button>
+      </div>
+      <div class="hint sm-err" id="dl-manual-err"></div>
+    </div>
+    <div class="row" style="justify-content:flex-end">
+      <button id="dl-manual-cancel" class="ghost">取消</button>
+      <button id="dl-manual-ok">校验并安装</button>
+    </div>
+  </div>
+</div>
+
+<!-- 哈希不符确认弹窗（手动安装钉值对不上/无法对钉时；明示风险，用户确认才强装） -->
+<div class="modal-mask" id="dl-mismatch-modal" style="display:none">
+  <div class="modal sub-modal">
+    <div class="sm-head">
+      <span class="sm-logo" style="background:var(--danger)"><i data-ic="triangle-alert" data-sz="20"></i></span>
+      <div>
+        <h3>无法校验文件完整性</h3>
+        <div class="hint">该文件与官方钉死版本不一致</div>
+      </div>
+    </div>
+    <div class="sm-body">
+      <div class="kv"><span class="k">钉死版本</span><span class="mono" id="dl-mm-version">-</span></div>
+      <div class="kv"><span class="k">实际哈希</span><span class="mono" id="dl-mm-hash">-</span></div>
+      <div class="hint sm-err">无法校验该文件与官方钉死版本一致，可能版本不符或已被篡改；仅在确认文件来自官方渠道时才应继续。</div>
+    </div>
+    <div class="row" style="justify-content:flex-end">
+      <button id="dl-mm-cancel" class="ghost">放弃</button>
+      <button id="dl-mm-ok" class="danger">仍然使用</button>
     </div>
   </div>
 </div>
