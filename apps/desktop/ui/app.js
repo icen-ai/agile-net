@@ -330,6 +330,10 @@ const Island = {
         void target.offsetWidth;
         target.classList.add('island-part');
       }, 200);
+    } else {
+      // 同态连续调用（如两条通知 200ms 内接连到达）：上一次的 reveal 定时器已被
+      // clear，若不补显，内容会永远残留 visibility:hidden —— 空岛（白 pill 无内容）
+      parts[showPart].style.visibility = '';
     }
     // 6. 收尾释放显式尺寸（回到自适应）
     this._t2 = setTimeout(() => { el.style.width = ''; el.style.height = ''; }, 520);
@@ -774,7 +778,7 @@ function renderCredList(creds, statusMap) {
     const badge = st ? statusBadgeHtml(st) : '<span class="badge b-gray">未连接</span>';
     const mainBtn = st === 'Connected'
       ? '<button class="ghost small" data-act="disconnect" data-key="' + esc(key) + '">断开</button>'
-      : '<button class="ghost small" data-act="reconnect" data-key="' + esc(key) + '">' + (st ? '重连' : '连接') + '</button>';
+      : '<button class="small" data-act="reconnect" data-key="' + esc(key) + '">' + (st ? '重连' : '连接') + '</button>';
     const epName = key.includes('@') ? key.slice(0, key.indexOf('@')) : key;
     return '<div class="node-card' + (live(st) ? '' : ' down') + '"><div class="info">' +
       '<div class="name">' + esc(epName) + ' <span class="dim">· ' + esc(c.username) + '</span> ' + badge + '</div>' +
