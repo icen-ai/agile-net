@@ -19,9 +19,11 @@ use axum::{
 };
 use dashmap::DashMap;
 use serde::Serialize;
-use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+// 登录限流器实现已下沉 core（服务端/客户端两端共用），此处再导出保持 crate::api 路径不变
+pub use agile_net_core::util::{LoginBlockReason, LoginRateLimiter};
 
 /// 运行时共享状态（数据面句柄，供状态 API 读取）。
 pub struct NodeRuntime {
@@ -61,6 +63,8 @@ pub struct ApiState {
     pub login_limiter: LoginRateLimiter,
     /// refresh 端点限流（10 次/分钟/IP；refresh 每次执行 DB 写入轮换，必须限速）
     pub refresh_limiter: LoginRateLimiter,
+    /// admin-bootstrap 票据兑换限流（10 次/分钟/IP；票据可枚举兑换，防暴力枚举）
+    pub bootstrap_limiter: LoginRateLimiter,
     /// 创建/重置账号后的 connect_url 短期缓存（3 分钟，供二维码取用；含明文密码不宜长存）
     connect_url_cache: Arc<DashMap<String, (String, Instant)>>,
     /// 节点公网接入地址（运行时可通过设置 API 热更新）
@@ -86,6 +90,7 @@ impl ApiState {
             runtime,
             login_limiter: LoginRateLimiter::new(),
             refresh_limiter: LoginRateLimiter::new().with_config(10, u32::MAX, 15),
+            bootstrap_limiter: LoginRateLimiter::new().with_config(10, u32::MAX, 15),
             connect_url_cache: Arc::new(DashMap::new()),
             public_host: Arc::new(arc_swap::ArcSwap::from_pointee(public_host)),
             api_port,
@@ -104,11 +109,11 @@ impl ApiState {
     }
 
     /// 客户端 API 接入端点（connect_url 用）。
-    pub fn public_api_endpoint(&self) -> (String, u16) {
+    pub async fn public_api_endpoint(&self) -> (String, u16) {
         // 优先读数据库中的运行时设置，回落到启动值
         let host = self
-            .db
-            .get_config("public_host")
+            .db_call(|db| db.get_config("public_host"))
+            .await
             .ok()
             .flatten()
             .filter(|s| !s.is_empty())
@@ -117,9 +122,22 @@ impl ApiState {
     }
 
     /// 数据面隧道端点（client config 用）。
-    pub fn public_tunnel_endpoint(&self) -> (String, u16) {
-        let (host, _) = self.public_api_endpoint();
+    pub async fn public_tunnel_endpoint(&self) -> (String, u16) {
+        let (host, _) = self.public_api_endpoint().await;
         (host, self.relay_port)
+    }
+
+    /// 同步 DB 调用卸载到阻塞线程池。
+    ///
+    /// rusqlite 为同步 API，直接在 async handler 里调用会占住 tokio worker
+    /// （聚合查询尤为明显）；handlers 下全部 DB 访问一律经此包装。
+    pub async fn db_call<F, T>(&self, f: F) -> agile_net_core::error::Result<T>
+    where
+        F: FnOnce(&Database) -> agile_net_core::error::Result<T> + Send + 'static,
+        T: Send + 'static,
+    {
+        let db = self.db.clone();
+        offload(move || f(&db)).await
     }
 
     pub fn remember_connect_url(&self, account_id: &str, url: &str) {
@@ -143,109 +161,22 @@ impl ApiState {
     }
 }
 
-/// 登录频率限制器：5 次/分钟/IP，连续失败 5 次锁定 15 分钟。
-#[derive(Clone)]
-pub struct LoginRateLimiter {
-    inner: Arc<DashMap<IpAddr, LoginAttempts>>,
-    max_per_minute: u32,
-    lock_threshold: u32,
-    lock_duration: Duration,
-}
+// ==================== 阻塞工作卸载 ====================
 
-struct LoginAttempts {
-    window_start: Instant,
-    attempts: u32,
-    failures: u32,
-    locked_until: Option<Instant>,
-}
-
-impl LoginRateLimiter {
-    pub fn new() -> Self {
-        Self {
-            inner: Arc::new(DashMap::new()),
-            max_per_minute: 5,
-            lock_threshold: 5,
-            lock_duration: Duration::from_secs(15 * 60),
-        }
+/// 同步阻塞工作的统一卸载点：argon2id 哈希/校验、JWT 签发轮换（内部含 DB 写）
+/// 等 CPU/IO 密集调用一律经此进入 tokio 阻塞线程池，避免占住 async worker。
+/// DB 访问请用 `ApiState::db_call`（本函数的便捷包装，自动注入连接池句柄）。
+pub(crate) async fn offload<F, T>(f: F) -> agile_net_core::error::Result<T>
+where
+    F: FnOnce() -> agile_net_core::error::Result<T> + Send + 'static,
+    T: Send + 'static,
+{
+    match tokio::task::spawn_blocking(f).await {
+        Ok(r) => r,
+        Err(e) => Err(agile_net_core::error::Error::Other(format!(
+            "blocking task failed: {e}"
+        ))),
     }
-
-    /// 覆盖默认限流参数（对应 agile-net.toml [limits]）。
-    pub fn with_config(
-        mut self,
-        max_per_minute: u32,
-        lock_threshold: u32,
-        lock_minutes: u32,
-    ) -> Self {
-        self.max_per_minute = max_per_minute.max(1);
-        self.lock_threshold = lock_threshold.max(1);
-        self.lock_duration = Duration::from_secs(lock_minutes.max(1) as u64 * 60);
-        self
-    }
-
-    /// 检查是否允许尝试登录（限流 + 锁定判定）。
-    /// 附带惰性清扫：条目数超 1024 时淘汰 30 分钟未活动的失败记录（防内存无上限增长）。
-    pub fn check(&self, ip: IpAddr) -> Result<(), LoginBlockReason> {
-        if self.inner.len() > 1024 {
-            self.inner
-                .retain(|_, e| e.window_start.elapsed() < Duration::from_secs(30 * 60));
-        }
-        let mut entry = self.inner.entry(ip).or_insert(LoginAttempts {
-            window_start: Instant::now(),
-            attempts: 0,
-            failures: 0,
-            locked_until: None,
-        });
-        let e = entry.value_mut();
-
-        if let Some(until) = e.locked_until {
-            if until > Instant::now() {
-                return Err(LoginBlockReason::Locked(until - Instant::now()));
-            }
-            e.locked_until = None;
-            e.failures = 0;
-        }
-
-        if e.window_start.elapsed() > Duration::from_secs(60) {
-            e.window_start = Instant::now();
-            e.attempts = 0;
-        }
-        e.attempts += 1;
-        if e.attempts > self.max_per_minute {
-            return Err(LoginBlockReason::RateLimited);
-        }
-        Ok(())
-    }
-
-    /// 记录一次登录失败（连续失败达阈值则锁定）。
-    pub fn record_failure(&self, ip: IpAddr) {
-        let mut entry = self.inner.entry(ip).or_insert(LoginAttempts {
-            window_start: Instant::now(),
-            attempts: 0,
-            failures: 0,
-            locked_until: None,
-        });
-        let e = entry.value_mut();
-        e.failures += 1;
-        if e.failures >= self.lock_threshold {
-            e.locked_until = Some(Instant::now() + self.lock_duration);
-        }
-    }
-
-    /// 登录成功，清零失败计数。
-    pub fn record_success(&self, ip: IpAddr) {
-        self.inner.remove(&ip);
-    }
-}
-
-impl Default for LoginRateLimiter {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-pub enum LoginBlockReason {
-    RateLimited,
-    Locked(Duration),
 }
 
 // ==================== 统一响应体 ====================

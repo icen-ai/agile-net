@@ -12,7 +12,7 @@
 | **anet-svc / anet** | 服务器二进制 + 管理命令（同一实现双入口） | 服务器中继、内网网关、运维管理 |
 
 > 命令面统一为 `anet`：`init`（首装向导）/ `start` / `stop` / `restart` / `status` /
-> `login` / `node` / `rule` / `group` / `account` / `token` / `admin` / `audit` / `tui`。
+> `login` / `node` / `rule` / `group` / `account` / `token` / `connector` / `admin` / `audit` / `tui`。
 > `anet-svc` 仅作服务器进程名（裸跑等同 `anet start`）；`anet-svc serve` 与 `anet-svc cli` 已废弃（保留隐藏兼容）。
 
 ## 能力一览
@@ -30,7 +30,7 @@
 - **Clash/FlClash 共存**：5 万段默认端口（API 59090 / Relay 54430 / 代理 57890），
   可作为 Clash 的 socks5 节点按内网 CIDR 分流（见 `apps/README.md`）
 - **安全硬化**：argon2id 密码哈希、令牌只存哈希、证书固定 pinning、常数时间比较、
-  登录限流锁定、全量审计日志、JWT 吊销轮换
+  登录限流锁定、全量审计日志、JWT 吊销轮换、客户端凭据 OS keyring 存储
 
 ## 快速开始
 

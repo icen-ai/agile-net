@@ -671,7 +671,7 @@ fn seed_relay_tokens_from_env(db: &Database) -> Result<()> {
             continue;
         }
         let prefix = format!("{}****", &token[..token.len().min(8)]);
-        db.create_relay_token_full(&hash, &prefix, "seeded from environment", expose, scope)?;
+        db.create_relay_token_with_quota(&hash, &prefix, "seeded from environment", expose, scope, None, None)?;
         tracing::info!(prefix = %prefix, expose, scope, "relay token seeded from environment");
     }
     Ok(())

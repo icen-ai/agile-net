@@ -38,7 +38,10 @@ pub async fn get_config(
         let deadline =
             std::time::Instant::now() + std::time::Duration::from_secs(LONG_POLL_TIMEOUT_SECS);
         loop {
-            let current = state.db.config_version().unwrap_or(0);
+            let current = state
+                .db_call(|db| db.config_version())
+                .await
+                .unwrap_or(0);
             if current > client_version {
                 break;
             }
@@ -49,22 +52,33 @@ pub async fn get_config(
         }
     }
 
-    build_config_response(&state, &claims.sub)
+    build_config_response(&state, &claims.sub).await
 }
 
-fn build_config_response(state: &ApiState, account_id: &str) -> Response {
-    let version = state.db.config_version().unwrap_or(0);
-    let node_name = state
-        .db
-        .get_config("node_name")
-        .ok()
-        .flatten()
-        .unwrap_or_else(|| "AgileNet Node".to_string());
+async fn build_config_response(state: &ApiState, account_id: &str) -> Response {
+    // 配置组装所需读取合并为一次阻塞任务（版本/节点名/规则/管理位）
+    let aid = account_id.to_string();
+    let (version, node_name, rules, admin_console) = state
+        .db_call(move |db| {
+            let version = db.config_version().unwrap_or(0);
+            let node_name = db
+                .get_config("node_name")
+                .ok()
+                .flatten()
+                .unwrap_or_else(|| "AgileNet Node".to_string());
+            let rules = db.rules_of_account(&aid).unwrap_or_default();
+            let admin_console = db
+                .get_account(&aid)
+                .ok()
+                .flatten()
+                .map(|a| a.admin_console)
+                .unwrap_or(false);
+            Ok((version, node_name, rules, admin_console))
+        })
+        .await
+        .unwrap_or_else(|_| (0, "AgileNet Node".to_string(), Vec::new(), false));
 
-    let rules = state
-        .db
-        .rules_of_account(account_id)
-        .unwrap_or_default()
+    let rules = rules
         .into_iter()
         .map(|r| {
             json!({
@@ -76,15 +90,7 @@ fn build_config_response(state: &ApiState, account_id: &str) -> Response {
         })
         .collect::<Vec<_>>();
 
-    let (server, port) = state.public_tunnel_endpoint();
-
-    let admin_console = state
-        .db
-        .get_account(account_id)
-        .ok()
-        .flatten()
-        .map(|a| a.admin_console)
-        .unwrap_or(false);
+    let (server, port) = state.public_tunnel_endpoint().await;
 
     // 可管理上游自动发现（握手 v2）：仅管理版账号下发；
     // 票据经 console-ticket 端点按需取用，不随配置广播
@@ -143,7 +149,8 @@ pub async fn heartbeat(
     let account_id = &claims.sub;
 
     // 账号被禁用/删除时强制下线
-    let account = match state.db.get_account(account_id) {
+    let aid = account_id.clone();
+    let account = match state.db_call(move |db| db.get_account(&aid)).await {
         Ok(Some(a)) => a,
         _ => {
             return ok(json!({
@@ -153,28 +160,35 @@ pub async fn heartbeat(
         }
     };
     if !account.enabled {
+        let version = state
+            .db_call(|db| db.config_version())
+            .await
+            .unwrap_or(0);
         return ok(json!({
-            "config_version": state.db.config_version().unwrap_or(0),
+            "config_version": version,
             "force_disconnect": true,
         }));
     }
 
-    let _ = state.db.touch_account_seen(account_id);
-
-    // bytes_tx/rx 为自上次心跳以来的增量（心跳间隔 60s），按小时聚合入库
+    // bytes_tx/rx 为自上次心跳以来的增量（心跳间隔 60s），按小时聚合入库；
+    // 在线触达 + 流量入库 + 版本读取合并为一次阻塞任务
     let delta_tx = req.bytes_tx.clamp(0, MAX_HEARTBEAT_BYTES);
     let delta_rx = req.bytes_rx.clamp(0, MAX_HEARTBEAT_BYTES);
-    if delta_tx > 0 || delta_rx > 0 {
-        let _ = state.db.add_traffic(
-            account_id,
-            delta_tx,
-            delta_rx,
-            req.active_connections.clamp(0, 1_000_000),
-        );
-    }
+    let traffic = (delta_tx > 0 || delta_rx > 0)
+        .then_some((delta_tx, delta_rx, req.active_connections.clamp(0, 1_000_000)));
+    let version = state
+        .db_call(move |db| {
+            let _ = db.touch_account_seen(&account.id);
+            if let Some((tx, rx, conns)) = traffic {
+                let _ = db.add_traffic(&account.id, tx, rx, conns);
+            }
+            db.config_version()
+        })
+        .await
+        .unwrap_or(0);
 
     ok(json!({
-        "config_version": state.db.config_version().unwrap_or(0),
+        "config_version": version,
         "force_disconnect": false,
     }))
 }
@@ -197,7 +211,8 @@ pub async fn console_ticket(
     State(state): State<ApiState>,
     body: Option<Json<ConsoleTicketRequest>>,
 ) -> Response {
-    let account = match state.db.get_account(&claims.sub) {
+    let sub = claims.sub.clone();
+    let account = match state.db_call(move |db| db.get_account(&sub)).await {
         Ok(Some(a)) if a.enabled => a,
         _ => {
             return err(
@@ -235,8 +250,8 @@ pub async fn console_ticket(
     }
 
     match state
-        .db
-        .create_admin_ticket("account", &account.id, "full", 1, 600)
+        .db_call(move |db| db.create_admin_ticket("account", &account.id, "full", 1, 600))
+        .await
     {
         Ok(ticket) => ok(json!({
             "ticket": ticket,

@@ -9,6 +9,7 @@ pub mod proto;
 pub mod proxy;
 pub mod relay;
 pub mod tunnel;
+pub mod util;
 
 /// 初始化 rustls 默认 CryptoProvider (使用 ring)
 pub fn init_crypto_provider() {

@@ -53,7 +53,7 @@ mod tests {
 
         // 未设配额 / 不存在的哈希：None（不限）
         let hash2 = sha256_hex(b"tok-free");
-        db.create_relay_token_with_group(&hash2, "psk_f", "", false, "full", None)
+        db.create_relay_token_with_quota(&hash2, "psk_f", "", false, "full", None, None)
             .unwrap();
         assert_eq!(relay_token_rate_limit_bps_by_hash(&db, &hash2), None);
         assert_eq!(relay_token_rate_limit_bps_by_hash(&db, "no-such"), None);

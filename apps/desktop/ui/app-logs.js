@@ -3,6 +3,7 @@
 
 /* ================= 日志视图（订阅内核可观测：实时连接 / 实时日志 / 命中追踪） =================
    仅在本页打开时轮询（连接/日志 1s、命中 2s，单一定时器按页签分派），离开即停；
+   窗口不可见或内核未运行时定时器轻量空转、跳过内核 IPC（停内核瞬间放行最后一次拉取落空态）；
    连接表签名对比整表重绘，日志流增量追加（上限 500 行 DOM 裁剪），渲染防频闪。 */
 
 /* ---- 日志行渲染（级别归一 + 关键字 mark.logv-hl 高亮；先 esc 再高亮，替换串同为转义文本） ---- */
@@ -26,6 +27,7 @@ function logLineHtml(e, kw) {
 const LogsView = {
   tab: 'conn',
   timer: null, tick: 0,
+  kernelOff: false, // 内核未运行且已落空态（onTick 据此空转跳过内核 IPC，恢复运行自动复位）
   connSig: '', hitsSig: '', evSig: '',
   connMap: {},        // 最近一次连接数据 id → {c, live}（详情展开/重绘恢复的数据源）
   connDetailId: null, // 展开中的连接详情行 id（同时只开一行；行消失即收起）
@@ -41,8 +43,16 @@ const LogsView = {
   stop() { if (this.timer) { clearInterval(this.timer); this.timer = null; } },
   onTick() {
     this.tick++;
-    if (this.tab === 'hits') { if (this.tick % 2 === 0) this.pollHits(); return; }
-    if (this.tab === 'ev') { if (this.tick % 10 === 0) this.pollEvents(); return; } // 事件低频：10s
+    // 窗口不可见：跳过当次 IPC（定时器保持轻量空转，恢复可见后自行接续）
+    if (document.hidden) return;
+    if (this.tab === 'ev') { if (this.tick % 10 === 0) this.pollEvents(); return; } // 事件低频：10s（本机事件日志，不依赖内核）
+    // 内核未运行：空转跳过内核 IPC；刚停内核时放行最后一次拉取，让页面落回「内核未运行」空态
+    let settling = false;
+    if (!window._subRunning) {
+      if (this.kernelOff) return;
+      this.kernelOff = true; settling = true;
+    } else this.kernelOff = false;
+    if (this.tab === 'hits') { if (settling || this.tick % 2 === 0) this.pollHits(); return; }
     if (this.tab === 'log') this.pollLogs();
     else this.pollConns();
   },

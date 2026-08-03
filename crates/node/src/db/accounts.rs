@@ -33,43 +33,17 @@ impl Database {
             bind.push(Box::new(format!("%{q}%")));
             bind.push(Box::new(format!("%{q}%")));
         }
-        let where_sql = if where_clauses.is_empty() {
-            String::new()
-        } else {
-            format!("WHERE {}", where_clauses.join(" AND "))
-        };
-
-        let total: i64 = {
-            let sql = format!("SELECT COUNT(*) FROM account a {where_sql}");
-            let mut stmt = conn.prepare(&sql).map_err(db_err)?;
-            stmt.query_row(
-                rusqlite::params_from_iter(bind.iter().map(|b| b.as_ref())),
-                |r| r.get(0),
-            )
-            .map_err(db_err)?
-        };
-
-        let offset = (page.saturating_sub(1)) * page_size;
-        let sql = format!(
-            "SELECT a.id, a.username, a.group_id, g.name, a.enabled, a.remark, a.last_seen_at, a.created_at, a.updated_at, a.admin_console
-             FROM account a LEFT JOIN \"group\" g ON a.group_id = g.id
-             {where_sql} ORDER BY a.created_at DESC LIMIT ? OFFSET ?"
-        );
-        let mut stmt = conn.prepare(&sql).map_err(db_err)?;
-        let mut bind_refs: Vec<&dyn rusqlite::types::ToSql> =
-            bind.iter().map(|b| b.as_ref()).collect();
-        let limit = page_size as i64;
-        let off = offset as i64;
-        bind_refs.push(&limit);
-        bind_refs.push(&off);
-        let rows = stmt
-            .query_map(rusqlite::params_from_iter(bind_refs), map_account_row)
-            .map_err(db_err)?;
-        let mut items = Vec::new();
-        for r in rows {
-            items.push(r.map_err(db_err)?);
-        }
-        Ok((items, total))
+        super::paginate::paged_query(
+            &conn,
+            "a.id, a.username, a.group_id, g.name, a.enabled, a.remark, a.last_seen_at, a.created_at, a.updated_at, a.admin_console",
+            "account a LEFT JOIN \"group\" g ON a.group_id = g.id",
+            &where_clauses,
+            &bind,
+            "a.created_at DESC",
+            page,
+            page_size,
+            map_account_row,
+        )
     }
 
     pub fn get_account(&self, id: &str) -> Result<Option<AccountRecord>> {
@@ -284,55 +258,6 @@ impl Database {
     }
 
     // ==================== Relay Token ====================
-
-    pub fn create_relay_token(
-        &self,
-        token_hash: &str,
-        token_prefix: &str,
-        remark: &str,
-    ) -> Result<RelayTokenRecord> {
-        self.create_relay_token_full(token_hash, token_prefix, remark, false, "full")
-    }
-
-    /// 创建 Relay Token（可勾选「允许该下游中继管理本节点」+ 授权档位）。
-    pub fn create_relay_token_full(
-        &self,
-        token_hash: &str,
-        token_prefix: &str,
-        remark: &str,
-        expose_control: bool,
-        control_scope: &str,
-    ) -> Result<RelayTokenRecord> {
-        self.create_relay_token_with_group(
-            token_hash,
-            token_prefix,
-            remark,
-            expose_control,
-            control_scope,
-            None,
-        )
-    }
-
-    /// 创建 Relay Token 并挂载收敛权限组（group_id 为 None = 不收敛）。
-    pub fn create_relay_token_with_group(
-        &self,
-        token_hash: &str,
-        token_prefix: &str,
-        remark: &str,
-        expose_control: bool,
-        control_scope: &str,
-        group_id: Option<&str>,
-    ) -> Result<RelayTokenRecord> {
-        self.create_relay_token_with_quota(
-            token_hash,
-            token_prefix,
-            remark,
-            expose_control,
-            control_scope,
-            group_id,
-            None,
-        )
-    }
 
     /// 创建 Relay Token（含带宽配额；rate_limit_kbps 单位 KB/s，None = 不限）。
     /// 非法值防御：`<= 0` 归一为 NULL（API 层已按 400 拒绝，此处兜底防绕过）。
@@ -577,7 +502,7 @@ mod tests {
 
         // 带组创建
         let rec = db
-            .create_relay_token_with_group(&hash, "psk_abcd", "带组", false, "full", Some(&gid))
+            .create_relay_token_with_quota(&hash, "psk_abcd", "带组", false, "full", Some(&gid), None)
             .expect("create with group");
         assert_eq!(rec.group_id.as_deref(), Some(gid.as_str()));
 
@@ -600,10 +525,10 @@ mod tests {
         assert!(matches!(g, Some(None)));
         assert_eq!(db.get_relay_token(&rec.id).unwrap().unwrap().group_id, None);
 
-        // 旧方法委托：默认不收敛
+        // 不带组创建：默认不收敛
         let rec2 = db
-            .create_relay_token_full(&sha256_hex(b"tok2"), "psk_efgh", "", false, "full")
-            .expect("create full");
+            .create_relay_token_with_quota(&sha256_hex(b"tok2"), "psk_efgh", "", false, "full", None, None)
+            .expect("create without group");
         assert_eq!(rec2.group_id, None);
         // 不存在的哈希：None
         assert_eq!(db.get_relay_token_group("no-such-hash").unwrap(), None);
@@ -655,9 +580,9 @@ mod tests {
             None
         );
 
-        // 旧委托方法：默认不限
+        // 不设配额创建：默认不限
         let rec3 = db
-            .create_relay_token_with_group(&sha256_hex(b"tok3"), "psk_x", "", false, "full", None)
+            .create_relay_token_with_quota(&sha256_hex(b"tok3"), "psk_x", "", false, "full", None, None)
             .unwrap();
         assert_eq!(rec3.rate_limit_kbps, None);
         // 不存在的哈希：None

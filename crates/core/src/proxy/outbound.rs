@@ -110,6 +110,38 @@ impl Socks5ForwardOutbound {
     }
 }
 
+/// Tunnel 隧道出站。
+pub struct TunnelOutbound {
+    opener: Arc<dyn ChannelOpener>,
+}
+
+impl TunnelOutbound {
+    pub fn new(opener: Arc<dyn ChannelOpener>) -> Self {
+        Self { opener }
+    }
+
+    /// 通过指定节点的隧道发起端到端转发
+    pub async fn proxy_stream<S>(
+        &self,
+        node_id: &str,
+        target_host: &str,
+        target_port: u16,
+        client_stream: S,
+    ) -> Result<(u64, u64)>
+    where
+        S: AsyncRead + AsyncWrite + Unpin,
+    {
+        debug!(
+            node_id,
+            target_host, target_port, "initiating tunnel outbound"
+        );
+        let mux_channel = self.opener.open(node_id, target_host, target_port).await?;
+
+        let (bytes_sent, bytes_recv) = bridge(client_stream, mux_channel).await?;
+        Ok((bytes_sent, bytes_recv))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -196,37 +228,5 @@ mod tests {
 
         let err = Socks5ForwardOutbound::connect(upstream, "example.com", 443).await;
         assert!(err.is_err());
-    }
-}
-
-/// Tunnel 隧道出站。
-pub struct TunnelOutbound {
-    opener: Arc<dyn ChannelOpener>,
-}
-
-impl TunnelOutbound {
-    pub fn new(opener: Arc<dyn ChannelOpener>) -> Self {
-        Self { opener }
-    }
-
-    /// 通过指定节点的隧道发起端到端转发
-    pub async fn proxy_stream<S>(
-        &self,
-        node_id: &str,
-        target_host: &str,
-        target_port: u16,
-        client_stream: S,
-    ) -> Result<(u64, u64)>
-    where
-        S: AsyncRead + AsyncWrite + Unpin,
-    {
-        debug!(
-            node_id,
-            target_host, target_port, "initiating tunnel outbound"
-        );
-        let mux_channel = self.opener.open(node_id, target_host, target_port).await?;
-
-        let (bytes_sent, bytes_recv) = bridge(client_stream, mux_channel).await?;
-        Ok((bytes_sent, bytes_recv))
     }
 }

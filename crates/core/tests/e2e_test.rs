@@ -124,10 +124,10 @@ async fn multi_node_routing_isolation() -> Result<()> {
     tokio::spawn(async move {
         while let Ok((mut stream, _)) = echo_b.accept().await {
             let mut buf = [0u8; 128];
-            if let Ok(n) = stream.read(&mut buf).await {
-                if &buf[..n] == b"ping" {
-                    let _ = stream.write_all(b"from-node-b").await;
-                }
+            if let Ok(n) = stream.read(&mut buf).await
+                && &buf[..n] == b"ping"
+            {
+                let _ = stream.write_all(b"from-node-b").await;
             }
         }
     });
@@ -137,10 +137,10 @@ async fn multi_node_routing_isolation() -> Result<()> {
     tokio::spawn(async move {
         while let Ok((mut stream, _)) = echo_c.accept().await {
             let mut buf = [0u8; 128];
-            if let Ok(n) = stream.read(&mut buf).await {
-                if &buf[..n] == b"ping" {
-                    let _ = stream.write_all(b"from-node-c").await;
-                }
+            if let Ok(n) = stream.read(&mut buf).await
+                && &buf[..n] == b"ping"
+            {
+                let _ = stream.write_all(b"from-node-c").await;
             }
         }
     });

@@ -77,9 +77,10 @@ async fn admin_ui_alias_and_no_prefilled_credentials() {
 #[tokio::test]
 async fn admin_ui_escapes_dynamic_content() {
     let (_, js, _) = get("/ui/app.js").await;
-    // esc() 函数存在且被用于渲染
-    assert!(js.contains("function esc(s)"));
-    assert!(js.contains("&amp;"));
+    // esc() 实现已沉淀到共享层 /ui/agutil.js，app.js 经共享脚本获得
+    let (_, util, _) = get("/ui/agutil.js").await;
+    assert!(util.contains("function esc(s)") || util.contains("esc ="));
+    assert!(util.contains("&amp;"));
     // 不直接把接口数据 innerHTML（全部经 esc/pager/shortId 包装）
     assert!(!js.contains("innerHTML = (d.items||[]).map(a =>\n      '<tr><td><b>' + a.username"));
 }

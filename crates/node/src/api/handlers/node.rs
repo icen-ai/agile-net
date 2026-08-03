@@ -16,14 +16,39 @@ use serde::Deserialize;
 use serde_json::json;
 
 pub async fn status(AdminAuth(_): AdminAuth, State(state): State<ApiState>) -> Response {
-    let db = &state.db;
-    let node_name = db
-        .get_config("node_name")
-        .ok()
-        .flatten()
-        .unwrap_or_else(|| "AgileNet Node".to_string());
-    let rule_count = db.list_rules(1, 1, None, None).map(|(_, t)| t).unwrap_or(0);
-    let (accounts_total, accounts_disabled) = db.account_stats().unwrap_or((0, 0));
+    // 概览所需读取合并为一次阻塞任务（名称/规则数/账号统计/24h 流量序列；
+    // node_traffic_24h 为小时聚合查询，查询失败回落空序列不阻断 status）
+    let (node_name, rule_count, accounts_total, accounts_disabled, traffic_24h) = state
+        .db_call(|db| {
+            let node_name = db
+                .get_config("node_name")
+                .ok()
+                .flatten()
+                .unwrap_or_else(|| "AgileNet Node".to_string());
+            let rule_count = db.list_rules(1, 1, None, None).map(|(_, t)| t).unwrap_or(0);
+            let (accounts_total, accounts_disabled) = db.account_stats().unwrap_or((0, 0));
+            let traffic_24h = db
+                .node_traffic_24h()
+                .map(|v| serde_json::to_value(v).unwrap_or_else(|_| empty_traffic_24h()))
+                .unwrap_or_else(|_| empty_traffic_24h());
+            Ok((
+                node_name,
+                rule_count,
+                accounts_total,
+                accounts_disabled,
+                traffic_24h,
+            ))
+        })
+        .await
+        .unwrap_or_else(|_| {
+            (
+                "AgileNet Node".to_string(),
+                0,
+                0,
+                0,
+                empty_traffic_24h(),
+            )
+        });
 
     let (listener_json, online_accounts) = match &state.runtime.listener {
         Some(l) => (
@@ -125,12 +150,6 @@ pub async fn status(AdminAuth(_): AdminAuth, State(state): State<ApiState>) -> R
         })).collect::<Vec<_>>(),
     });
 
-    // 24h 三维流量序列（node_traffic_log 小时聚合；查询失败回落空序列不阻断 status）
-    let traffic_24h = db
-        .node_traffic_24h()
-        .map(|v| serde_json::to_value(v).unwrap_or_else(|_| empty_traffic_24h()))
-        .unwrap_or_else(|_| empty_traffic_24h());
-
     ok(json!({
         "node_name": node_name,
         "version": env!("CARGO_PKG_VERSION"),
@@ -161,9 +180,17 @@ fn empty_traffic_24h() -> serde_json::Value {
 }
 
 /// 系统资源占用（跨平台 sysinfo）。
+/// System 进程级缓存复用：每次新建实例无历史差分，CPU 使用率恒为 0 语义不准，
+/// 且 15s 概览轮询反复构造浪费；refresh 集合保持最小（内存 + 本进程），不扩大。
 fn system_stats() -> serde_json::Value {
+    use std::sync::{Mutex, OnceLock};
     use sysinfo::System;
-    let mut sys = System::new();
+    static SYS: OnceLock<Mutex<System>> = OnceLock::new();
+    // 锁中毒不阻断 status：取回内部数据继续用
+    let mut sys = SYS
+        .get_or_init(|| Mutex::new(System::new()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     sys.refresh_memory();
     let pid = sysinfo::get_current_pid().ok();
     let mut cpu = 0.0f32;
@@ -214,7 +241,7 @@ pub async fn stats(
 ) -> Response {
     let hours = period_hours(&q.period);
     match q.group_by.as_str() {
-        "account" => match state.db.traffic_by_account(hours) {
+        "account" => match state.db_call(move |db| db.traffic_by_account(hours)).await {
             Ok((breakdown, total_tx, total_rx)) => ok(json!({
                 "period": q.period,
                 "total_tx": total_tx,
@@ -227,7 +254,7 @@ pub async fn stats(
                 e.to_string(),
             ),
         },
-        "time" => match state.db.traffic_by_time(hours) {
+        "time" => match state.db_call(move |db| db.traffic_by_time(hours)).await {
             Ok(points) => ok(json!({
                 "period": q.period,
                 "interval": "1h",
@@ -294,7 +321,11 @@ pub async fn update_settings(
                 "node_name must be 1-64 characters",
             );
         }
-        if let Err(e) = state.db.set_config("node_name", name) {
+        let name = name.to_string();
+        if let Err(e) = state
+            .db_call(move |db| db.set_config("node_name", &name))
+            .await
+        {
             return err(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 codes::INTERNAL,
@@ -312,7 +343,11 @@ pub async fn update_settings(
                 "invalid public_host",
             );
         }
-        if let Err(e) = state.db.set_config("public_host", host) {
+        let host = host.to_string();
+        if let Err(e) = state
+            .db_call(move |db| db.set_config("public_host", &host))
+            .await
+        {
             return err(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 codes::INTERNAL,
@@ -328,7 +363,8 @@ pub async fn update_settings(
         "node.update_settings",
         None,
         &applied.join(","),
-    );
+    )
+    .await;
     ok(json!({
         "applied": applied,
         "restart_required": [],
@@ -362,7 +398,8 @@ pub async fn kick_peer(
             "node.kick_peer",
             Some(&req.node_id),
             "",
-        );
+        )
+        .await;
         ok(json!({ "kicked": true }))
     } else {
         err(
@@ -375,11 +412,16 @@ pub async fn kick_peer(
 
 /// Prometheus 格式指标导出（admin 认证）。
 pub async fn metrics(AdminAuth(_): AdminAuth, State(state): State<ApiState>) -> Response {
-    let db = &state.db;
     let mut out = String::new();
     let uptime = state.runtime.uptime_secs();
-    let rule_count = db.list_rules(1, 1, None, None).map(|(_, t)| t).unwrap_or(0);
-    let (acc_total, acc_disabled) = db.account_stats().unwrap_or((0, 0));
+    let (rule_count, acc_total, acc_disabled) = state
+        .db_call(|db| {
+            let rule_count = db.list_rules(1, 1, None, None).map(|(_, t)| t).unwrap_or(0);
+            let (acc_total, acc_disabled) = db.account_stats().unwrap_or((0, 0));
+            Ok((rule_count, acc_total, acc_disabled))
+        })
+        .await
+        .unwrap_or((0, 0, 0));
 
     out.push_str(
         "# HELP agilenet_uptime_seconds Node uptime\n# TYPE agilenet_uptime_seconds gauge\n",

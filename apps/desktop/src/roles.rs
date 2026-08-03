@@ -462,8 +462,9 @@ pub fn has_web_password() -> bool {
 
 /// 设置 Web 远程面管理密码（argon2id 哈希落盘，0600）。
 pub fn set_web_password(password: &str) -> Result<(), String> {
-    if password.len() < 10 {
-        return Err("管理密码至少 10 位".into());
+    // 与服务端管理员密码策略同一实现（node 端导出）；错误文案中文化
+    if agile_net_node::api::handlers::auth::validate_password_strength(password).is_err() {
+        return Err("管理密码至少 10 位，且须同时包含大小写字母与数字".into());
     }
     let hash = agile_net_node::db::hash_password(password).map_err(|e| e.to_string())?;
     let dir = data_dir();
@@ -506,7 +507,6 @@ fn generate_secret() -> String {
 }
 
 /// 校验 Web 远程面管理密码。
-#[allow(dead_code)]
 pub fn verify_web_password(password: &str) -> bool {
     let v = read_web_auth();
     let Some(hash) = v["password_hash"].as_str() else {
@@ -566,12 +566,14 @@ mod tests {
 
     #[test]
     fn settings_scripts_roundtrip_with_order_and_enabled() {
-        let mut v = RoleSettings::default();
-        v.sub_mode = "global".into();
-        v.sub_scripts = vec![
-            SubScript { id: "a".into(), name: "甲".into(), code: "c1".into(), enabled: true, order: 0 },
-            SubScript { id: "b".into(), name: "乙".into(), code: "c2".into(), enabled: false, order: 1 },
-        ];
+        let v = RoleSettings {
+            sub_mode: "global".into(),
+            sub_scripts: vec![
+                SubScript { id: "a".into(), name: "甲".into(), code: "c1".into(), enabled: true, order: 0 },
+                SubScript { id: "b".into(), name: "乙".into(), code: "c2".into(), enabled: false, order: 1 },
+            ],
+            ..Default::default()
+        };
         let raw = serde_json::to_string(&v).unwrap();
         let back: RoleSettings = serde_json::from_str(&raw).unwrap();
         assert_eq!(back.sub_mode, "global");
@@ -597,9 +599,11 @@ mod tests {
         assert!(v.notify_float_ball);
         assert!(!v.reduce_effects);
         // 持久化往返
-        let mut v = RoleSettings::default();
-        v.notify_float_ball = false;
-        v.reduce_effects = true;
+        let v = RoleSettings {
+            notify_float_ball: false,
+            reduce_effects: true,
+            ..Default::default()
+        };
         let raw = serde_json::to_string(&v).unwrap();
         let back: RoleSettings = serde_json::from_str(&raw).unwrap();
         assert!(!back.notify_float_ball);
@@ -693,9 +697,11 @@ mod tests {
         assert!(!v.tun_mode);
         assert_eq!(v.external_upstream, DEFAULT_EXTERNAL_UPSTREAM);
         // 持久化往返
-        let mut v = RoleSettings::default();
-        v.tun_mode = true;
-        v.external_upstream = "127.0.0.1:7897".into();
+        let v = RoleSettings {
+            tun_mode: true,
+            external_upstream: "127.0.0.1:7897".into(),
+            ..Default::default()
+        };
         let raw = serde_json::to_string(&v).unwrap();
         let back: RoleSettings = serde_json::from_str(&raw).unwrap();
         assert!(back.tun_mode);

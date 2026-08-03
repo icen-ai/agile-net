@@ -6,6 +6,7 @@
 //! - SNI 域名伪装
 
 use crate::error::{Error, Result};
+use crate::util::base64_encode;
 use rcgen::{CertificateParams, KeyPair};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName};
 use std::path::PathBuf;
@@ -287,31 +288,6 @@ pub fn cert_fingerprint_sha256(cert: &CertificateDer<'_>) -> String {
     use sha2::Digest;
     let digest = sha2::Sha256::digest(cert.as_ref());
     digest.iter().map(|b| format!("{b:02x}")).collect()
-}
-
-/// 最小化 base64 编码（避免引入额外依赖）。
-fn base64_encode(data: &[u8]) -> String {
-    const TABLE: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(data.len() * 4 / 3 + 4);
-    for chunk in data.chunks(3) {
-        let b0 = chunk[0] as u32;
-        let b1 = *chunk.get(1).unwrap_or(&0) as u32;
-        let b2 = *chunk.get(2).unwrap_or(&0) as u32;
-        let n = (b0 << 16) | (b1 << 8) | b2;
-        out.push(TABLE[(n >> 18) as usize & 63] as char);
-        out.push(TABLE[(n >> 12) as usize & 63] as char);
-        if chunk.len() > 1 {
-            out.push(TABLE[(n >> 6) as usize & 63] as char);
-        } else {
-            out.push('=');
-        }
-        if chunk.len() > 2 {
-            out.push(TABLE[n as usize & 63] as char);
-        } else {
-            out.push('=');
-        }
-    }
-    out
 }
 
 /// PEM 按 64 列折行。

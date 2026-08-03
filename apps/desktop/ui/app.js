@@ -280,9 +280,24 @@ window.addEventListener('DOMContentLoaded', async () => {
     }
   }
 
-  setInterval(() => { refreshNodes(); refreshProxy(); refreshSubStatus(); refreshSysproxy(); refreshTun(); renderDashFanout(); refreshCustomRules(); refreshCombos(); Hero.tick10s(); }, 10000);
+  /* ---- 主窗轮询调度：窗口隐藏时暂停三路定时器，可见时恢复并立即刷新一次（托盘/悬浮球同款 visibilitychange 模式） ---- */
+  let mainT10 = 0, mainT2 = 0, mainT30 = 0;
+  function mainTick10s() { refreshNodes(); refreshProxy(); refreshSubStatus(); refreshSysproxy(); refreshTun(); renderDashFanout(); refreshCustomRules(); refreshCombos(); Hero.tick10s(); }
   // 订阅内核流量 + 制品下载状态 2s 轮询（sub_traffic 读 Atomic 快照、dl_state 读内存状态，廉价；内部变更检测不重绘）
-  setInterval(() => { SubTraffic.poll(); pollDl(); }, 2000);
+  function mainTick2s() { SubTraffic.poll(); pollDl(); }
   // 出口 IP 探测 30s 轮询（结果带签名对比，不变不重绘）
-  setInterval(() => { NetProbe.refresh(); }, 30000);
+  function mainTick30s() { NetProbe.refresh(); }
+  function startMainLoops(immediate) {
+    if (mainT10) return;
+    if (immediate) { mainTick10s(); mainTick2s(); mainTick30s(); }
+    mainT10 = setInterval(mainTick10s, 10000);
+    mainT2 = setInterval(mainTick2s, 2000);
+    mainT30 = setInterval(mainTick30s, 30000);
+  }
+  function stopMainLoops() {
+    clearInterval(mainT10); clearInterval(mainT2); clearInterval(mainT30);
+    mainT10 = mainT2 = mainT30 = 0;
+  }
+  document.addEventListener('visibilitychange', () => { document.hidden ? stopMainLoops() : startMainLoops(true); });
+  startMainLoops(false); // 启动时上方已逐项刷新过一轮，此处仅挂定时器
 });

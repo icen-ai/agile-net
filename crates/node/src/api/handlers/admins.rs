@@ -1,8 +1,9 @@
 //! Admin 管理员管理（列表/新建/删除/修改密码）
 
 use super::audit;
+use super::auth::validate_admin_credentials;
 use crate::api::extractors::{AdminAuth, ClientIp};
-use crate::api::{ApiState, codes, err, ok};
+use crate::api::{ApiState, codes, err, ok, offload};
 use crate::db::hash_password;
 use axum::{
     Json,
@@ -14,7 +15,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 pub async fn list_admins(AdminAuth(_): AdminAuth, State(state): State<ApiState>) -> Response {
-    match state.db.list_admins() {
+    match state.db_call(|db| db.list_admins()).await {
         Ok(admins) => {
             let items: Vec<_> = admins
                 .into_iter()
@@ -52,19 +53,22 @@ pub async fn create_admin(
     if let Err(msg) = validate_admin_credentials(&req.username, &req.password) {
         return err(StatusCode::BAD_REQUEST, codes::VALIDATION_FAILED, msg);
     }
-    if state
-        .db
-        .get_admin_by_username(&req.username)
+    let uname = req.username.clone();
+    let exists = state
+        .db_call(move |db| db.get_admin_by_username(&uname))
+        .await
         .unwrap_or(None)
-        .is_some()
-    {
+        .is_some();
+    if exists {
         return err(
             StatusCode::CONFLICT,
             codes::DUPLICATE,
             "admin username already exists",
         );
     }
-    let hash = match hash_password(&req.password) {
+    // argon2id 哈希卸载到阻塞线程池
+    let password = req.password.clone();
+    let hash = match offload(move || hash_password(&password)).await {
         Ok(h) => h,
         Err(e) => {
             return err(
@@ -74,7 +78,11 @@ pub async fn create_admin(
             );
         }
     };
-    match state.db.create_admin(&req.username, &hash) {
+    let uname = req.username.clone();
+    match state
+        .db_call(move |db| db.create_admin(&uname, &hash))
+        .await
+    {
         Ok(admin) => {
             audit(
                 &state,
@@ -83,7 +91,8 @@ pub async fn create_admin(
                 "admin.create",
                 Some(&admin.id),
                 &req.username,
-            );
+            )
+            .await;
             ok(json!({
                 "id": admin.id,
                 "username": admin.username,
@@ -111,28 +120,36 @@ pub async fn delete_admin(
             "cannot delete yourself",
         );
     }
-    if state.db.count_admins().unwrap_or(0) <= 1 {
+    if state.db_call(|db| db.count_admins()).await.unwrap_or(0) <= 1 {
         return err(
             StatusCode::BAD_REQUEST,
             codes::BAD_REQUEST,
             "cannot delete the last admin",
         );
     }
-    let Some(target) = state.db.get_admin_by_id(&id).unwrap_or(None) else {
+    let aid = id.clone();
+    let Some(target) = state
+        .db_call(move |db| db.get_admin_by_id(&aid))
+        .await
+        .unwrap_or(None)
+    else {
         return err(StatusCode::NOT_FOUND, codes::NOT_FOUND, "admin not found");
     };
-    match state.db.delete_admin(&id) {
+    match state.db_call(move |db| db.delete_admin(&id)).await {
         Ok(_) => {
             // 吊销被删管理员的全部会话
-            let _ = state.jwt.revoke_all(&id);
+            let jwt = state.jwt.clone();
+            let aid = target.id.clone();
+            let _ = offload(move || jwt.revoke_all(&aid)).await;
             audit(
                 &state,
                 &claims,
                 &ip,
                 "admin.delete",
-                Some(&id),
+                Some(&target.id),
                 &target.username,
-            );
+            )
+            .await;
             ok(json!(null))
         }
         Err(e) => err(
@@ -156,10 +173,20 @@ pub async fn change_password(
     ClientIp(ip): ClientIp,
     Json(req): Json<ChangePasswordRequest>,
 ) -> Response {
-    let Some(admin) = state.db.get_admin_by_id(&claims.sub).unwrap_or(None) else {
+    let sub = claims.sub.clone();
+    let Some(admin) = state
+        .db_call(move |db| db.get_admin_by_id(&sub))
+        .await
+        .unwrap_or(None)
+    else {
         return err(StatusCode::NOT_FOUND, codes::NOT_FOUND, "admin not found");
     };
-    if !crate::db::verify_password(&req.old_password, &admin.password_hash).unwrap_or(false) {
+    // argon2id 校验/哈希卸载到阻塞线程池
+    let (old, hash) = (req.old_password.clone(), admin.password_hash.clone());
+    let verified = offload(move || crate::db::verify_password(&old, &hash))
+        .await
+        .unwrap_or(false);
+    if !verified {
         return err(
             StatusCode::UNAUTHORIZED,
             codes::INVALID_CREDENTIALS,
@@ -169,7 +196,8 @@ pub async fn change_password(
     if let Err(msg) = validate_admin_credentials(&claims.username, &req.new_password) {
         return err(StatusCode::BAD_REQUEST, codes::VALIDATION_FAILED, msg);
     }
-    let hash = match hash_password(&req.new_password) {
+    let new_password = req.new_password.clone();
+    let hash = match offload(move || hash_password(&new_password)).await {
         Ok(h) => h,
         Err(e) => {
             return err(
@@ -179,14 +207,20 @@ pub async fn change_password(
             );
         }
     };
-    if let Err(e) = state.db.update_admin_password(&claims.sub, &hash) {
+    let sub = claims.sub.clone();
+    if let Err(e) = state
+        .db_call(move |db| db.update_admin_password(&sub, &hash))
+        .await
+    {
         return err(
             StatusCode::INTERNAL_SERVER_ERROR,
             codes::INTERNAL,
             e.to_string(),
         );
     }
-    let _ = state.jwt.revoke_all(&claims.sub);
+    let jwt = state.jwt.clone();
+    let sub = claims.sub.clone();
+    let _ = offload(move || jwt.revoke_all(&sub)).await;
     audit(
         &state,
         &claims,
@@ -194,28 +228,7 @@ pub async fn change_password(
         "admin.change_password",
         Some(&claims.sub),
         "",
-    );
+    )
+    .await;
     ok(json!({ "changed": true, "message": "请使用新密码重新登录" }))
-}
-
-fn validate_admin_credentials(username: &str, password: &str) -> Result<(), String> {
-    if username.is_empty() || username.len() > 32 {
-        return Err("username must be 1-32 characters".into());
-    }
-    if !username
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-    {
-        return Err("username may only contain [a-zA-Z0-9_-]".into());
-    }
-    if password.len() < 10 {
-        return Err("password must be at least 10 characters".into());
-    }
-    let has_lower = password.chars().any(|c| c.is_ascii_lowercase());
-    let has_upper = password.chars().any(|c| c.is_ascii_uppercase());
-    let has_digit = password.chars().any(|c| c.is_ascii_digit());
-    if !(has_lower && has_upper && has_digit) {
-        return Err("password must contain lower, upper and digit characters".into());
-    }
-    Ok(())
 }

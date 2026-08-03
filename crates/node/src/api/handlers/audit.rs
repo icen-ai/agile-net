@@ -26,8 +26,8 @@ pub async fn list_audit_logs(
 ) -> Response {
     let (page, page_size) = crate::api::normalize_page(q.page, q.page_size);
     match state
-        .db
-        .list_audit_logs(page, page_size, q.action.as_deref())
+        .db_call(move |db| db.list_audit_logs(page, page_size, q.action.as_deref()))
+        .await
     {
         Ok((items, total)) => ok(json!({
             "items": items,

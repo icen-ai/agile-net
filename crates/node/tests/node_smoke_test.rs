@@ -74,11 +74,10 @@ key_path = "{certs}/key.pem"
             ))
             .send()
             .await
+            && r.status() == reqwest::StatusCode::UNAUTHORIZED
         {
-            if r.status() == reqwest::StatusCode::UNAUTHORIZED {
-                api_up = true; // 401 说明 API 已在服务（只是未认证）
-                break;
-            }
+            api_up = true; // 401 说明 API 已在服务（只是未认证）
+            break;
         }
         if _guard.0.try_wait().unwrap().is_some() {
             panic!("node process exited prematurely");
@@ -178,11 +177,10 @@ key_path = "{certs}/relay-key.pem"
             .json(&serde_json::json!({"username":"admin","password":"SmokeTest123!"}))
             .send()
             .await
+            && r.status().is_success()
         {
-            if r.status().is_success() {
-                api_up = true;
-                break;
-            }
+            api_up = true;
+            break;
         }
         if _guard.0.try_wait().unwrap().is_some() {
             panic!("node process exited prematurely");

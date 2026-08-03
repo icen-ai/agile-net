@@ -42,28 +42,13 @@ impl Database {
         action: Option<&str>,
     ) -> Result<(Vec<AuditLogRecord>, i64)> {
         let conn = self.conn();
-        let (where_sql, pattern) = match action {
-            Some(a) => ("WHERE action = ?1", a.to_string()),
-            None => ("", String::new()),
-        };
-
-        let total: i64 = if pattern.is_empty() {
-            conn.query_row("SELECT COUNT(*) FROM audit_log", [], |r| r.get(0))
-                .map_err(db_err)?
-        } else {
-            conn.query_row(
-                &format!("SELECT COUNT(*) FROM audit_log {where_sql}"),
-                params![pattern],
-                |r| r.get(0),
-            )
-            .map_err(db_err)?
-        };
-
-        let offset = (page.saturating_sub(1)) * page_size;
-        let sql = format!(
-            "SELECT id, admin_id, operator, action, target, detail, ip, created_at FROM audit_log {where_sql} ORDER BY created_at DESC LIMIT {page_size} OFFSET {offset}"
-        );
-        let mut stmt = conn.prepare(&sql).map_err(db_err)?;
+        let mut where_clauses = Vec::new();
+        let mut bind: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+        // 空串过滤等同不过滤（与原 pattern.is_empty() 分支行为一致）
+        if let Some(a) = action.filter(|a| !a.is_empty()) {
+            where_clauses.push("action = ?");
+            bind.push(Box::new(a.to_string()));
+        }
         let map_row = |r: &rusqlite::Row| -> rusqlite::Result<AuditLogRecord> {
             Ok(AuditLogRecord {
                 id: r.get(0)?,
@@ -76,16 +61,17 @@ impl Database {
                 created_at: r.get(7)?,
             })
         };
-        let rows = if pattern.is_empty() {
-            stmt.query_map([], map_row).map_err(db_err)?
-        } else {
-            stmt.query_map(params![pattern], map_row).map_err(db_err)?
-        };
-        let mut items = Vec::new();
-        for r in rows {
-            items.push(r.map_err(db_err)?);
-        }
-        Ok((items, total))
+        super::paginate::paged_query(
+            &conn,
+            "id, admin_id, operator, action, target, detail, ip, created_at",
+            "audit_log",
+            &where_clauses,
+            &bind,
+            "created_at DESC",
+            page,
+            page_size,
+            map_row,
+        )
     }
 
     /// 清理 N 天前的审计日志，返回删除条数。

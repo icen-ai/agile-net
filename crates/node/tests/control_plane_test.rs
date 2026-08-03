@@ -55,7 +55,7 @@ async fn start_upstream() -> (NodeServer, u16) {
     let hash = sha256_hex(RELAY_TOKEN.as_bytes());
     server
         .db()
-        .create_relay_token_full(&hash, "psk_p2te****", "P2 测试下游", true, "rules")
+        .create_relay_token_with_quota(&hash, "psk_p2te****", "P2 测试下游", true, "rules", None, None)
         .unwrap();
     (server, relay_port)
 }
@@ -341,7 +341,7 @@ async fn expose_control_toggle_audited() {
 async fn migration_v3_columns_present() {
     let db = Database::in_memory().unwrap();
     let rec = db
-        .create_relay_token_full(&sha256_hex(b"psk_x"), "psk_x***", "", true, "ro")
+        .create_relay_token_with_quota(&sha256_hex(b"psk_x"), "psk_x***", "", true, "ro", None, None)
         .unwrap();
     assert!(rec.expose_control);
     assert_eq!(rec.control_scope, "ro");

@@ -27,7 +27,10 @@ pub async fn list_groups(
     Query(q): Query<ListQuery>,
 ) -> Response {
     let (page, page_size) = crate::api::normalize_page(q.page, q.page_size);
-    match state.db.list_groups(page, page_size, q.q.as_deref()) {
+    match state
+        .db_call(move |db| db.list_groups(page, page_size, q.q.as_deref()))
+        .await
+    {
         Ok((items, total)) => ok(json!({
             "items": items,
             "total": total,
@@ -47,8 +50,22 @@ pub async fn get_group(
     State(state): State<ApiState>,
     Path(id): Path<String>,
 ) -> Response {
-    let group = match state.db.get_group(&id) {
-        Ok(Some(g)) => g,
+    // 组 + 名下规则 + 名下账号合并为一次阻塞任务
+    let gid = id.clone();
+    let result = state
+        .db_call(move |db| {
+            let Some(group) = db.get_group(&gid)? else {
+                return Ok(None);
+            };
+            let rules = db.rules_of_group(&gid).unwrap_or_default();
+            let (accounts, _) = db
+                .list_accounts(1, 100, Some(&gid), None, None)
+                .unwrap_or_default();
+            Ok(Some((group, rules, accounts)))
+        })
+        .await;
+    let (group, rules, accounts) = match result {
+        Ok(Some(v)) => v,
         Ok(None) => return err(StatusCode::NOT_FOUND, codes::NOT_FOUND, "group not found"),
         Err(e) => {
             return err(
@@ -58,11 +75,6 @@ pub async fn get_group(
             );
         }
     };
-    let rules = state.db.rules_of_group(&id).unwrap_or_default();
-    let (accounts, _) = state
-        .db
-        .list_accounts(1, 100, Some(&id), None, None)
-        .unwrap_or_default();
     let accounts: Vec<_> = accounts
         .into_iter()
         .map(|a| json!({ "id": a.id, "username": a.username, "enabled": a.enabled }))
@@ -85,29 +97,43 @@ pub async fn get_group_detail(
     State(state): State<ApiState>,
     Path(id): Path<String>,
 ) -> Response {
-    if state.db.get_group(&id).unwrap_or(None).is_none() {
+    // 组存在性 + 三类身份清单合并为一次阻塞任务
+    let gid = id.clone();
+    let result = state
+        .db_call(move |db| {
+            if db.get_group(&gid).unwrap_or(None).is_none() {
+                return Ok(None);
+            }
+            let (accounts, _) = db
+                .list_accounts(1, 1000, Some(&gid), None, None)
+                .unwrap_or_default();
+            let relay_tokens = db.list_relay_tokens().unwrap_or_default();
+            let connectors = db.list_connectors().unwrap_or_default();
+            Ok(Some((accounts, relay_tokens, connectors)))
+        })
+        .await;
+    let Some((accounts, relay_tokens, connectors)) = (match result {
+        Ok(v) => v,
+        Err(e) => {
+            return err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                codes::INTERNAL,
+                e.to_string(),
+            );
+        }
+    }) else {
         return err(StatusCode::NOT_FOUND, codes::NOT_FOUND, "group not found");
-    }
-    let (accounts, _) = state
-        .db
-        .list_accounts(1, 1000, Some(&id), None, None)
-        .unwrap_or_default();
+    };
     let accounts: Vec<_> = accounts
         .into_iter()
         .map(|a| json!({ "id": a.id, "username": a.username, "enabled": a.enabled }))
         .collect();
-    let relay_tokens: Vec<_> = state
-        .db
-        .list_relay_tokens()
-        .unwrap_or_default()
+    let relay_tokens: Vec<_> = relay_tokens
         .into_iter()
         .filter(|t| t.group_id.as_deref() == Some(id.as_str()))
         .map(|t| json!({ "id": t.id, "token_prefix": t.token_prefix, "remark": t.remark }))
         .collect();
-    let connectors: Vec<_> = state
-        .db
-        .list_connectors()
-        .unwrap_or_default()
+    let connectors: Vec<_> = connectors
         .into_iter()
         .filter(|c| c.group_id.as_deref() == Some(id.as_str()))
         .map(|c| json!({ "id": c.id, "name": c.name, "upstream_addr": c.upstream_addr, "enabled": c.enabled }))
@@ -149,32 +175,58 @@ pub async fn create_group(
     if let Err(msg) = validate_group_input(name, &req.remark) {
         return err(StatusCode::BAD_REQUEST, codes::VALIDATION_FAILED, msg);
     }
-    if state.db.get_group_by_name(name).unwrap_or(None).is_some() {
+    let name_owned = name.to_string();
+    let exists = state
+        .db_call(move |db| db.get_group_by_name(&name_owned))
+        .await
+        .unwrap_or(None)
+        .is_some();
+    if exists {
         return err(
             StatusCode::CONFLICT,
             codes::DUPLICATE,
             "group name already exists",
         );
     }
-    // 校验 rule_ids 存在
-    for rid in &req.rule_ids {
-        if state.db.get_rule(rid).unwrap_or(None).is_none() {
-            return err(
-                StatusCode::NOT_FOUND,
-                codes::NOT_FOUND,
-                format!("rule not found: {rid}"),
-            );
-        }
+    // 校验 rule_ids 存在（整批一次阻塞任务，返回首个缺失项）
+    let rule_ids = req.rule_ids.clone();
+    let missing = state
+        .db_call(move |db| {
+            for rid in &rule_ids {
+                if db.get_rule(rid).unwrap_or(None).is_none() {
+                    return Ok(Some(rid.clone()));
+                }
+            }
+            Ok(None)
+        })
+        .await
+        .unwrap_or(None);
+    if let Some(rid) = missing {
+        return err(
+            StatusCode::NOT_FOUND,
+            codes::NOT_FOUND,
+            format!("rule not found: {rid}"),
+        );
     }
 
-    match state.db.create_group(name, &req.remark) {
+    let (name_owned, remark) = (name.to_string(), req.remark.clone());
+    match state
+        .db_call(move |db| db.create_group(&name_owned, &remark))
+        .await
+    {
         Ok(group) => {
             if !req.rule_ids.is_empty() {
-                let _ = state.db.set_group_rules(&group.id, &req.rule_ids);
-                let _ = state.db.bump_config_version();
+                let (gid, rule_ids) = (group.id.clone(), req.rule_ids.clone());
+                let _ = state
+                    .db_call(move |db| {
+                        let _ = db.set_group_rules(&gid, &rule_ids);
+                        db.bump_config_version()
+                    })
+                    .await;
             }
-            audit(&state, &claims, &ip, "group.create", Some(&group.id), name);
-            match state.db.get_group(&group.id) {
+            audit(&state, &claims, &ip, "group.create", Some(&group.id), name).await;
+            let gid = group.id.clone();
+            match state.db_call(move |db| db.get_group(&gid)).await {
                 Ok(Some(g)) => ok_created(g),
                 _ => ok_created(group),
             }
@@ -200,7 +252,13 @@ pub async fn update_group(
     Path(id): Path<String>,
     Json(req): Json<UpdateGroupRequest>,
 ) -> Response {
-    if state.db.get_group(&id).unwrap_or(None).is_none() {
+    let gid = id.clone();
+    let exists = state
+        .db_call(move |db| db.get_group(&gid))
+        .await
+        .unwrap_or(None)
+        .is_some();
+    if !exists {
         return err(StatusCode::NOT_FOUND, codes::NOT_FOUND, "group not found");
     }
     if let Some(name) = &req.name {
@@ -208,9 +266,17 @@ pub async fn update_group(
         if let Err(msg) = validate_group_input(name, "") {
             return err(StatusCode::BAD_REQUEST, codes::VALIDATION_FAILED, msg);
         }
-        if let Ok(Some(existing)) = state.db.get_group_by_name(name)
-            && existing.id != id
-        {
+        let (name_owned, gid) = (name.to_string(), id.clone());
+        let conflict = state
+            .db_call(move |db| {
+                Ok(match db.get_group_by_name(&name_owned)? {
+                    Some(existing) => existing.id != gid,
+                    None => false,
+                })
+            })
+            .await
+            .unwrap_or(false);
+        if conflict {
             return err(
                 StatusCode::CONFLICT,
                 codes::DUPLICATE,
@@ -218,9 +284,10 @@ pub async fn update_group(
             );
         }
     }
+    let (gid, name, remark) = (id.clone(), req.name.clone(), req.remark.clone());
     if let Err(e) = state
-        .db
-        .update_group(&id, req.name.as_deref(), req.remark.as_deref())
+        .db_call(move |db| db.update_group(&gid, name.as_deref(), remark.as_deref()))
+        .await
     {
         return err(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -228,8 +295,8 @@ pub async fn update_group(
             e.to_string(),
         );
     }
-    audit(&state, &claims, &ip, "group.update", Some(&id), "");
-    match state.db.get_group(&id) {
+    audit(&state, &claims, &ip, "group.update", Some(&id), "").await;
+    match state.db_call(move |db| db.get_group(&id)).await {
         Ok(Some(g)) => ok(g),
         _ => err(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -253,7 +320,13 @@ pub async fn set_group_rules(
     Path(id): Path<String>,
     Json(req): Json<SetGroupRulesRequest>,
 ) -> Response {
-    if state.db.get_group(&id).unwrap_or(None).is_none() {
+    let gid = id.clone();
+    let exists = state
+        .db_call(move |db| db.get_group(&gid))
+        .await
+        .unwrap_or(None)
+        .is_some();
+    if !exists {
         return err(StatusCode::NOT_FOUND, codes::NOT_FOUND, "group not found");
     }
     if req.rule_ids.len() > 500 {
@@ -263,23 +336,37 @@ pub async fn set_group_rules(
             "too many rule_ids",
         );
     }
-    for rid in &req.rule_ids {
-        if state.db.get_rule(rid).unwrap_or(None).is_none() {
+    // 校验 + 全量设置 + 版本递增合并为一次阻塞任务
+    let (gid, rule_ids) = (id.clone(), req.rule_ids.clone());
+    let result = state
+        .db_call(move |db| {
+            for rid in &rule_ids {
+                if db.get_rule(rid).unwrap_or(None).is_none() {
+                    return Ok(Some(rid.clone()));
+                }
+            }
+            db.set_group_rules(&gid, &rule_ids)?;
+            let _ = db.bump_config_version();
+            Ok(None)
+        })
+        .await;
+    let missing = match result {
+        Ok(v) => v,
+        Err(e) => {
             return err(
-                StatusCode::NOT_FOUND,
-                codes::NOT_FOUND,
-                format!("rule not found: {rid}"),
+                StatusCode::INTERNAL_SERVER_ERROR,
+                codes::INTERNAL,
+                e.to_string(),
             );
         }
-    }
-    if let Err(e) = state.db.set_group_rules(&id, &req.rule_ids) {
+    };
+    if let Some(rid) = missing {
         return err(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            codes::INTERNAL,
-            e.to_string(),
+            StatusCode::NOT_FOUND,
+            codes::NOT_FOUND,
+            format!("rule not found: {rid}"),
         );
     }
-    let _ = state.db.bump_config_version();
     audit(
         &state,
         &claims,
@@ -287,7 +374,8 @@ pub async fn set_group_rules(
         "group.update_rules",
         Some(&id),
         &format!("rule_count={}", req.rule_ids.len()),
-    );
+    )
+    .await;
     ok(json!({ "rule_count": req.rule_ids.len() }))
 }
 
@@ -304,10 +392,20 @@ pub async fn delete_group(
     Path(id): Path<String>,
     Query(q): Query<ForceQuery>,
 ) -> Response {
-    if state.db.get_group(&id).unwrap_or(None).is_none() {
+    let gid = id.clone();
+    let exists = state
+        .db_call(move |db| db.get_group(&gid))
+        .await
+        .unwrap_or(None)
+        .is_some();
+    if !exists {
         return err(StatusCode::NOT_FOUND, codes::NOT_FOUND, "group not found");
     }
-    let account_count = state.db.count_accounts_in_group(&id).unwrap_or(0);
+    let gid = id.clone();
+    let account_count = state
+        .db_call(move |db| db.count_accounts_in_group(&gid))
+        .await
+        .unwrap_or(0);
     if account_count > 0 && !q.force {
         return err(
             StatusCode::CONFLICT,
@@ -315,17 +413,25 @@ pub async fn delete_group(
             format!("group has {account_count} accounts, reassign or delete them first"),
         );
     }
-    match state.db.delete_group(&id, q.force) {
+    let force = q.force;
+    let aid = id.clone();
+    match state
+        .db_call(move |db| {
+            db.delete_group(&id, force)?;
+            db.bump_config_version()
+        })
+        .await
+    {
         Ok(_) => {
-            let _ = state.db.bump_config_version();
             audit(
                 &state,
                 &claims,
                 &ip,
                 "group.delete",
-                Some(&id),
+                Some(&aid),
                 &format!("force={} account_count={}", q.force, account_count),
-            );
+            )
+            .await;
             ok(json!(null))
         }
         Err(e) => err(

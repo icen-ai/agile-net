@@ -1,5 +1,6 @@
 'use strict';
-/* 从 app.js 拆分：invoke 桥 / 全局状态 / 共享工具与组件（纯搬运，零逻辑变更） */
+/* 从 app.js 拆分：invoke 桥 / 全局状态 / 本端工具与组件（纯搬运，零逻辑变更）。
+   $ / esc / ahelp 已沉淀共享层 agutil.js（index.html 先于本文件引入）；图标走共享 icons.js 的 AgIcon。 */
 
 /* 双传输 invoke 桥：Tauri 窗口内走 IPC；浏览器（Web 远程面）走 HTTP REST。
    REST 端点与命令一一映射（服务端见 crates/client/src/api.rs），信封 {code,data}/{code,message}。 */
@@ -74,8 +75,6 @@ if (TAURI) {
   });
 }
 
-const $ = (id) => document.getElementById(id);
-
 const PREFS = {
   get autoproxy() { return localStorage.getItem('ag_autoproxy') !== '0'; },
   set autoproxy(v) { localStorage.setItem('ag_autoproxy', v ? '1' : '0'); },
@@ -128,17 +127,6 @@ function applyReduceEffects(on) {
 // 解析即应用，避免首帧浅色闪烁（与 wiki / 控制台行为一致）
 applyTheme();
 applyReduceEffects(localStorage.getItem('ag_reduce_fx') === '1');
-
-function esc(s) {
-  return String(s ?? '').replace(/[&<>"'`]/g, c => ({
-    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;','`':'&#96;'
-  }[c]));
-}
-
-/* 行内帮助（共享组件 .ahelp，样式在 components.css）：问号图标 + 纯 CSS hover 说明卡 */
-function ahelp(text) {
-  return '<span class="ahelp">' + AgIcon('badge-question-mark', 13) + '<span class="ahelp-tip">' + esc(text) + '</span></span>';
-}
 
 /* odo 数字滚动驱动（结构 .odo > .odo-digit > .odo-strip 见 components.css；滚动动效由 CSS transition 完成）。
    用法：元素带 class="odo"，每帧调 odoSet(el, text)——按字符对齐 diff：数字位复用/新建 digit 并写

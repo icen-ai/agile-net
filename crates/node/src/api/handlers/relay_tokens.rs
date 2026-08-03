@@ -74,29 +74,49 @@ pub async fn create_token(
             "rate_limit_kbps must be positive",
         );
     }
-    if let Some(gid) = &req.group_id
-        && state.db.get_group(gid).unwrap_or(None).is_none()
-    {
-        return err(
-            StatusCode::NOT_FOUND,
-            codes::NOT_FOUND,
-            format!("group not found: {gid}"),
-        );
+    if let Some(gid) = &req.group_id {
+        let probe = gid.clone();
+        let exists = state
+            .db_call(move |db| db.get_group(&probe))
+            .await
+            .unwrap_or(None)
+            .is_some();
+        if !exists {
+            return err(
+                StatusCode::NOT_FOUND,
+                codes::NOT_FOUND,
+                format!("group not found: {gid}"),
+            );
+        }
     }
 
     let token = generate_relay_token();
     let token_hash = sha256_hex(token.as_bytes());
     let prefix = format!("{}****", &token[..8]);
 
-    match state.db.create_relay_token_with_quota(
-        &token_hash,
-        &prefix,
-        &req.remark,
-        req.expose_control,
-        &req.control_scope,
-        req.group_id.as_deref(),
-        req.rate_limit_kbps,
-    ) {
+    let params = (
+        token_hash,
+        prefix.clone(),
+        req.remark.clone(),
+        req.control_scope.clone(),
+        req.group_id.clone(),
+    );
+    let (expose_control, rate_limit_kbps) = (req.expose_control, req.rate_limit_kbps);
+    let created = state
+        .db_call(move |db| {
+            let (token_hash, prefix, remark, control_scope, group_id) = params;
+            db.create_relay_token_with_quota(
+                &token_hash,
+                &prefix,
+                &remark,
+                expose_control,
+                &control_scope,
+                group_id.as_deref(),
+                rate_limit_kbps,
+            )
+        })
+        .await;
+    match created {
         Ok(record) => {
             audit(
                 &state,
@@ -105,7 +125,8 @@ pub async fn create_token(
                 "relay_token.create",
                 Some(&record.id),
                 &req.remark,
-            );
+            )
+            .await;
             if req.expose_control {
                 audit(
                     &state,
@@ -114,7 +135,8 @@ pub async fn create_token(
                     "relay_token.expose_control",
                     Some(&record.id),
                     &format!("on (scope={})", req.control_scope),
-                );
+                )
+                .await;
             }
             if let Some(gid) = &req.group_id {
                 audit(
@@ -124,7 +146,8 @@ pub async fn create_token(
                     "relay_token.set_group",
                     Some(&record.id),
                     &format!("group_id={gid}"),
-                );
+                )
+                .await;
             }
             if let Some(kbps) = req.rate_limit_kbps {
                 audit(
@@ -134,7 +157,8 @@ pub async fn create_token(
                     "relay_token.set_rate_limit",
                     Some(&record.id),
                     &format!("rate_limit_kbps={kbps}"),
-                );
+                )
+                .await;
             }
             ok_created(json!({
                 "id": record.id,
@@ -194,11 +218,16 @@ pub async fn update_token(
             "control_scope must be one of ro/rules/full",
         );
     }
+    let tid = id.clone();
     let Some(existing) = state
-        .db
-        .list_relay_tokens()
-        .ok()
-        .and_then(|items| items.into_iter().find(|t| t.id == id))
+        .db_call(move |db| {
+            Ok(db
+                .list_relay_tokens()
+                .ok()
+                .and_then(|items| items.into_iter().find(|t| t.id == tid)))
+        })
+        .await
+        .unwrap_or(None)
     else {
         return err(
             StatusCode::NOT_FOUND,
@@ -219,14 +248,20 @@ pub async fn update_token(
             );
         }
     };
-    if let Some(Some(gid)) = &new_group
-        && state.db.get_group(gid).unwrap_or(None).is_none()
-    {
-        return err(
-            StatusCode::NOT_FOUND,
-            codes::NOT_FOUND,
-            format!("group not found: {gid}"),
-        );
+    if let Some(Some(gid)) = &new_group {
+        let probe = gid.clone();
+        let exists = state
+            .db_call(move |db| db.get_group(&probe))
+            .await
+            .unwrap_or(None)
+            .is_some();
+        if !exists {
+            return err(
+                StatusCode::NOT_FOUND,
+                codes::NOT_FOUND,
+                format!("group not found: {gid}"),
+            );
+        }
     }
     // 配额入参解析：null = 不限，正整数 = 设为该值（其余类型/<=0 均 400）
     let new_rate_limit: Option<Option<i64>> = match &req.rate_limit_kbps {
@@ -250,9 +285,11 @@ pub async fn update_token(
             );
         }
     };
+    let (tid, scope) = (id.clone(), req.control_scope.clone());
+    let expose_control = req.expose_control;
     if let Err(e) = state
-        .db
-        .update_relay_token_control(&id, req.expose_control, &req.control_scope)
+        .db_call(move |db| db.update_relay_token_control(&tid, expose_control, &scope))
+        .await
     {
         return err(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -273,7 +310,8 @@ pub async fn update_token(
                 if req.expose_control { "on" } else { "off" },
                 req.control_scope
             ),
-        );
+        )
+        .await;
     }
 
     // 收敛组变更：写库后按哈希踢会话，在线对端重连即按新组收敛（即时生效）
@@ -281,17 +319,26 @@ pub async fn update_token(
     if let Some(new_group) = new_group
         && new_group != existing.group_id
     {
-        if let Err(e) = state.db.set_relay_token_group(&id, new_group.as_deref()) {
-            return err(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                codes::INTERNAL,
-                e.to_string(),
-            );
-        }
-        if let (Some(listener), Ok(Some(hash))) = (
-            &state.runtime.listener,
-            state.db.get_relay_token_hash(&id),
-        ) && let Some(node_id) = listener.disconnect_by_token_hash(&hash)
+        // 写库 + 取哈希合并为一次阻塞任务
+        let (tid, gid) = (id.clone(), new_group.clone());
+        let token_hash = match state
+            .db_call(move |db| {
+                db.set_relay_token_group(&tid, gid.as_deref())?;
+                Ok(db.get_relay_token_hash(&tid).unwrap_or(None))
+            })
+            .await
+        {
+            Ok(h) => h,
+            Err(e) => {
+                return err(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    codes::INTERNAL,
+                    e.to_string(),
+                );
+            }
+        };
+        if let (Some(listener), Some(hash)) = (&state.runtime.listener, token_hash)
+            && let Some(node_id) = listener.disconnect_by_token_hash(&hash)
         {
             tracing::info!(node = %node_id, "relay token group changed, peer kicked");
         }
@@ -305,7 +352,8 @@ pub async fn update_token(
                 Some(gid) => format!("group_id={gid}"),
                 None => "group cleared (unrestricted)".to_string(),
             },
-        );
+        )
+        .await;
         group_id_resp = new_group;
     }
 
@@ -314,7 +362,11 @@ pub async fn update_token(
     if let Some(new_rate_limit) = new_rate_limit
         && new_rate_limit != existing.rate_limit_kbps
     {
-        if let Err(e) = state.db.set_relay_token_rate_limit(&id, new_rate_limit) {
+        let tid = id.clone();
+        if let Err(e) = state
+            .db_call(move |db| db.set_relay_token_rate_limit(&tid, new_rate_limit))
+            .await
+        {
             return err(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 codes::INTERNAL,
@@ -331,7 +383,8 @@ pub async fn update_token(
                 Some(kbps) => format!("rate_limit_kbps={kbps}"),
                 None => "rate_limit cleared (unlimited)".to_string(),
             },
-        );
+        )
+        .await;
         rate_limit_resp = new_rate_limit;
     }
 
@@ -345,7 +398,7 @@ pub async fn update_token(
 }
 
 pub async fn list_tokens(AdminAuth(_): AdminAuth, State(state): State<ApiState>) -> Response {
-    match state.db.list_relay_tokens() {
+    match state.db_call(|db| db.list_relay_tokens()).await {
         Ok(items) => ok(json!({ "items": items })),
         Err(e) => err(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -361,16 +414,23 @@ pub async fn delete_token(
     ClientIp(ip): ClientIp,
     Path(id): Path<String>,
 ) -> Response {
-    // 先取哈希（删除联动：使用该 token 的在线下游节点立即被踢）
-    let token_hash = state.db.get_relay_token_hash(&id).unwrap_or(None);
-    match state.db.delete_relay_token(&id) {
-        Ok(_) => {
+    // 先取哈希再删除，合并为一次阻塞任务
+    // （删除联动：使用该 token 的在线下游节点立即被踢）
+    let tid = id.clone();
+    match state
+        .db_call(move |db| {
+            let hash = db.get_relay_token_hash(&id).unwrap_or(None);
+            db.delete_relay_token(&id).map(|_| hash)
+        })
+        .await
+    {
+        Ok(token_hash) => {
             if let (Some(listener), Some(hash)) = (&state.runtime.listener, token_hash)
                 && let Some(node_id) = listener.disconnect_by_token_hash(&hash)
             {
                 tracing::info!(node = %node_id, "relay token revoked, peer kicked");
             }
-            audit(&state, &claims, &ip, "relay_token.delete", Some(&id), "");
+            audit(&state, &claims, &ip, "relay_token.delete", Some(&tid), "").await;
             ok(json!(null))
         }
         Err(e) => err(

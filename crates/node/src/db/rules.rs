@@ -27,34 +27,17 @@ impl Database {
             bind.push(Box::new(format!("%{q}%")));
             bind.push(Box::new(format!("%{q}%")));
         }
-        let where_sql = if where_clauses.is_empty() {
-            String::new()
-        } else {
-            format!("WHERE {}", where_clauses.join(" AND "))
-        };
-
-        let total: i64 = {
-            let sql = format!("SELECT COUNT(*) FROM rule r {where_sql}");
-            let mut stmt = conn.prepare(&sql).map_err(db_err)?;
-            let params = rusqlite::params_from_iter(bind.iter().map(|b| b.as_ref()));
-            stmt.query_row(params, |r| r.get(0)).map_err(db_err)?
-        };
-
-        let offset = (page.saturating_sub(1)) * page_size;
-        let sql = format!(
-            "SELECT r.id, r.type, r.value, r.resolve, r.remark, r.created_at, r.updated_at,
-                    (SELECT COUNT(*) FROM group_rule gr WHERE gr.rule_id = r.id) AS group_count
-             FROM rule r {where_sql} ORDER BY r.created_at DESC LIMIT ? OFFSET ?"
-        );
-        let mut stmt = conn.prepare(&sql).map_err(db_err)?;
-        let mut bind_refs: Vec<&dyn rusqlite::types::ToSql> =
-            bind.iter().map(|b| b.as_ref()).collect();
-        let limit = page_size as i64;
-        let off = offset as i64;
-        bind_refs.push(&limit);
-        bind_refs.push(&off);
-        let rows = stmt
-            .query_map(rusqlite::params_from_iter(bind_refs), |r| {
+        super::paginate::paged_query(
+            &conn,
+            "r.id, r.type, r.value, r.resolve, r.remark, r.created_at, r.updated_at,
+             (SELECT COUNT(*) FROM group_rule gr WHERE gr.rule_id = r.id) AS group_count",
+            "rule r",
+            &where_clauses,
+            &bind,
+            "r.created_at DESC",
+            page,
+            page_size,
+            |r| {
                 Ok(RuleRecord {
                     id: r.get(0)?,
                     rule_type: r.get(1)?,
@@ -65,13 +48,8 @@ impl Database {
                     updated_at: r.get(6)?,
                     group_count: r.get(7)?,
                 })
-            })
-            .map_err(db_err)?;
-        let mut items = Vec::new();
-        for r in rows {
-            items.push(r.map_err(db_err)?);
-        }
-        Ok((items, total))
+            },
+        )
     }
 
     pub fn get_rule(&self, id: &str) -> Result<Option<RuleRecord>> {
@@ -268,42 +246,26 @@ impl Database {
         q: Option<&str>,
     ) -> Result<(Vec<GroupRecord>, i64)> {
         let conn = self.conn();
-        let (where_sql, pattern) = match q {
-            Some(q) => ("WHERE g.name LIKE ?1 OR g.remark LIKE ?1", format!("%{q}%")),
-            None => ("", String::new()),
-        };
-
-        let total: i64 = if pattern.is_empty() {
-            conn.query_row("SELECT COUNT(*) FROM \"group\"", [], |r| r.get(0))
-                .map_err(db_err)?
-        } else {
-            conn.query_row(
-                &format!("SELECT COUNT(*) FROM \"group\" g {where_sql}"),
-                params![pattern],
-                |r| r.get(0),
-            )
-            .map_err(db_err)?
-        };
-
-        let offset = (page.saturating_sub(1)) * page_size;
-        let sql = format!(
-            "SELECT g.id, g.name, g.remark, g.created_at, g.updated_at,
-                    (SELECT COUNT(*) FROM group_rule gr WHERE gr.group_id = g.id),
-                    (SELECT COUNT(*) FROM account a WHERE a.group_id = g.id)
-             FROM \"group\" g {where_sql} ORDER BY g.created_at DESC LIMIT {page_size} OFFSET {offset}"
-        );
-        let mut stmt = conn.prepare(&sql).map_err(db_err)?;
-        let rows = if pattern.is_empty() {
-            stmt.query_map([], map_group_row).map_err(db_err)?
-        } else {
-            stmt.query_map(params![pattern], map_group_row)
-                .map_err(db_err)?
-        };
-        let mut items = Vec::new();
-        for r in rows {
-            items.push(r.map_err(db_err)?);
+        let mut where_clauses = Vec::new();
+        let mut bind: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+        if let Some(q) = q {
+            where_clauses.push("(g.name LIKE ? OR g.remark LIKE ?)");
+            bind.push(Box::new(format!("%{q}%")));
+            bind.push(Box::new(format!("%{q}%")));
         }
-        Ok((items, total))
+        super::paginate::paged_query(
+            &conn,
+            "g.id, g.name, g.remark, g.created_at, g.updated_at,
+             (SELECT COUNT(*) FROM group_rule gr WHERE gr.group_id = g.id),
+             (SELECT COUNT(*) FROM account a WHERE a.group_id = g.id)",
+            "\"group\" g",
+            &where_clauses,
+            &bind,
+            "g.created_at DESC",
+            page,
+            page_size,
+            map_group_row,
+        )
     }
 
     pub fn get_group(&self, id: &str) -> Result<Option<GroupRecord>> {

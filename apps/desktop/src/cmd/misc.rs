@@ -254,7 +254,23 @@ pub(crate) async fn list_server_connectors(
         .collect())
 }
 
+/// 扇出表单（add/update 两命令的公共参数）。
+/// 注意：tauri command 的扁平参数即前端 invoke 契约（camelCase 逐参映射），
+/// 结构体无法作为单参整体传入（tauri 不支持 serde flatten），
+/// 故仅用于内部收敛，命令边界保留扁平签名并豁免参数过多 lint。
+struct ConnectorForm {
+    upstream_addr: String,
+    token: String,
+    sni_hostname: String,
+    insecure: bool,
+    group_id: Option<String>,
+    name: Option<String>,
+    advertise: Option<String>,
+    remark: Option<String>,
+}
+
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // 扁平参数 = 前端 invoke 契约，缘由见 ConnectorForm
 pub(crate) async fn add_server_connector(
     state: State<'_, AppState>,
     upstream_addr: String,
@@ -266,18 +282,36 @@ pub(crate) async fn add_server_connector(
     advertise: Option<String>,
     remark: Option<String>,
 ) -> Result<(), String> {
-    let addr = upstream_addr.trim();
-    if addr.is_empty() || token.trim().is_empty() {
+    let form = ConnectorForm {
+        upstream_addr,
+        token,
+        sni_hostname,
+        insecure,
+        group_id,
+        name,
+        advertise,
+        remark,
+    };
+    add_server_connector_inner(&state, form).await
+}
+
+async fn add_server_connector_inner(
+    state: &State<'_, AppState>,
+    form: ConnectorForm,
+) -> Result<(), String> {
+    let addr = form.upstream_addr.trim();
+    if addr.is_empty() || form.token.trim().is_empty() {
         return Err("扇出目标地址与 Relay Token 不能为空".into());
     }
     // 名称可空：留空 = 取目标地址（沿用 TOML 导入惯例；connector.name 唯一约束）
-    let name = name
+    let name = form
+        .name
         .map(|n| n.trim().to_string())
         .filter(|n| !n.is_empty())
         .unwrap_or_else(|| addr.to_string());
-    let advertise = advertise.unwrap_or_default().trim().to_string();
-    let remark = remark.unwrap_or_default().trim().to_string();
-    let group_id = group_id.filter(|g| !g.trim().is_empty());
+    let advertise = form.advertise.unwrap_or_default().trim().to_string();
+    let remark = form.remark.unwrap_or_default().trim().to_string();
+    let group_id = form.group_id.filter(|g| !g.trim().is_empty());
     let db = roles::open_embedded_db()?;
     validate_group(&db, group_id.as_deref())?;
     if db
@@ -292,9 +326,9 @@ pub(crate) async fn add_server_connector(
         .create_connector(
             &name,
             addr,
-            token.trim(),
-            sni_hostname.trim(),
-            insecure,
+            form.token.trim(),
+            form.sni_hostname.trim(),
+            form.insecure,
             "",
             "",
             &advertise,
@@ -303,11 +337,12 @@ pub(crate) async fn add_server_connector(
         )
         .map_err(map_err)?;
     roles::audit("gui.fanout_change", serde_json::json!({"action": "add", "name": name}));
-    hot_upsert_connector(&state, &rec.id, &name).await;
+    hot_upsert_connector(state, &rec.id, &name).await;
     Ok(())
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // 扁平参数 = 前端 invoke 契约，缘由见 ConnectorForm
 pub(crate) async fn update_server_connector(
     state: State<'_, AppState>,
     id: String,
@@ -320,18 +355,37 @@ pub(crate) async fn update_server_connector(
     advertise: Option<String>,
     remark: Option<String>,
 ) -> Result<(), String> {
-    let addr = upstream_addr.trim();
+    let form = ConnectorForm {
+        upstream_addr,
+        token,
+        sni_hostname,
+        insecure,
+        group_id,
+        name,
+        advertise,
+        remark,
+    };
+    update_server_connector_inner(&state, &id, form).await
+}
+
+async fn update_server_connector_inner(
+    state: &State<'_, AppState>,
+    id: &str,
+    form: ConnectorForm,
+) -> Result<(), String> {
+    let addr = form.upstream_addr.trim();
     if addr.is_empty() {
         return Err("扇出目标地址不能为空".into());
     }
     // 名称可空：留空 = 取目标地址（与 add 同惯例）
-    let name = name
+    let name = form
+        .name
         .map(|n| n.trim().to_string())
         .filter(|n| !n.is_empty())
         .unwrap_or_else(|| addr.to_string());
-    let group_id = group_id.filter(|g| !g.trim().is_empty());
+    let group_id = form.group_id.filter(|g| !g.trim().is_empty());
     let db = roles::open_embedded_db()?;
-    let Some(old) = db.get_connector(&id).map_err(map_err)? else {
+    let Some(old) = db.get_connector(id).map_err(map_err)? else {
         return Err("扇出连接不存在".into());
     };
     validate_group(&db, group_id.as_deref())?;
@@ -345,24 +399,26 @@ pub(crate) async fn update_server_connector(
     }
     // token / advertise / remark 三态：token 留空 = 保留原值；advertise/remark 缺省(None) = 保留，
     // 前端恒传（空串 = 用户显式清空）；证书路径 GUI 不编辑，原样保留
-    let token_reset = if token.trim().is_empty() {
+    let token_reset = if form.token.trim().is_empty() {
         None
     } else {
-        Some(token.trim().to_string())
+        Some(form.token.trim().to_string())
     };
-    let advertise = advertise
+    let advertise = form
+        .advertise
         .map(|a| a.trim().to_string())
         .unwrap_or_else(|| old.advertise.clone());
-    let remark = remark
+    let remark = form
+        .remark
         .map(|r| r.trim().to_string())
         .unwrap_or_else(|| old.remark.clone());
     db.update_connector(
-        &id,
+        id,
         &name,
         addr,
         token_reset.as_deref(),
-        sni_hostname.trim(),
-        insecure,
+        form.sni_hostname.trim(),
+        form.insecure,
         &old.ca_cert_path,
         &old.pinned_cert_path,
         &advertise,
@@ -371,7 +427,7 @@ pub(crate) async fn update_server_connector(
     )
     .map_err(map_err)?;
     roles::audit("gui.fanout_change", serde_json::json!({"action": "update", "name": name}));
-    hot_upsert_connector(&state, &id, &name).await;
+    hot_upsert_connector(state, id, &name).await;
     Ok(())
 }
 

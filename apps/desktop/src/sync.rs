@@ -13,8 +13,8 @@
 //! - 状态落 `~/.agile-net/sync-state.json`（0600），通道配置落 `sync-config.json`（0600）
 //! - 审计 gui.sync_config / gui.sync_upload / gui.sync_restore（绝不落明文与密文内容）
 
+use agile_net_node::db::sha256_hex;
 use serde::{Deserialize, Serialize};
-use sha2::Digest as _;
 
 use crate::roles;
 
@@ -573,10 +573,6 @@ fn hex(data: &[u8]) -> String {
     data.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-fn sha256_hex(data: &[u8]) -> String {
-    hex(&sha2::Sha256::digest(data))
-}
-
 fn hmac_sha256(key: &[u8], data: &[u8]) -> [u8; 32] {
     let k = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, key);
     let tag = ring::hmac::sign(&k, data);
@@ -616,17 +612,31 @@ fn sigv4_signing_key(sk: &str, date: &str, region: &str, service: &str) -> [u8; 
     hmac_sha256(&k_service, b"aws4_request")
 }
 
+/// SigV4 签名参数（收敛 sigv4_authorization 入参；service 固定 s3）
+struct SigV4Params<'a> {
+    method: &'a str,
+    canonical_uri: &'a str,
+    host: &'a str,
+    region: &'a str,
+    ak: &'a str,
+    sk: &'a str,
+    amz_date: &'a str,
+    payload_hash: &'a str,
+}
+
 /// AWS SigV4 Authorization 头（service=s3；只签 host;x-amz-content-sha256;x-amz-date 三头）
-fn sigv4_authorization(
-    method: &str,
-    canonical_uri: &str,
-    host: &str,
-    region: &str,
-    ak: &str,
-    sk: &str,
-    amz_date: &str,
-    payload_hash: &str,
-) -> String {
+fn sigv4_authorization(p: &SigV4Params<'_>) -> String {
+    // 字段全为 &str（Copy），解构复制后沿用原排版
+    let SigV4Params {
+        method,
+        canonical_uri,
+        host,
+        region,
+        ak,
+        sk,
+        amz_date,
+        payload_hash,
+    } = *p;
     let canonical_headers =
         format!("host:{host}\nx-amz-content-sha256:{payload_hash}\nx-amz-date:{amz_date}\n");
     let signed_headers = "host;x-amz-content-sha256;x-amz-date";
@@ -691,16 +701,16 @@ async fn s3_request(
         c.region.trim()
     };
     let (amz_date, _) = amz_dates(now_ts());
-    let auth = sigv4_authorization(
-        method.as_str(),
-        &u.canonical_uri,
-        &u.host,
+    let auth = sigv4_authorization(&SigV4Params {
+        method: method.as_str(),
+        canonical_uri: &u.canonical_uri,
+        host: &u.host,
         region,
-        c.ak.trim(),
-        &c.sk,
-        &amz_date,
-        &payload_hash,
-    );
+        ak: c.ak.trim(),
+        sk: &c.sk,
+        amz_date: &amz_date,
+        payload_hash: &payload_hash,
+    });
     let mut req = http_client()?
         .request(method, &u.url)
         .header("x-amz-date", amz_date)
@@ -1128,16 +1138,16 @@ mod tests {
     fn sigv4_authorization_fixed_vector() {
         // 本实现三头签名（host;x-amz-content-sha256;x-amz-date）固定输入输出；
         // 期望值已经独立 HMAC-SHA256 实现（Python hmac/hashlib）交叉验证一致
-        let auth = sigv4_authorization(
-            "GET",
-            "/test.txt",
-            "examplebucket.s3-us-west-1.amazonaws.com",
-            "us-west-1",
-            "AKIAIOSFODNN7EXAMPLE",
-            "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
-            "20130524T000000Z",
-            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        );
+        let auth = sigv4_authorization(&SigV4Params {
+            method: "GET",
+            canonical_uri: "/test.txt",
+            host: "examplebucket.s3-us-west-1.amazonaws.com",
+            region: "us-west-1",
+            ak: "AKIAIOSFODNN7EXAMPLE",
+            sk: "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+            amz_date: "20130524T000000Z",
+            payload_hash: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        });
         assert_eq!(
             auth,
             "AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/20130524/us-west-1/s3/aws4_request, \

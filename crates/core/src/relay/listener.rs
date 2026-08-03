@@ -18,6 +18,7 @@ use crate::relay::limit::TokenBucket;
 use crate::relay::mux::{MuxChannel, MuxSession, OpenRequest};
 use crate::relay::transit::{TO_LOCAL, TransitMeter};
 use crate::tunnel::tls::TlsConfigBuilder;
+use crate::util::sha256_hex;
 
 use bytes::Bytes;
 use dashmap::DashMap;
@@ -29,7 +30,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::broadcast;
+use tokio::sync::{Semaphore, broadcast};
 use tokio_rustls::TlsAcceptor;
 use tracing::{debug, info, warn};
 
@@ -41,6 +42,9 @@ pub const DEFAULT_MAX_CONNECTIONS: usize = 1024;
 pub const DEFAULT_MAX_PENDING_AUTH: usize = 256;
 /// 默认同一 IP 在 60s 窗口内允许的最大认证失败次数。
 pub const DEFAULT_MAX_AUTH_FAILURES_PER_MINUTE: u32 = 20;
+/// 单会话并发处理中的对端 Open 上限（防 Open 洪泛耗尽任务/连接资源；
+/// 本端 open_channel 方向已有 MAX_CHANNELS_PER_SESSION 保护，本上限补齐对端方向）。
+pub const MAX_INBOUND_OPENS_PER_SESSION: usize = 256;
 
 /// 认证通过后的主体身份。
 #[derive(Debug, Clone)]
@@ -98,15 +102,6 @@ impl TokenValidator for StaticTokenValidator {
             None
         }
     }
-}
-
-/// 认证 token 的 SHA-256 指纹（用于按哈希踢除会话）。
-fn sha256_hex(data: &[u8]) -> String {
-    use sha2::Digest;
-    sha2::Sha256::digest(data)
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
 }
 
 /// 常数时间字节比较，避免时序侧信道。
@@ -616,12 +611,23 @@ impl RelayListener {
 
         // 处理该对端发起的 Open 请求直到连接断开
         // （reader 任务结束时 open_tx 被释放，recv 返回 None）
+        // 并发上限：对端 Open 洪泛时每个请求都会 spawn 任务并外连目标，
+        // 超限即回 OpenFail 拒绝，防任务/连接资源耗尽
+        let open_permits = Arc::new(Semaphore::new(MAX_INBOUND_OPENS_PER_SESSION));
         while let Some(req) = open_rx.recv().await {
+            let Ok(permit) = open_permits.clone().try_acquire_owned() else {
+                debug!(node = %node_id, channel = req.channel_id, "inbound open limit reached, rejecting");
+                let _ = mux
+                    .send_frame(Frame::empty(FrameType::OpenFail, req.channel_id))
+                    .await;
+                continue;
+            };
             let this = self.clone();
             let mux = mux.clone();
             let node_id = node_id.clone();
             let acl = acl.clone();
             tokio::spawn(async move {
+                let _permit = permit; // 许可随任务持有至桥接结束
                 this.handle_node_open(mux, req, node_id, acl).await;
             });
         }
@@ -664,11 +670,21 @@ impl RelayListener {
 
         // 处理该客户端的 Open 请求直到连接断开
         // （reader 任务结束时 open_tx 被释放，recv 返回 None）
+        // 并发上限：与节点会话同口径，防对端 Open 洪泛耗尽任务/连接资源
+        let open_permits = Arc::new(Semaphore::new(MAX_INBOUND_OPENS_PER_SESSION));
         while let Some(req) = open_rx.recv().await {
+            let Ok(permit) = open_permits.clone().try_acquire_owned() else {
+                debug!(account = %account_id, channel = req.channel_id, "inbound open limit reached, rejecting");
+                let _ = mux
+                    .send_frame(Frame::empty(FrameType::OpenFail, req.channel_id))
+                    .await;
+                continue;
+            };
             let this = self.clone();
             let mux = mux.clone();
             let acl_router = acl_router.clone();
             tokio::spawn(async move {
+                let _permit = permit; // 许可随任务持有至桥接结束
                 this.handle_client_open(mux, req, acl_router).await;
             });
         }

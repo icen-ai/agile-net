@@ -15,6 +15,7 @@ use crate::proxy::router::{Outbound, ProxyRouter};
 use crate::relay::listener::RelayListener;
 use crate::relay::transit::{FROM_PROXY, TO_LOCAL, TransitMeter};
 use crate::tunnel::opener::ChannelOpener;
+use crate::util::base64_encode;
 use arc_swap::ArcSwap;
 
 use dashmap::DashMap;
@@ -369,9 +370,8 @@ async fn handle_socks5(
         };
         let outbound = match router_ref.custom_bypass_match(&host) {
             Some(o) => o.clone(),
-            None => router_ref
-                .route_target(&format!("{host}:{target_port}"))
-                .clone(),
+            // 已解析出 host/port：按纯主机名路由，免去 "host:port" 临时串拼接与端口剥离
+            None => router_ref.route_host(&host).clone(),
         };
         (host, outbound)
     };
@@ -568,9 +568,8 @@ async fn handle_http(
         };
         let outbound = match router_ref.custom_bypass_match(&host) {
             Some(o) => o.clone(),
-            None => router_ref
-                .route_target(&format!("{host}:{target_port}"))
-                .clone(),
+            // 已解析出 host/port：按纯主机名路由，免去 "host:port" 临时串拼接与端口剥离
+            None => router_ref.route_host(&host).clone(),
         };
         (host, outbound)
     };
@@ -721,29 +720,4 @@ fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 /// 计算 Basic 认证头期望值（base64(user:pass)）。
 fn basic_auth_value(user: &str, pass: &str) -> String {
     base64_encode(format!("{user}:{pass}").as_bytes())
-}
-
-/// 最小化 base64 编码。
-fn base64_encode(data: &[u8]) -> String {
-    const TABLE: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(data.len() * 4 / 3 + 4);
-    for chunk in data.chunks(3) {
-        let b0 = chunk[0] as u32;
-        let b1 = *chunk.get(1).unwrap_or(&0) as u32;
-        let b2 = *chunk.get(2).unwrap_or(&0) as u32;
-        let n = (b0 << 16) | (b1 << 8) | b2;
-        out.push(TABLE[(n >> 18) as usize & 63] as char);
-        out.push(TABLE[(n >> 12) as usize & 63] as char);
-        if chunk.len() > 1 {
-            out.push(TABLE[(n >> 6) as usize & 63] as char);
-        } else {
-            out.push('=');
-        }
-        if chunk.len() > 2 {
-            out.push(TABLE[n as usize & 63] as char);
-        } else {
-            out.push('=');
-        }
-    }
-    out
 }

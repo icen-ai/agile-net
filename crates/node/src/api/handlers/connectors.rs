@@ -63,24 +63,30 @@ fn validate_connector_input(
 }
 
 /// 校验收敛组存在（Some 时）。
-fn validate_group(state: &ApiState, group_id: Option<&str>) -> Option<Response> {
-    if let Some(gid) = group_id
-        && state.db.get_group(gid).unwrap_or(None).is_none()
-    {
-        return Some(err(
-            StatusCode::NOT_FOUND,
-            codes::NOT_FOUND,
-            format!("group not found: {gid}"),
-        ));
+async fn validate_group(state: &ApiState, group_id: Option<&str>) -> Option<Response> {
+    if let Some(gid) = group_id {
+        let gid_owned = gid.to_string();
+        let exists = state
+            .db_call(move |db| db.get_group(&gid_owned))
+            .await
+            .unwrap_or(None)
+            .is_some();
+        if !exists {
+            return Some(err(
+                StatusCode::NOT_FOUND,
+                codes::NOT_FOUND,
+                format!("group not found: {gid}"),
+            ));
+        }
     }
     None
 }
 
 /// 视图 JSON：ConnectorView + 实时状态（绝不含 token 明文/密文）。
-fn connector_json(state: &ApiState, id: &str) -> Option<serde_json::Value> {
+async fn connector_json(state: &ApiState, id: &str) -> Option<serde_json::Value> {
     let v = state
-        .db
-        .list_connectors()
+        .db_call(|db| db.list_connectors())
+        .await
         .ok()?
         .into_iter()
         .find(|c| c.id == id)?;
@@ -95,7 +101,7 @@ fn connector_json(state: &ApiState, id: &str) -> Option<serde_json::Value> {
 }
 
 pub async fn list_connectors(AdminAuth(_): AdminAuth, State(state): State<ApiState>) -> Response {
-    match state.db.list_connectors() {
+    match state.db_call(|db| db.list_connectors()).await {
         Ok(items) => {
             let items: Vec<serde_json::Value> = items
                 .into_iter()
@@ -138,16 +144,21 @@ pub async fn create_connector(
             "token must be 1-256 characters",
         );
     }
-    if let Some(resp) = validate_group(&state, req.group_id.as_deref()) {
+    if let Some(resp) = validate_group(&state, req.group_id.as_deref()).await {
         return resp;
     }
     // 名称唯一（DB 亦有 UNIQUE 约束，前置校验给出明确 409）
+    let name_owned = name.to_string();
     let name_taken = state
-        .db
-        .list_connectors()
-        .unwrap_or_default()
-        .into_iter()
-        .any(|c| c.name == name);
+        .db_call(move |db| {
+            Ok(db
+                .list_connectors()
+                .unwrap_or_default()
+                .into_iter()
+                .any(|c| c.name == name_owned))
+        })
+        .await
+        .unwrap_or(false);
     if name_taken {
         return err(
             StatusCode::CONFLICT,
@@ -157,18 +168,46 @@ pub async fn create_connector(
     }
 
     let advertise = req.advertise.join(",");
-    match state.db.create_connector(
-        name,
-        &req.upstream_addr,
-        &req.token,
-        &req.sni_hostname,
-        req.insecure,
-        &req.ca_cert_path,
-        &req.pinned_cert_path,
-        &advertise,
-        req.group_id.as_deref(),
-        &req.remark,
-    ) {
+    let params = (
+        name.to_string(),
+        req.upstream_addr.clone(),
+        req.token.clone(),
+        req.sni_hostname.clone(),
+        req.ca_cert_path.clone(),
+        req.pinned_cert_path.clone(),
+        advertise,
+        req.group_id.clone(),
+        req.remark.clone(),
+    );
+    let insecure = req.insecure;
+    let created = state
+        .db_call(move |db| {
+            let (
+                name,
+                upstream_addr,
+                token,
+                sni_hostname,
+                ca_cert_path,
+                pinned_cert_path,
+                advertise,
+                group_id,
+                remark,
+            ) = params;
+            db.create_connector(
+                &name,
+                &upstream_addr,
+                &token,
+                &sni_hostname,
+                insecure,
+                &ca_cert_path,
+                &pinned_cert_path,
+                &advertise,
+                group_id.as_deref(),
+                &remark,
+            )
+        })
+        .await;
+    match created {
         Ok(rec) => {
             // 热装配失败不阻断创建（DB 已落成；状态显示 disconnected，可修正后重试更新）
             if let Err(e) = state.runtime.connector_manager.upsert_from_db(&rec.id).await {
@@ -181,8 +220,9 @@ pub async fn create_connector(
                 "connector.create",
                 Some(&rec.id),
                 &format!("{name} -> {}", req.upstream_addr),
-            );
-            match connector_json(&state, &rec.id) {
+            )
+            .await;
+            match connector_json(&state, &rec.id).await {
                 Some(v) => ok_created(v),
                 None => err(
                     StatusCode::INTERNAL_SERVER_ERROR,
@@ -230,7 +270,13 @@ pub async fn update_connector(
     Path(id): Path<String>,
     Json(req): Json<UpdateConnectorRequest>,
 ) -> Response {
-    if state.db.get_connector(&id).unwrap_or(None).is_none() {
+    let cid = id.clone();
+    let exists = state
+        .db_call(move |db| db.get_connector(&cid))
+        .await
+        .unwrap_or(None)
+        .is_some();
+    if !exists {
         return err(
             StatusCode::NOT_FOUND,
             codes::NOT_FOUND,
@@ -251,15 +297,20 @@ pub async fn update_connector(
             "token too long (max 256)",
         );
     }
-    if let Some(resp) = validate_group(&state, req.group_id.as_deref()) {
+    if let Some(resp) = validate_group(&state, req.group_id.as_deref()).await {
         return resp;
     }
+    let (name_owned, cid) = (name.to_string(), id.clone());
     let name_taken = state
-        .db
-        .list_connectors()
-        .unwrap_or_default()
-        .into_iter()
-        .any(|c| c.name == name && c.id != id);
+        .db_call(move |db| {
+            Ok(db
+                .list_connectors()
+                .unwrap_or_default()
+                .into_iter()
+                .any(|c| c.name == name_owned && c.id != cid))
+        })
+        .await
+        .unwrap_or(false);
     if name_taken {
         return err(
             StatusCode::CONFLICT,
@@ -271,19 +322,49 @@ pub async fn update_connector(
     // 空串视为未提供（保留原 token）
     let token_reset = req.token.as_deref().filter(|t| !t.is_empty());
     let advertise = req.advertise.join(",");
-    if let Err(e) = state.db.update_connector(
-        &id,
-        name,
-        &req.upstream_addr,
-        token_reset,
-        &req.sni_hostname,
-        req.insecure,
-        &req.ca_cert_path,
-        &req.pinned_cert_path,
-        &advertise,
-        req.group_id.as_deref(),
-        &req.remark,
-    ) {
+    let params = (
+        id.clone(),
+        name.to_string(),
+        req.upstream_addr.clone(),
+        token_reset.map(str::to_string),
+        req.sni_hostname.clone(),
+        req.ca_cert_path.clone(),
+        req.pinned_cert_path.clone(),
+        advertise,
+        req.group_id.clone(),
+        req.remark.clone(),
+    );
+    let insecure = req.insecure;
+    let updated = state
+        .db_call(move |db| {
+            let (
+                id,
+                name,
+                upstream_addr,
+                token_reset,
+                sni_hostname,
+                ca_cert_path,
+                pinned_cert_path,
+                advertise,
+                group_id,
+                remark,
+            ) = params;
+            db.update_connector(
+                &id,
+                &name,
+                &upstream_addr,
+                token_reset.as_deref(),
+                &sni_hostname,
+                insecure,
+                &ca_cert_path,
+                &pinned_cert_path,
+                &advertise,
+                group_id.as_deref(),
+                &remark,
+            )
+        })
+        .await;
+    if let Err(e) = updated {
         return err(
             StatusCode::INTERNAL_SERVER_ERROR,
             codes::INTERNAL,
@@ -309,8 +390,9 @@ pub async fn update_connector(
                 "kept"
             }
         ),
-    );
-    match connector_json(&state, &id) {
+    )
+    .await;
+    match connector_json(&state, &id).await {
         Some(v) => ok(v),
         None => err(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -326,24 +408,30 @@ pub async fn delete_connector(
     ClientIp(ip): ClientIp,
     Path(id): Path<String>,
 ) -> Response {
-    let Some(rec) = state.db.get_connector(&id).unwrap_or(None) else {
+    let cid = id.clone();
+    let Some(rec) = state
+        .db_call(move |db| db.get_connector(&cid))
+        .await
+        .unwrap_or(None)
+    else {
         return err(
             StatusCode::NOT_FOUND,
             codes::NOT_FOUND,
             "connector not found",
         );
     };
-    match state.db.delete_connector(&id) {
+    match state.db_call(move |db| db.delete_connector(&id)).await {
         Ok(_) => {
-            state.runtime.connector_manager.remove(&id).await;
+            state.runtime.connector_manager.remove(&rec.id).await;
             audit(
                 &state,
                 &claims,
                 &ip,
                 "connector.delete",
-                Some(&id),
+                Some(&rec.id),
                 &rec.name,
-            );
+            )
+            .await;
             ok(json!(null))
         }
         Err(e) => err(
@@ -362,14 +450,23 @@ async fn set_enabled(
     id: &str,
     enabled: bool,
 ) -> Response {
-    let Some(rec) = state.db.get_connector(id).unwrap_or(None) else {
+    let cid = id.to_string();
+    let Some(rec) = state
+        .db_call(move |db| db.get_connector(&cid))
+        .await
+        .unwrap_or(None)
+    else {
         return err(
             StatusCode::NOT_FOUND,
             codes::NOT_FOUND,
             "connector not found",
         );
     };
-    if let Err(e) = state.db.set_connector_enabled(id, enabled) {
+    let cid = id.to_string();
+    if let Err(e) = state
+        .db_call(move |db| db.set_connector_enabled(&cid, enabled))
+        .await
+    {
         return err(
             StatusCode::INTERNAL_SERVER_ERROR,
             codes::INTERNAL,
@@ -394,8 +491,9 @@ async fn set_enabled(
         },
         Some(id),
         &rec.name,
-    );
-    match connector_json(state, id) {
+    )
+    .await;
+    match connector_json(state, id).await {
         Some(v) => ok(v),
         None => err(
             StatusCode::INTERNAL_SERVER_ERROR,

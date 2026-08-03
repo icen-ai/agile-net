@@ -1,46 +1,12 @@
 'use strict';
-/* ================= 图标（Lucide 内联 SVG，仅收录用到的图标） ================= */
-const ICONS = {
-  'zap': '<path d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z"/>',
-  'layout-dashboard': '<rect width="7" height="9" x="3" y="3" rx="1"/><rect width="7" height="5" x="14" y="3" rx="1"/><rect width="7" height="9" x="14" y="12" rx="1"/><rect width="7" height="5" x="3" y="16" rx="1"/>',
-  'users': '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
-  'shield': '<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/>',
-  'route': '<circle cx="6" cy="19" r="3"/><path d="M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15"/><circle cx="18" cy="5" r="3"/>',
-  'badge-question-mark': '<path d="M3.85 8.62a4 4 0 0 1 4.78-4.77 4 4 0 0 1 6.74 0 4 4 0 0 1 4.78 4.78 4 4 0 0 1 0 6.74 4 4 0 0 1-4.77 4.78 4 4 0 0 1-6.75 0 4 4 0 0 1-4.78-4.77 4 4 0 0 1 0-6.76Z"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" x2="12.01" y1="17" y2="17"/>',
-  'git-fork': '<circle cx="12" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><circle cx="18" cy="6" r="3"/><path d="M18 9v1a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V9"/><path d="M12 12v3"/>',
-  'orbit': '<path d="M20.341 6.484A10 10 0 0 1 10.266 21.85"/><path d="M3.659 17.516A10 10 0 0 1 13.74 2.152"/><circle cx="12" cy="12" r="3"/><circle cx="19" cy="5" r="2"/><circle cx="5" cy="19" r="2"/>',
-  'scroll-text': '<path d="M15 12h-5"/><path d="M15 8h-5"/><path d="M19 17V5a2 2 0 0 0-2-2H4"/><path d="M8 21h12a2 2 0 0 0 2-2v-1a1 1 0 0 0-1-1H11a1 1 0 0 0-1 1v1a2 2 0 1 1-4 0V5a2 2 0 1 0-4 0v2a1 1 0 0 0 1 1h3"/>',
-  'settings': '<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/>',
-  'sun': '<circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/>',
-  'moon': '<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>',
-  'log-out': '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" x2="9" y1="12" y2="12"/>',
-  'plus': '<path d="M5 12h14"/><path d="M12 5v14"/>',
-  'copy': '<rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>',
-  'qr-code': '<rect width="5" height="5" x="3" y="3" rx="1"/><rect width="5" height="5" x="16" y="3" rx="1"/><rect width="5" height="5" x="3" y="16" rx="1"/><path d="M21 16h-3a2 2 0 0 0-2 2v3"/><path d="M21 21v.01"/><path d="M12 7v3a2 2 0 0 1-2 2H4"/><path d="M3 12h.01"/><path d="M12 3h.01"/><path d="M12 16v.01"/><path d="M16 12h1"/><path d="M21 12v.01"/><path d="M12 21v-1"/>',
-  'triangle-alert': '<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/>',
-  'user': '<path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>',
-  'minus': '<path d="M5 12h14"/>',
-  'square': '<rect width="18" height="18" x="3" y="3" rx="2"/>',
-  'x': '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
-  'panel-left': '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/>',
-  'chevron-down': '<path d="m6 9 6 6 6-6"/>',
-};
-function ic(name, size) {
-  const s = size || 16;
-  return '<svg class="ic" width="' + s + '" height="' + s + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + (ICONS[name] || '') + '</svg>';
-}
-/* 静态 HTML 中的 <i data-ic="name" data-sz="n"> 占位符替换为内联 SVG */
-function hydrateIcons() {
-  document.querySelectorAll('[data-ic]').forEach(el => {
-    const span = document.createElement('span');
-    span.innerHTML = ic(el.dataset.ic, el.dataset.sz ? +el.dataset.sz : 16);
-    el.replaceWith(span.firstChild);
-  });
-}
+/* ================= 图标 =================
+   共享图标表 apps/desktop/ui/icons.js 经 /ui/icons.js 服务（AgIcon/AgIconHydrate，AGENTS.md §6）；
+   本端保留 ic 别名兼容既有调用，不再本地维护图标表。 */
+const ic = AgIcon;
 
 /* ================= ag-select 统一自定义下拉（共享组件，样式在 /ui/components.css） =================
    渐进增强：原生 select 保留为数据/逻辑载体（视觉隐藏），自定义 UI 与其双向同步——
-   选择自定义项 = 写回 sel.value 并 dispatch change（冒泡，既有内联 onchange 照常触发）；
+   选择自定义项 = 写回 sel.value 并 dispatch change（冒泡，既有绑定照常触发）；
    程序化改选项/值后调 agSelectRefresh(sel) 刷新标签；sel.disabled 同步禁用态。
    弹出层 fixed 挂 body（避开模态 overflow 裁剪，z-index 高于模态），点击外部 / Esc / 滚动 / 缩放关闭。 */
 let agselOpen = null; // 当前打开的下拉 {root, btn, pop, cleanup}（全局同时只开一个）
@@ -165,8 +131,8 @@ function agTabsBind(bar, onSwitch) {
   if (cur) apply(cur.dataset.agtab, false);
 }
 
-/* ================= 基础设施 ================= */
-const $ = (id) => document.getElementById(id);
+/* ================= 基础设施 =================
+   $ / esc / ahelp 走共享基础工具 /ui/agutil.js（AGENTS.md §6），本端不再保留本地副本 */
 const S = {
   access: localStorage.getItem('ag_access') || '',
   refresh: localStorage.getItem('ag_refresh') || '',
@@ -181,15 +147,6 @@ const S = {
   ws: null,
 };
 
-function esc(s) {
-  return String(s ?? '').replace(/[&<>"'`]/g, c => ({
-    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;','`':'&#96;'
-  }[c]));
-}
-/* 行内帮助（共享组件 .ahelp，样式在 /ui/components.css）：问号图标 + 纯 CSS hover 说明卡 */
-function ahelp(text) {
-  return '<span class="ahelp">' + ic('badge-question-mark', 13) + '<span class="ahelp-tip">' + esc(text) + '</span></span>';
-}
 function fmtBytes(n) {
   n = Number(n) || 0;
   if (n >= (1<<30)) return (n/(1<<30)).toFixed(2) + ' GB';
@@ -349,14 +306,61 @@ function groupName(id) {
 }
 /* 代理模式文案（客户端代理槽位 mode：system=系统代理 / local=本地代理） */
 function proxyModeText(m) { return ({ system: '系统代理', local: '本地代理' })[m] || m || ''; }
-function pager(viewKey, total, reload) {
+function pager(viewKey, total) {
   const page = S.page[viewKey], size = S.size[viewKey];
   const pages = Math.max(1, Math.ceil(total / size));
   return '<div class="pager"><span>共 ' + total + ' 条 · ' + page + '/' + pages + ' 页</span>' +
-    '<button class="ghost small" ' + (page<=1?'disabled':'') + ' onclick="S.page.' + viewKey + '--;' + reload + '()">上一页</button>' +
-    '<button class="ghost small" ' + (page>=pages?'disabled':'') + ' onclick="S.page.' + viewKey + '++;' + reload + '()">下一页</button></div>';
+    '<button class="ghost small" ' + (page<=1?'disabled':'') + ' data-pager="' + viewKey + '" data-delta="-1">上一页</button>' +
+    '<button class="ghost small" ' + (page>=pages?'disabled':'') + ' data-pager="' + viewKey + '" data-delta="1">下一页</button></div>';
 }
 function shortId(id) { return esc(String(id||'').substring(0,8)); }
+
+/* ================= 动态内容事件委托 =================
+   动态 HTML 一律 data-* 标记、document 层统一分派（替代内联 onclick/onchange，对齐桌面端 CSP 约束）；
+   委托挂在 document，innerHTML 轮询重写不影响绑定。点击动作用 data-act，变更动作用 data-act-chg。 */
+const ACT_CLICK = {
+  'copy': b => copyText(b.dataset.copy),
+  'show-qr': b => showQr(b.dataset.id),
+  'acc-reset': b => resetAccountPwd(b.dataset.id, b.dataset.name),
+  'acc-toggle': b => toggleAccount(b.dataset.id, b.dataset.enabled === 'true'),
+  'acc-del': b => delAccount(b.dataset.id, b.dataset.name),
+  'grp-detail': b => openGroupDetail(b.dataset.id),
+  'grp-bind': b => openBindRules(b.dataset.id, b.dataset.name),
+  'grp-edit': b => openEditGroup(b.dataset.id, b.dataset.name, b.dataset.remark || ''),
+  'grp-del': b => delGroup(b.dataset.id, b.dataset.name, Number(b.dataset.count || 0)),
+  'rule-edit': b => openEditRule(b.dataset.id, b.dataset.type, b.dataset.value, b.dataset.resolve === 'true', b.dataset.remark || ''),
+  'rule-del': b => delRule(b.dataset.id, b.dataset.value, Number(b.dataset.count || 0)),
+  'tok-edit': b => openEditToken(b.dataset.id, b.dataset.group || '', b.dataset.expose === 'true', b.dataset.scope),
+  'tok-del': b => delToken(b.dataset.id),
+  'conn-edit': b => openEditConnector(b.dataset.id),
+  'conn-toggle': b => toggleConnector(b.dataset.id, b.dataset.enabled === 'true'),
+  'conn-del': b => delConnector(b.dataset.id, b.dataset.name),
+  'admin-del': b => delAdmin(b.dataset.id, b.dataset.name),
+};
+const ACT_CHANGE = {
+  'tok-expose': el => toggleExpose(el.dataset.id, el.checked),
+  'tok-scope': el => setScope(el.dataset.id, el.value),
+};
+document.addEventListener('click', (e) => {
+  const p = e.target.closest('[data-pager]');
+  if (p) {
+    if (p.disabled) return;
+    const key = p.dataset.pager;
+    S.page[key] += Number(p.dataset.delta);
+    ({ accounts: renderAccounts, groups: renderGroups, rules: renderRules, audit: renderAudit }[key] || (() => {}))();
+    return;
+  }
+  const b = e.target.closest('[data-act]');
+  if (!b) return;
+  const fn = ACT_CLICK[b.dataset.act];
+  if (fn) fn(b);
+});
+document.addEventListener('change', (e) => {
+  const el = e.target.closest('[data-act-chg]');
+  if (!el) return;
+  const fn = ACT_CHANGE[el.dataset.actChg];
+  if (fn) fn(el);
+});
 
 /* ================= 概览 ================= */
 async function renderDashboard() {
@@ -533,21 +537,25 @@ function updateTfCards(st) {
 async function renderAccounts() {
   $('view').innerHTML = '<div class="page-title">' + ic('users', 20) + '客户端账号</div><div class="page-desc">账号即客户端身份凭据，密码由服务端生成（sk- 48 位强随机），仅创建/重置时展示一次</div>' +
     '<div class="toolbar">' +
-      '<input id="acc-q" placeholder="搜索账号/备注" value="' + esc(S.filter.accounts) + '" oninput="S.filter.accounts=this.value;S.page.accounts=1;renderAccounts()">' +
-      '<select onchange="S.filter.accountsGroup=this.value;S.page.accounts=1;renderAccounts()">' +
+      '<input id="acc-q" placeholder="搜索账号/备注" value="' + esc(S.filter.accounts) + '">' +
+      '<select id="acc-group">' +
         '<option value="">全部权限组</option>' +
         S.groups.map(g => '<option value="' + esc(g.id) + '" ' + (S.filter.accountsGroup===g.id?'selected':'') + '>' + esc(g.name) + '</option>').join('') +
       '</select>' +
-      '<select onchange="S.filter.accountsEnabled=this.value;S.page.accounts=1;renderAccounts()">' +
+      '<select id="acc-enabled">' +
         '<option value="">全部状态</option>' +
         '<option value="true" ' + (S.filter.accountsEnabled==='true'?'selected':'') + '>启用</option>' +
         '<option value="false" ' + (S.filter.accountsEnabled==='false'?'selected':'') + '>禁用</option>' +
       '</select>' +
       '<div class="spacer"></div>' +
-      '<button onclick="openCreateAccount()">' + ic('plus', 15) + '新建账号</button>' +
+      '<button id="acc-create">' + ic('plus', 15) + '新建账号</button>' +
     '</div>' +
     '<div class="card table-wrap"><table><thead><tr><th>账号</th><th>权限组</th><th>在线</th><th>状态</th><th>最后在线</th><th>备注</th><th>操作</th></tr></thead><tbody id="acc-body"></tbody></table><div id="acc-pager"></div></div>';
   agSelectEnhance($('view'));
+  $('acc-q').oninput = (e) => { S.filter.accounts = e.target.value; S.page.accounts = 1; renderAccounts(); };
+  $('acc-group').onchange = (e) => { S.filter.accountsGroup = e.target.value; S.page.accounts = 1; renderAccounts(); };
+  $('acc-enabled').onchange = (e) => { S.filter.accountsEnabled = e.target.value; S.page.accounts = 1; renderAccounts(); };
+  $('acc-create').onclick = openCreateAccount;
   await loadAccounts();
   S.timers.push(setInterval(loadAccounts, 20000));
 }
@@ -567,12 +575,12 @@ async function loadAccounts() {
       '<td style="color:var(--dim)">' + esc(a.last_seen_at || '从未') + '</td>' +
       '<td style="color:var(--dim)">' + esc(a.remark || '-') + '</td>' +
       '<td style="white-space:nowrap">' +
-        '<button class="ghost small" onclick="resetAccountPwd(\'' + esc(a.id) + '\',\'' + esc(a.username) + '\')">重置密码</button> ' +
-        '<button class="ghost small" onclick="toggleAccount(\'' + esc(a.id) + '\',' + !a.enabled + ')">' + (a.enabled?'禁用':'启用') + '</button> ' +
-        '<button class="danger small" onclick="delAccount(\'' + esc(a.id) + '\',\'' + esc(a.username) + '\')">删除</button>' +
+        '<button class="ghost small" data-act="acc-reset" data-id="' + esc(a.id) + '" data-name="' + esc(a.username) + '">重置密码</button> ' +
+        '<button class="ghost small" data-act="acc-toggle" data-id="' + esc(a.id) + '" data-enabled="' + !a.enabled + '">' + (a.enabled?'禁用':'启用') + '</button> ' +
+        '<button class="danger small" data-act="acc-del" data-id="' + esc(a.id) + '" data-name="' + esc(a.username) + '">删除</button>' +
       '</td></tr>'
     ).join('') || '<tr><td colspan="7" class="empty">暂无账号</td></tr>';
-    $('acc-pager').innerHTML = pager('accounts', d.total||0, 'renderAccounts');
+    $('acc-pager').innerHTML = pager('accounts', d.total||0);
   } catch(e) { toast(e.message, 'err'); }
 }
 function openCreateAccount() {
@@ -602,10 +610,10 @@ function showAccountSecret(title, username, password, connectUrl, accountId, isA
   openModal(title,
     (isAdminLink ? '<div class="hint" style="color:var(--danger-text);margin-bottom:8px">' + ic('triangle-alert', 13) + ' 这是管理版接入链接：持链接者可管理本端点，请按管理员凭据级别保管与分发</div>' : '') +
     '<div class="kv"><span class="k">账号</span><span><b>' + esc(username) + '</b></span></div>' +
-    '<div class="kv"><span class="k">密码</span><span class="mono">' + esc(password) + ' <button class="ghost small" onclick="copyText(\'' + esc(password) + '\')">' + ic('copy', 13) + '复制</button></span></div>' +
+    '<div class="kv"><span class="k">密码</span><span class="mono">' + esc(password) + ' <button class="ghost small" data-act="copy" data-copy="' + esc(password) + '">' + ic('copy', 13) + '复制</button></span></div>' +
     '<div class="secret-box"><div style="color:var(--dim);font-size:12px;margin-bottom:4px">接入链接（客户端导入）</div><span class="mono">' + esc(connectUrl) + '</span></div>' +
-    '<div class="actions" style="justify-content:flex-start;margin-top:10px"><button class="ghost small" onclick="copyText(\'' + esc(connectUrl) + '\')">' + ic('copy', 13) + '复制接入链接</button>' +
-    '<button class="ghost small" onclick="showQr(\'' + esc(accountId) + '\')">' + ic('qr-code', 13) + '显示二维码</button></div>' +
+    '<div class="actions" style="justify-content:flex-start;margin-top:10px"><button class="ghost small" data-act="copy" data-copy="' + esc(connectUrl) + '">' + ic('copy', 13) + '复制接入链接</button>' +
+    '<button class="ghost small" data-act="show-qr" data-id="' + esc(accountId) + '">' + ic('qr-code', 13) + '显示二维码</button></div>' +
     '<div class="qr-box" id="qr-box"></div>' +
     '<div class="hint" style="color:var(--warn)">' + ic('triangle-alert', 13) + ' 密码与接入链接仅本次展示，10 分钟内可打开二维码</div>',
     [{label:'我已保存', fn: closeModal}]);
@@ -643,9 +651,11 @@ async function delAccount(id, username) {
 /* ================= 权限组 ================= */
 async function renderGroups() {
   $('view').innerHTML = '<div class="page-title">' + ic('shield', 20) + '权限组</div><div class="page-desc">权限组是规则与账号的桥梁：账号所属组决定其可访问的内网资源</div>' +
-    '<div class="toolbar"><input placeholder="搜索名称/备注" value="' + esc(S.filter.groups||'') + '" oninput="S.filter.groups=this.value;S.page.groups=1;renderGroups()">' +
-    '<div class="spacer"></div><button onclick="openCreateGroup()">' + ic('plus', 15) + '新建权限组</button></div>' +
+    '<div class="toolbar"><input id="grp-q" placeholder="搜索名称/备注" value="' + esc(S.filter.groups||'') + '">' +
+    '<div class="spacer"></div><button id="grp-create">' + ic('plus', 15) + '新建权限组</button></div>' +
     '<div class="card table-wrap"><table><thead><tr><th>名称</th><th>规则数</th><th>账号数</th><th>备注</th><th>操作</th></tr></thead><tbody id="grp-body"></tbody></table><div id="grp-pager"></div></div>';
+  $('grp-q').oninput = (e) => { S.filter.groups = e.target.value; S.page.groups = 1; renderGroups(); };
+  $('grp-create').onclick = openCreateGroup;
   await loadGroups();
 }
 async function loadGroups() {
@@ -660,13 +670,13 @@ async function loadGroups() {
       '<td><span class="badge b-info">' + g.account_count + '</span></td>' +
       '<td style="color:var(--dim)">' + esc(g.remark || '-') + '</td>' +
       '<td style="white-space:nowrap">' +
-        '<button class="ghost small" onclick="openGroupDetail(\'' + esc(g.id) + '\')">详情</button> ' +
-        '<button class="ghost small" onclick="openBindRules(\'' + esc(g.id) + '\',\'' + esc(g.name) + '\')">绑定规则</button> ' +
-        '<button class="ghost small" onclick="openEditGroup(\'' + esc(g.id) + '\',\'' + esc(g.name) + '\',\'' + esc(g.remark||'') + '\')">编辑</button> ' +
-        '<button class="danger small" onclick="delGroup(\'' + esc(g.id) + '\',\'' + esc(g.name) + '\',' + g.account_count + ')">删除</button>' +
+        '<button class="ghost small" data-act="grp-detail" data-id="' + esc(g.id) + '">详情</button> ' +
+        '<button class="ghost small" data-act="grp-bind" data-id="' + esc(g.id) + '" data-name="' + esc(g.name) + '">绑定规则</button> ' +
+        '<button class="ghost small" data-act="grp-edit" data-id="' + esc(g.id) + '" data-name="' + esc(g.name) + '" data-remark="' + esc(g.remark||'') + '">编辑</button> ' +
+        '<button class="danger small" data-act="grp-del" data-id="' + esc(g.id) + '" data-name="' + esc(g.name) + '" data-count="' + g.account_count + '">删除</button>' +
       '</td></tr>'
     ).join('') || '<tr><td colspan="5" class="empty">暂无权限组</td></tr>';
-    $('grp-pager').innerHTML = pager('groups', d.total||0, 'renderGroups');
+    $('grp-pager').innerHTML = pager('groups', d.total||0);
     S.groups = d.items || S.groups;
   } catch(e) { toast(e.message, 'err'); }
 }
@@ -764,18 +774,22 @@ async function delGroup(id, name, accountCount) {
 async function renderRules() {
   $('view').innerHTML = '<div class="page-title">' + ic('route', 20) + '路由规则</div><div class="page-desc">CIDR 网段与域名规则，经权限组分配给账号；变更即时生效并推送客户端</div>' +
     '<div class="toolbar">' +
-      '<input placeholder="搜索匹配值/备注" value="' + esc(S.filter.rules) + '" oninput="S.filter.rules=this.value;S.page.rules=1;renderRules()">' +
-      '<select onchange="S.filter.rulesType=this.value;S.page.rules=1;renderRules()">' +
+      '<input id="rule-q" placeholder="搜索匹配值/备注" value="' + esc(S.filter.rules) + '">' +
+      '<select id="rule-type">' +
         '<option value="">全部类型</option>' +
         '<option value="ip-cidr" ' + (S.filter.rulesType==='ip-cidr'?'selected':'') + '>ip-cidr</option>' +
         '<option value="host" ' + (S.filter.rulesType==='host'?'selected':'') + '>host</option>' +
       '</select>' +
       '<div class="spacer"></div>' +
-      '<button class="ghost" onclick="openBatchImport()">批量导入</button>' +
-      '<button onclick="openCreateRule()">' + ic('plus', 15) + '新建规则</button>' +
+      '<button class="ghost" id="rule-batch">批量导入</button>' +
+      '<button id="rule-create">' + ic('plus', 15) + '新建规则</button>' +
     '</div>' +
     '<div class="card table-wrap"><table><thead><tr><th>类型</th><th>匹配值</th><th>解析</th><th>引用组</th><th>备注</th><th>操作</th></tr></thead><tbody id="rule-body"></tbody></table><div id="rule-pager"></div></div>';
   agSelectEnhance($('view'));
+  $('rule-q').oninput = (e) => { S.filter.rules = e.target.value; S.page.rules = 1; renderRules(); };
+  $('rule-type').onchange = (e) => { S.filter.rulesType = e.target.value; S.page.rules = 1; renderRules(); };
+  $('rule-batch').onclick = openBatchImport;
+  $('rule-create').onclick = openCreateRule;
   await loadRules();
 }
 async function loadRules() {
@@ -792,11 +806,11 @@ async function loadRules() {
       '<td>' + (r.group_count || 0) + '</td>' +
       '<td style="color:var(--dim)">' + esc(r.remark || '-') + '</td>' +
       '<td style="white-space:nowrap">' +
-        '<button class="ghost small" onclick="openEditRule(\'' + esc(r.id) + '\',\'' + esc(r.type) + '\',\'' + esc(r.value) + '\',' + r.resolve + ',\'' + esc(r.remark||'') + '\')">编辑</button> ' +
-        '<button class="danger small" onclick="delRule(\'' + esc(r.id) + '\',\'' + esc(r.value) + '\',' + (r.group_count||0) + ')">删除</button>' +
+        '<button class="ghost small" data-act="rule-edit" data-id="' + esc(r.id) + '" data-type="' + esc(r.type) + '" data-value="' + esc(r.value) + '" data-resolve="' + r.resolve + '" data-remark="' + esc(r.remark||'') + '">编辑</button> ' +
+        '<button class="danger small" data-act="rule-del" data-id="' + esc(r.id) + '" data-value="' + esc(r.value) + '" data-count="' + (r.group_count||0) + '">删除</button>' +
       '</td></tr>'
     ).join('') || '<tr><td colspan="6" class="empty">暂无规则</td></tr>';
-    $('rule-pager').innerHTML = pager('rules', d.total||0, 'renderRules');
+    $('rule-pager').innerHTML = pager('rules', d.total||0);
   } catch(e) { toast(e.message, 'err'); }
 }
 function ruleFormHtml(t, v, resolve, remark) {
@@ -903,12 +917,13 @@ async function renderFanIn() {
     '<div data-agpanel="listen"><div class="card"><h3>扇入监听</h3><div id="fanin-listener"></div></div></div>' +
     '<div data-agpanel="peers" hidden><div class="card"><h3>扇入连接</h3><div class="table-wrap"><table><thead><tr><th>对端 node_id</th><th>上行</th><th>下行</th></tr></thead><tbody id="fanin-peers"></tbody></table></div></div></div>' +
     '<div data-agpanel="tokens" hidden><div class="card"><h3>扇入令牌' + ahelp('令牌 = 允许对端扇入本端点的预共享密钥（psk_ 48 位）；服务端只存哈希，全文仅创建时展示一次') + '</h3>' +
-      '<div class="toolbar"><div class="spacer"></div><button onclick="openCreateToken()">' + ic('plus', 15) + '生成令牌</button></div>' +
+      '<div class="toolbar"><div class="spacer"></div><button id="tok-create">' + ic('plus', 15) + '生成令牌</button></div>' +
       '<div class="table-wrap"><table><thead><tr><th>前缀</th><th>权限组</th><th>带宽配额</th><th>备注</th><th>暴露控制面</th><th>最近使用</th><th>创建时间</th><th>操作</th></tr></thead><tbody id="tok-body"></tbody></table></div></div></div>';
   agTabsBind($('fanin-tabs'), (k) => {
     S.faninTab = k;
     $('fanin-q').hidden = (k === 'listen');
   });
+  $('tok-create').onclick = openCreateToken;
   // 连接/令牌一脉相承的相关搜索：输入即过滤两表，切页签搜索词保留并各自生效
   $('fanin-q').oninput = (e) => {
     S.faninQuery = e.target.value;
@@ -978,14 +993,14 @@ function renderFaninTokens() {
     '<td>' + (t.group_id ? esc(t.group_name || groupName(t.group_id)) : '<span style="color:var(--dim2)">不收敛</span>') + '</td>' +
     '<td class="mono">' + (t.rate_limit_kbps ? esc(t.rate_limit_kbps) + ' KB/s' : '<span style="color:var(--dim2)">不限</span>') + '</td>' +
     '<td>' + esc(t.remark || '-') + '</td>' +
-    '<td><label class="chk" style="display:flex;align-items:center;gap:5px"><input type="checkbox" ' + (t.expose_control ? 'checked' : '') +
-      ' onchange="toggleExpose(\'' + esc(t.id) + '\', this.checked)"><span style="font-size:12px">允许管理</span></label>' +
-      (t.expose_control ? '<select class="ghost small" onchange="setScope(\'' + esc(t.id) + '\', this.value)">' +
+    '<td><label class="chk" style="display:flex;align-items:center;gap:5px"><input type="checkbox" data-act-chg="tok-expose" data-id="' + esc(t.id) + '"' + (t.expose_control ? ' checked' : '') +
+      '><span style="font-size:12px">允许管理</span></label>' +
+      (t.expose_control ? '<select class="ghost small" data-act-chg="tok-scope" data-id="' + esc(t.id) + '">' +
         ['ro','rules','full'].map(sc => '<option value="' + sc + '" ' + (t.control_scope === sc ? 'selected' : '') + '>' + ({ro:'只读',rules:'规则',full:'全权'})[sc] + '</option>').join('') + '</select>' : '') + '</td>' +
     '<td style="color:var(--dim)">' + esc(t.last_used_at || '未使用') + '</td>' +
     '<td style="color:var(--dim)">' + esc(t.created_at) + '</td>' +
-    '<td style="white-space:nowrap"><button class="ghost small" onclick="openEditToken(\'' + esc(t.id) + '\',\'' + esc(t.group_id||'') + '\',' + t.expose_control + ',\'' + esc(t.control_scope) + '\')">编辑</button> ' +
-    '<button class="danger small" onclick="delToken(\'' + esc(t.id) + '\')">吊销</button></td></tr>'
+    '<td style="white-space:nowrap"><button class="ghost small" data-act="tok-edit" data-id="' + esc(t.id) + '" data-group="' + esc(t.group_id||'') + '" data-expose="' + t.expose_control + '" data-scope="' + esc(t.control_scope) + '">编辑</button> ' +
+    '<button class="danger small" data-act="tok-del" data-id="' + esc(t.id) + '">吊销</button></td></tr>'
   ).join('') || '<tr><td colspan="8" class="empty">' + (q ? '无匹配的扇入令牌' : '暂无扇入令牌') + '</td></tr>';
   agSelectEnhance(body);
 }
@@ -1034,7 +1049,7 @@ function openCreateToken() {
           });
           openModal('令牌已生成 — 仅此一次展示',
             '<div class="secret-box"><span class="mono">' + esc(d.token) + '</span></div>' +
-            '<div class="actions" style="justify-content:flex-start;margin-top:10px"><button class="ghost small" onclick="copyText(\'' + esc(d.token) + '\')">' + ic('copy', 13) + '复制令牌</button></div>' +
+            '<div class="actions" style="justify-content:flex-start;margin-top:10px"><button class="ghost small" data-act="copy" data-copy="' + esc(d.token) + '">' + ic('copy', 13) + '复制令牌</button></div>' +
             '<div class="hint" style="color:var(--warn)">' + ic('triangle-alert', 13) + ' 请立即保存，服务端只存哈希，无法找回</div>',
             [{label:'我已保存', fn: () => { closeModal(); loadTokens(); }}]);
         } catch(e) { toast(e.message, 'err'); }
@@ -1081,8 +1096,9 @@ function connStatusBadge(st) {
 }
 async function renderConnectors() {
   $('view').innerHTML = '<div class="page-title">' + ic('git-fork', 20) + '扇出</div><div class="page-desc">本端点主动连出的对端隧道</div>' +
-    '<div class="toolbar"><div class="spacer"></div><button onclick="openCreateConnector()">' + ic('plus', 15) + '新建扇出</button></div>' +
+    '<div class="toolbar"><div class="spacer"></div><button id="conn-create">' + ic('plus', 15) + '新建扇出</button></div>' +
     '<div class="card table-wrap"><table><thead><tr><th>名称</th><th>上游地址</th><th>权限组</th><th>状态</th><th>启用</th><th>备注</th><th>操作</th></tr></thead><tbody id="conn-body"></tbody></table></div>';
+  $('conn-create').onclick = openCreateConnector;
   await loadConnectors();
   S.timers.push(setInterval(loadConnectors, 5000));
 }
@@ -1104,9 +1120,9 @@ async function loadConnectors() {
       '<td>' + (c.enabled ? '<span class="badge b-ok">启用</span>' : '<span class="badge b-off">禁用</span>') + '</td>' +
       '<td style="color:var(--dim)">' + esc(c.remark || '-') + '</td>' +
       '<td style="white-space:nowrap">' +
-        '<button class="ghost small" onclick="openEditConnector(\'' + esc(c.id) + '\')">编辑</button> ' +
-        '<button class="ghost small" onclick="toggleConnector(\'' + esc(c.id) + '\',' + !c.enabled + ')">' + (c.enabled ? '禁用' : '启用') + '</button> ' +
-        '<button class="danger small" onclick="delConnector(\'' + esc(c.id) + '\',\'' + esc(c.name) + '\')">删除</button>' +
+        '<button class="ghost small" data-act="conn-edit" data-id="' + esc(c.id) + '">编辑</button> ' +
+        '<button class="ghost small" data-act="conn-toggle" data-id="' + esc(c.id) + '" data-enabled="' + !c.enabled + '">' + (c.enabled ? '禁用' : '启用') + '</button> ' +
+        '<button class="danger small" data-act="conn-del" data-id="' + esc(c.id) + '" data-name="' + esc(c.name) + '">删除</button>' +
       '</td></tr>';
     }).join('') || '<tr><td colspan="7" class="empty">暂无扇出对端</td></tr>';
   } catch(e) { toast(e.message, 'err'); }
@@ -1189,7 +1205,7 @@ async function delConnector(id, name) {
 async function renderAudit() {
   $('view').innerHTML = '<div class="page-title">' + ic('scroll-text', 20) + '审计日志</div><div class="page-desc">全部敏感操作留痕：登录、增删改、启停、重置、吊销</div>' +
     '<div class="toolbar">' +
-      '<select onchange="S.filter.auditAction=this.value;S.page.audit=1;renderAudit()">' +
+      '<select id="audit-action">' +
         '<option value="">全部动作</option>' +
         ['admin.login','admin.init','rule.create','rule.update','rule.delete','rule.batch_import',
          'group.create','group.update','group.delete','group.update_rules',
@@ -1202,6 +1218,7 @@ async function renderAudit() {
     '</div>' +
     '<div class="card table-wrap"><table><thead><tr><th>时间</th><th>操作人</th><th>动作</th><th>目标</th><th>详情</th><th>来源 IP</th></tr></thead><tbody id="audit-body"></tbody></table><div id="audit-pager"></div></div>';
   agSelectEnhance($('view'));
+  $('audit-action').onchange = (e) => { S.filter.auditAction = e.target.value; S.page.audit = 1; renderAudit(); };
   await loadAudit();
 }
 async function loadAudit() {
@@ -1218,7 +1235,7 @@ async function loadAudit() {
       '<td style="color:var(--dim);max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(l.detail || '-') + '</td>' +
       '<td class="mono" style="color:var(--dim)">' + esc(l.ip || '-') + '</td></tr>'
     ).join('') || '<tr><td colspan="6" class="empty">暂无审计日志</td></tr>';
-    $('audit-pager').innerHTML = pager('audit', d.total||0, 'renderAudit');
+    $('audit-pager').innerHTML = pager('audit', d.total||0);
   } catch(e) { toast(e.message, 'err'); }
 }
 
@@ -1227,20 +1244,24 @@ async function renderSettings() {
   // 分区：服务端信息（名称/公网地址/运行信息）→ 管理面（管理员/我的密码）→ 系统日志；仅重排分组，元素 id 全部保留
   $('view').innerHTML = '<div class="page-title">' + ic('settings', 20) + '端点设置</div><div class="page-desc">服务端信息、管理面账号与系统日志</div>' +
     '<div class="card"><h3>服务端信息</h3>' +
-      '<label>端点名称</label><div style="display:flex;gap:10px"><input id="set-name" style="flex:1"><button onclick="saveNodeName()">保存</button></div>' +
-      '<label>公网接入地址（connect_url 与隧道端点主机名）</label><div style="display:flex;gap:10px"><input id="set-host" style="flex:1" placeholder="cdn.example.com"><button onclick="savePublicHost()">保存</button></div>' +
+      '<label>端点名称</label><div style="display:flex;gap:10px"><input id="set-name" style="flex:1"><button id="set-name-save">保存</button></div>' +
+      '<label>公网接入地址（connect_url 与隧道端点主机名）</label><div style="display:flex;gap:10px"><input id="set-host" style="flex:1" placeholder="cdn.example.com"><button id="set-host-save">保存</button></div>' +
       '<div id="set-info" style="margin-top:14px"></div>' +
     '</div>' +
     '<div class="card"><h3>管理员</h3>' +
       '<div class="table-wrap"><table><thead><tr><th>用户名</th><th>创建时间</th><th>操作</th></tr></thead><tbody id="admin-body"></tbody></table></div>' +
-      '<div class="toolbar" style="margin-top:12px"><input id="na-user" placeholder="新管理员用户名"><input id="na-pass" type="password" placeholder="密码（≥10位含大小写数字）"><button onclick="createAdmin()">' + ic('plus', 15) + '新建管理员</button></div>' +
+      '<div class="toolbar" style="margin-top:12px"><input id="na-user" placeholder="新管理员用户名"><input id="na-pass" type="password" placeholder="密码（≥10位含大小写数字）"><button id="admin-create">' + ic('plus', 15) + '新建管理员</button></div>' +
     '</div>' +
     '<div class="card"><h3>修改我的密码</h3>' +
       '<label>旧密码</label><input id="pw-old" type="password" style="width:280px">' +
       '<label>新密码（≥10 位，含大小写字母与数字）</label><input id="pw-new" type="password" style="width:280px">' +
-      '<div style="margin-top:12px"><button onclick="changePassword()">修改密码（修改后需重新登录）</button></div>' +
+      '<div style="margin-top:12px"><button id="pw-change">修改密码（修改后需重新登录）</button></div>' +
     '</div>' +
     '<div class="card"><h3>最近系统日志</h3><div id="set-logs" class="mono" style="max-height:300px;overflow-y:auto;color:var(--dim);font-size:12px"></div></div>';
+  $('set-name-save').onclick = saveNodeName;
+  $('set-host-save').onclick = savePublicHost;
+  $('admin-create').onclick = createAdmin;
+  $('pw-change').onclick = changePassword;
   try {
     const st = await api('GET', '/api/v1/admin/node/status');
     $('set-name').value = st.node_name || '';
@@ -1253,14 +1274,14 @@ async function renderSettings() {
       kv('本地代理', (st.proxy.mode ? proxyModeText(st.proxy.mode) + ' · ' : '') + (st.proxy.enabled ? st.proxy.listen : '未启用')) +
       (st.cert_fingerprint
         ? '<div class="kv"><span class="k">证书指纹 (SHA-256)</span><span class="mono" style="font-size:11px;word-break:break-all">' + esc(st.cert_fingerprint) +
-          ' <button class="ghost small" onclick="copyText(\'' + esc(st.cert_fingerprint) + '\')">' + ic('copy', 13) + '复制</button></span></div>'
+          ' <button class="ghost small" data-act="copy" data-copy="' + esc(st.cert_fingerprint) + '">' + ic('copy', 13) + '复制</button></span></div>'
         : '');
   } catch(e) { toast(e.message, 'err'); }
   try {
     const conf = await api('GET', '/api/v1/admin/admins');
     $('admin-body').innerHTML = (conf.items||[]).map(a =>
       '<tr><td><b>' + esc(a.username) + '</b></td><td style="color:var(--dim)">' + esc(a.created_at) + '</td>' +
-      '<td><button class="danger small" onclick="delAdmin(\'' + esc(a.id) + '\',\'' + esc(a.username) + '\')">删除</button></td></tr>'
+      '<td><button class="danger small" data-act="admin-del" data-id="' + esc(a.id) + '" data-name="' + esc(a.username) + '">删除</button></td></tr>'
     ).join('') || '<tr><td colspan="3" class="empty">无</td></tr>';
   } catch(e) {}
   try {
@@ -1325,8 +1346,14 @@ function toggleTheme() {
 
 /* ================= 启动 ================= */
 window.addEventListener('DOMContentLoaded', async () => {
-  hydrateIcons();
+  AgIconHydrate();
   applyTheme();
+  // 静态元素事件绑定（HTML 一律不写内联事件属性，对齐桌面端 CSP 约束）
+  $('login-btn').onclick = doLogin;
+  $('login-theme-btn').onclick = toggleTheme;
+  $('theme-btn').onclick = toggleTheme;
+  $('logout-btn').onclick = doLogout;
+  document.querySelectorAll('.nav-item[data-view]').forEach(n => { n.onclick = () => switchView(n.dataset.view); });
   // Tauri 控制台窗口：显示自定义标题栏（无边框窗口），接 window 控制与主题广播
   if (window.__TAURI__) {
     document.body.classList.add('tb-mode');

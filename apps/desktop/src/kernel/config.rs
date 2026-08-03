@@ -175,8 +175,10 @@ mod tests {
 
     #[test]
     fn config_render_basic() {
-        let mut store = SubStore::default();
-        store.secret = "s3cret".into();
+        let mut store = SubStore {
+            secret: "s3cret".into(),
+            ..Default::default()
+        };
         let mk = |id: &str, name: &str, url: &str, active: bool| Subscription {
             id: id.into(),
             name: name.into(),
@@ -211,8 +213,10 @@ mod tests {
 
     #[test]
     fn config_escapes_quotes() {
-        let mut store = SubStore::default();
-        store.secret = "s".into();
+        let mut store = SubStore {
+            secret: "s".into(),
+            ..Default::default()
+        };
         store.subscriptions.push(Subscription {
             id: "a".into(),
             name: "x".into(),
@@ -232,8 +236,10 @@ mod tests {
     #[test]
     fn config_render_local_file_provider() {
         // 本地导入订阅（file:// 前缀）渲染为 type: file + path，不经 URL 拉取
-        let mut store = SubStore::default();
-        store.secret = "s".into();
+        let mut store = SubStore {
+            secret: "s".into(),
+            ..Default::default()
+        };
         store.subscriptions.push(Subscription {
             id: "a".into(),
             name: "本地".into(),
@@ -275,8 +281,10 @@ mod tests {
     /// TUN 模式配置快照（tun.md §2.3 骨架逐字段）+ 防环检查通过
     #[test]
     fn config_render_tun_snapshot() {
-        let mut store = SubStore::default();
-        store.secret = "s3cret".into();
+        let mut store = SubStore {
+            secret: "s3cret".into(),
+            ..Default::default()
+        };
         store.subscriptions.push(Subscription {
             id: "a".into(),
             name: "机场A".into(),
@@ -325,8 +333,10 @@ mod tests {
     /// 防环静态检查全覆盖（tun.md §2.5 各条）
     #[test]
     fn check_no_loop_covers_all_clauses() {
-        let mut store = SubStore::default();
-        store.secret = "s".into();
+        let store = SubStore {
+            secret: "s".into(),
+            ..Default::default()
+        };
         let tun_cfg = render_config(&store, "rule", true);
         let base_cfg = render_config(&store, "rule", false);
         assert!(check_no_loop(&tun_cfg, true).is_ok());
@@ -356,8 +366,10 @@ mod tests {
         assert!(base_cfg.contains("mixed-port: 57892"));
         assert!(check_no_loop(&base_cfg, false).is_ok());
         // secret 行随机十六进制巧合命中端口串不误伤
-        let mut store = SubStore::default();
-        store.secret = "57890abcdef".into();
+        let store = SubStore {
+            secret: "57890abcdef".into(),
+            ..Default::default()
+        };
         let cfg = render_config(&store, "rule", false);
         assert!(check_no_loop(&cfg, false).is_ok(), "secret 行不参与检查");
         let cfg = render_config(&store, "rule", true);

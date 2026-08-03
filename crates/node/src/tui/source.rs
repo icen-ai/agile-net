@@ -567,9 +567,9 @@ mod tests {
     fn db_rows_carry_group_name() {
         let db = Database::open(tmp_db("group")).unwrap();
         let g = db.create_group("G1", "").unwrap();
-        db.create_relay_token_with_group("hash-t1", "tun_t1", "", false, "full", Some(&g.id))
+        db.create_relay_token_with_quota("hash-t1", "tun_t1", "", false, "full", Some(&g.id), None)
             .unwrap();
-        db.create_relay_token_with_group("hash-t2", "tun_t2", "", false, "full", None)
+        db.create_relay_token_with_quota("hash-t2", "tun_t2", "", false, "full", None, None)
             .unwrap();
         db.create_connector(
             "peer-a",

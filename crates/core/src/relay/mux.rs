@@ -126,7 +126,7 @@ impl AsyncRead for MuxChannel {
                             let frame = Frame::new(
                                 FrameType::WindowUpdate,
                                 self.channel_id,
-                                Bytes::from(n.to_be_bytes().to_vec()),
+                                Bytes::copy_from_slice(&n.to_be_bytes()),
                             );
                             let _ = self.tx_frames.try_send(frame);
                         }

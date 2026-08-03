@@ -5,8 +5,6 @@
 //! 交互：左键拖拽（松手边缘吸附）/ 单击 Q 弹缩放 / 双击开主窗 / 右键交互菜单；
 //! 内容：↓↑ 实时速率（2s 直读内核 TrafficStats，无 IPC），无流量显示闪电标。
 
-#![cfg(windows)]
-
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicIsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 use tauri::Manager as _;
@@ -50,8 +48,9 @@ static BALL_HWND: AtomicIsize = AtomicIsize::new(0);
 static DARK: AtomicBool = AtomicBool::new(false);
 static BOUNCE_FRAME: AtomicI32 = AtomicI32::new(0);
 /// 左键按下状态：光标起点（屏幕坐标）、球起点、是否已进拖拽。
+type DownState = (i32, i32, i32, i32, bool);
 /// Option::None = 空闲（鼠标未按下）——悬停移动严禁触发拖拽（否则球被光标"吓跑"）
-static DOWN_STATE: Mutex<Option<(i32, i32, i32, i32, bool)>> = Mutex::new(None);
+static DOWN_STATE: Mutex<Option<DownState>> = Mutex::new(None);
 static GDIP_TOKEN: OnceLock<usize> = OnceLock::new();
 
 fn gdip_init() {

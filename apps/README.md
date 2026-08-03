@@ -131,7 +131,7 @@ ui/ (HTML+JS)  ──IPC──>  src/lib.rs (Tauri commands)
                               │
                               ├─ connect_node / disconnect_node / list_nodes
                               ├─ start_proxy / stop_proxy / proxy_status
-                              ├─ list_credentials（~/.agile-net/credentials.json, 0600）
+                              ├─ list_credentials（密码存 OS keyring，credentials.json 只留元数据，0600 文件回退）
                               └─ parse_connect_url（agilenet:// 接入链接解析）
                               │
                         agile-net-client 引擎（anet-svc client 同源）

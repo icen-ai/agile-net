@@ -25,13 +25,13 @@
 
 <div id="login-view">
   <div class="login-card">
-    <button class="ghost small" id="login-theme-btn" onclick="toggleTheme()" title="切换主题"></button>
+    <button class="ghost small" id="login-theme-btn" title="切换主题"></button>
     <div class="logo"><i data-ic="zap" data-sz="22"></i></div>
     <h1>AgileNet</h1>
     <p>企业级网络穿透与代理链路由 · 管理控制台</p>
     <input id="login-user" type="text" placeholder="用户名" autocomplete="username">
     <input id="login-pass" type="password" placeholder="密码" autocomplete="current-password">
-    <button id="login-btn" onclick="doLogin()">登 录</button>
+    <button id="login-btn">登 录</button>
     <div class="login-err" id="login-err"></div>
   </div>
 </div>
@@ -40,19 +40,19 @@
 <div class="shell">
   <aside class="sidebar">
     <div class="brand"><span class="logo"><i data-ic="zap" data-sz="15"></i></span><span class="brand-text">AgileNet</span></div>
-    <div class="nav-item" data-view="dashboard" onclick="switchView('dashboard')"><i data-ic="layout-dashboard"></i><span class="nav-label">概览</span></div>
-    <div class="nav-item" data-view="accounts" onclick="switchView('accounts')"><i data-ic="users"></i><span class="nav-label">客户端账号</span></div>
-    <div class="nav-item" data-view="groups" onclick="switchView('groups')"><i data-ic="shield"></i><span class="nav-label">权限组</span></div>
-    <div class="nav-item" data-view="rules" onclick="switchView('rules')"><i data-ic="route"></i><span class="nav-label">规则</span></div>
-    <div class="nav-item" data-view="fanin" onclick="switchView('fanin')"><i data-ic="orbit"></i><span class="nav-label">扇入</span></div>
-    <div class="nav-item" data-view="connectors" onclick="switchView('connectors')"><i data-ic="git-fork"></i><span class="nav-label">扇出</span></div>
-    <div class="nav-item" data-view="audit" onclick="switchView('audit')"><i data-ic="scroll-text"></i><span class="nav-label">审计日志</span></div>
-    <div class="nav-item" data-view="settings" onclick="switchView('settings')"><i data-ic="settings"></i><span class="nav-label">端点设置</span></div>
+    <div class="nav-item" data-view="dashboard"><i data-ic="layout-dashboard"></i><span class="nav-label">概览</span></div>
+    <div class="nav-item" data-view="accounts"><i data-ic="users"></i><span class="nav-label">客户端账号</span></div>
+    <div class="nav-item" data-view="groups"><i data-ic="shield"></i><span class="nav-label">权限组</span></div>
+    <div class="nav-item" data-view="rules"><i data-ic="route"></i><span class="nav-label">规则</span></div>
+    <div class="nav-item" data-view="fanin"><i data-ic="orbit"></i><span class="nav-label">扇入</span></div>
+    <div class="nav-item" data-view="connectors"><i data-ic="git-fork"></i><span class="nav-label">扇出</span></div>
+    <div class="nav-item" data-view="audit"><i data-ic="scroll-text"></i><span class="nav-label">审计日志</span></div>
+    <div class="nav-item" data-view="settings"><i data-ic="settings"></i><span class="nav-label">端点设置</span></div>
     <div class="sidebar-footer">
       <div id="me-info">-</div>
       <div style="margin-top:8px;display:flex;gap:6px">
-        <button class="ghost small" onclick="toggleTheme()" id="theme-btn"></button>
-        <button class="ghost small" onclick="doLogout()"><i data-ic="log-out" data-sz="13"></i>退出登录</button>
+        <button class="ghost small" id="theme-btn"></button>
+        <button class="ghost small" id="logout-btn"><i data-ic="log-out" data-sz="13"></i>退出登录</button>
       </div>
     </div>
   </aside>
@@ -60,6 +60,8 @@
 </div>
 </div>
 
+<script src="/ui/icons.js"></script>
+<script src="/ui/agutil.js"></script>
 <script src="/ui/agchart.js"></script>
 <script src="/ui/app.js"></script>
 </body>

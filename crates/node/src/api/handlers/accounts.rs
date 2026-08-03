@@ -5,7 +5,7 @@
 
 use super::audit;
 use crate::api::extractors::{AdminAuth, ClientIp};
-use crate::api::{ApiState, codes, err, ok, ok_created};
+use crate::api::{ApiState, codes, err, ok, ok_created, offload};
 use crate::db::{generate_password, hash_password};
 use axum::{
     Json,
@@ -33,13 +33,18 @@ pub async fn list_accounts(
     Query(q): Query<ListQuery>,
 ) -> Response {
     let (page, page_size) = crate::api::normalize_page(q.page, q.page_size);
-    match state.db.list_accounts(
-        page,
-        page_size,
-        q.group_id.as_deref(),
-        q.enabled,
-        q.q.as_deref(),
-    ) {
+    let result = state
+        .db_call(move |db| {
+            db.list_accounts(
+                page,
+                page_size,
+                q.group_id.as_deref(),
+                q.enabled,
+                q.q.as_deref(),
+            )
+        })
+        .await;
+    match result {
         Ok((mut items, total)) => {
             // 在线判定：数据面隧道会话存在，或最近 3 分钟有心跳
             let now = chrono::Utc::now();
@@ -115,25 +120,33 @@ pub async fn create_account(
             "remark too long (max 256)",
         );
     }
-    if state
-        .db
-        .get_account_by_username(username)
+    let uname = username.to_string();
+    let exists = state
+        .db_call(move |db| db.get_account_by_username(&uname))
+        .await
         .unwrap_or(None)
-        .is_some()
-    {
+        .is_some();
+    if exists {
         return err(
             StatusCode::CONFLICT,
             codes::DUPLICATE,
             "username already exists",
         );
     }
-    if state.db.get_group(&req.group_id).unwrap_or(None).is_none() {
+    let gid = req.group_id.clone();
+    let group_exists = state
+        .db_call(move |db| db.get_group(&gid))
+        .await
+        .unwrap_or(None)
+        .is_some();
+    if !group_exists {
         return err(StatusCode::NOT_FOUND, codes::NOT_FOUND, "group not found");
     }
 
-    // 服务端生成强密码（sk 风格）
+    // 服务端生成强密码（sk 风格）；argon2id 哈希卸载到阻塞线程池
     let password = generate_password();
-    let password_hash = match hash_password(&password) {
+    let password_plain = password.clone();
+    let password_hash = match offload(move || hash_password(&password_plain)).await {
         Ok(h) => h,
         Err(e) => {
             return err(
@@ -144,15 +157,20 @@ pub async fn create_account(
         }
     };
 
-    match state.db.create_account_with_admin(
-        username,
-        &password_hash,
-        &req.group_id,
-        &req.remark,
-        req.admin_console,
-    ) {
+    let (uname, group_id, remark) = (
+        username.to_string(),
+        req.group_id.clone(),
+        req.remark.clone(),
+    );
+    let admin_console = req.admin_console;
+    let created = state
+        .db_call(move |db| {
+            db.create_account_with_admin(&uname, &password_hash, &group_id, &remark, admin_console)
+        })
+        .await;
+    match created {
         Ok(account) => {
-            let mut connect_url = build_connect_url(&state, username, &password);
+            let mut connect_url = build_connect_url(&state, username, &password).await;
             if req.admin_console {
                 // 管理版接入链接变体：持链接者可管理本节点（强警示 + 签发审计）
                 connect_url.push_str("&admin=1");
@@ -163,7 +181,8 @@ pub async fn create_account(
                     "account.issue_admin_link",
                     Some(&account.id),
                     username,
-                );
+                )
+                .await;
             }
             state.remember_connect_url(&account.id, &connect_url);
             audit(
@@ -173,8 +192,14 @@ pub async fn create_account(
                 "account.create",
                 Some(&account.id),
                 username,
-            );
-            let group = state.db.get_group(&req.group_id).ok().flatten();
+            )
+            .await;
+            let gid = req.group_id.clone();
+            let group = state
+                .db_call(move |db| db.get_group(&gid))
+                .await
+                .ok()
+                .flatten();
             ok_created(json!({
                 "id": account.id,
                 "username": account.username,
@@ -210,7 +235,8 @@ pub async fn update_account(
     Path(id): Path<String>,
     Json(req): Json<UpdateAccountRequest>,
 ) -> Response {
-    let existing = match state.db.get_account(&id) {
+    let aid = id.clone();
+    let existing = match state.db_call(move |db| db.get_account(&aid)).await {
         Ok(Some(a)) => a,
         Ok(None) => return err(StatusCode::NOT_FOUND, codes::NOT_FOUND, "account not found"),
         Err(e) => {
@@ -222,19 +248,32 @@ pub async fn update_account(
         }
     };
 
-    if let Some(gid) = &req.group_id
-        && state.db.get_group(gid).unwrap_or(None).is_none()
-    {
-        return err(StatusCode::NOT_FOUND, codes::NOT_FOUND, "group not found");
+    if let Some(gid) = &req.group_id {
+        let gid = gid.clone();
+        let group_exists = state
+            .db_call(move |db| db.get_group(&gid))
+            .await
+            .unwrap_or(None)
+            .is_some();
+        if !group_exists {
+            return err(StatusCode::NOT_FOUND, codes::NOT_FOUND, "group not found");
+        }
     }
 
-    if let Err(e) = state.db.update_account_full(
-        &id,
-        req.group_id.as_deref(),
-        req.enabled,
-        req.remark.as_deref(),
-        req.admin_console,
-    ) {
+    let (aid, group_id, remark) = (id.clone(), req.group_id.clone(), req.remark.clone());
+    let (enabled, admin_console) = (req.enabled, req.admin_console);
+    if let Err(e) = state
+        .db_call(move |db| {
+            db.update_account_full(
+                &aid,
+                group_id.as_deref(),
+                enabled,
+                remark.as_deref(),
+                admin_console,
+            )
+        })
+        .await
+    {
         return err(
             StatusCode::INTERNAL_SERVER_ERROR,
             codes::INTERNAL,
@@ -251,7 +290,8 @@ pub async fn update_account(
             "account.issue_admin_link",
             Some(&id),
             &existing.username,
-        );
+        )
+        .await;
     } else if req.admin_console == Some(false) && existing.admin_console {
         if let Some(listener) = &state.runtime.listener {
             listener.disconnect_client(&id);
@@ -263,13 +303,19 @@ pub async fn update_account(
             "account.update",
             Some(&id),
             &existing.username,
-        );
+        )
+        .await;
     }
 
     // 禁用：吊销全部 token、清除 tunnel_token，并立即断开活跃隧道会话
     if req.enabled == Some(false) && existing.enabled {
-        let _ = state.jwt.revoke_all(&id);
-        let _ = state.db.set_account_tunnel_token(&id, None);
+        let jwt = state.jwt.clone();
+        let aid = id.clone();
+        let _ = offload(move || jwt.revoke_all(&aid)).await;
+        let aid = id.clone();
+        let _ = state
+            .db_call(move |db| db.set_account_tunnel_token(&aid, None))
+            .await;
         if let Some(listener) = &state.runtime.listener {
             let kicked = listener.disconnect_client(&id);
             if kicked > 0 {
@@ -283,7 +329,8 @@ pub async fn update_account(
             "account.disable",
             Some(&id),
             &existing.username,
-        );
+        )
+        .await;
     } else if req.enabled == Some(true) && !existing.enabled {
         audit(
             &state,
@@ -292,10 +339,11 @@ pub async fn update_account(
             "account.enable",
             Some(&id),
             &existing.username,
-        );
+        )
+        .await;
     }
     if req.group_id.is_some() {
-        let _ = state.db.bump_config_version();
+        let _ = state.db_call(|db| db.bump_config_version()).await;
     }
     if req.group_id.is_some() || req.remark.is_some() {
         audit(
@@ -305,10 +353,11 @@ pub async fn update_account(
             "account.update",
             Some(&id),
             &existing.username,
-        );
+        )
+        .await;
     }
 
-    match state.db.get_account(&id) {
+    match state.db_call(move |db| db.get_account(&id)).await {
         Ok(Some(a)) => ok(a),
         _ => err(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -324,7 +373,8 @@ pub async fn reset_password(
     ClientIp(ip): ClientIp,
     Path(id): Path<String>,
 ) -> Response {
-    let account = match state.db.get_account(&id) {
+    let aid = id.clone();
+    let account = match state.db_call(move |db| db.get_account(&aid)).await {
         Ok(Some(a)) => a,
         Ok(None) => return err(StatusCode::NOT_FOUND, codes::NOT_FOUND, "account not found"),
         Err(e) => {
@@ -336,8 +386,10 @@ pub async fn reset_password(
         }
     };
 
+    // argon2id 哈希卸载到阻塞线程池
     let password = generate_password();
-    let password_hash = match hash_password(&password) {
+    let password_plain = password.clone();
+    let password_hash = match offload(move || hash_password(&password_plain)).await {
         Ok(h) => h,
         Err(e) => {
             return err(
@@ -347,7 +399,11 @@ pub async fn reset_password(
             );
         }
     };
-    if let Err(e) = state.db.set_account_password(&id, &password_hash) {
+    let aid = id.clone();
+    if let Err(e) = state
+        .db_call(move |db| db.set_account_password(&aid, &password_hash))
+        .await
+    {
         return err(
             StatusCode::INTERNAL_SERVER_ERROR,
             codes::INTERNAL,
@@ -355,13 +411,18 @@ pub async fn reset_password(
         );
     }
     // 旧凭据立即失效 + 断开活跃隧道会话
-    let _ = state.jwt.revoke_all(&id);
-    let _ = state.db.set_account_tunnel_token(&id, None);
+    let jwt = state.jwt.clone();
+    let aid = id.clone();
+    let _ = offload(move || jwt.revoke_all(&aid)).await;
+    let aid = id.clone();
+    let _ = state
+        .db_call(move |db| db.set_account_tunnel_token(&aid, None))
+        .await;
     if let Some(listener) = &state.runtime.listener {
         listener.disconnect_client(&id);
     }
 
-    let connect_url = build_connect_url(&state, &account.username, &password);
+    let connect_url = build_connect_url(&state, &account.username, &password).await;
     state.remember_connect_url(&id, &connect_url);
     audit(
         &state,
@@ -370,7 +431,8 @@ pub async fn reset_password(
         "account.reset_password",
         Some(&id),
         &account.username,
-    );
+    )
+    .await;
 
     ok(json!({
         "password": password,
@@ -418,7 +480,8 @@ pub async fn delete_account(
     ClientIp(ip): ClientIp,
     Path(id): Path<String>,
 ) -> Response {
-    let account = match state.db.get_account(&id) {
+    let aid = id.clone();
+    let account = match state.db_call(move |db| db.get_account(&aid)).await {
         Ok(Some(a)) => a,
         Ok(None) => return err(StatusCode::NOT_FOUND, codes::NOT_FOUND, "account not found"),
         Err(e) => {
@@ -429,20 +492,23 @@ pub async fn delete_account(
             );
         }
     };
-    match state.db.delete_account(&id) {
+    match state.db_call(move |db| db.delete_account(&id)).await {
         Ok(_) => {
-            let _ = state.jwt.revoke_all(&id);
+            let jwt = state.jwt.clone();
+            let aid = account.id.clone();
+            let _ = offload(move || jwt.revoke_all(&aid)).await;
             if let Some(listener) = &state.runtime.listener {
-                listener.disconnect_client(&id);
+                listener.disconnect_client(&account.id);
             }
             audit(
                 &state,
                 &claims,
                 &ip,
                 "account.delete",
-                Some(&id),
+                Some(&account.id),
                 &account.username,
-            );
+            )
+            .await;
             ok(json!(null))
         }
         Err(e) => err(
@@ -455,8 +521,8 @@ pub async fn delete_account(
 
 /// 生成客户端接入 URL（指向管理 API 端点，数据面端点由 config 下发）。
 /// 携带证书指纹（若静态证书模式），客户端据此一键做证书固定，无需 insecure。
-fn build_connect_url(state: &ApiState, username: &str, password: &str) -> String {
-    let (server, port) = state.public_api_endpoint();
+async fn build_connect_url(state: &ApiState, username: &str, password: &str) -> String {
+    let (server, port) = state.public_api_endpoint().await;
     let mut url = format!(
         "agilenet://connect?server={server}&port={port}&account={username}&password={password}&tls=1"
     );

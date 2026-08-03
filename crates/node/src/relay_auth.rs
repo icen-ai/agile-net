@@ -193,13 +193,14 @@ mod tests {
         let db = Database::in_memory().unwrap();
         let gid = mk_group_with_rule(&db, "peers", "10.12.0.0/16");
         let token = "psk_test-token-with-group";
-        db.create_relay_token_with_group(
+        db.create_relay_token_with_quota(
             &sha256_hex(token.as_bytes()),
             "psk_test",
             "",
             false,
             "full",
             Some(&gid),
+            None,
         )
         .unwrap();
 
@@ -220,7 +221,7 @@ mod tests {
     fn node_token_without_group_stays_unrestricted() {
         let db = Database::in_memory().unwrap();
         let token = "psk_test-token-no-group";
-        db.create_relay_token_full(&sha256_hex(token.as_bytes()), "psk_test", "", false, "full")
+        db.create_relay_token_with_quota(&sha256_hex(token.as_bytes()), "psk_test", "", false, "full", None, None)
             .unwrap();
 
         let validator = DbTokenValidator::new(db);

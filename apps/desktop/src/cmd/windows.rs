@@ -23,10 +23,13 @@ pub(crate) fn normalize_window_geometry(window: &tauri::WebviewWindow) {
 
 // ==================== 悬浮球窗口（仅桌面） ====================
 
-/// 悬浮球锚点信息：球体可视区左上物理坐标 (x, y)、球可视高、球所在显示器工作区与缩放因子。
+/// 悬浮球锚点：球体可视区左上物理坐标 (x, y)、球可视高、球所在显示器工作区 (x, y, w, h) 与缩放因子。
+pub(crate) type BallAnchor = (f64, f64, f64, (f64, f64, f64, f64), f64);
+
+/// 读取悬浮球锚点（字段语义见 BallAnchor）。
 /// 用 inner_position/inner_size：outer_* 在 Windows 含 DWM 隐形边框（72→170），会算歪菜单位置。
 /// 球不存在返回 None。
-pub(crate) fn ball_anchor(app: &tauri::AppHandle) -> Option<(f64, f64, f64, (f64, f64, f64, f64), f64)> {
+pub(crate) fn ball_anchor(app: &tauri::AppHandle) -> Option<BallAnchor> {
     // Windows 原生球：位置由 floatball 静态槽提供（无 webview 窗口）
     #[cfg(windows)]
     if let Some((bx, by, bs)) = floatball::rect() {
@@ -228,7 +231,7 @@ pub(crate) async fn float_open_menu_impl(app: &tauri::AppHandle) -> Result<(), S
             let _ = w.close();
             return Ok(());
         }
-        if let Some(p) = position(&app) {
+        if let Some(p) = position(app) {
             let _ = w.set_position(p);
         }
         let _ = w.show();
@@ -250,7 +253,7 @@ pub(crate) async fn float_open_menu_impl(app: &tauri::AppHandle) -> Result<(), S
     .build()
     .map_err(map_err)?;
     crate::arm_blur_close(&window, true);
-    if let Some(p) = position(&app) {
+    if let Some(p) = position(app) {
         let _ = window.set_position(p);
     }
     let _ = window.show();

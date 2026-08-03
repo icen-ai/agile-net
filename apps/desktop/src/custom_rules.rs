@@ -460,8 +460,8 @@ impl SystemHosts {
         }
     }
 
-    /// 指定路径（测试注入；非测试构建中仅测试使用，豁免 dead_code）。
-    #[allow(dead_code)]
+    /// 指定路径（仅测试注入用，随测试构建编译）。
+    #[cfg(test)]
     pub fn with_path(path: PathBuf) -> Self {
         Self { path }
     }

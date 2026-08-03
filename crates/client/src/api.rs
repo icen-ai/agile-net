@@ -9,6 +9,7 @@
 
 use crate::{AgileNetClient, ConnectParams, Credential, CredentialStore, NodeState};
 
+use agile_net_core::util::{LoginBlockReason, LoginRateLimiter};
 use anyhow::Result;
 use axum::{
     Json, Router,
@@ -18,11 +19,10 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{delete, get, post},
 };
-use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// 宿主注入的 Web 管理鉴权（密码哈希存储、JWT 密钥、审计落盘由宿主实现）。
 pub trait ClientWebAuth: Send + Sync {
@@ -461,86 +461,6 @@ fn rand_u64() -> u64 {
         .unwrap_or_default()
         .subsec_nanos() as u64
         ^ (std::process::id() as u64) << 32
-}
-
-// ==================== 登录限流 ====================
-
-#[derive(Clone)]
-struct LoginRateLimiter {
-    inner: Arc<DashMap<IpAddr, LoginAttempts>>,
-}
-
-struct LoginAttempts {
-    window_start: Instant,
-    attempts: u32,
-    failures: u32,
-    locked_until: Option<Instant>,
-}
-
-enum LoginBlockReason {
-    RateLimited,
-    Locked(Duration),
-}
-
-impl LoginRateLimiter {
-    const MAX_PER_MINUTE: u32 = 5;
-    const LOCK_THRESHOLD: u32 = 5;
-    const LOCK_MINUTES: u64 = 15;
-
-    fn new() -> Self {
-        Self {
-            inner: Arc::new(DashMap::new()),
-        }
-    }
-
-    fn check(&self, ip: IpAddr) -> std::result::Result<(), LoginBlockReason> {
-        // 惰性清扫：条目数超 1024 时淘汰 30 分钟未活动的失败记录（防内存无上限增长）
-        if self.inner.len() > 1024 {
-            self.inner
-                .retain(|_, e| e.window_start.elapsed() < Duration::from_secs(30 * 60));
-        }
-        let mut entry = self.inner.entry(ip).or_insert(LoginAttempts {
-            window_start: Instant::now(),
-            attempts: 0,
-            failures: 0,
-            locked_until: None,
-        });
-        let e = entry.value_mut();
-        if let Some(until) = e.locked_until {
-            if until > Instant::now() {
-                return Err(LoginBlockReason::Locked(until - Instant::now()));
-            }
-            e.locked_until = None;
-            e.failures = 0;
-        }
-        if e.window_start.elapsed() > Duration::from_secs(60) {
-            e.window_start = Instant::now();
-            e.attempts = 0;
-        }
-        e.attempts += 1;
-        if e.attempts > Self::MAX_PER_MINUTE {
-            return Err(LoginBlockReason::RateLimited);
-        }
-        Ok(())
-    }
-
-    fn record_failure(&self, ip: IpAddr) {
-        let mut entry = self.inner.entry(ip).or_insert(LoginAttempts {
-            window_start: Instant::now(),
-            attempts: 0,
-            failures: 0,
-            locked_until: None,
-        });
-        let e = entry.value_mut();
-        e.failures += 1;
-        if e.failures >= Self::LOCK_THRESHOLD {
-            e.locked_until = Some(Instant::now() + Duration::from_secs(Self::LOCK_MINUTES * 60));
-        }
-    }
-
-    fn record_success(&self, ip: IpAddr) {
-        self.inner.remove(&ip);
-    }
 }
 
 // ==================== 命令映射（与桌面 IPC 同语义） ====================

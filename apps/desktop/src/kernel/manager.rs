@@ -192,35 +192,40 @@ pub struct KernelStatus {
     pub script_errors: Vec<(String, String)>,
 }
 
+/// 内核托管可变状态（单锁聚合，消除槽位样板；锁均为语句级持有，严禁跨 await）。
+#[derive(Default)]
+struct KernelState {
+    /// supervisor 停止信号（槽位作存活标记，由 supervisor 收尾清除）
+    stop_tx: Option<tokio::sync::mpsc::Sender<()>>,
+    last_error: String,
+    /// /traffic WS 采集停止信号
+    traffic_stop: Option<tokio::sync::mpsc::Sender<()>>,
+    /// /connections 采集停止信号
+    conns_stop: Option<tokio::sync::mpsc::Sender<()>>,
+    /// /logs 采集停止信号
+    logs_stop: Option<tokio::sync::mpsc::Sender<()>>,
+    /// 最近一次启动时覆写脚本失败摘要（供前端灵动岛告警展示）
+    script_errors: Vec<(String, String)>,
+}
+
 /// 内核进程托管：启动/停止/崩溃退避重启（上限 5 次后放弃并审计）。
 /// 子进程由 supervisor 任务独占持有，停止经 mpsc 信号（杜绝跨 await 持锁死锁）。
 pub struct KernelManager {
-    stop_tx: Arc<std::sync::Mutex<Option<tokio::sync::mpsc::Sender<()>>>>,
+    state: Arc<std::sync::Mutex<KernelState>>,
     restart_count: Arc<AtomicU32>,
-    last_error: Arc<std::sync::Mutex<String>>,
     /// /traffic WS 累计器（内核启动时挂任务，停止即清零）
     traffic: Arc<TrafficStats>,
-    traffic_stop: Arc<std::sync::Mutex<Option<tokio::sync::mpsc::Sender<()>>>>,
     /// /connections 连接跟踪（活跃 map + 已关闭环 + 命中聚合）
     tracker: Arc<ConnTracker>,
-    conns_stop: Arc<std::sync::Mutex<Option<tokio::sync::mpsc::Sender<()>>>>,
-    logs_stop: Arc<std::sync::Mutex<Option<tokio::sync::mpsc::Sender<()>>>>,
-    /// 最近一次启动时覆写脚本失败摘要（供前端灵动岛告警展示）
-    script_errors: Arc<std::sync::Mutex<Vec<(String, String)>>>,
 }
 
 impl Default for KernelManager {
     fn default() -> Self {
         Self {
-            stop_tx: Arc::new(std::sync::Mutex::new(None)),
+            state: Arc::new(std::sync::Mutex::new(KernelState::default())),
             restart_count: Arc::new(AtomicU32::new(0)),
-            last_error: Arc::new(std::sync::Mutex::new(String::new())),
             traffic: Arc::new(TrafficStats::default()),
-            traffic_stop: Arc::new(std::sync::Mutex::new(None)),
             tracker: Arc::new(ConnTracker::default()),
-            conns_stop: Arc::new(std::sync::Mutex::new(None)),
-            logs_stop: Arc::new(std::sync::Mutex::new(None)),
-            script_errors: Arc::new(std::sync::Mutex::new(Vec::new())),
         }
     }
 }
@@ -228,7 +233,7 @@ impl Default for KernelManager {
 impl KernelManager {
     /// 启动内核（重写配置 → spawn → supervisor 监控）。
     pub async fn start(&self) -> Result<(), String> {
-        if self.stop_tx.lock().unwrap().is_some() {
+        if self.state.lock().unwrap().stop_tx.is_some() {
             return Ok(());
         }
         #[cfg(windows)]
@@ -246,20 +251,20 @@ impl KernelManager {
         // TUN 骨架防环约束（无 mixed-port / ANET-IN 出站 / MATCH 指向）必须完整保留。
         let settings = roles::RoleSettings::load();
         let effective = if settings.tun_mode {
-            *self.script_errors.lock().unwrap() = Vec::new();
+            self.state.lock().unwrap().script_errors = Vec::new();
             render_config(&store, &settings.sub_mode, true)
         } else {
             let base = render_config(&store, &settings.sub_mode, false);
             let (effective, script_fails) =
                 crate::sub_script::apply_scripts(&base, &settings.sub_scripts);
-            *self.script_errors.lock().unwrap() = script_fails;
+            self.state.lock().unwrap().script_errors = script_fails;
             effective
         };
         check_no_loop(&effective, settings.tun_mode)?;
         std::fs::write(config_path(), effective).map_err(|e| e.to_string())?;
 
         let (tx, rx) = tokio::sync::mpsc::channel::<()>(1);
-        *self.stop_tx.lock().unwrap() = Some(tx);
+        self.state.lock().unwrap().stop_tx = Some(tx);
         self.restart_count.store(0, Ordering::SeqCst);
         self.supervise(rx);
 
@@ -286,7 +291,7 @@ impl KernelManager {
 
     /// 挂 /traffic WS 流量累计任务（幂等；内核停止时经信号终止并清零）。
     fn start_traffic(&self) {
-        if self.traffic_stop.lock().unwrap().is_some() {
+        if self.state.lock().unwrap().traffic_stop.is_some() {
             return;
         }
         let store = load_store();
@@ -295,12 +300,12 @@ impl KernelManager {
         }
         self.traffic.reset();
         let (tx, rx) = tokio::sync::mpsc::channel::<()>(1);
-        *self.traffic_stop.lock().unwrap() = Some(tx);
+        self.state.lock().unwrap().traffic_stop = Some(tx);
         let stats = self.traffic.clone();
-        let slot = self.traffic_stop.clone();
+        let state = self.state.clone();
         tokio::spawn(async move {
             traffic_ws_loop(store.secret, stats, rx).await;
-            *slot.lock().unwrap() = None;
+            state.lock().unwrap().traffic_stop = None;
         });
     }
 
@@ -313,11 +318,11 @@ impl KernelManager {
         }
         self.tracker.reset();
         // /connections：全量快照 → 活跃 map + 已关闭环 + 命中聚合
-        if self.conns_stop.lock().unwrap().is_none() {
+        if self.state.lock().unwrap().conns_stop.is_none() {
             let (tx, rx) = tokio::sync::mpsc::channel::<()>(1);
-            *self.conns_stop.lock().unwrap() = Some(tx);
+            self.state.lock().unwrap().conns_stop = Some(tx);
             let tracker = self.tracker.clone();
-            let slot = self.conns_stop.clone();
+            let state = self.state.clone();
             let secret = store.secret.clone();
             tokio::spawn(async move {
                 collect_ws_loop(secret, "/connections", rx, move |payload| {
@@ -326,15 +331,15 @@ impl KernelManager {
                     }
                 })
                 .await;
-                *slot.lock().unwrap() = None;
+                state.lock().unwrap().conns_stop = None;
             });
         }
         // /logs?level=info：内核日志 ring buffer
-        if self.logs_stop.lock().unwrap().is_none() {
+        if self.state.lock().unwrap().logs_stop.is_none() {
             let (tx, rx) = tokio::sync::mpsc::channel::<()>(1);
-            *self.logs_stop.lock().unwrap() = Some(tx);
+            self.state.lock().unwrap().logs_stop = Some(tx);
             let tracker = self.tracker.clone();
-            let slot = self.logs_stop.clone();
+            let state = self.state.clone();
             let secret = store.secret.clone();
             tokio::spawn(async move {
                 collect_ws_loop(secret, "/logs?level=info", rx, move |payload| {
@@ -343,7 +348,7 @@ impl KernelManager {
                     }
                 })
                 .await;
-                *slot.lock().unwrap() = None;
+                state.lock().unwrap().logs_stop = None;
             });
         }
     }
@@ -398,16 +403,15 @@ impl KernelManager {
     /// supervisor：独占子进程；崩溃指数退避重启（1/2/4/8/16s，上限 5 次）；
     /// 收到停止信号即 kill 并退出，收尾清理句柄。
     fn supervise(&self, mut rx: tokio::sync::mpsc::Receiver<()>) {
-        let stop_tx = self.stop_tx.clone();
+        let state = self.state.clone();
         let restart_count = self.restart_count.clone();
-        let last_error = self.last_error.clone();
         tokio::spawn(async move {
             let mut restarts = 0u32;
             loop {
                 let mut child = match Self::spawn(&kernel_bin_path()) {
                     Ok(c) => c,
                     Err(e) => {
-                        *last_error.lock().unwrap() = e;
+                        state.lock().unwrap().last_error = e;
                         break;
                     }
                 };
@@ -416,7 +420,7 @@ impl KernelManager {
                         restarts += 1;
                         restart_count.store(restarts, Ordering::SeqCst);
                         if let Ok(status) = &exit {
-                            *last_error.lock().unwrap() = format!("内核退出: {status}");
+                            state.lock().unwrap().last_error = format!("内核退出: {status}");
                         }
                         if restarts > 5 {
                             roles::audit(
@@ -444,30 +448,33 @@ impl KernelManager {
                     }
                 }
             }
-            *stop_tx.lock().unwrap() = None;
+            state.lock().unwrap().stop_tx = None;
         });
     }
 
     /// 停止内核（经 clone 的发送端发信号；槽位作存活标记由 supervisor 收尾清除，等待上限 5s）。
     pub async fn stop(&self) {
-        Self::drain_stop(&self.stop_tx).await;
+        self.drain_stop(|s| &mut s.stop_tx).await;
         // 流量/连接/日志采集任务随内核停止：发信号并等待任务退出自清槽位（上限 5s；
         // 保证 stop→start 快速重启时挂载函数看到的是已清槽位，新旧任务不打架）
-        Self::drain_stop(&self.traffic_stop).await;
-        Self::drain_stop(&self.conns_stop).await;
-        Self::drain_stop(&self.logs_stop).await;
+        self.drain_stop(|s| &mut s.traffic_stop).await;
+        self.drain_stop(|s| &mut s.conns_stop).await;
+        self.drain_stop(|s| &mut s.logs_stop).await;
         self.traffic.reset();
         self.tracker.reset();
         roles::audit("gui.kernel_stop", serde_json::json!({}));
     }
 
-    /// 经槽位发停止信号并等待任务自清槽位（上限 5s）。
-    async fn drain_stop(slot: &Arc<std::sync::Mutex<Option<tokio::sync::mpsc::Sender<()>>>>) {
-        let tx = slot.lock().unwrap().clone();
+    /// 经槽位发停止信号并等待任务自清槽位（上限 5s；pick 从聚合状态取目标槽位，锁不跨 await）。
+    async fn drain_stop(
+        &self,
+        pick: impl Fn(&mut KernelState) -> &mut Option<tokio::sync::mpsc::Sender<()>>,
+    ) {
+        let tx = pick(&mut self.state.lock().unwrap()).clone();
         if let Some(tx) = tx {
             let _ = tx.send(()).await;
             for _ in 0..50 {
-                if slot.lock().unwrap().is_none() {
+                if pick(&mut self.state.lock().unwrap()).is_none() {
                     break;
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -476,7 +483,7 @@ impl KernelManager {
     }
 
     pub async fn running(&self) -> bool {
-        self.stop_tx.lock().unwrap().is_some()
+        self.state.lock().unwrap().stop_tx.is_some()
     }
 
     pub async fn status(&self) -> KernelStatus {
@@ -489,14 +496,15 @@ impl KernelManager {
         } else {
             String::new()
         };
+        let state = self.state.lock().unwrap();
         KernelStatus {
             supported: kernel_asset().is_some(),
             installed: kernel_bin_path().exists(),
             running,
             version,
             restart_count: self.restart_count.load(Ordering::Relaxed),
-            last_error: self.last_error.lock().unwrap().clone(),
-            script_errors: self.script_errors.lock().unwrap().clone(),
+            last_error: state.last_error.clone(),
+            script_errors: state.script_errors.clone(),
         }
     }
 }

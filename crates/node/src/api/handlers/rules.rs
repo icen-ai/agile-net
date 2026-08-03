@@ -29,8 +29,8 @@ pub async fn list_rules(
 ) -> Response {
     let (page, page_size) = crate::api::normalize_page(q.page, q.page_size);
     match state
-        .db
-        .list_rules(page, page_size, q.rule_type.as_deref(), q.q.as_deref())
+        .db_call(move |db| db.list_rules(page, page_size, q.rule_type.as_deref(), q.q.as_deref()))
+        .await
     {
         Ok((items, total)) => ok(json!({
             "items": items,
@@ -103,11 +103,12 @@ pub async fn create_rule(
         Err(msg) => return err(StatusCode::BAD_REQUEST, codes::VALIDATION_FAILED, msg),
     };
 
-    if state
-        .db
-        .rule_exists(&req.rule_type, &value)
-        .unwrap_or(false)
-    {
+    let (rule_type, val) = (req.rule_type.clone(), value.clone());
+    let exists = state
+        .db_call(move |db| db.rule_exists(&rule_type, &val))
+        .await
+        .unwrap_or(false);
+    if exists {
         return err(
             StatusCode::CONFLICT,
             codes::DUPLICATE,
@@ -115,12 +116,17 @@ pub async fn create_rule(
         );
     }
 
+    // 创建 + 配置版本递增合并为一次阻塞任务
+    let (rule_type, resolve, remark) = (req.rule_type.clone(), req.resolve, req.remark.clone());
     match state
-        .db
-        .create_rule(&req.rule_type, &value, req.resolve, &req.remark)
+        .db_call(move |db| {
+            let rule = db.create_rule(&rule_type, &value, resolve, &remark)?;
+            let _ = db.bump_config_version();
+            Ok(rule)
+        })
+        .await
     {
         Ok(rule) => {
-            let _ = state.db.bump_config_version();
             audit(
                 &state,
                 &claims,
@@ -128,7 +134,8 @@ pub async fn create_rule(
                 "rule.create",
                 Some(&rule.id),
                 &req.remark,
-            );
+            )
+            .await;
             ok_created(rule)
         }
         Err(e) => err(
@@ -153,7 +160,8 @@ pub async fn update_rule(
     Path(id): Path<String>,
     Json(req): Json<UpdateRuleRequest>,
 ) -> Response {
-    let existing = match state.db.get_rule(&id) {
+    let rid = id.clone();
+    let existing = match state.db_call(move |db| db.get_rule(&rid)).await {
         Ok(Some(r)) => r,
         Ok(None) => {
             return err(StatusCode::NOT_FOUND, codes::NOT_FOUND, "rule not found");
@@ -178,36 +186,41 @@ pub async fn update_rule(
             Ok(v) => v,
             Err(msg) => return err(StatusCode::BAD_REQUEST, codes::VALIDATION_FAILED, msg),
         };
-        if normalized != existing.value
-            && state
-                .db
-                .rule_exists(&existing.rule_type, &normalized)
-                .unwrap_or(false)
-        {
-            return err(
-                StatusCode::CONFLICT,
-                codes::DUPLICATE,
-                "rule with same type and value already exists",
-            );
+        if normalized != existing.value {
+            let (rule_type, val) = (existing.rule_type.clone(), normalized);
+            let exists = state
+                .db_call(move |db| db.rule_exists(&rule_type, &val))
+                .await
+                .unwrap_or(false);
+            if exists {
+                return err(
+                    StatusCode::CONFLICT,
+                    codes::DUPLICATE,
+                    "rule with same type and value already exists",
+                );
+            }
         }
     }
 
-    if let Err(e) = state.db.update_rule(
-        &id,
-        req.value.as_deref(),
-        req.resolve,
-        req.remark.as_deref(),
-    ) {
+    // 更新 + 配置版本递增合并为一次阻塞任务
+    let (rid, value, remark) = (id.clone(), req.value.clone(), req.remark.clone());
+    let resolve = req.resolve;
+    if let Err(e) = state
+        .db_call(move |db| {
+            db.update_rule(&rid, value.as_deref(), resolve, remark.as_deref())?;
+            db.bump_config_version()
+        })
+        .await
+    {
         return err(
             StatusCode::INTERNAL_SERVER_ERROR,
             codes::INTERNAL,
             e.to_string(),
         );
     }
-    let _ = state.db.bump_config_version();
-    audit(&state, &claims, &ip, "rule.update", Some(&id), "");
+    audit(&state, &claims, &ip, "rule.update", Some(&id), "").await;
 
-    match state.db.get_rule(&id) {
+    match state.db_call(move |db| db.get_rule(&id)).await {
         Ok(Some(rule)) => ok(rule),
         _ => err(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -230,7 +243,11 @@ pub async fn delete_rule(
     Path(id): Path<String>,
     Query(q): Query<ForceQuery>,
 ) -> Response {
-    let groups = state.db.rule_referencing_groups(&id).unwrap_or_default();
+    let rid = id.clone();
+    let groups = state
+        .db_call(move |db| db.rule_referencing_groups(&rid))
+        .await
+        .unwrap_or_default();
     if !groups.is_empty() && !q.force {
         return (
             StatusCode::CONFLICT,
@@ -243,10 +260,18 @@ pub async fn delete_rule(
             .into_response();
     }
 
-    match state.db.delete_rule(&id, q.force) {
+    // 删除 + 配置版本递增合并为一次阻塞任务
+    let force = q.force;
+    let aid = id.clone();
+    match state
+        .db_call(move |db| {
+            db.delete_rule(&id, force)?;
+            db.bump_config_version()
+        })
+        .await
+    {
         Ok(_) => {
-            let _ = state.db.bump_config_version();
-            audit(&state, &claims, &ip, "rule.delete", Some(&id), "");
+            audit(&state, &claims, &ip, "rule.delete", Some(&aid), "").await;
             ok(json!(null))
         }
         Err(e) => err(
@@ -289,73 +314,98 @@ pub async fn batch_import(
         );
     }
 
-    // error 模式：预检全部
+    // error 模式：预检全部（一次阻塞任务，返回首个冲突项）
     if req.on_conflict == "error" {
-        for r in &req.rules {
-            if let Ok(normalized) = validate_rule_input(r)
-                && state
-                    .db
-                    .rule_exists(&r.rule_type, &normalized)
-                    .unwrap_or(false)
-            {
-                return err(
-                    StatusCode::CONFLICT,
-                    codes::DUPLICATE,
-                    format!("duplicate rule: {} {}", r.rule_type, normalized),
-                );
-            }
-        }
-    }
-
-    let mut created = 0i64;
-    let mut skipped = 0i64;
-    let mut updated = 0i64;
-    let mut errors = Vec::<String>::new();
-
-    for r in &req.rules {
-        let value = match validate_rule_input(r) {
-            Ok(v) => v,
-            Err(msg) => {
-                errors.push(msg);
-                continue;
-            }
-        };
-        if state.db.rule_exists(&r.rule_type, &value).unwrap_or(false) {
-            match req.on_conflict.as_str() {
-                "overwrite" => {
-                    // 找到既有记录并更新 remark/resolve
-                    let (items, _) = state
-                        .db
-                        .list_rules(1, 100, Some(&r.rule_type), Some(&value))
-                        .unwrap_or_default();
-                    if let Some(existing) = items.iter().find(|i| i.value == value) {
-                        if state
-                            .db
-                            .update_rule(&existing.id, None, Some(r.resolve), Some(&r.remark))
-                            .is_ok()
-                        {
-                            updated += 1;
-                        } else {
-                            errors.push(format!("update failed: {value}"));
-                        }
+        let probes: Vec<(String, String)> = req
+            .rules
+            .iter()
+            .filter_map(|r| {
+                validate_rule_input(r)
+                    .ok()
+                    .map(|normalized| (r.rule_type.clone(), normalized))
+            })
+            .collect();
+        let dup = state
+            .db_call(move |db| {
+                for (rule_type, normalized) in &probes {
+                    if db.rule_exists(rule_type, normalized).unwrap_or(false) {
+                        return Ok(Some(format!("{rule_type} {normalized}")));
                     }
                 }
-                _ => skipped += 1,
-            }
-            continue;
-        }
-        match state
-            .db
-            .create_rule(&r.rule_type, &value, r.resolve, &r.remark)
-        {
-            Ok(_) => created += 1,
-            Err(e) => errors.push(format!("{value}: {e}")),
+                Ok(None)
+            })
+            .await
+            .unwrap_or(None);
+        if let Some(d) = dup {
+            return err(
+                StatusCode::CONFLICT,
+                codes::DUPLICATE,
+                format!("duplicate rule: {d}"),
+            );
         }
     }
 
-    if created > 0 || updated > 0 {
-        let _ = state.db.bump_config_version();
-    }
+    // 整批导入合并为一次阻塞任务（最多 500 条，逐条 spawn 开销反而更大）
+    let (rules_in, on_conflict) = (req.rules, req.on_conflict.clone());
+    let batch = state
+        .db_call(move |db| {
+            let mut created = 0i64;
+            let mut skipped = 0i64;
+            let mut updated = 0i64;
+            let mut errors = Vec::<String>::new();
+
+            for r in &rules_in {
+                let value = match validate_rule_input(r) {
+                    Ok(v) => v,
+                    Err(msg) => {
+                        errors.push(msg);
+                        continue;
+                    }
+                };
+                if db.rule_exists(&r.rule_type, &value).unwrap_or(false) {
+                    match on_conflict.as_str() {
+                        "overwrite" => {
+                            // 找到既有记录并更新 remark/resolve
+                            let (items, _) = db
+                                .list_rules(1, 100, Some(&r.rule_type), Some(&value))
+                                .unwrap_or_default();
+                            if let Some(existing) = items.iter().find(|i| i.value == value) {
+                                if db
+                                    .update_rule(&existing.id, None, Some(r.resolve), Some(&r.remark))
+                                    .is_ok()
+                                {
+                                    updated += 1;
+                                } else {
+                                    errors.push(format!("update failed: {value}"));
+                                }
+                            }
+                        }
+                        _ => skipped += 1,
+                    }
+                    continue;
+                }
+                match db.create_rule(&r.rule_type, &value, r.resolve, &r.remark) {
+                    Ok(_) => created += 1,
+                    Err(e) => errors.push(format!("{value}: {e}")),
+                }
+            }
+
+            if created > 0 || updated > 0 {
+                let _ = db.bump_config_version();
+            }
+            Ok((created, skipped, updated, errors))
+        })
+        .await;
+    let (created, skipped, updated, errors) = match batch {
+        Ok(v) => v,
+        Err(e) => {
+            return err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                codes::INTERNAL,
+                e.to_string(),
+            );
+        }
+    };
     audit(
         &state,
         &claims,
@@ -363,7 +413,8 @@ pub async fn batch_import(
         "rule.batch_import",
         None,
         &format!("created={created} skipped={skipped} updated={updated}"),
-    );
+    )
+    .await;
 
     ok(json!({
         "created": created,

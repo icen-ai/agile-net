@@ -1,6 +1,9 @@
 'use strict';
-/* Lucide 内联 SVG 图标（仅收录用到的图标；无构建链下等价于 tree-shaking，未引用的图标不打包）。
-   用法：静态 HTML 写 <i data-ic="zap" data-sz="15"></i>，动态 JS 调 AgIcon('zap', 15)。 */
+/* Lucide 内联 SVG 图标共享表（双端唯一来源，AGENTS.md §6 组件沉淀）：
+   桌面端 <script src="icons.js"> 引入；管理端经 crates/node/src/ui/mod.rs 内嵌服务于 /ui/icons.js。
+   仅收录两端用到的图标（无构建链下等价于 tree-shaking，未引用的图标不打包）。
+   用法：静态 HTML 写 <i data-ic="zap" data-sz="15"></i>（DOMContentLoaded 自动水合），
+   动态 JS 调 AgIcon('zap', 15)；动态插入的 [data-ic] 占位可显式调 AgIconHydrate(root) 复跑。 */
 (function () {
   const ICONS = {
     'home': '<path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/>',
@@ -50,17 +53,26 @@
     'pencil': '<path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/><path d="m15 5 4 4"/>',
     'stethoscope': '<path d="M4.8 2.3A.3.3 0 1 0 5 2H4a2 2 0 0 0-2 2v5a6 6 0 0 0 6 6a6 6 0 0 0 6-6V4a2 2 0 0 0-2-2h-1a.2.2 0 1 0 .3.3"/><path d="M8 15v1a6 6 0 0 0 6 6a6 6 0 0 0 6-6v-4"/><circle cx="20" cy="10" r="2"/>',
     'bell': '<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/>',
+    /* 管理端收录（crates/node/ui） */
+    'sun': '<circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/>',
+    'moon': '<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>',
+    'log-out': '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" x2="9" y1="12" y2="12"/>',
+    'copy': '<rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>',
+    'qr-code': '<rect width="5" height="5" x="3" y="3" rx="1"/><rect width="5" height="5" x="16" y="3" rx="1"/><rect width="5" height="5" x="3" y="16" rx="1"/><path d="M21 16h-3a2 2 0 0 0-2 2v3"/><path d="M21 21v.01"/><path d="M12 7v3a2 2 0 0 1-2 2H4"/><path d="M3 12h.01"/><path d="M12 3h.01"/><path d="M12 16v.01"/><path d="M16 12h1"/><path d="M21 12v.01"/><path d="M12 21v-1"/>',
   };
   function AgIcon(name, size) {
     const s = size || 16;
     return '<svg class="ic" width="' + s + '" height="' + s + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + (ICONS[name] || '') + '</svg>';
   }
-  window.AgIcon = AgIcon;
-  window.addEventListener('DOMContentLoaded', () => {
-    document.querySelectorAll('[data-ic]').forEach(el => {
+  /* 静态 HTML 中的 <i data-ic="name" data-sz="n"> 占位水合为内联 SVG（幂等，可重复调用） */
+  function AgIconHydrate(root) {
+    (root || document).querySelectorAll('[data-ic]').forEach(el => {
       const span = document.createElement('span');
       span.innerHTML = AgIcon(el.dataset.ic, el.dataset.sz ? +el.dataset.sz : 16);
       el.replaceWith(span.firstChild);
     });
-  });
+  }
+  window.AgIcon = AgIcon;
+  window.AgIconHydrate = AgIconHydrate;
+  window.addEventListener('DOMContentLoaded', () => AgIconHydrate());
 })();

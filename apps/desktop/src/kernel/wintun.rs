@@ -23,10 +23,11 @@ pub(crate) const WINTUN_ZIP_SHA256: &str =
     "07c256185d6ee3652e09fa55c0b673e2624b565e02c4b9091c79ca7d2f24ef51";
 /// 官方源路径（完整性由 SHA-256 钉死保证；下载镜像见 wintun_urls）
 const WINTUN_ZIP_PATH: &str = "download.wireguard.com/wintun/wintun-0.14.1.zip";
-/// wintun.dll 0.14.1 (amd64, 427,552 B) 本体的 SHA-256——本地候选复用时的校验钉
-/// （取自 FlClash 分发的同版本官方 dll；zip 内层 dll 与整包哈希不同，勿混用）
-pub(crate) const WINTUN_DLL_SHA256: &str =
-    "e5da8447dc2c320edc0fc52fa01885c103de8c118481f683643cacc3220dafce";
+/// wintun.dll 0.14.1 (amd64, 427,552 B) 本体的 SHA-256——本地候选复用与内嵌落盘的校验钉
+/// （zip 内层 dll 与整包哈希不同，勿与 WINTUN_ZIP_SHA256 混用）。
+/// 钉值唯一来源在 node 侧（crates/node/src/tool/doctor/tun.rs，doctor 校验共用），
+/// 此处仅 re-export 保持 sub::WINTUN_DLL_SHA256 引用路径不变。
+pub use agile_net_node::tool::doctor::WINTUN_DLL_SHA256;
 
 /// wintun.dll 落盘位置（与 mihomo.exe 同目录，wintun 按 exe 相邻加载）。
 pub fn wintun_dll_path() -> PathBuf {
@@ -77,7 +78,8 @@ fn reuse_local_wintun(dll: &PathBuf) -> Result<bool, String> {
 /// wintun.dll 0.14.1 (amd64) 官方原版内嵌——wireguard.com 在受限网络不可达、
 /// gh 镜像又不能代理非 github 域名，下载路径对国内用户必然失败（弹窗风暴根源），
 /// 故钉版本直接随二进制分发（wintun 为 MIT 许可，允许再分发；来源 https://www.wintun.net/）。
-/// 升级 = 替换 apps/desktop/wintun/wintun.dll + 更新 WINTUN_VERSION/WINTUN_DLL_SHA256。
+/// 升级 = 替换 apps/desktop/wintun/wintun.dll + 更新 WINTUN_VERSION
+/// + 更新 node 侧钉值（crates/node/src/tool/doctor/tun.rs WINTUN_DLL_SHA256，全仓唯一来源）。
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 static WINTUN_DLL_EMBEDDED: &[u8] = include_bytes!("../../wintun/wintun.dll");
 
@@ -115,7 +117,8 @@ pub async fn ensure_wintun() -> Result<PathBuf, String> {
 mod tests {
     use super::*;
 
-    /// 内嵌 wintun.dll 必须与钉值一致（防替换错版本/构建期污染；升级时需同步三处）
+    /// 内嵌 wintun.dll 必须与钉值一致（防替换错版本/构建期污染；
+    /// 钉值单源化后「同步三处」收敛为两处：本内嵌文件 + node 侧常量）
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     #[test]
     fn wintun_embedded_matches_pin() {

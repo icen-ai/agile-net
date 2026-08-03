@@ -11,6 +11,7 @@
 //! - 审计：gui.dl_start / gui.dl_done（含镜像）/ gui.dl_failed（含原因）/ gui.dl_manual_install；
 //!   严禁记录文件内容
 
+use agile_net_node::db::sha256_hex;
 use serde::Serialize;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -329,12 +330,6 @@ fn url_host(url: &str) -> &str {
     }
 }
 
-/// SHA-256 十六进制
-fn sha256_hex(bytes: &[u8]) -> String {
-    use sha2::Digest;
-    format!("{:x}", sha2::Sha256::digest(bytes))
-}
-
 /// 钉值校验：相符 Ok；不符 Err(实际哈希)（调用方决定篡改审计/手动确认分支）
 fn verify_pin(bytes: &[u8], expect: &str) -> Result<(), String> {
     let actual = sha256_hex(bytes);
@@ -542,6 +537,9 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
+    /// 进度报告收集槽（(已下载, 总量?) 序列）
+    type Reports = Arc<Mutex<Vec<(u64, Option<u64>)>>>;
+
     fn tempdir(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "anet-dl-test-{tag}-{}",
@@ -608,7 +606,7 @@ mod tests {
                 tokio::time::sleep(std::time::Duration::from_millis(30)).await;
             }
         });
-        let reports: Arc<Mutex<Vec<(u64, Option<u64>)>>> = Arc::new(Mutex::new(Vec::new()));
+        let reports: Reports = Arc::new(Mutex::new(Vec::new()));
         let reports2 = reports.clone();
         let url = format!("http://127.0.0.1:{port}/pkg.zip");
         let (bytes, mirror) = download_stream(&[url], &move |_m, d, t| {
@@ -654,7 +652,7 @@ mod tests {
             s.write_all(&served).await.unwrap();
             s.write_all(b"\r\n0\r\n\r\n").await.unwrap();
         });
-        let reports: Arc<Mutex<Vec<(u64, Option<u64>)>>> = Arc::new(Mutex::new(Vec::new()));
+        let reports: Reports = Arc::new(Mutex::new(Vec::new()));
         let reports2 = reports.clone();
         let url = format!("http://127.0.0.1:{port}/pkg.bin");
         let (bytes, _) = download_stream(&[url], &move |_m, d, t| {

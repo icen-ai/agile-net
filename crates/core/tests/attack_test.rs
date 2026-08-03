@@ -5,12 +5,12 @@
 
 use agile_net_core::error::Result;
 use agile_net_core::proto::frame::{Frame, FrameType};
-use agile_net_core::proto::message::AuthRequest;
+use agile_net_core::proto::message::{AuthRequest, OpenChannel};
 use agile_net_core::proxy::ProxyInbound;
 use agile_net_core::proxy::router::ProxyRouter;
 use agile_net_core::relay::connector::RelayConnector;
 use agile_net_core::relay::listener::{
-    AuthIdentity, RelayListener, StaticTokenValidator, TokenValidator,
+    AuthIdentity, MAX_INBOUND_OPENS_PER_SESSION, RelayListener, StaticTokenValidator, TokenValidator,
 };
 use agile_net_core::relay::mux::MuxSession;
 use agile_net_core::tunnel::tls::{TlsConfigBuilder, generate_self_signed};
@@ -133,9 +133,9 @@ async fn first_frame_must_be_auth() -> Result<()> {
 
     // 应收到 AuthFail 或被关闭
     let res = tokio::time::timeout(Duration::from_secs(3), Frame::read_from(&mut stream)).await;
-    match res {
-        Ok(Ok(f)) => assert_eq!(f.frame_type, FrameType::AuthFail),
-        _ => {} // 连接被直接关闭也可接受
+    // 连接被直接关闭也可接受
+    if let Ok(Ok(f)) = res {
+        assert_eq!(f.frame_type, FrameType::AuthFail);
     }
     Ok(())
 }
@@ -607,5 +607,96 @@ async fn socks5_malformed_survives() -> Result<()> {
     let mut r = [0u8; 2];
     s3.read_exact(&mut r).await?;
     assert_eq!(r, [0x05, 0x00]);
+    Ok(())
+}
+
+/// A15: Open 洪泛 —— 单会话对端 Open 并发达上限后，超额 Open 立即收到 OpenFail，
+/// 且 Listener 与新会话不受影响（本端 open_channel 有 MAX_CHANNELS_PER_SESSION，
+/// 对端方向由 MAX_INBOUND_OPENS_PER_SESSION 补齐）
+#[tokio::test]
+async fn open_flood_capped() -> Result<()> {
+    let addr = get_free_addr();
+    let listener = Arc::new(RelayListener::new(addr, "tok")?);
+    let l = listener.clone();
+    tokio::spawn(async move {
+        let _ = l.start().await;
+    });
+
+    // 黑洞目标：接受连接但永不读写，让 Open 处理任务挂起占住许可
+    let blackhole = TcpListener::bind("127.0.0.1:0").await?;
+    let bh_port = blackhole.local_addr()?.port();
+    tokio::spawn(async move {
+        let mut held = Vec::new();
+        while let Ok((s, _)) = blackhole.accept().await {
+            held.push(s);
+        }
+    });
+    tokio::time::sleep(Duration::from_millis(60)).await;
+
+    // 手工 TLS 客户端完成节点认证
+    let tls = TlsConfigBuilder::new()
+        .allow_self_signed(true)
+        .build_client()?;
+    let connector = tokio_rustls::TlsConnector::from(tls);
+    let tcp = TcpStream::connect(addr).await?;
+    let server_name =
+        rustls::pki_types::ServerName::try_from("cdn.cloudflare.com".to_string()).unwrap();
+    let mut stream = connector.connect(server_name, tcp).await?;
+    let auth = AuthRequest {
+        node_id: "flooder".into(),
+        token: "tok".into(),
+        kind: agile_net_core::proto::message::AuthKind::Node,
+        advertise: vec![],
+        version: 1,
+    };
+    let payload = serde_json::to_vec(&auth).unwrap();
+    Frame::new(FrameType::Auth, 0, Bytes::from(payload))
+        .write_to(&mut stream)
+        .await?;
+    let f = Frame::read_from(&mut stream).await?;
+    assert_eq!(f.frame_type, FrameType::AuthOk);
+
+    // 洪泛：上限 + 64 个 Open 全部直指黑洞（前 256 个占住许可挂起，后 64 个应被拒）
+    const EXTRA: usize = 64;
+    let total = MAX_INBOUND_OPENS_PER_SESSION + EXTRA;
+    let open_payload = Bytes::from(
+        serde_json::to_vec(&OpenChannel {
+            target_addr: "127.0.0.1".into(),
+            target_port: bh_port,
+        })
+        .unwrap(),
+    );
+    for i in 0..total {
+        let channel_id = (2 * i + 1) as u32;
+        Frame::new(FrameType::Open, channel_id, open_payload.clone())
+            .write_to(&mut stream)
+            .await?;
+    }
+    // rustls 写侧有内部缓冲：整批写完后必须 flush，否则尾部密文滞留不出栈
+    stream.flush().await?;
+
+    // 逐帧统计：恰好 上限 个 OpenOk、EXTRA 个 OpenFail
+    let mut ok_count = 0usize;
+    let mut fail_count = 0usize;
+    for _ in 0..total {
+        let f = tokio::time::timeout(Duration::from_secs(10), Frame::read_from(&mut stream))
+            .await
+            .map_err(|_| agile_net_core::error::Error::Timeout)??;
+        match f.frame_type {
+            FrameType::OpenOk => ok_count += 1,
+            FrameType::OpenFail => fail_count += 1,
+            other => panic!("Open 洪泛期间收到意外帧类型: {other:?}"),
+        }
+    }
+    assert_eq!(
+        ok_count, MAX_INBOUND_OPENS_PER_SESSION,
+        "上限内的 Open 应全部成功建立"
+    );
+    assert_eq!(fail_count, EXTRA, "超限的 Open 必须被立即拒绝");
+
+    // 洪泛期间 Listener 照常服务新会话
+    let valid = RelayConnector::new(addr, "node-b", "tok")?;
+    valid.connect().await?;
+    assert!(valid.is_connected(), "Open 洪泛不得影响其他会话");
     Ok(())
 }

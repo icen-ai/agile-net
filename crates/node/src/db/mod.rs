@@ -4,7 +4,8 @@
 //! 以 Argon2id / SHA-256 哈希存储，严禁明文落库。
 //!
 //! 按域拆分子模块（纯搬运，零逻辑变更）：pool（连接池与共享基础）/
-//! migrations（版本化迁移）/ admin / rules / accounts / connectors / logs；
+//! migrations（版本化迁移）/ paginate（分页查询公共 helper）/
+//! admin / rules / accounts / connectors / logs；
 //! 对外路径 `db::xxx` 全部不变。
 
 pub mod models;
@@ -14,6 +15,7 @@ mod admin;
 mod connectors;
 mod logs;
 mod migrations;
+mod paginate;
 mod pool;
 mod rules;
 
@@ -69,12 +71,8 @@ pub fn generate_secret_hex() -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// SHA-256 hex（Token 落库哈希）
-pub fn sha256_hex(data: &[u8]) -> String {
-    use sha2::Digest;
-    let digest = sha2::Sha256::digest(data);
-    digest.iter().map(|b| format!("{b:02x}")).collect()
-}
+/// SHA-256 hex（Token 落库哈希）：统一使用 core 的共享实现（再导出，保持 `db::sha256_hex` 路径不变）
+pub use agile_net_core::util::sha256_hex;
 
 pub(crate) fn random_alnum(len: usize) -> String {
     use rand::Rng;

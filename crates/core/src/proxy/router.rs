@@ -211,6 +211,20 @@ impl ProxyRouter {
         }
     }
 
+    /// 按纯主机名/IP（不含端口）匹配路由。
+    ///
+    /// 调用方已解析出 host/port 时使用（如代理入站），与 `route_target("host:port")`
+    /// 判定口径一致，但免去临时串拼接与端口剥离分配。
+    pub fn route_host(&self, host: &str) -> &Outbound {
+        if let Ok(ip) = host.parse::<IpAddr>() {
+            self.route_ip(ip)
+        } else if let Some(out) = self.resolve_host(host) {
+            out
+        } else {
+            &self.default
+        }
+    }
+
     /// 判断目标是否命中任意非默认路由（ACL 判定用，忽略默认出站）。
     ///
     /// 与 `route_target` 同样的方式剥离端口 / 解析 IP，
