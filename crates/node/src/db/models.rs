@@ -82,6 +82,9 @@ pub struct RelayTokenRecord {
     /// 组名（联查展示用）
     #[serde(default)]
     pub group_name: Option<String>,
+    /// 带宽配额（KB/s；None = 不限）
+    #[serde(default)]
+    pub rate_limit_kbps: Option<i64>,
     pub last_used_at: Option<String>,
     pub created_at: String,
 }

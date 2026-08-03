@@ -270,7 +270,7 @@ async fn channel_hijack_dropped() -> Result<()> {
     // 在已认证会话上注入伪造的 Data 帧（通过手工 TLS 会话难以构造，
     // 改为直接验证 MuxSession 行为：未知通道的 Data 被丢弃）
     let (s1, _s2) = tokio::io::duplex(4096);
-    let (mux, _h) = MuxSession::start(s1, 1, None, false);
+    let (mux, _h) = MuxSession::start(s1, 1, None, false, None);
     // 会话未注册通道 999，直接 close 不应 panic
     mux.close_channel(999);
     assert_eq!(mux.channel_count(), 0);

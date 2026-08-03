@@ -14,6 +14,7 @@ use crate::proto::message::{
 };
 use crate::proxy::router::{Outbound, ProxyRouter};
 use crate::relay::acl::PeerAcl;
+use crate::relay::limit::TokenBucket;
 use crate::relay::mux::{MuxChannel, MuxSession, OpenRequest};
 use crate::relay::transit::{TO_LOCAL, TransitMeter};
 use crate::tunnel::tls::TlsConfigBuilder;
@@ -148,6 +149,9 @@ struct AdvertisedRoutes {
     suffixes: Vec<(String, String)>,
 }
 
+/// 会话带宽限速提供者：按认证身份返回字节/秒上限（None = 该会话不限速）。
+type RateLimitProvider = Arc<dyn Fn(&AuthIdentity, &str) -> Option<u64> + Send + Sync>;
+
 /// Relay 监听器。
 pub struct RelayListener {
     listen_addr: SocketAddr,
@@ -169,6 +173,8 @@ pub struct RelayListener {
     max_auth_failures_per_minute: u32,
     /// 中继途径核算（None = 不打点；扇入对端发起的转发按 from=node_id 入账）
     transit: Option<Arc<TransitMeter>>,
+    /// 会话带宽限速提供者：按认证身份返回字节/秒上限（None = 该会话不限速）
+    rate_limit_provider: Option<RateLimitProvider>,
 }
 
 impl RelayListener {
@@ -219,6 +225,7 @@ impl RelayListener {
             max_pending_auth: DEFAULT_MAX_PENDING_AUTH,
             max_auth_failures_per_minute: DEFAULT_MAX_AUTH_FAILURES_PER_MINUTE,
             transit: None,
+            rate_limit_provider: None,
         }
     }
 
@@ -226,6 +233,25 @@ impl RelayListener {
     pub fn with_transit_meter(mut self, meter: Arc<TransitMeter>) -> Self {
         self.transit = Some(meter);
         self
+    }
+
+    /// 挂接会话带宽限速提供者：认证成功后按（身份, token 哈希）返回该会话的字节/秒上限，
+    /// 返回 None（或未挂接 provider）表示不限速。限速在 mux 数据面生效，
+    /// 读写双方向合并限额，burst 取 `rate.max(64*1024)`（见 session_limiter）。
+    pub fn with_session_rate_limit<F>(mut self, f: F) -> Self
+    where
+        F: Fn(&AuthIdentity, &str) -> Option<u64> + Send + Sync + 'static,
+    {
+        self.rate_limit_provider = Some(Arc::new(f));
+        self
+    }
+
+    /// 按认证身份构造会话限速桶（None = 不限速）。
+    fn session_limiter(&self, identity: &AuthIdentity, token_hash: &str) -> Option<Arc<TokenBucket>> {
+        let rate = self.rate_limit_provider.as_ref()?(identity, token_hash)?;
+        // burst 至少 64 KiB（>= 一个满 Data 分片 16 KiB）：速率极低时也要让单帧
+        // 一次性拿到令牌，否则每帧都按缺口长时间排队，小速率会话会被卡到不可用
+        Some(Arc::new(TokenBucket::new(rate, rate.max(64 * 1024))))
     }
 
     /// 覆盖默认限流参数（对应 agile-net.toml [limits]）。
@@ -439,6 +465,8 @@ impl RelayListener {
         drop(_pending_guard);
 
         let flow_control = peer_version >= PROTOCOL_VERSION_FLOW_CONTROL;
+        // 会话级带宽限速：认证身份确定后构造令牌桶（None = 不限速），随会话注入 mux
+        let limiter = self.session_limiter(&identity, &token_hash);
         match identity {
             AuthIdentity::Node {
                 node_id,
@@ -454,12 +482,20 @@ impl RelayListener {
                     token_hash,
                     flow_control,
                     acl,
+                    limiter,
                 )
                 .await
             }
             AuthIdentity::Client { account_id, acl } => {
-                self.serve_client_session(tls_stream, peer_addr, account_id, acl, flow_control)
-                    .await
+                self.serve_client_session(
+                    tls_stream,
+                    peer_addr,
+                    account_id,
+                    acl,
+                    flow_control,
+                    limiter,
+                )
+                .await
             }
         }
     }
@@ -557,11 +593,13 @@ impl RelayListener {
         token_hash: String,
         flow_control: bool,
         acl: Option<Arc<PeerAcl>>,
+        limiter: Option<Arc<TokenBucket>>,
     ) -> Result<()> {
         info!(peer = %peer_addr, node_id = %node_id, "node authenticated successfully");
 
         let (open_tx, mut open_rx) = tokio::sync::mpsc::channel::<OpenRequest>(64);
-        let (mux, reader_handle) = MuxSession::start(tls_stream, 1, Some(open_tx), flow_control);
+        let (mux, reader_handle) =
+            MuxSession::start(tls_stream, 1, Some(open_tx), flow_control, limiter);
 
         self.peers.insert(
             node_id.clone(),
@@ -607,12 +645,14 @@ impl RelayListener {
         account_id: String,
         acl: Vec<String>,
         flow_control: bool,
+        limiter: Option<Arc<TokenBucket>>,
     ) -> Result<()> {
         info!(peer = %peer_addr, account = %account_id, "client authenticated successfully");
 
         let acl_router = build_acl_router(&acl);
         let (open_tx, mut open_rx) = tokio::sync::mpsc::channel::<OpenRequest>(64);
-        let (mux, reader_handle) = MuxSession::start(tls_stream, 1, Some(open_tx), flow_control);
+        let (mux, reader_handle) =
+            MuxSession::start(tls_stream, 1, Some(open_tx), flow_control, limiter);
 
         self.clients
             .entry(account_id.clone())

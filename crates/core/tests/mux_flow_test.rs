@@ -15,8 +15,8 @@ async fn mux_pair(flow_control: bool) -> (Arc<MuxSession>, Arc<MuxSession>) {
     let connect = tokio::spawn(async move { tokio::net::TcpStream::connect(addr).await.unwrap() });
     let (server, _) = listener.accept().await.unwrap();
     let client = connect.await.unwrap();
-    let (a, _h1) = MuxSession::start(client, 1, None, flow_control);
-    let (b, _h2) = MuxSession::start(server, 2, None, flow_control);
+    let (a, _h1) = MuxSession::start(client, 1, None, flow_control, None);
+    let (b, _h2) = MuxSession::start(server, 2, None, flow_control, None);
     (a, b)
 }
 

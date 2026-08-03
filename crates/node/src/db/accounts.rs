@@ -323,13 +323,38 @@ impl Database {
         control_scope: &str,
         group_id: Option<&str>,
     ) -> Result<RelayTokenRecord> {
+        self.create_relay_token_with_quota(
+            token_hash,
+            token_prefix,
+            remark,
+            expose_control,
+            control_scope,
+            group_id,
+            None,
+        )
+    }
+
+    /// 创建 Relay Token（含带宽配额；rate_limit_kbps 单位 KB/s，None = 不限）。
+    /// 非法值防御：`<= 0` 归一为 NULL（API 层已按 400 拒绝，此处兜底防绕过）。
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_relay_token_with_quota(
+        &self,
+        token_hash: &str,
+        token_prefix: &str,
+        remark: &str,
+        expose_control: bool,
+        control_scope: &str,
+        group_id: Option<&str>,
+        rate_limit_kbps: Option<i64>,
+    ) -> Result<RelayTokenRecord> {
+        let rate_limit_kbps = rate_limit_kbps.filter(|v| *v > 0);
         let conn = self.conn();
         let id = uuid::Uuid::new_v4().to_string();
         let now = now_rfc3339();
         conn.execute(
-            "INSERT INTO relay_token (id, token_hash, token_prefix, remark, expose_control, control_scope, group_id, created_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
-            params![id, token_hash, token_prefix, remark, expose_control as i32, control_scope, group_id, now],
+            "INSERT INTO relay_token (id, token_hash, token_prefix, remark, expose_control, control_scope, group_id, rate_limit_kbps, created_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+            params![id, token_hash, token_prefix, remark, expose_control as i32, control_scope, group_id, rate_limit_kbps, now],
         )
         .map_err(db_err)?;
         Ok(RelayTokenRecord {
@@ -340,6 +365,7 @@ impl Database {
             control_scope: control_scope.to_string(),
             group_id: group_id.map(|g| g.to_string()),
             group_name: None,
+            rate_limit_kbps,
             last_used_at: None,
             created_at: now,
         })
@@ -354,6 +380,33 @@ impl Database {
         )
         .map_err(db_err)?;
         Ok(())
+    }
+
+    /// 设置 relay token 带宽配额（KB/s；None = 不限）。
+    /// 非法值防御：`<= 0` 归一为 NULL（同 create 兜底策略）。
+    pub fn set_relay_token_rate_limit(&self, id: &str, rate_limit_kbps: Option<i64>) -> Result<()> {
+        let rate_limit_kbps = rate_limit_kbps.filter(|v| *v > 0);
+        let conn = self.conn();
+        conn.execute(
+            "UPDATE relay_token SET rate_limit_kbps = ?1 WHERE id = ?2",
+            params![rate_limit_kbps, id],
+        )
+        .map_err(db_err)?;
+        Ok(())
+    }
+
+    /// 按哈希查 relay token 带宽配额（KB/s，数据面限速用）。
+    /// None = token 不存在或未设配额（不限）。
+    pub fn get_relay_token_rate_limit(&self, token_hash: &str) -> Result<Option<i64>> {
+        let conn = self.conn();
+        let mut stmt = conn
+            .prepare("SELECT rate_limit_kbps FROM relay_token WHERE token_hash = ?1")
+            .map_err(db_err)?;
+        let mut rows = stmt.query(params![token_hash]).map_err(db_err)?;
+        Ok(match rows.next().map_err(db_err)? {
+            Some(r) => r.get(0).map_err(db_err)?,
+            None => None,
+        })
     }
 
     /// 更新暴露控制面开关与授权档位（开关变更走 relay_token.expose_control 审计）。
@@ -395,7 +448,7 @@ impl Database {
     pub fn list_relay_tokens(&self) -> Result<Vec<RelayTokenRecord>> {
         let conn = self.conn();
         let mut stmt = conn
-            .prepare("SELECT t.id, t.token_prefix, t.remark, t.expose_control, t.control_scope, t.last_used_at, t.created_at, t.group_id, g.name
+            .prepare("SELECT t.id, t.token_prefix, t.remark, t.expose_control, t.control_scope, t.last_used_at, t.created_at, t.group_id, g.name, t.rate_limit_kbps
                       FROM relay_token t LEFT JOIN \"group\" g ON t.group_id = g.id ORDER BY t.created_at DESC")
             .map_err(db_err)?;
         let rows = stmt.query_map([], map_relay_token_row).map_err(db_err)?;
@@ -410,7 +463,7 @@ impl Database {
     pub fn get_relay_token(&self, id: &str) -> Result<Option<RelayTokenRecord>> {
         let conn = self.conn();
         let mut stmt = conn
-            .prepare("SELECT t.id, t.token_prefix, t.remark, t.expose_control, t.control_scope, t.last_used_at, t.created_at, t.group_id, g.name
+            .prepare("SELECT t.id, t.token_prefix, t.remark, t.expose_control, t.control_scope, t.last_used_at, t.created_at, t.group_id, g.name, t.rate_limit_kbps
                       FROM relay_token t LEFT JOIN \"group\" g ON t.group_id = g.id WHERE t.id = ?1")
             .map_err(db_err)?;
         let mut rows = stmt.query(params![id]).map_err(db_err)?;
@@ -486,6 +539,7 @@ fn map_relay_token_row(r: &rusqlite::Row) -> rusqlite::Result<RelayTokenRecord> 
         created_at: r.get(6)?,
         group_id: r.get(7)?,
         group_name: r.get(8)?,
+        rate_limit_kbps: r.get(9)?,
     })
 }
 
@@ -553,5 +607,60 @@ mod tests {
         assert_eq!(rec2.group_id, None);
         // 不存在的哈希：None
         assert_eq!(db.get_relay_token_group("no-such-hash").unwrap(), None);
+    }
+
+    #[test]
+    fn relay_token_rate_limit_crud() {
+        let db = Database::in_memory().unwrap();
+        let hash = sha256_hex(b"tok-rl");
+
+        // 带配额创建（10 MB/s = 10240 KB/s）
+        let rec = db
+            .create_relay_token_with_quota(&hash, "psk_rl", "限速", false, "full", None, Some(10240))
+            .expect("create with quota");
+        assert_eq!(rec.rate_limit_kbps, Some(10240));
+
+        // list / 详情 / 按哈希三处带出
+        assert_eq!(db.list_relay_tokens().unwrap()[0].rate_limit_kbps, Some(10240));
+        assert_eq!(
+            db.get_relay_token(&rec.id).unwrap().unwrap().rate_limit_kbps,
+            Some(10240)
+        );
+        assert_eq!(db.get_relay_token_rate_limit(&hash).unwrap(), Some(10240));
+
+        // 更新与清除
+        db.set_relay_token_rate_limit(&rec.id, Some(1024)).unwrap();
+        assert_eq!(db.get_relay_token_rate_limit(&hash).unwrap(), Some(1024));
+        db.set_relay_token_rate_limit(&rec.id, None).unwrap();
+        assert_eq!(db.get_relay_token_rate_limit(&hash).unwrap(), None);
+
+        // 非法值防御：<=0 归一为 NULL（不限）
+        db.set_relay_token_rate_limit(&rec.id, Some(0)).unwrap();
+        assert_eq!(db.get_relay_token_rate_limit(&hash).unwrap(), None);
+        let rec2 = db
+            .create_relay_token_with_quota(
+                &sha256_hex(b"tok-rl-neg"),
+                "psk_neg",
+                "",
+                false,
+                "full",
+                None,
+                Some(-5),
+            )
+            .expect("create with invalid quota");
+        assert_eq!(rec2.rate_limit_kbps, None);
+        assert_eq!(
+            db.get_relay_token_rate_limit(&sha256_hex(b"tok-rl-neg"))
+                .unwrap(),
+            None
+        );
+
+        // 旧委托方法：默认不限
+        let rec3 = db
+            .create_relay_token_with_group(&sha256_hex(b"tok3"), "psk_x", "", false, "full", None)
+            .unwrap();
+        assert_eq!(rec3.rate_limit_kbps, None);
+        // 不存在的哈希：None
+        assert_eq!(db.get_relay_token_rate_limit("no-such").unwrap(), None);
     }
 }

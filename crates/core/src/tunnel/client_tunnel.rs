@@ -173,7 +173,8 @@ impl ClientTunnel {
 
         // 客户端是会话中唯一发起 Open 的一方，使用偶数 channel_id
         let flow_control = server_version >= PROTOCOL_VERSION_FLOW_CONTROL;
-        let (mux, reader_handle) = MuxSession::start(tls_stream, 2, None, flow_control);
+        // 客户端侧不做会话限速（若被限速，由对端 listener 注入的桶在 ingress 回压）
+        let (mux, reader_handle) = MuxSession::start(tls_stream, 2, None, flow_control, None);
 
         // 会话维护任务：心跳（带抖动）+ 空闲超时检测
         let shutdown_notify = self.shutdown_notify.clone();

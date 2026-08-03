@@ -7,6 +7,7 @@
 
 pub mod acl;
 pub mod connectors;
+pub mod rate_limit;
 
 use crate::api::{ApiState, NodeRuntime, create_app};
 use crate::auth::jwt::JwtService;
@@ -216,8 +217,13 @@ impl NodeServer {
             };
 
             let listener = {
+                // 会话带宽限速接线：relay_token.rate_limit_kbps → core TokenBucket（B/s）
+                let db_rl = db.clone();
                 let l = RelayListener::with_validator(addr, validator, tls_acceptor)
-                    .with_transit_meter(transit_meter.clone());
+                    .with_transit_meter(transit_meter.clone())
+                    .with_session_rate_limit(move |id, hash| {
+                        rate_limit::token_rate_limit_bps(id, hash, &db_rl)
+                    });
                 match &config.limits {
                     Some(lim) => Arc::new(l.with_limits(
                         lim.max_connections,

@@ -199,6 +199,14 @@ const MIGRATIONS: &[(u32, &str, &str)] = &[
     CREATE INDEX idx_node_traffic_hour ON node_traffic_log(hour);
     "#,
     ),
+    (
+        7,
+        "relay_token_rate_limit",
+        r#"
+    -- Relay Token 带宽配额（KB/s；NULL = 不限）。扇入会话限速由 core TokenBucket 执行。
+    ALTER TABLE relay_token ADD COLUMN rate_limit_kbps INTEGER;
+    "#,
+    ),
 ];
 
 impl Database {
@@ -366,6 +374,70 @@ mod tests {
             let views = db.list_connectors().unwrap();
             assert_eq!(views.len(), 1);
             assert_eq!(views[0].ca_cert_path, "/etc/anet/ca.pem");
+        }
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    }
+
+    #[test]
+    fn migration_v7_upgrades_old_db() {
+        // 构造一个只应用过 v1~v6 的旧库文件（relay_token 无 rate_limit_kbps 列）
+        let path = std::env::temp_dir().join(format!("anet-db-mig7-test-{}.db", uuid::Uuid::new_v4()));
+        {
+            let conn = rusqlite::Connection::open(&path).expect("open raw conn");
+            conn.execute_batch(
+                "CREATE TABLE _migration (
+                    version INTEGER PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );",
+            )
+            .unwrap();
+            for (version, name, sql) in MIGRATIONS.iter().take(6) {
+                conn.execute_batch(sql).unwrap();
+                conn.execute(
+                    "INSERT INTO _migration (version, name) VALUES (?1, ?2)",
+                    params![version, name],
+                )
+                .unwrap();
+            }
+            // 旧 schema 下插入一条 relay_token（无 rate_limit_kbps 列）
+            conn.execute(
+                "INSERT INTO relay_token (id, token_hash, token_prefix, remark, expose_control, control_scope, created_at)
+                 VALUES ('tok-old', 'hash-old', 'psk_abcd', 'legacy', 0, 'full', '2026-01-01T00:00:00Z')",
+                [],
+            )
+            .unwrap();
+        }
+
+        // 打开即触发 v7 迁移：旧行保留、新列为 NULL（不限速）
+        {
+            let db = Database::open(&path).expect("open migrated db");
+            let tok = db
+                .get_relay_token("tok-old")
+                .expect("get")
+                .expect("old token exists");
+            assert_eq!(tok.token_prefix, "psk_abcd");
+            assert_eq!(tok.rate_limit_kbps, None);
+            assert_eq!(db.get_relay_token_rate_limit("hash-old").unwrap(), None);
+
+            // 迁移后旧行可直接设置/清除配额
+            db.set_relay_token_rate_limit("tok-old", Some(10240))
+                .expect("set rate limit");
+            let tok = db.get_relay_token("tok-old").unwrap().unwrap();
+            assert_eq!(tok.rate_limit_kbps, Some(10240));
+            assert_eq!(
+                db.get_relay_token_rate_limit("hash-old").unwrap(),
+                Some(10240)
+            );
+            db.set_relay_token_rate_limit("tok-old", None)
+                .expect("clear rate limit");
+            assert_eq!(
+                db.get_relay_token("tok-old").unwrap().unwrap().rate_limit_kbps,
+                None
+            );
         }
 
         let _ = std::fs::remove_file(&path);

@@ -29,6 +29,9 @@ pub struct CreateTokenRequest {
     /// 收敛权限组（缺省/null = 不收敛，放行一切）
     #[serde(default)]
     pub group_id: Option<String>,
+    /// 带宽配额（KB/s；缺省/null = 不限；>0 生效，<=0 非法）
+    #[serde(default)]
+    pub rate_limit_kbps: Option<i64>,
 }
 
 fn default_scope() -> String {
@@ -37,6 +40,11 @@ fn default_scope() -> String {
 
 fn valid_scope(scope: &str) -> bool {
     matches!(scope, "ro" | "rules" | "full")
+}
+
+/// 配额校验：>0 或缺省合法；<=0 拒绝（DB 层另有归一兜底）。
+fn valid_rate_limit(rate_limit_kbps: Option<i64>) -> bool {
+    rate_limit_kbps.is_none_or(|v| v > 0)
 }
 
 pub async fn create_token(
@@ -59,6 +67,13 @@ pub async fn create_token(
             "control_scope must be one of ro/rules/full",
         );
     }
+    if !valid_rate_limit(req.rate_limit_kbps) {
+        return err(
+            StatusCode::BAD_REQUEST,
+            codes::VALIDATION_FAILED,
+            "rate_limit_kbps must be positive",
+        );
+    }
     if let Some(gid) = &req.group_id
         && state.db.get_group(gid).unwrap_or(None).is_none()
     {
@@ -73,13 +88,14 @@ pub async fn create_token(
     let token_hash = sha256_hex(token.as_bytes());
     let prefix = format!("{}****", &token[..8]);
 
-    match state.db.create_relay_token_with_group(
+    match state.db.create_relay_token_with_quota(
         &token_hash,
         &prefix,
         &req.remark,
         req.expose_control,
         &req.control_scope,
         req.group_id.as_deref(),
+        req.rate_limit_kbps,
     ) {
         Ok(record) => {
             audit(
@@ -110,6 +126,16 @@ pub async fn create_token(
                     &format!("group_id={gid}"),
                 );
             }
+            if let Some(kbps) = req.rate_limit_kbps {
+                audit(
+                    &state,
+                    &claims,
+                    &ip,
+                    "relay_token.set_rate_limit",
+                    Some(&record.id),
+                    &format!("rate_limit_kbps={kbps}"),
+                );
+            }
             ok_created(json!({
                 "id": record.id,
                 "token": token,
@@ -118,6 +144,7 @@ pub async fn create_token(
                 "expose_control": record.expose_control,
                 "control_scope": record.control_scope,
                 "group_id": record.group_id,
+                "rate_limit_kbps": record.rate_limit_kbps,
                 "created_at": record.created_at,
             }))
         }
@@ -138,6 +165,9 @@ pub struct UpdateTokenRequest {
     /// （serde 对 Option 的显式 null 也归为 None，须 deserialize_some 区分缺省与置空）
     #[serde(default, deserialize_with = "deserialize_some")]
     pub group_id: Option<serde_json::Value>,
+    /// 配额变更三态：缺省 = 不变，null = 不限，正整数 = 设为该值（KB/s）。
+    #[serde(default, deserialize_with = "deserialize_some")]
+    pub rate_limit_kbps: Option<serde_json::Value>,
 }
 
 /// 字段出现即包 Some（含显式 null），缺省才走 default None。
@@ -198,6 +228,28 @@ pub async fn update_token(
             format!("group not found: {gid}"),
         );
     }
+    // 配额入参解析：null = 不限，正整数 = 设为该值（其余类型/<=0 均 400）
+    let new_rate_limit: Option<Option<i64>> = match &req.rate_limit_kbps {
+        None => None,
+        Some(serde_json::Value::Null) => Some(None),
+        Some(serde_json::Value::Number(n)) => match n.as_i64() {
+            Some(v) if v > 0 => Some(Some(v)),
+            _ => {
+                return err(
+                    StatusCode::BAD_REQUEST,
+                    codes::VALIDATION_FAILED,
+                    "rate_limit_kbps must be positive",
+                );
+            }
+        },
+        Some(_) => {
+            return err(
+                StatusCode::BAD_REQUEST,
+                codes::VALIDATION_FAILED,
+                "rate_limit_kbps must be a positive integer or null",
+            );
+        }
+    };
     if let Err(e) = state
         .db
         .update_relay_token_control(&id, req.expose_control, &req.control_scope)
@@ -257,11 +309,38 @@ pub async fn update_token(
         group_id_resp = new_group;
     }
 
+    // 配额变更：写库即生效（新会话按新值限速；既有会话待 core 限速钩子接入重连策略）
+    let mut rate_limit_resp = existing.rate_limit_kbps;
+    if let Some(new_rate_limit) = new_rate_limit
+        && new_rate_limit != existing.rate_limit_kbps
+    {
+        if let Err(e) = state.db.set_relay_token_rate_limit(&id, new_rate_limit) {
+            return err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                codes::INTERNAL,
+                e.to_string(),
+            );
+        }
+        audit(
+            &state,
+            &claims,
+            &ip,
+            "relay_token.set_rate_limit",
+            Some(&id),
+            &match new_rate_limit {
+                Some(kbps) => format!("rate_limit_kbps={kbps}"),
+                None => "rate_limit cleared (unlimited)".to_string(),
+            },
+        );
+        rate_limit_resp = new_rate_limit;
+    }
+
     ok(json!({
         "id": id,
         "expose_control": req.expose_control,
         "control_scope": req.control_scope,
         "group_id": group_id_resp,
+        "rate_limit_kbps": rate_limit_resp,
     }))
 }
 

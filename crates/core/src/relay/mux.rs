@@ -13,6 +13,7 @@
 
 use crate::error::{Error, Result};
 use crate::proto::frame::{DATA_CHUNK_SIZE, Frame, FrameType};
+use crate::relay::limit::TokenBucket;
 
 use bytes::{Buf, Bytes};
 use dashmap::DashMap;
@@ -285,11 +286,14 @@ impl MuxSession {
     /// 启动一个 Mux 会话，拆分流并启动后台读写任务。
     ///
     /// `flow_control`：是否启用 per-channel 窗口流控（要求对端为协议 v2）。
+    /// `limiter`：会话级带宽限速桶（读写双方向共用，None = 不限速）；
+    /// 纯数据面节流，不改帧格式，旧端完全兼容（设计见 relay::limit 模块头）。
     pub fn start<S>(
         stream: S,
         starting_id: u32,
         open_tx: Option<mpsc::Sender<OpenRequest>>,
         flow_control: bool,
+        limiter: Option<Arc<TokenBucket>>,
     ) -> (Arc<Self>, tokio::task::JoinHandle<()>)
     where
         S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
@@ -305,10 +309,17 @@ impl MuxSession {
 
         // 启动后台写任务
         let bytes_out_task = bytes_out.clone();
+        let limiter_write = limiter.clone();
         tokio::spawn(async move {
             while let Some(frame) = rx_frames.recv().await {
                 if frame.frame_type == FrameType::Data {
                     bytes_out_task.fetch_add(frame.payload.len() as u64, Ordering::Relaxed);
+                    // 会话带宽限速（egress）：令牌不足时挂起本写任务，帧缓存在
+                    // 会话 mpsc 中，自然向上游 MuxChannel::poll_write 施加背压；
+                    // acquire 等待封顶 5s，不会阻止 session 关闭
+                    if let Some(limiter) = &limiter_write {
+                        limiter.acquire(frame.payload.len() as u64).await;
+                    }
                 }
                 if frame.write_to(&mut writer).await.is_err() {
                     break;
@@ -327,6 +338,7 @@ impl MuxSession {
         let last_activity_task = last_activity.clone();
         let tx_frames_task = tx_frames.clone();
         let bytes_in_task = bytes_in.clone();
+        let limiter_read = limiter;
 
         let reader_handle = tokio::spawn(async move {
             while let Ok(frame) = Frame::read_from(&mut reader).await {
@@ -335,6 +347,12 @@ impl MuxSession {
                     FrameType::Data | FrameType::DataFin => {
                         if frame.frame_type == FrameType::Data {
                             bytes_in_task.fetch_add(frame.payload.len() as u64, Ordering::Relaxed);
+                        }
+                        // 会话带宽限速（ingress）：分发前扣令牌；令牌不足时本读任务
+                        // 挂起、不再从 socket 读取，TCP 接收窗口耗尽后自然回压对端
+                        // 发送方。与 egress 共用同一桶（双方向合并限额）
+                        if let Some(limiter) = &limiter_read {
+                            limiter.acquire(frame.payload.len() as u64).await;
                         }
                         if let Some(entry) = channels_task.get(&frame.channel_id) {
                             let _ = entry.data_tx.send(frame.payload).await;

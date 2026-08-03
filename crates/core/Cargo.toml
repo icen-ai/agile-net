@@ -26,3 +26,7 @@ rcgen = { workspace = true }
 rustls-pemfile = { workspace = true }
 webpki-roots = { workspace = true }
 sha2 = { workspace = true }
+
+[dev-dependencies]
+# test-util：令牌桶单测用 tokio::time::pause 虚拟时钟（full 不含该 feature）
+tokio = { workspace = true, features = ["test-util"] }

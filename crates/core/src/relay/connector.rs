@@ -341,7 +341,8 @@ impl RelayConnector {
         );
 
         let (open_tx, mut open_rx) = mpsc::channel::<OpenRequest>(64);
-        let (mux, reader_handle) = MuxSession::start(tls_stream, 2, Some(open_tx), flow_control);
+        // connector 侧不做会话限速（限速由 listener 按身份注入）
+        let (mux, reader_handle) = MuxSession::start(tls_stream, 2, Some(open_tx), flow_control, None);
 
         // 后台维护循环：心跳（带抖动）、空闲超时检测、Open 通道请求
         let shutdown_notify = self.shutdown_notify.clone();

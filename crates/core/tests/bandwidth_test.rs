@@ -93,7 +93,7 @@ async fn connect_raw_peer(relay_addr: SocketAddr, node_id: &str, token: &str) ->
         server_version = v["version"].as_u64().unwrap_or(1) as u32;
     }
     let flow_control = server_version >= PROTOCOL_VERSION_FLOW_CONTROL;
-    let (mux, _reader) = MuxSession::start(tls, 2, None, flow_control);
+    let (mux, _reader) = MuxSession::start(tls, 2, None, flow_control, None);
     mux
 }
 

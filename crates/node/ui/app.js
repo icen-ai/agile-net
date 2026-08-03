@@ -904,7 +904,7 @@ async function renderFanIn() {
     '<div data-agpanel="peers" hidden><div class="card"><h3>扇入连接</h3><div class="table-wrap"><table><thead><tr><th>对端 node_id</th><th>上行</th><th>下行</th></tr></thead><tbody id="fanin-peers"></tbody></table></div></div></div>' +
     '<div data-agpanel="tokens" hidden><div class="card"><h3>扇入令牌' + ahelp('令牌 = 允许对端扇入本端点的预共享密钥（psk_ 48 位）；服务端只存哈希，全文仅创建时展示一次') + '</h3>' +
       '<div class="toolbar"><div class="spacer"></div><button onclick="openCreateToken()">' + ic('plus', 15) + '生成令牌</button></div>' +
-      '<div class="table-wrap"><table><thead><tr><th>前缀</th><th>权限组</th><th>备注</th><th>暴露控制面</th><th>最近使用</th><th>创建时间</th><th>操作</th></tr></thead><tbody id="tok-body"></tbody></table></div></div></div>';
+      '<div class="table-wrap"><table><thead><tr><th>前缀</th><th>权限组</th><th>带宽配额</th><th>备注</th><th>暴露控制面</th><th>最近使用</th><th>创建时间</th><th>操作</th></tr></thead><tbody id="tok-body"></tbody></table></div></div></div>';
   agTabsBind($('fanin-tabs'), (k) => {
     S.faninTab = k;
     $('fanin-q').hidden = (k === 'listen');
@@ -976,6 +976,7 @@ function renderFaninTokens() {
   body.innerHTML = items.map(t =>
     '<tr><td class="mono">' + esc(t.token_prefix) + '</td>' +
     '<td>' + (t.group_id ? esc(t.group_name || groupName(t.group_id)) : '<span style="color:var(--dim2)">不收敛</span>') + '</td>' +
+    '<td class="mono">' + (t.rate_limit_kbps ? esc(t.rate_limit_kbps) + ' KB/s' : '<span style="color:var(--dim2)">不限</span>') + '</td>' +
     '<td>' + esc(t.remark || '-') + '</td>' +
     '<td><label class="chk" style="display:flex;align-items:center;gap:5px"><input type="checkbox" ' + (t.expose_control ? 'checked' : '') +
       ' onchange="toggleExpose(\'' + esc(t.id) + '\', this.checked)"><span style="font-size:12px">允许管理</span></label>' +
@@ -985,7 +986,7 @@ function renderFaninTokens() {
     '<td style="color:var(--dim)">' + esc(t.created_at) + '</td>' +
     '<td style="white-space:nowrap"><button class="ghost small" onclick="openEditToken(\'' + esc(t.id) + '\',\'' + esc(t.group_id||'') + '\',' + t.expose_control + ',\'' + esc(t.control_scope) + '\')">编辑</button> ' +
     '<button class="danger small" onclick="delToken(\'' + esc(t.id) + '\')">吊销</button></td></tr>'
-  ).join('') || '<tr><td colspan="7" class="empty">' + (q ? '无匹配的扇入令牌' : '暂无扇入令牌') + '</td></tr>';
+  ).join('') || '<tr><td colspan="8" class="empty">' + (q ? '无匹配的扇入令牌' : '暂无扇入令牌') + '</td></tr>';
   agSelectEnhance(body);
 }
 async function toggleExpose(id, on) {
@@ -1008,6 +1009,8 @@ function openCreateToken() {
     '<label>权限组（留空 = 不收敛，放行一切）</label><select id="nt-group" style="width:100%">' +
       '<option value="">不收敛（放行一切）</option>' +
       S.groups.map(g => '<option value="' + esc(g.id) + '">' + esc(g.name) + '</option>').join('') + '</select>' +
+    '<label>带宽配额 KB/s（留空 = 不限速）</label><input id="nt-rate" type="number" min="1" placeholder="如 10240（= 10 MB/s）" style="width:100%">' +
+    '<div class="hint">限制该令牌整条链路的读写总速率（数据面令牌桶节流，超限自然降速不断流）</div>' +
     '<label class="chk" style="display:flex;align-items:center;gap:6px;margin-top:8px"><input type="checkbox" id="nt-expose"> 允许该扇入中继管理本端点（暴露控制面，默认关）</label>' +
     '<div id="nt-expose-opts" style="display:none;margin:6px 0">' +
       '<label>授权档位</label><select id="nt-scope" style="width:100%">' +
@@ -1021,11 +1024,13 @@ function openCreateToken() {
       {label:'取消', kind:'ghost', fn: closeModal},
       {label:'生成', fn: async () => {
         try {
+          const rateVal = parseInt($('nt-rate').value, 10);
           const d = await api('POST', '/api/v1/admin/node/relay-tokens', {
             remark: $('nt-remark').value.trim(),
             expose_control: $('nt-expose').checked,
             control_scope: $('nt-scope').value,
             group_id: $('nt-group').value || null,
+            rate_limit_kbps: rateVal > 0 ? rateVal : null,
           });
           openModal('令牌已生成 — 仅此一次展示',
             '<div class="secret-box"><span class="mono">' + esc(d.token) + '</span></div>' +
@@ -1045,19 +1050,22 @@ async function delToken(id) {
 }
 /* 编辑收敛组：PUT 三态语义（缺省=不变 / null=不收敛 / 字符串=挂组），
    编辑为用户显式选择故总是送出；暴露控制面在列表直接改（不送 group_id=不变） */
-function openEditToken(id, groupId, exposeControl, controlScope) {
+function openEditToken(id, groupId, exposeControl, controlScope, rateKbps) {
   openModal('编辑扇入令牌',
     '<label>权限组（选「不收敛」= 放行一切）</label><select id="et-group" style="width:100%">' +
       '<option value="">不收敛（放行一切）</option>' +
       S.groups.map(g => '<option value="' + esc(g.id) + '" ' + (groupId===g.id?'selected':'') + '>' + esc(g.name) + '</option>').join('') + '</select>' +
-    '<div class="hint">变更收敛组后在线对端将被踢断，重连即按新组收敛（即时生效，记审计）</div>',
+    '<label>带宽配额 KB/s（清空 = 不限速）</label><input id="et-rate" type="number" min="1" value="' + (rateKbps > 0 ? rateKbps : '') + '" placeholder="不限" style="width:100%">' +
+    '<div class="hint">配额变更对新建会话即时生效（在线会话不断连，重连后生效）；变更收敛组后在线对端将被踢断，重连即按新组收敛（记审计）</div>',
     [
       {label:'取消', kind:'ghost', fn: closeModal},
       {label:'保存', fn: async () => {
         try {
+          const rateVal = parseInt($('et-rate').value, 10);
           await api('PUT', '/api/v1/admin/node/relay-tokens/' + id, {
             expose_control: exposeControl, control_scope: controlScope,
             group_id: $('et-group').value || null,
+            rate_limit_kbps: rateVal > 0 ? rateVal : null,
           });
           closeModal(); toast('已保存', 'ok'); loadTokens();
         } catch(e) { toast(e.message, 'err'); }

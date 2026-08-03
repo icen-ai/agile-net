@@ -296,6 +296,9 @@ pub struct TokenAddArgs {
     /// 收敛权限组（名称或 ID；缺省 = 不收敛，放行一切）
     #[arg(long)]
     pub group: Option<String>,
+    /// 带宽配额（KB/s；缺省 = 不限，须为正整数）
+    #[arg(long, value_parser = clap::value_parser!(i64).range(1..))]
+    pub rate_limit_kbps: Option<i64>,
 }
 
 // ---------- Connector ----------
@@ -1226,6 +1229,10 @@ async fn cmd_token(api: Option<String>, args: TokenArgs, json_out: bool) -> Resu
                             } else {
                                 "关".to_string()
                             },
+                            t["rate_limit_kbps"]
+                                .as_i64()
+                                .map(|v| v.to_string())
+                                .unwrap_or_else(|| "-".to_string()),
                             t["remark"].as_str().unwrap_or("-").to_string(),
                             t["last_used_at"].as_str().unwrap_or("未使用").to_string(),
                             t["created_at"].as_str().unwrap_or("-").to_string(),
@@ -1233,7 +1240,7 @@ async fn cmd_token(api: Option<String>, args: TokenArgs, json_out: bool) -> Resu
                     })
                     .collect();
                 print_table(
-                    &["ID", "前缀", "权限组", "暴露面", "备注", "最近使用", "创建时间"],
+                    &["ID", "前缀", "权限组", "暴露面", "限速KB/s", "备注", "最近使用", "创建时间"],
                     rows,
                 );
             }
@@ -1254,6 +1261,7 @@ async fn cmd_token(api: Option<String>, args: TokenArgs, json_out: bool) -> Resu
                         "expose_control": a.expose_control,
                         "control_scope": a.scope,
                         "group_id": group_id,
+                        "rate_limit_kbps": a.rate_limit_kbps,
                     })),
                 )
                 .await?;
@@ -1269,6 +1277,9 @@ async fn cmd_token(api: Option<String>, args: TokenArgs, json_out: bool) -> Resu
                 }
                 if a.expose_control {
                     println!("   已暴露控制面（档位 {}）：持令牌下游可管理本端点", a.scope);
+                }
+                if let Some(kbps) = a.rate_limit_kbps {
+                    println!("   带宽配额: {kbps} KB/s");
                 }
                 println!("   服务端只存哈希，请立即保存");
             }
