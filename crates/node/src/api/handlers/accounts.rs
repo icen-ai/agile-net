@@ -1,7 +1,7 @@
-//! Accounts API Handlers（对应 docs/api/accounts.md）
+//! Accounts API handlers (see docs/api/accounts.md)
 //!
-//! 企业级设计：密码由服务端生成（`sk-` + 48 位混合字符，~286 bits 熵），
-//! 仅在创建/重置时返回一次；二维码内容即 connect_url。
+//! Design: passwords are server-generated (`sk-` + 48 mixed chars, ~286 bits entropy),
+//! returned only once at create/reset; the QR code content is the connect_url.
 
 use super::audit;
 use crate::api::extractors::{AdminAuth, ClientIp};
@@ -46,7 +46,7 @@ pub async fn list_accounts(
         .await;
     match result {
         Ok((mut items, total)) => {
-            // 在线判定：数据面隧道会话存在，或最近 3 分钟有心跳
+            // Online check: a data-plane tunnel session exists, or a heartbeat seen within 3 minutes
             let now = chrono::Utc::now();
             for a in &mut items {
                 let tunnel_online = state
@@ -84,12 +84,12 @@ pub struct CreateAccountRequest {
     pub group_id: String,
     #[serde(default)]
     pub remark: String,
-    /// 同时授予「管理此节点」权限（管理版接入链接，生成页强警示 + 签发审计）
+    /// Also grant the "manage this node" permission (admin link; strong warning on the create page + issuance audit)
     #[serde(default)]
     pub admin_console: bool,
 }
 
-/// 账号名校验：3-32 字符 [a-zA-Z0-9_-]
+/// Username validation: 3-32 chars [a-zA-Z0-9_-]
 fn validate_username(username: &str) -> Result<(), String> {
     if username.len() < 3 || username.len() > 32 {
         return Err("username must be 3-32 characters".into());
@@ -143,7 +143,7 @@ pub async fn create_account(
         return err(StatusCode::NOT_FOUND, codes::NOT_FOUND, "group not found");
     }
 
-    // 服务端生成强密码（sk 风格）；argon2id 哈希卸载到阻塞线程池
+    // Server-side strong password (sk style); argon2id hash offloaded to the blocking pool
     let password = generate_password();
     let password_plain = password.clone();
     let password_hash = match offload(move || hash_password(&password_plain)).await {
@@ -172,7 +172,7 @@ pub async fn create_account(
         Ok(account) => {
             let mut connect_url = build_connect_url(&state, username, &password).await;
             if req.admin_console {
-                // 管理版接入链接变体：持链接者可管理本节点（强警示 + 签发审计）
+                // Admin-link variant: the link holder can manage this node (strong warning + issuance audit)
                 connect_url.push_str("&admin=1");
                 audit(
                     &state,
@@ -281,7 +281,7 @@ pub async fn update_account(
         );
     }
 
-    // 管理权限变更：授予记签发审计；收回即断开隧道会话（管理通路立即失效）
+    // Admin permission change: granting records an issuance audit; revoking disconnects tunnel sessions (admin path disabled at once)
     if req.admin_console == Some(true) && !existing.admin_console {
         audit(
             &state,
@@ -307,7 +307,7 @@ pub async fn update_account(
         .await;
     }
 
-    // 禁用：吊销全部 token、清除 tunnel_token，并立即断开活跃隧道会话
+    // Disable: revoke all tokens, clear tunnel_token, and disconnect active tunnel sessions at once
     if req.enabled == Some(false) && existing.enabled {
         let jwt = state.jwt.clone();
         let aid = id.clone();
@@ -386,7 +386,7 @@ pub async fn reset_password(
         }
     };
 
-    // argon2id 哈希卸载到阻塞线程池
+    // argon2id hash offloaded to the blocking pool
     let password = generate_password();
     let password_plain = password.clone();
     let password_hash = match offload(move || hash_password(&password_plain)).await {
@@ -410,7 +410,7 @@ pub async fn reset_password(
             e.to_string(),
         );
     }
-    // 旧凭据立即失效 + 断开活跃隧道会话
+    // Old credentials invalidated at once + active tunnel sessions disconnected
     let jwt = state.jwt.clone();
     let aid = id.clone();
     let _ = offload(move || jwt.revoke_all(&aid)).await;
@@ -440,7 +440,7 @@ pub async fn reset_password(
     }))
 }
 
-/// 二维码（SVG）：内容为 connect_url，仅在创建/重置后 10 分钟内可取。
+/// QR code (SVG): content is the connect_url, available only within 10 minutes after create/reset.
 pub async fn qrcode(
     AdminAuth(_): AdminAuth,
     State(state): State<ApiState>,
@@ -519,8 +519,8 @@ pub async fn delete_account(
     }
 }
 
-/// 生成客户端接入 URL（指向管理 API 端点，数据面端点由 config 下发）。
-/// 携带证书指纹（若静态证书模式），客户端据此一键做证书固定，无需 insecure。
+/// Build the client connect URL (points at the admin API endpoint; the data-plane endpoint comes from config).
+/// Carries the cert fingerprint (static cert mode) so the client can pin the cert in one click, no insecure needed.
 async fn build_connect_url(state: &ApiState, username: &str, password: &str) -> String {
     let (server, port) = state.public_api_endpoint().await;
     let mut url = format!(

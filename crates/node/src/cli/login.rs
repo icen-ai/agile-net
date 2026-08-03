@@ -1,4 +1,4 @@
-//! 登录端点并保存会话（`anet login`）。
+//! Log in to an endpoint and save the session (`anet login`).
 
 use anyhow::{Context as _, Result, bail};
 use clap::Args;

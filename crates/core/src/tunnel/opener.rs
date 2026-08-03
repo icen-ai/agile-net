@@ -1,10 +1,10 @@
-//! 通道开启抽象 (ChannelOpener)
+//! Channel opener abstraction (ChannelOpener)
 //!
-//! 统一「向某个节点打开数据通道」的动作：
-//! - `RelayListener`：在上游节点上向指定下游 peer 打开通道
-//! - `ClientTunnel`：在客户端到节点的隧道里打开通道（忽略 node_id，单上游）
+//! Unifies "open a data channel to some node":
+//! - `RelayListener`: open a channel to a given fan-out peer on the fan-in node
+//! - `ClientTunnel`: open a channel inside the client-to-node tunnel (node_id ignored, single fan-in side)
 //!
-//! Proxy 入站通过该抽象把 Tunnel 出站解析到具体的通道来源。
+//! The proxy inbound resolves Tunnel outbounds to a concrete channel source through this abstraction.
 
 use crate::error::Result;
 use crate::relay::listener::RelayListener;
@@ -14,11 +14,11 @@ use crate::tunnel::client_tunnel::ClientTunnel;
 use std::future::Future;
 use std::pin::Pin;
 
-/// 打开一条到目标地址的逻辑通道。
+/// Open a logical channel to a target address.
 ///
-/// `node_id` 为路由规则中指定的目标节点标识：
-/// - 对 `RelayListener`：下游 peer 的 node_id
-/// - 对 `ClientTunnel`：忽略（隧道本身即通往该节点）
+/// `node_id` is the target node from the routing rule:
+/// - for `RelayListener`: the fan-out peer's node_id
+/// - for `ClientTunnel`: ignored (the tunnel itself leads to that node)
 pub trait ChannelOpener: Send + Sync {
     fn open<'a>(
         &'a self,
@@ -27,7 +27,7 @@ pub trait ChannelOpener: Send + Sync {
         target_port: u16,
     ) -> Pin<Box<dyn Future<Output = Result<MuxChannel>> + Send + 'a>>;
 
-    /// 途径核算用的去向标识（默认取规则 node_id；自动选路的开启器覆盖为实际对端）。
+    /// Destination label for transit accounting (defaults to the rule's node_id; auto-routing openers override with the actual peer).
     fn transit_label<'a>(&'a self, node_id: &'a str, _target_host: &'a str) -> String {
         node_id.to_string()
     }
@@ -55,7 +55,7 @@ impl ChannelOpener for ClientTunnel {
     }
 }
 
-/// 按通告路由表自动选择下游 peer 的开启器（节点本地代理用）。
+/// Opener that auto-selects a fan-out peer from the advertised routing table (for the node's local proxy).
 pub struct PeerAutoOpener {
     listener: std::sync::Arc<RelayListener>,
 }
@@ -74,7 +74,7 @@ impl ChannelOpener for PeerAutoOpener {
         target_port: u16,
     ) -> Pin<Box<dyn Future<Output = Result<MuxChannel>> + Send + 'a>> {
         Box::pin(async move {
-            // 优先使用规则指定的节点，其次按通告路由自动解析
+            // prefer the rule-specified node, otherwise auto-resolve via advertised routes
             let peer = if !node_id.is_empty() {
                 node_id.to_string()
             } else {
@@ -91,7 +91,7 @@ impl ChannelOpener for PeerAutoOpener {
     }
 
     fn transit_label<'a>(&'a self, node_id: &'a str, target_host: &'a str) -> String {
-        // 与 open 同一解析口径：规则指定优先，否则按通告路由自动解析
+        // same resolution as open: rule-specified first, else auto-resolve via advertised routes
         if !node_id.is_empty() {
             node_id.to_string()
         } else {

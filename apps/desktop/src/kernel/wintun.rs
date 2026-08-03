@@ -1,4 +1,4 @@
-//! 从 subscription.rs 拆分：wintun.dll 钉版本下发（纯搬运，零逻辑变更）
+//! Split from subscription.rs: pinned wintun.dll provisioning (pure move, zero logic change)
 
 use std::path::PathBuf;
 
@@ -7,35 +7,36 @@ use crate::roles;
 use super::manager::NEED_DOWNLOAD_PREFIX;
 use super::store::kernel_dir;
 
-/// wintun zip 下载源（官方源直连 + 本地代理兜底；gh-proxy/ghfast 仅镜像 github.com，
-/// 不能代理任意域名，已从候移除——受限网络主路径是本地候选复用 reuse_local_wintun）
+/// wintun zip download sources (direct official source + local proxy fallback; gh-proxy/ghfast only
+/// mirror github.com and cannot proxy arbitrary domains, so they were dropped from candidates — on
+/// restricted networks the main path is local candidate reuse via reuse_local_wintun)
 pub(crate) fn wintun_urls() -> Vec<String> {
     vec![format!("https://{WINTUN_ZIP_PATH}")]
 }
 
-// ==================== wintun.dll 钉版本下发（TUN 模式，Windows x64） ====================
+// ==================== Pinned wintun.dll provisioning (TUN mode, Windows x64) ====================
 
-/// 钉死的 wintun 版本（升级 = 改这里 + 更新哈希）
+/// Pinned wintun version (upgrade = change here + update hashes)
 pub const WINTUN_VERSION: &str = "0.14.1";
-/// wintun-0.14.1.zip 的 SHA-256（与内核同策略钉死；哈希与 wintun.net 官网、
-/// wireguard-windows 构建脚本等多源交叉验证一致）
+/// SHA-256 of wintun-0.14.1.zip (pinned with the same policy as the kernel; hash cross-verified
+/// against multiple sources including the wintun.net site and the wireguard-windows build script)
 pub(crate) const WINTUN_ZIP_SHA256: &str =
     "07c256185d6ee3652e09fa55c0b673e2624b565e02c4b9091c79ca7d2f24ef51";
-/// 官方源路径（完整性由 SHA-256 钉死保证；下载镜像见 wintun_urls）
+/// Official source path (integrity enforced by the SHA-256 pin; download mirrors see wintun_urls)
 const WINTUN_ZIP_PATH: &str = "download.wireguard.com/wintun/wintun-0.14.1.zip";
-/// wintun.dll 0.14.1 (amd64, 427,552 B) 本体的 SHA-256——本地候选复用与内嵌落盘的校验钉
-/// （zip 内层 dll 与整包哈希不同，勿与 WINTUN_ZIP_SHA256 混用）。
-/// 钉值唯一来源在 node 侧（crates/node/src/tool/doctor/tun.rs，doctor 校验共用），
-/// 此处仅 re-export 保持 sub::WINTUN_DLL_SHA256 引用路径不变。
+/// SHA-256 of the wintun.dll 0.14.1 (amd64, 427,552 B) binary itself — verification pin for local
+/// candidate reuse and embedded provisioning (the inner dll hashes differently from the whole zip;
+/// do not mix with WINTUN_ZIP_SHA256). Pin single source is node-side (crates/node/src/tool/doctor/tun.rs,
+/// shared with doctor checks); re-export only, keeping the sub::WINTUN_DLL_SHA256 path unchanged.
 pub use agile_net_node::tool::doctor::WINTUN_DLL_SHA256;
 
-/// wintun.dll 落盘位置（与 mihomo.exe 同目录，wintun 按 exe 相邻加载）。
+/// Where wintun.dll is provisioned (same dir as mihomo.exe; wintun loads adjacent to the exe).
 pub fn wintun_dll_path() -> PathBuf {
     kernel_dir().join("wintun.dll")
 }
 
-/// 本地候选复用：Clash 系客户端普遍自带同版本官方 wintun.dll（受限网络下
-/// wireguard.com 不可达时免下载）；仅在 SHA-256 匹配钉值时复用，否则忽略。
+/// Local candidate reuse: Clash-family clients commonly bundle the same official wintun.dll version
+/// (download-free when wireguard.com is unreachable on restricted networks); reuse only on SHA-256 pin match, else ignore.
 fn wintun_local_candidates() -> Vec<PathBuf> {
     let mut v = Vec::new();
     let home = std::env::var("USERPROFILE")
@@ -43,7 +44,7 @@ fn wintun_local_candidates() -> Vec<PathBuf> {
         .map(PathBuf::from)
         .unwrap_or_default();
     if !home.as_os_str().is_empty() {
-        v.push(home.join(".config/clash/wintun.dll")); // FlClash 数据目录
+        v.push(home.join(".config/clash/wintun.dll")); // FlClash data dir
     }
     if let Ok(x) = std::env::var("APPDATA") {
         v.push(PathBuf::from(x).join("FlClash/wintun.dll"));
@@ -54,7 +55,7 @@ fn wintun_local_candidates() -> Vec<PathBuf> {
     v
 }
 
-/// 复用本地已存在的官方 wintun.dll（SHA-256 钉值校验），命中返回 true。
+/// Reuse an existing local official wintun.dll (SHA-256 pin verified); returns true on hit.
 fn reuse_local_wintun(dll: &PathBuf) -> Result<bool, String> {
     use sha2::Digest;
     for cand in wintun_local_candidates() {
@@ -72,14 +73,15 @@ fn reuse_local_wintun(dll: &PathBuf) -> Result<bool, String> {
     Ok(false)
 }
 
-/// 确保 wintun.dll 存在（已存在 / 本地候选复用即返回），仅 Windows x64 需要。
-/// 缺失时**不再当场下载**——返回 NEED_DOWNLOAD 错误，由下载管理器（download.rs）
-/// 后台流式下载 + 进度展示，完成后前端重试原动作（见 set_tun_mode）。
-/// wintun.dll 0.14.1 (amd64) 官方原版内嵌——wireguard.com 在受限网络不可达、
-/// gh 镜像又不能代理非 github 域名，下载路径对国内用户必然失败（弹窗风暴根源），
-/// 故钉版本直接随二进制分发（wintun 为 MIT 许可，允许再分发；来源 https://www.wintun.net/）。
-/// 升级 = 替换 apps/desktop/wintun/wintun.dll + 更新 WINTUN_VERSION
-/// + 更新 node 侧钉值（crates/node/src/tool/doctor/tun.rs WINTUN_DLL_SHA256，全仓唯一来源）。
+/// Ensure wintun.dll exists (returns immediately if present or reused from local candidates); Windows x64 only.
+/// When missing, **no inline download anymore** — returns a NEED_DOWNLOAD error and the download manager
+/// (download.rs) streams it in the background with progress; the frontend retries the original action
+/// afterwards (see set_tun_mode). wintun.dll 0.14.1 (amd64) official binary is embedded — wireguard.com
+/// is unreachable on restricted networks and gh mirrors cannot proxy non-github domains, so the download
+/// path inevitably fails for CN users (root cause of the popup storm); hence the pinned version ships
+/// with the binary (wintun is MIT-licensed, redistribution allowed; source https://www.wintun.net/).
+/// Upgrade = replace apps/desktop/wintun/wintun.dll + bump WINTUN_VERSION
+/// + update the node-side pin (crates/node/src/tool/doctor/tun.rs WINTUN_DLL_SHA256, single source repo-wide).
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 static WINTUN_DLL_EMBEDDED: &[u8] = include_bytes!("../../wintun/wintun.dll");
 
@@ -96,7 +98,7 @@ pub async fn ensure_wintun() -> Result<PathBuf, String> {
         }
         let dir = kernel_dir();
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-        // 主路径：内嵌官方 dll 落盘（钉值校验，杜绝编译期篡改）；免网络、免下载
+        // Main path: write the embedded official dll to disk (pin-verified, defeats build-time tampering); no network, no download
         {
             use sha2::Digest;
             if format!("{:x}", sha2::Sha256::digest(WINTUN_DLL_EMBEDDED)) == WINTUN_DLL_SHA256 {
@@ -105,7 +107,7 @@ pub async fn ensure_wintun() -> Result<PathBuf, String> {
                 return Ok(dll);
             }
         }
-        // 兜底：本地候选复用（Clash 系客户端自带同版本 dll）
+        // Fallback: reuse local candidates (Clash-family clients bundle the same dll version)
         if reuse_local_wintun(&dll)? {
             return Ok(dll);
         }
@@ -117,8 +119,8 @@ pub async fn ensure_wintun() -> Result<PathBuf, String> {
 mod tests {
     use super::*;
 
-    /// 内嵌 wintun.dll 必须与钉值一致（防替换错版本/构建期污染；
-    /// 钉值单源化后「同步三处」收敛为两处：本内嵌文件 + node 侧常量）
+    /// Embedded wintun.dll must match the pin (guards against wrong-version swaps / build-time pollution;
+    /// after pin single-sourcing, "sync three places" shrinks to two: this embedded file + node-side constant)
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     #[test]
     fn wintun_embedded_matches_pin() {

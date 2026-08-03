@@ -1,7 +1,7 @@
-//! Relay Token API Handlers（对应 docs/api/node.md 的 relay-tokens 部分）
+//! Relay token API handlers (see the relay-tokens section of docs/api/node.md)
 //!
-//! Token 由服务端生成（`psk_` + 48 位），数据库只存 SHA-256 哈希与前缀，
-//! 全文仅创建时返回一次。
+//! Tokens are server-generated (`psk_` + 48 chars); the DB stores only the SHA-256 hash
+//! and prefix, and the full token is returned only once at creation.
 
 use super::audit;
 use crate::api::extractors::{AdminAuth, ClientIp};
@@ -20,16 +20,16 @@ use serde_json::json;
 pub struct CreateTokenRequest {
     #[serde(default)]
     pub remark: String,
-    /// 允许该下游中继管理本节点（默认关）
+    /// Allow this fan-in relay to manage the node (default off)
     #[serde(default)]
     pub expose_control: bool,
-    /// 管理授权档位：ro / rules / full
+    /// Admin grant scope: ro / rules / full
     #[serde(default = "default_scope")]
     pub control_scope: String,
-    /// 收敛权限组（缺省/null = 不收敛，放行一切）
+    /// ACL group (absent/null = unrestricted, allow all)
     #[serde(default)]
     pub group_id: Option<String>,
-    /// 带宽配额（KB/s；缺省/null = 不限；>0 生效，<=0 非法）
+    /// Bandwidth quota (KB/s; absent/null = unlimited; >0 takes effect, <=0 invalid)
     #[serde(default)]
     pub rate_limit_kbps: Option<i64>,
 }
@@ -42,7 +42,7 @@ fn valid_scope(scope: &str) -> bool {
     matches!(scope, "ro" | "rules" | "full")
 }
 
-/// 配额校验：>0 或缺省合法；<=0 拒绝（DB 层另有归一兜底）。
+/// Quota validation: >0 or absent is valid; <=0 rejected (the DB layer has a normalizing backstop).
 fn valid_rate_limit(rate_limit_kbps: Option<i64>) -> bool {
     rate_limit_kbps.is_none_or(|v| v > 0)
 }
@@ -185,16 +185,16 @@ pub struct UpdateTokenRequest {
     pub expose_control: bool,
     #[serde(default = "default_scope")]
     pub control_scope: String,
-    /// 收敛组变更三态：缺省 = 不变，null = 不收敛，字符串 = 挂到该组。
-    /// （serde 对 Option 的显式 null 也归为 None，须 deserialize_some 区分缺省与置空）
+    /// ACL group change tri-state: absent = unchanged, null = unrestricted, string = mount to that group.
+    /// (serde maps an explicit null on Option to None too; deserialize_some distinguishes absent from cleared)
     #[serde(default, deserialize_with = "deserialize_some")]
     pub group_id: Option<serde_json::Value>,
-    /// 配额变更三态：缺省 = 不变，null = 不限，正整数 = 设为该值（KB/s）。
+    /// Quota change tri-state: absent = unchanged, null = unlimited, positive integer = set to that value (KB/s).
     #[serde(default, deserialize_with = "deserialize_some")]
     pub rate_limit_kbps: Option<serde_json::Value>,
 }
 
-/// 字段出现即包 Some（含显式 null），缺省才走 default None。
+/// Wraps the field in Some when present (including explicit null); only absent falls back to default None.
 fn deserialize_some<'de, D, T>(de: D) -> Result<Option<T>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -203,7 +203,7 @@ where
     T::deserialize(de).map(Some)
 }
 
-/// 暴露控制面开关变更（默认关；变更即审计 relay_token.expose_control）。
+/// Expose-control-plane switch update (default off; every change audited as relay_token.expose_control).
 pub async fn update_token(
     AdminAuth(claims): AdminAuth,
     State(state): State<ApiState>,
@@ -235,7 +235,7 @@ pub async fn update_token(
             "relay token not found",
         );
     };
-    // 收敛组入参解析：null = 不收敛，字符串 = 挂到该组（其余类型 400）
+    // Parse ACL group input: null = unrestricted, string = mount to that group (any other type 400)
     let new_group: Option<Option<String>> = match &req.group_id {
         None => None,
         Some(serde_json::Value::Null) => Some(None),
@@ -263,7 +263,7 @@ pub async fn update_token(
             );
         }
     }
-    // 配额入参解析：null = 不限，正整数 = 设为该值（其余类型/<=0 均 400）
+    // Parse quota input: null = unlimited, positive integer = set to that value (other types/<=0 all 400)
     let new_rate_limit: Option<Option<i64>> = match &req.rate_limit_kbps {
         None => None,
         Some(serde_json::Value::Null) => Some(None),
@@ -314,12 +314,12 @@ pub async fn update_token(
         .await;
     }
 
-    // 收敛组变更：写库后按哈希踢会话，在线对端重连即按新组收敛（即时生效）
+    // ACL group change: kick sessions by token hash after the DB write; online peers reconnect under the new group (takes effect at once)
     let mut group_id_resp = existing.group_id.clone();
     if let Some(new_group) = new_group
         && new_group != existing.group_id
     {
-        // 写库 + 取哈希合并为一次阻塞任务
+        // DB write + hash fetch merged into one blocking task
         let (tid, gid) = (id.clone(), new_group.clone());
         let token_hash = match state
             .db_call(move |db| {
@@ -357,7 +357,7 @@ pub async fn update_token(
         group_id_resp = new_group;
     }
 
-    // 配额变更：写库即生效（新会话按新值限速；既有会话待 core 限速钩子接入重连策略）
+    // Quota change: effective on DB write (new sessions limited to the new value; existing sessions await the core rate-limit hook joining the reconnect policy)
     let mut rate_limit_resp = existing.rate_limit_kbps;
     if let Some(new_rate_limit) = new_rate_limit
         && new_rate_limit != existing.rate_limit_kbps
@@ -414,8 +414,8 @@ pub async fn delete_token(
     ClientIp(ip): ClientIp,
     Path(id): Path<String>,
 ) -> Response {
-    // 先取哈希再删除，合并为一次阻塞任务
-    // （删除联动：使用该 token 的在线下游节点立即被踢）
+    // Fetch the hash, then delete, merged into one blocking task
+    // (delete side effect: online downstream nodes using this token are kicked at once)
     let tid = id.clone();
     match state
         .db_call(move |db| {

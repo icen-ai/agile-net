@@ -1,4 +1,4 @@
-//! 第 5 节：网络连通（DNS 解析 / HTTPS 出站 / 默认网关 ping）。
+//! Section 5: network connectivity (DNS resolution / HTTPS egress / default-gateway ping).
 
 use super::{DoctorSection, DoctorStatus, item, section};
 use std::net::IpAddr;
@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 pub(super) async fn section_network() -> DoctorSection {
     let mut items = Vec::new();
 
-    // DNS 解析
+    // DNS resolution
     match tokio::net::lookup_host(("www.cloudflare.com", 443)).await {
         Ok(addrs) => {
             let addrs: Vec<_> = addrs.collect();
@@ -41,7 +41,7 @@ pub(super) async fn section_network() -> DoctorSection {
         )),
     }
 
-    // HTTPS 出站
+    // HTTPS egress
     let https_start = Instant::now();
     let https = reqwest::Client::builder()
         .timeout(Duration::from_secs(5))
@@ -85,7 +85,7 @@ pub(super) async fn section_network() -> DoctorSection {
         },
     }
 
-    // 默认网关 ping（失败仅提示——很多网关禁 ICMP）
+    // Default-gateway ping (failure is only informational — many gateways block ICMP)
     match default_net::get_default_gateway() {
         Ok(gw) => match ping_once(gw.ip_addr, Duration::from_secs(1)).await {
             Ok(ms) => items.push(item(
@@ -114,7 +114,7 @@ pub(super) async fn section_network() -> DoctorSection {
     section("network", "网络连通", items)
 }
 
-/// 单发 ICMP ping（surge-ping；无权限/超时均为 Err 由调用方降级为提示）。
+/// Single-shot ICMP ping (surge-ping; permission/timeout failures are Err and degraded to info by the caller).
 async fn ping_once(addr: IpAddr, timeout: Duration) -> Result<f64, String> {
     use surge_ping::{Client, Config, ICMP, PingIdentifier, PingSequence};
     let config = match addr {

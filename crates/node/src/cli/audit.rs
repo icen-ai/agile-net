@@ -1,4 +1,4 @@
-//! 审计日志查询（`anet audit ...`）。
+//! Audit log queries (`anet audit ...`).
 
 use anyhow::Result;
 use clap::{Args, Subcommand};

@@ -1,34 +1,34 @@
 'use strict';
-/* 从 app.js 拆分：订阅代理 / 节点页 / 覆写脚本 / TUN / 制品下载 / 拖拽导入（纯搬运，零逻辑变更） */
+/* Split out of app.js: subscription proxy / node page / override scripts / TUN / artifact download / drag-drop import (pure move, zero logic change) */
 
-/* ================= 订阅代理（mihomo sidecar） ================= */
+/* ================= Subscription proxy (mihomo sidecar) ================= */
 let SUBS = [];
 let PROXY_DATA = null;
-let PROXY_CACHED = false; // true = 内核未运行，展示缓存快照（只读）
+let PROXY_CACHED = false; // true = kernel not running, showing cached snapshot (read-only)
 let CUR_GROUP = null;
-/* 「每日选妃」测速状态：DELAY_CACHE group -> Map(node -> ms，0=超时)，只就地刷徽标不触发整组重渲染；
-   TESTING 进行中的组（按钮禁用防重复点击）；TEST_ALL_ON 串行全部测速中 */
+/* 「每日选妃」 latency-test state: DELAY_CACHE group -> Map(node -> ms, 0=timeout), refresh badges in place only, no full-group re-render;
+   TESTING groups currently testing (button disabled against double-click); TEST_ALL_ON serial test-all in progress */
 const DELAY_CACHE = new Map();
 const TESTING = new Set();
 let TEST_ALL_ON = false;
-function getSortMode(g) { return localStorage.getItem('ag_sort_' + g) || 'default'; } // 每组记忆排序方式
+function getSortMode(g) { return localStorage.getItem('ag_sort_' + g) || 'default'; } // per-group remembered sort mode
 
-/* 仪表盘订阅卡：激活订阅 + 节点数 + 当前节点延迟（PROXY_DATA 就绪后补充） */
+/* Dashboard subscription card: active subscription + node count + current node latency (filled once PROXY_DATA ready) */
 function updateDashSub() {
   const active = SUBS.find(s => s.active);
   let val, sub;
   if (active) {
     val = active.name;
-    sub = active.node_count + ' 节点 · 共 ' + SUBS.length + ' 个订阅';
+    sub = AgI18n.t('sub.dashActiveSub', { nodes: active.node_count, subs: SUBS.length });
     const g = PROXY_DATA && CUR_GROUP && PROXY_DATA[CUR_GROUP];
     if (g && g.now) {
       const p = PROXY_DATA[g.now] || {};
       const hist = (p.history && p.history.length) ? p.history[p.history.length - 1].delay : 0;
-      sub += ' · 当前 ' + g.now + (hist ? ' ' + hist + 'ms' : '');
+      sub += AgI18n.t('sub.dashCurrent', { node: g.now }) + (hist ? ' ' + hist + 'ms' : '');
     }
   } else {
-    val = SUBS.length ? SUBS.length + ' 个订阅' : '未添加订阅';
-    sub = SUBS.length ? '未激活，点卡片进订阅页激活' : '点卡片进订阅页添加';
+    val = SUBS.length ? AgI18n.t('sub.dashCountSubs', { n: SUBS.length }) : AgI18n.t('sub.dashNoSub');
+    sub = AgI18n.t(SUBS.length ? 'sub.dashInactiveHint' : 'sub.dashEmptyHint');
   }
   setText('d-sub-val', val);
   setText('d-sub-sub', sub);
@@ -41,29 +41,29 @@ async function refreshSubs() {
   const list = $('subs-list');
   const active = SUBS.find(s => s.active);
   $('proxy-sub-desc').textContent = active
-    ? '当前激活：' + active.name + '（' + active.node_count + ' 节点）— 点击卡片切换，「测速」批量测延迟'
-    : '请先在「订阅」页激活一个订阅';
+    ? AgI18n.t('sub.descActive', { name: active.name, n: active.node_count })
+    : AgI18n.t('sub.descActivateFirst');
   updateDashSub();
   if (!SUBS.length) {
-    list.innerHTML = '<div class="empty">尚未添加订阅</div>';
+    list.innerHTML = '<div class="empty">' + AgI18n.t('sub.emptySubs') + '</div>';
     return;
   }
   list.innerHTML = SUBS.map(s => {
     const used = (s.upload || 0) + (s.download || 0);
     const pct = s.total ? Math.min(100, used / s.total * 100) : 0;
     const cls = pct >= 95 ? 'full' : pct >= 80 ? 'warn' : '';
-    const traffic = s.total ? fmtBytes(used) + ' / ' + fmtBytes(s.total) : fmtBytes(used) + ' 已用';
-    const expire = s.expire ? ' · ' + fmtDate(s.expire) : (s.total ? ' · 长期有效' : '');
+    const traffic = s.total ? fmtBytes(used) + ' / ' + fmtBytes(s.total) : AgI18n.t('sub.usedOnly', { used: fmtBytes(used) });
+    const expire = s.expire ? ' · ' + fmtDate(s.expire) : (s.total ? AgI18n.t('sub.longTerm') : '');
     return '<div class="sub-card' + (s.active ? ' active' : '') + '" data-sub-activate="' + esc(s.id) + '">' +
       '<div class="sub-card-top"><span class="sub-card-title" title="' + esc(s.name) + '">' + esc(s.name) + '</span>' +
-      (s.active ? '<span class="sub-badge">使用中</span>' : '') +
+      (s.active ? '<span class="sub-badge">' + AgI18n.t('sub.inUse') + '</span>' : '') +
       '<span class="sub-card-actions">' +
-      '<button class="ghost small icon-btn" data-sub-update="' + esc(s.id) + '" title="刷新订阅">' + AgIcon('refresh-cw', 13) + '</button>' +
-      '<button class="ghost small icon-btn" data-sub-del="' + esc(s.id) + '" title="删除">' + AgIcon('trash-2', 13) + '</button>' +
+      '<button class="ghost small icon-btn" data-sub-update="' + esc(s.id) + '" title="' + AgI18n.t('sub.refreshTitle') + '">' + AgIcon('refresh-cw', 13) + '</button>' +
+      '<button class="ghost small icon-btn" data-sub-del="' + esc(s.id) + '" title="' + AgI18n.t('common.delete') + '">' + AgIcon('trash-2', 13) + '</button>' +
       '</span></div>' +
       '<div class="sub-progress"><i class="' + cls + '" style="width:' + pct.toFixed(1) + '%"></i></div>' +
       '<div class="sub-card-meta">' + traffic + expire + '</div>' +
-      '<div class="sub-card-sub">' + fmtAgo(s.updated_at) + '更新 · ' + s.node_count + ' 节点</div>' +
+      '<div class="sub-card-sub">' + AgI18n.t('sub.updatedMeta', { ago: fmtAgo(s.updated_at), n: s.node_count }) + '</div>' +
       '</div>';
   }).join('');
 }
@@ -72,37 +72,37 @@ async function refreshSubStatus() {
   let st;
   try { st = await invoke('subscription_status'); } catch (e) { return; }
   $('sub-status-text').textContent = st.running
-    ? '运行中'
-    : (st.installed ? '已安装，未运行' : (st.supported ? '未开启' : '当前平台不支持'));
-  $('sub-version').textContent = st.version || (st.installed ? '已安装' : '-');
+    ? AgI18n.t('common.running')
+    : (st.installed ? AgI18n.t('sub.installedNotRunning') : (st.supported ? AgI18n.t('sub.notEnabled') : AgI18n.t('sub.unsupported')));
+  $('sub-version').textContent = st.version || (st.installed ? AgI18n.t('sub.installed') : '-');
   $('r-sub').checked = st.running;
-  // 仪表盘订阅卡开关与徽标同步（与订阅页内核开关同一角色）
+  // dashboard subscription card toggle & badge sync (same role as the subscription page kernel toggle)
   const d = $('d-sub');
   if (d) d.checked = st.running;
-  setHtml('d-sub-badge', st.running ? '<span class="badge b-ok">运行中</span>' : '<span class="badge b-gray">未运行</span>');
-  // 覆写脚本失败告警（签名去重：同一组失败只弹一次，恢复后重置）
+  setHtml('d-sub-badge', st.running ? '<span class="badge b-ok">' + AgI18n.t('common.running') + '</span>' : '<span class="badge b-gray">' + AgI18n.t('sub.notRunning') + '</span>');
+  // override script failure alert (sig dedup: same failure set toasts once, resets after recovery)
   const se = st.script_errors || [];
   const seSig = JSON.stringify(se);
   if (se.length && window._scriptErrSig !== seSig) {
-    toast('覆写脚本「' + se[0][0] + '」执行失败已跳过：' + se[0][1], 'err');
+    toast(AgI18n.t('sub.scriptFailed', { name: se[0][0], err: se[0][1] }), 'err');
   }
   window._scriptErrSig = se.length ? seSig : '';
-  // 内核状态翻转：出口路径随之变化，立刻重探出口 IP（经 mihomo ↔ 直连）
+  // kernel state flipped: egress path changes, re-probe egress IP now (via mihomo ↔ direct)
   if (window._subRunning !== st.running) {
     window._subRunning = st.running;
     NetProbe.refresh();
   }
   NetProbe.render();
-  // 侧栏底部速率区随内核运行态翻转（运行↔未运行）
+  // sidebar footer rate area flips with kernel run state (running ↔ stopped)
   renderSideFoot();
-  Hero.onTraffic(); // 英雄卡曲线/读数同步翻转（sub_traffic 报错时此处兜底切空态）
-  // 无论内核是否运行都刷新代理页（未运行时回落缓存快照，方便查看节点情况）
+  Hero.onTraffic(); // hero card curve/readings flip too (fallback to empty state here when sub_traffic errors)
+  // refresh proxy page whether kernel runs or not (falls back to cached snapshot when down, for node browsing)
   refreshGroups();
 }
 
-/* ---------- 订阅内核流量（后端 /traffic WS 单任务累计，前端 2s 轮询同一数据源） ----------
-   订阅页内核卡与首页订阅卡共用本模块序列，不另起轮询；
-   速率序列照 trackFaninTraffic 的 delta 保护：累计倒退 = 内核重启清零，按新基准。 */
+/* ---------- Subscription kernel traffic (backend /traffic WS single-task cumulative; frontend 2s polls same source) ----------
+   Subscription page kernel card and home subscription card share this module's series; no extra polling;
+   rate series follows trackFaninTraffic's delta guard: cumulative regression = kernel restart reset, take as new baseline. */
 const SubTraffic = {
   data: null, _last: null, _lastUp: null, _lastDown: null, series: [], rates: { up: 0, down: 0 }, _sig: '',
   async poll() {
@@ -117,7 +117,7 @@ const SubTraffic = {
       if (this.series.length > 90) this.series.shift();
     }
     this._last = total;
-    // 分向速率（2s 轮询差分供侧栏底部；内核重启计数归零 → 负差钳 0，速率不造假）
+    // per-direction rates (2s poll delta feeds sidebar footer; kernel restart zeroes counters → clamp negative delta to 0, never fake rates)
     const dUp = this._lastUp === null ? 0 : Math.max(0, t.up_total - this._lastUp);
     const dDown = this._lastDown === null ? 0 : Math.max(0, t.down_total - this._lastDown);
     this._lastUp = t.up_total;
@@ -126,16 +126,16 @@ const SubTraffic = {
     this.data = t;
     this.render();
     renderSideFoot();
-    Hero.onTraffic(); // 中控台英雄卡：速率缓冲/曲线/今日已用（同一 2s 数据源，不另起轮询）
+    Hero.onTraffic(); // dashboard hero card: rate buffer/curve/today usage (same 2s source, no extra polling)
   },
   render() {
     const t = this.data, show = !!window._subRunning && !!t;
-    // 显隐先行（不受变更检测拦截）
+    // visibility first (not gated by change detection)
     const row = $('sub-traffic-row'), spark = $('sub-spark');
     const dtf = $('d-sub-tf'), dspark = $('d-sub-spark');
     [row, spark, dtf, dspark].forEach(el => { if (el) el.style.display = show ? '' : 'none'; });
     const sig = show ? (t.up_total + '/' + t.down_total) : 'off';
-    if (sig === this._sig) return; // 变更检测：总量未变不重绘
+    if (sig === this._sig) return; // change detection: totals unchanged, skip redraw
     this._sig = sig;
     if (!show) return;
     const text = '↑ ' + fmtBytes(t.up_total) + ' · ↓ ' + fmtBytes(t.down_total);
@@ -147,16 +147,16 @@ const SubTraffic = {
   },
 };
 
-/* ---------- 代理页（「每日选妃」：组批量测速流式刷徽标 + 延迟排序 + 推荐徽标） ----------
-   渲染纪律：group-tabs / node-grid 均签名对比，数据不变不重绘（refreshSubStatus 10s 轮询会调进来）；
-   测速结果只写 DELAY_CACHE 并就地刷 .lat 徽标（text/class），不触发整组重渲染；
-   阶梯收尾后 reconcile 一次，应用延迟排序与「推荐」徽标。 */
-const GROUP_LABELS = { 'AGILE-SUB': '订阅节点' }; // 技术名 → 友好名；mihomo 内置 GLOBAL 组隐藏
+/* ---------- Proxy page (「每日选妃」: group batch latency test with streaming badge refresh + delay sort + recommended badge) ----------
+   Render discipline: group-tabs / node-grid both sig-compared, no redraw when data unchanged (refreshSubStatus 10s poll calls in);
+   test results only write DELAY_CACHE and refresh .lat badges in place (text/class), no full-group re-render;
+   after the stagger finishes, reconcile once: apply delay sort and 「推荐」 badge. */
+const GROUP_LABELS = { 'AGILE-SUB': 'sub.groupAgileSub' }; // technical name → locale entry key; mihomo built-in GLOBAL group hidden
 function proxyGroupList() {
   return Object.entries(PROXY_DATA || {}).filter(([n, p]) =>
     n !== 'GLOBAL' && p.all && ['Selector', 'URLTest', 'Fallback'].includes(p.type));
 }
-/* 节点有效延迟：测速缓存优先（0=超时）；URLTest/Fallback 组回落 mihomo history 最近值；null=未测速 */
+/* Effective node latency: latency-test cache first (0=timeout); URLTest/Fallback groups fall back to latest mihomo history value; null=not tested */
 function delayOf(group, node) {
   const m = DELAY_CACHE.get(group);
   if (m && m.has(node)) return m.get(node);
@@ -167,21 +167,21 @@ function delayOf(group, node) {
   }
   return null;
 }
-// 延迟分档：<300ms good / <800ms mid / 其余 bad；0（超时）与 null（未测速）均为 na
+// latency tiers: <300ms good / <800ms mid / else bad; 0 (timeout) and null (not tested) are both na
 function latCls(ms) { return ms < 300 ? 'lat-good' : ms < 800 ? 'lat-mid' : 'lat-bad'; }
 function latHtml(ms) {
   if (typeof ms === 'number' && ms > 0)
     return '<span class="lat ' + latCls(ms) + '" style="margin-left:auto">' + ms + ' ms</span>';
-  return '<span class="lat lat-na" style="margin-left:auto">' + (ms === null ? '—' : '超时') + '</span>';
+  return '<span class="lat lat-na" style="margin-left:auto">' + (ms === null ? '—' : AgI18n.t('sub.timeout')) + '</span>';
 }
-/* 「推荐」徽标：测速后延迟最低且 <500ms 的节点（Tailscale 式替用户决策） */
+/* 「推荐」 badge: node with lowest tested latency under 500ms (Tailscale-style decide-for-user) */
 function bestNode(group) {
   const m = DELAY_CACHE.get(group);
   let best = null, bestMs = 500;
   if (m) m.forEach((ms, name) => { if (ms > 0 && ms < bestMs) { best = name; bestMs = ms; } });
   return best;
 }
-/* 按延迟排序：有有效延迟的升序在前，无数据/超时保持原顺序在后（下标 tiebreak 保稳定）；当前选中顺其自然 */
+/* Sort by latency: nodes with valid latency ascending first, no-data/timeout keep original order after (index tiebreak keeps stability); current selection follows naturally */
 function sortedNodes(group) {
   const g = PROXY_DATA[group];
   if (getSortMode(group) !== 'delay') return g.all;
@@ -193,7 +193,7 @@ function sortedNodes(group) {
     .map(k => k.n);
 }
 
-/* 空态与降级：内核未运行（「去开启」跳订阅视图，HTTP_MODE 无此入口）/ 无代理组 */
+/* Empty state & degradation: kernel not running (「去开启」 jumps to subscription view, no such entry in HTTP_MODE) / no proxy groups */
 function renderProxyEmpty(kind) {
   $('pg-toolbar').style.display = 'none';
   const tabs = $('group-tabs');
@@ -204,12 +204,12 @@ function renderProxyEmpty(kind) {
     grid.dataset.sig = sig;
     grid.innerHTML = kind === 'down'
       ? '<div class="empty-state" style="grid-column:1/-1">' + AgIcon('satellite', 36) +
-        '<div class="empty-t">订阅内核未运行</div>' +
-        '<div class="empty-d">开启订阅代理角色后，这里会列出可切换的节点</div>' +
-        (HTTP_MODE ? '' : '<button class="small" data-goto-sub>去开启</button>') + '</div>'
+        '<div class="empty-t">' + AgI18n.t('sub.kernelDown') + '</div>' +
+        '<div class="empty-d">' + AgI18n.t('sub.kernelDownDesc') + '</div>' +
+        (HTTP_MODE ? '' : '<button class="small" data-goto-sub>' + AgI18n.t('sub.goEnable') + '</button>') + '</div>'
       : '<div class="empty-state" style="grid-column:1/-1">' + AgIcon('orbit', 36) +
-        '<div class="empty-t">暂无代理组，检查订阅配置</div>' +
-        '<div class="empty-d">订阅可能未包含节点，或尚未刷新成功</div></div>';
+        '<div class="empty-t">' + AgI18n.t('sub.noGroups') + '</div>' +
+        '<div class="empty-d">' + AgI18n.t('sub.noGroupsDesc') + '</div></div>';
   }
   syncTestUI();
 }
@@ -229,17 +229,17 @@ async function refreshGroups() {
   if (!groups.length) { renderProxyEmpty('empty'); updateDashSub(); return; }
   if (!CUR_GROUP || !groups.some(([n]) => n === CUR_GROUP)) CUR_GROUP = groups[0][0];
   $('pg-toolbar').style.display = '';
-  // 组页签签名对比：组集合与当前组不变不重绘
+  // group tab sig compare: no redraw when group set and current group unchanged
   const tabs = $('group-tabs');
   const tabSig = JSON.stringify([groups.map(([n]) => n), CUR_GROUP]);
   if (tabs.dataset.sig !== tabSig) {
     tabs.dataset.sig = tabSig;
     tabs.innerHTML = groups.map(([n]) =>
-      '<button class="group-tab' + (n === CUR_GROUP ? ' active' : '') + '" data-group-tab="' + esc(n) + '">' + esc(GROUP_LABELS[n] || n) + '</button>'
+      '<button class="group-tab' + (n === CUR_GROUP ? ' active' : '') + '" data-group-tab="' + esc(n) + '">' + esc(GROUP_LABELS[n] ? AgI18n.t(GROUP_LABELS[n]) : n) + '</button>'
     ).join('');
   }
-  // 缓存态：只读展示，覆盖说明文案（正常态文案由 refreshSubs 维护）
-  if (PROXY_CACHED) setText('proxy-sub-desc', '订阅内核未运行，以下为最近缓存节点（测速与切换不可用）');
+  // cached state: read-only display, override desc copy (normal-state copy maintained by refreshSubs)
+  if (PROXY_CACHED) setText('proxy-sub-desc', AgI18n.t('sub.cachedDesc'));
   syncSortTabs();
   syncTestUI();
   renderNodeGrid();
@@ -250,7 +250,7 @@ function renderNodeGrid(force) {
   const g = PROXY_DATA && PROXY_DATA[CUR_GROUP];
   if (!g) return;
   const grid = $('node-grid');
-  // 签名对比：代理数据/排序方式不变不重绘（测速徽标就地单独刷，10s 轮询不打断流式写入）
+  // sig compare: no redraw when proxy data/sort mode unchanged (latency-test badges refresh in place separately; 10s poll must not interrupt streaming writes)
   const sig = JSON.stringify([CUR_GROUP, g.type, g.now, g.all, PROXY_CACHED, getSortMode(CUR_GROUP)]);
   if (!force && grid.dataset.sig === sig) return;
   grid.dataset.sig = sig;
@@ -260,7 +260,7 @@ function renderNodeGrid(force) {
     const cur = g.now === n;
     return '<div class="snode-card' + (cur ? ' current' : '') + '" data-group="' + esc(CUR_GROUP) + '" data-node="' + esc(n) + '">' +
       '<div class="node-name">' + (cur ? '<span class="node-check">' + AgIcon('check', 11) + '</span>' : '') +
-      (best === n ? '<span class="pill pill-ok">推荐</span>' : '') +
+      (best === n ? '<span class="pill pill-ok">' + AgI18n.t('sub.recommended') + '</span>' : '') +
       '<span class="node-name-text" title="' + esc(n) + '">' + esc(n) + '</span></div>' +
       '<div class="node-foot" style="padding-right:0"><span class="node-proto">' + esc(p.type || '') + '</span>' +
       latHtml(delayOf(CUR_GROUP, n)) +
@@ -268,20 +268,20 @@ function renderNodeGrid(force) {
   }).join('');
 }
 
-/* 只刷徽标不重渲染：'…' 加载态 / null 未测速（—）/ 0 超时 / >0 有效延迟 */
+/* Badge-only refresh, no re-render: '…' loading / null not tested (—) / 0 timeout / >0 valid latency */
 function writeLat(card, ms) {
   const el = card.querySelector('.lat');
   if (!el) return;
   if (ms === '…') { el.textContent = '…'; el.className = 'lat lat-na'; return; }
   if (typeof ms === 'number' && ms > 0) { el.textContent = ms + ' ms'; el.className = 'lat ' + latCls(ms); return; }
-  el.textContent = ms === null ? '—' : '超时';
+  el.textContent = ms === null ? '—' : AgI18n.t('sub.timeout');
   el.className = 'lat lat-na';
 }
 function groupCards(group) {
   return [...$('node-grid').querySelectorAll('.snode-card')].filter(c => c.dataset.group === group);
 }
 
-/* 测速按钮态：HTTP_MODE（CMD_MAP 无此命令）与缓存态隐藏；进行中禁用 + 转圈（防重复点击，竞品投诉教训） */
+/* Latency-test button state: hidden in HTTP_MODE (CMD_MAP lacks this command) and cached state; disabled + spinner while running (anti double-click, learned from competitor complaints) */
 let _testUiKey = '';
 function syncTestUI() {
   const bAll = $('btn-test-all'), bGrp = $('btn-test-group');
@@ -294,17 +294,17 @@ function syncTestUI() {
   bGrp.style.display = hide ? 'none' : '';
   bGrp.disabled = grpBusy || TEST_ALL_ON;
   bAll.disabled = TEST_ALL_ON;
-  bGrp.innerHTML = grpBusy ? '<span class="spinner"></span>测速中' : AgIcon('zap', 13) + '测速';
-  bAll.innerHTML = TEST_ALL_ON ? '<span class="spinner"></span>测速中…' : AgIcon('gauge', 14) + '全部测速';
+  bGrp.innerHTML = grpBusy ? '<span class="spinner"></span>' + AgI18n.t('sub.testing') : AgIcon('zap', 13) + AgI18n.t('sub.test');
+  bAll.innerHTML = TEST_ALL_ON ? '<span class="spinner"></span>' + AgI18n.t('sub.testingAll') : AgIcon('gauge', 14) + AgI18n.t('sub.testAll');
 }
 function syncSortTabs() {
   const cur = getSortMode(CUR_GROUP);
   document.querySelectorAll('#sort-tabs .agtab').forEach(t => t.classList.toggle('active', t.dataset.sort === cur));
 }
 
-/* 组批量测速（sub_test_group：delay=0 表超时，返回已按有效延迟升序、0 排尾）：
-   点击即把全组徽标置「…」加载态；结果按返回顺序 30ms 阶梯写入，模拟流式逐行刷新
-   （mihomo 一次性返回，前端做出逐行感）；失败回滚徽标为缓存/历史值，不整组重渲染。 */
+/* Group batch latency test (sub_test_group: delay=0 means timeout, returns sorted by valid latency ascending, 0 at tail):
+   on click set all group badges to 「…」 loading; results written in 30ms stagger in returned order, simulating streaming row-by-row refresh
+   (mihomo returns all at once; frontend fakes the row-by-row feel); on failure roll badges back to cached/history values, no full-group re-render. */
 async function testGroupDelay(group) {
   if (!group || TESTING.has(group) || PROXY_CACHED || HTTP_MODE) return false;
   TESTING.add(group);
@@ -331,12 +331,12 @@ async function testGroupDelay(group) {
   });
   TESTING.delete(group);
   syncTestUI();
-  // 阶梯收尾后 reconcile 一次：应用延迟排序与「推荐」徽标（当前组仍在展示时）
+  // after the stagger finishes, reconcile once: apply delay sort and 「推荐」 badge (if current group still shown)
   setTimeout(() => { if (CUR_GROUP === group && PROXY_DATA && PROXY_DATA[group]) renderNodeGrid(true); }, results.length * 30 + 60);
   return true;
 }
 
-/* 全部测速：串行遍历所有组（避免并发打爆内核），任一组失败即中止；进行中按钮转圈禁用 */
+/* Test all: iterate groups serially (avoid hammering the kernel with concurrency), abort on first group failure; button spinner + disabled while running */
 async function testAllGroups() {
   if (TEST_ALL_ON || PROXY_CACHED || HTTP_MODE) return;
   const groups = proxyGroupList();
@@ -354,41 +354,43 @@ function openSubModal() {
   $('sub-url').focus();
 }
 
-/* ---------- 覆写脚本（JS：main(config) 管线；拖拽排序 + 独立开关 + 试跑） ---------- */
+/* ---------- Override scripts (JS: main(config) pipeline; drag sort + per-script toggle + dry run) ---------- */
 let SUB_SCRIPTS = [];
-let SCRIPT_EDIT_ID = null; // null = 新建
+let SCRIPT_EDIT_ID = null; // null = new
 let SCRIPT_DRAG_ID = null;
-const SCRIPT_TEMPLATE = `const main = (config) => {
-  // config 为订阅生成的内核配置对象，修改后返回
+function scriptTemplate() {
+  return `const main = (config) => {
+  // ${AgI18n.t('sub.tplComment')}
   config.proxies = config.proxies || [];
   config.proxies.push({
-    name: "自建", type: "ss",
+    name: "${AgI18n.t('sub.tplProxyName')}", type: "ss",
     server: "example.com", port: 8388,
-    cipher: "aes-128-gcm", password: "密码"
+    cipher: "aes-128-gcm", password: "${AgI18n.t('sub.tplPassword')}"
   });
   config.rules = config.rules || [];
-  config.rules.unshift("DOMAIN-SUFFIX,example.com,自建");
+  config.rules.unshift("DOMAIN-SUFFIX,example.com,${AgI18n.t('sub.tplProxyName')}");
   return config;
 };`;
+}
 
 async function refreshSubScripts() {
   try { SUB_SCRIPTS = await invoke('list_sub_scripts'); } catch (e) { SUB_SCRIPTS = []; }
   const sig = JSON.stringify(SUB_SCRIPTS.map(s => [s.id, s.name, s.enabled, s.order]));
   const list = $('scripts-list');
   if (!SUB_SCRIPTS.length) {
-    if (list.dataset.sig !== 'empty') { list.dataset.sig = 'empty'; list.innerHTML = '<div class="empty">尚未添加脚本</div>'; }
+    if (list.dataset.sig !== 'empty') { list.dataset.sig = 'empty'; list.innerHTML = '<div class="empty">' + AgI18n.t('sub.emptyScripts') + '</div>'; }
     return;
   }
-  if (list.dataset.sig === sig) return; // 变更检测：内容未变不重绘（避免拖拽中被轮询打断）
+  if (list.dataset.sig === sig) return; // change detection: content unchanged, skip redraw (avoid poll interrupting an active drag)
   list.dataset.sig = sig;
   list.innerHTML = SUB_SCRIPTS.map(s =>
     '<div class="script-row" draggable="true" data-script-row="' + esc(s.id) + '">' +
-    '<span class="script-grip" title="拖拽排序">' + AgIcon('grip-vertical', 14) + '</span>' +
+    '<span class="script-grip" title="' + AgI18n.t('sub.dragSort') + '">' + AgIcon('grip-vertical', 14) + '</span>' +
     '<span class="script-name" title="' + esc(s.name) + '">' + esc(s.name) + '</span>' +
-    '<span class="script-state">' + (s.enabled ? '' : '已停用') + '</span>' +
+    '<span class="script-state">' + (s.enabled ? '' : AgI18n.t('common.disabled')) + '</span>' +
     '<label class="switch"><input type="checkbox" data-script-toggle="' + esc(s.id) + '"' + (s.enabled ? ' checked' : '') + '><span class="slider"></span></label>' +
-    '<button class="ghost small icon-btn" data-script-edit="' + esc(s.id) + '" title="编辑">' + AgIcon('pencil', 13) + '</button>' +
-    '<button class="ghost small icon-btn" data-script-del="' + esc(s.id) + '" title="删除">' + AgIcon('trash-2', 13) + '</button>' +
+    '<button class="ghost small icon-btn" data-script-edit="' + esc(s.id) + '" title="' + AgI18n.t('common.edit') + '">' + AgIcon('pencil', 13) + '</button>' +
+    '<button class="ghost small icon-btn" data-script-del="' + esc(s.id) + '" title="' + AgI18n.t('common.delete') + '">' + AgIcon('trash-2', 13) + '</button>' +
     '</div>'
   ).join('');
 }
@@ -396,9 +398,9 @@ async function refreshSubScripts() {
 function openScriptModal(id) {
   const sc = id ? SUB_SCRIPTS.find(s => s.id === id) : null;
   SCRIPT_EDIT_ID = sc ? sc.id : null;
-  $('script-modal-title').textContent = sc ? '编辑脚本' : '新建脚本';
+  $('script-modal-title').textContent = AgI18n.t(sc ? 'sub.scriptEdit' : 'sub.scriptNew');
   $('script-name').value = sc ? sc.name : '';
-  $('script-code').value = sc ? sc.code : SCRIPT_TEMPLATE;
+  $('script-code').value = sc ? sc.code : scriptTemplate();
   $('script-err').textContent = '';
   $('script-test-result').textContent = '';
   $('script-modal').style.display = 'flex';
@@ -412,7 +414,7 @@ function initSubScripts() {
     const code = $('script-code').value;
     const btn = $('script-test');
     btn.disabled = true;
-    $('script-test-result').textContent = '试跑中…';
+    $('script-test-result').textContent = AgI18n.t('sub.scriptTesting');
     $('script-test-result').classList.remove('sm-err');
     try {
       const msg = await invoke('test_sub_script', { code });
@@ -427,17 +429,17 @@ function initSubScripts() {
   $('script-ok').onclick = async () => {
     const name = $('script-name').value.trim();
     const code = $('script-code').value;
-    if (!code.trim()) { $('script-err').textContent = '脚本代码不能为空'; return; }
+    if (!code.trim()) { $('script-err').textContent = AgI18n.t('sub.scriptCodeEmpty'); return; }
     const btn = $('script-ok');
     btn.disabled = true;
     $('script-err').textContent = '';
     try {
       if (SCRIPT_EDIT_ID) {
         await invoke('update_sub_script', { id: SCRIPT_EDIT_ID, name, code });
-        toast('脚本已保存', 'ok');
+        toast(AgI18n.t('sub.scriptSaved'), 'ok');
       } else {
         await invoke('add_sub_script', { name, code });
-        toast('脚本已创建', 'ok');
+        toast(AgI18n.t('sub.scriptCreated'), 'ok');
       }
       $('script-modal').style.display = 'none';
       refreshSubScripts();
@@ -457,13 +459,13 @@ function initSubScripts() {
       } else if (btn.dataset.scriptDel) {
         if (btn.dataset.confirm === '1') {
           await invoke('remove_sub_script', { id: btn.dataset.scriptDel });
-          toast('脚本已删除', 'ok');
+          toast(AgI18n.t('sub.scriptDeleted'), 'ok');
           refreshSubScripts();
           return;
         }
         btn.dataset.confirm = '1';
         const old = btn.innerHTML;
-        btn.innerHTML = '<span style="font-size:11px">确认</span>';
+        btn.innerHTML = '<span style="font-size:11px">' + AgI18n.t('common.confirm') + '</span>';
         setTimeout(() => { if (btn.isConnected) { btn.dataset.confirm = ''; btn.innerHTML = old; } }, 2500);
       }
     } catch (err) { toast(friendlyError(err), 'err'); }
@@ -473,11 +475,11 @@ function initSubScripts() {
     if (!cb) return;
     try {
       await invoke('set_sub_script_enabled', { id: cb.dataset.scriptToggle, enabled: cb.checked });
-      toast(cb.checked ? '脚本已启用' : '脚本已停用', 'ok');
+      toast(AgI18n.t(cb.checked ? 'sub.scriptEnabled' : 'sub.scriptDisabled'), 'ok');
       refreshSubScripts();
     } catch (err) { cb.checked = !cb.checked; toast(friendlyError(err), 'err'); }
   });
-  /* HTML5 拖拽排序：drop 后按新顺序提交 reorder 命令 */
+  /* HTML5 drag sort: submit reorder command with new order after drop */
   list.addEventListener('dragstart', (e) => {
     const row = e.target.closest('[data-script-row]');
     if (!row) return;
@@ -493,7 +495,7 @@ function initSubScripts() {
     if (!SCRIPT_DRAG_ID) return;
     const row = e.target.closest('[data-script-row]');
     if (!row || row.dataset.scriptRow === SCRIPT_DRAG_ID) return;
-    e.preventDefault(); // 必须 preventDefault 才允许 drop
+    e.preventDefault(); // preventDefault required to allow drop
     e.dataTransfer.dropEffect = 'move';
     const rect = row.getBoundingClientRect();
     const before = e.clientY < rect.top + rect.height / 2;
@@ -522,26 +524,26 @@ function initSubscription() {
   $('btn-add-sub').onclick = openSubModal;
   $('sub-cancel').onclick = () => { $('sub-modal').style.display = 'none'; };
   $('sub-paste').onclick = async () => {
-    try { $('sub-url').value = await navigator.clipboard.readText(); } catch (e) { toast('无法读取剪贴板', 'err'); }
+    try { $('sub-url').value = await navigator.clipboard.readText(); } catch (e) { toast(AgI18n.t('sub.clipboardErr'), 'err'); }
   };
   $('sub-url').addEventListener('keydown', e => { if (e.key === 'Enter') $('sub-ok').click(); });
   $('sub-ok').onclick = async () => {
     const url = $('sub-url').value.trim();
-    if (!url) { $('sub-err').textContent = '请粘贴订阅地址'; return; }
+    if (!url) { $('sub-err').textContent = AgI18n.t('sub.urlRequired'); return; }
     const btn = $('sub-ok');
     btn.disabled = true;
-    btn.textContent = '拉取校验中…';
+    btn.textContent = AgI18n.t('sub.fetching');
     $('sub-err').textContent = '';
     try {
       const sub = await invoke('add_subscription', { name: $('sub-name').value.trim(), url });
       $('sub-modal').style.display = 'none';
-      toast('订阅已添加（' + sub.node_count + ' 节点）', 'ok');
+      toast(AgI18n.t('sub.added', { n: sub.node_count }), 'ok');
       refreshSubs();
     } catch (err) {
       $('sub-err').textContent = friendlyError(err);
     } finally {
       btn.disabled = false;
-      btn.textContent = '拉取并添加';
+      btn.textContent = AgI18n.t('sub.fetchAdd');
     }
   };
   $('subs-list').addEventListener('click', async (e) => {
@@ -552,35 +554,35 @@ function initSubscription() {
         if (btn.dataset.subUpdate) {
           btn.disabled = true;
           const sub = await invoke('update_subscription', { id: btn.dataset.subUpdate });
-          toast('订阅已刷新（' + sub.node_count + ' 节点）', 'ok');
+          toast(AgI18n.t('sub.refreshed', { n: sub.node_count }), 'ok');
           refreshSubs(); refreshGroups();
         } else if (btn.dataset.subDel) {
           if (btn.dataset.confirm === '1') {
             await invoke('remove_subscription', { id: btn.dataset.subDel });
-            toast('订阅已删除', 'ok');
+            toast(AgI18n.t('sub.deleted'), 'ok');
             refreshSubs(); refreshSubStatus();
             return;
           }
           btn.dataset.confirm = '1';
           const old = btn.innerHTML;
-          btn.innerHTML = '<span style="font-size:11px">确认</span>';
+          btn.innerHTML = '<span style="font-size:11px">' + AgI18n.t('common.confirm') + '</span>';
           setTimeout(() => { if (btn.isConnected) { btn.dataset.confirm = ''; btn.innerHTML = old; } }, 2500);
         }
       } catch (err) { toast(friendlyError(err), 'err'); btn.disabled = false; }
       return;
     }
-    // 卡片主体点击 = 单选激活
+    // card body click = single-select activate
     const card = e.target.closest('[data-sub-activate]');
     if (card && !card.classList.contains('active')) {
       try {
         const sub = await invoke('set_active_subscription', { id: card.dataset.subActivate });
-        toast('已激活 ' + sub.name, 'ok');
+        toast(AgI18n.t('sub.activated', { name: sub.name }), 'ok');
         refreshSubs(); refreshSubStatus();
       } catch (err) { toast(friendlyError(err), 'err'); }
     }
   });
 
-  /* 内核角色开关（订阅页 r-sub 与仪表盘 d-sub 双入口同一逻辑，checked 由 refreshSubStatus 统一同步） */
+  /* Kernel role toggle (subscription page r-sub and dashboard d-sub dual entries share this logic; checked synced centrally by refreshSubStatus) */
   const subToggle = async (e) => {
     const on = e.target.checked;
     const el = e.target;
@@ -588,21 +590,21 @@ function initSubscription() {
     try {
       if (on && !SUBS.length) {
         el.checked = false;
-        toast('请先添加订阅', 'err');
+        toast(AgI18n.t('sub.addFirst'), 'err');
         openSubModal();
         return;
       }
       await invoke('set_subscription_role', { enabled: on });
-      toast(on ? '订阅代理已开启（内核运行中）' : '订阅代理已关闭', 'ok');
+      toast(AgI18n.t(on ? 'sub.roleOn' : 'sub.roleOff'), 'ok');
       refreshSubStatus();
     } catch (err) {
       el.checked = !on;
       if (on && String(err).indexOf('NEED_DOWNLOAD:') === 0) {
-        /* 内核未安装：后端已自动开始下载；done 后自动重试开启 */
+        /* kernel not installed: backend already auto-started download; auto-retry enabling after done */
         handleNeedDownload(async () => {
           try {
             await invoke('set_subscription_role', { enabled: true });
-            toast('订阅代理已开启（内核运行中）', 'ok');
+            toast(AgI18n.t('sub.roleOn'), 'ok');
             refreshSubStatus();
           } catch (e2) { toast(friendlyError(e2), 'err'); }
         });
@@ -615,15 +617,15 @@ function initSubscription() {
   };
   $('r-sub').onchange = subToggle;
   $('d-sub').onchange = subToggle;
-  /* 出站模式：切换即持久化，内核运行中控制器热切（后端 PATCH /configs） */
+  /* Outbound mode: persist on switch, hot-swap in controller while kernel runs (backend PATCH /configs) */
   $('sub-mode').onchange = async (e) => {
     const prev = e.target.dataset.prev || 'rule';
     try {
       await invoke('set_sub_mode', { mode: e.target.value });
       e.target.dataset.prev = e.target.value;
       if (window._rolesCache) window._rolesCache.sub_mode = e.target.value;
-      const label = { rule: '规则', global: '全局', direct: '直连' }[e.target.value] || e.target.value;
-      toast('出站模式已切换为 ' + label, 'ok');
+      const label = { rule: AgI18n.t('sub.modeRule'), global: AgI18n.t('sub.modeGlobal'), direct: AgI18n.t('sub.modeDirect') }[e.target.value] || e.target.value;
+      toast(AgI18n.t('sub.modeSwitched', { mode: label }), 'ok');
     } catch (err) {
       e.target.value = prev;
       agSelectRefresh(e.target);
@@ -632,7 +634,7 @@ function initSubscription() {
   };
   initSubScripts();
 
-  /* 代理页事件 */
+  /* Proxy page events */
   $('group-tabs').addEventListener('click', (e) => {
     const tab = e.target.closest('[data-group-tab]');
     if (!tab) return;
@@ -652,10 +654,10 @@ function initSubscription() {
     if (e.target.closest('[data-goto-sub]')) { switchView('subscription'); return; }
     const card = e.target.closest('.snode-card');
     if (!card) return;
-    if (PROXY_CACHED) { toast('订阅内核未运行，仅展示缓存节点', 'err'); return; }
+    if (PROXY_CACHED) { toast(AgI18n.t('sub.cachedOnly'), 'err'); return; }
     try {
       await invoke('select_proxy', { group: card.dataset.group, name: card.dataset.node });
-      // 本地即时报选中态（含对勾搬迁）；g.now 同步后 10s 轮询签名自然触发重绘
+      // reflect selection locally at once (incl. check-mark move); once g.now synced, 10s poll sig naturally triggers redraw
       if (PROXY_DATA && PROXY_DATA[card.dataset.group]) PROXY_DATA[card.dataset.group].now = card.dataset.node;
       document.querySelectorAll('.snode-card').forEach(c => {
         c.classList.toggle('current', c === card);
@@ -663,29 +665,29 @@ function initSubscription() {
         if (c === card && !chk) c.querySelector('.node-name').insertAdjacentHTML('afterbegin', '<span class="node-check">' + AgIcon('check', 11) + '</span>');
         if (c !== card && chk) chk.remove();
       });
-      toast('已切换到 ' + card.dataset.node, 'ok');
+      toast(AgI18n.t('sub.switchedTo', { name: card.dataset.node }), 'ok');
     } catch (err) { toast(friendlyError(err), 'err'); }
   });
 }
 
-/* ---------- 订阅功能安装/激活（设置页） ---------- */
+/* ---------- Subscription feature install/activate (settings page) ---------- */
 async function refreshSubFeature() {
   let st;
   try { st = await invoke('subscription_status'); } catch (e) { return; }
   const statusEl = $('sub-install-status');
   const installBtn = $('btn-install-kernel');
   if (!st.supported) {
-    statusEl.textContent = '当前平台不支持';
+    statusEl.textContent = AgI18n.t('sub.unsupported');
     installBtn.disabled = true;
     $('btn-activate-sub').disabled = true;
     return;
   }
-  statusEl.textContent = st.installed ? (st.version ? '已安装（' + st.version + '）' : '已安装') : '未安装';
-  installBtn.innerHTML = AgIcon('download', 13) + (st.installed ? ' 重新下载内核' : ' 下载并安装内核');
+  statusEl.textContent = st.installed ? (st.version ? AgI18n.t('sub.installedVersion', { ver: st.version }) : AgI18n.t('sub.installed')) : AgI18n.t('sub.notInstalled');
+  installBtn.innerHTML = AgIcon('download', 13) + ' ' + AgI18n.t(st.installed ? 'sub.redownloadKernel' : 'sub.downloadKernel');
   $('btn-activate-sub').disabled = !st.installed;
 }
 function initSubFeature() {
-  /* 下载并安装内核：后端开始后台下载即返回；进度在订阅页下载卡展示，完成后刷新安装状态 */
+  /* Download & install kernel: backend returns once background download starts; progress shown on subscription page download card; refresh install state on completion */
   $('btn-install-kernel').onclick = async (e) => {
     const btn = e.target.closest('button');
     btn.disabled = true;
@@ -695,13 +697,13 @@ function initSubFeature() {
     } catch (err) { toast(friendlyError(err), 'err'); }
     finally { btn.disabled = false; }
   };
-  /* 手动安装：用户自行下载官方文件，给完整路径，钉值校验通过才落盘 */
+  /* Manual install: user downloads the official file themselves, gives full path; written to disk only after pinned-version/hash check passes */
   $('btn-manual-kernel').onclick = () => openDlManual('kernel');
   $('btn-activate-sub').onclick = async () => {
     try {
       await invoke('activate_subscription_feature', { enabled: true });
       applySubFeature(true);
-      toast('订阅功能已激活', 'ok');
+      toast(AgI18n.t('sub.featureActivated'), 'ok');
       switchView('subscription');
     } catch (err) { toast(friendlyError(err), 'err'); }
   };
@@ -709,49 +711,49 @@ function initSubFeature() {
     try {
       await invoke('activate_subscription_feature', { enabled: false });
       applySubFeature(false);
-      toast('订阅功能已停用', 'ok');
+      toast(AgI18n.t('sub.featureDeactivated'), 'ok');
     } catch (err) { toast(friendlyError(err), 'err'); }
   };
 }
 
-/* ================= TUN 模式（anet 在前 FlClash 在后；Windows x64，需管理员） =================
-   状态由后端 tun_status 轮询（10s 主轮询内），渲染全部走变更检测（setText/签名去重）；
-   开关/上游地址/提权弹窗事件显式绑定，无内联事件。 */
+/* ================= TUN mode (anet in front, FlClash behind; Windows x64, admin required) =================
+   State polled from backend tun_status (inside the 10s main poll); all rendering via change detection (setText/sig dedup);
+   toggle/upstream address/elevation modal events bound explicitly, no inline handlers. */
 let TUN_ON = false;
 let TUN_SUPPORTED = true;
 let TUN_UPSTREAM = '127.0.0.1:7890';
 
 function warnTunUpstream(st) {
   if (st && st.upstream_ok === false) {
-    toast('外部上游 ' + st.upstream + ' 不可达：FlClash 未运行或端口不符，未命中流量将失败', 'err');
+    toast(AgI18n.t('tun.upstreamUnreachable', { addr: st.upstream }), 'err');
   }
 }
 
 function applyTunStatus(st) {
   TUN_ON = !!st.enabled;
-  if (window._rolesCache) window._rolesCache.tun_mode = TUN_ON; // Hero 当前模式摘要同步（onchange/重试/10s 轮询一处覆盖）
+  if (window._rolesCache) window._rolesCache.tun_mode = TUN_ON; // Hero current-mode summary sync (one place covers onchange/retry/10s poll)
   TUN_SUPPORTED = !!st.supported;
   if (st.upstream) TUN_UPSTREAM = st.upstream;
-  // 放弃开启的一次性提示（权限不足/启动失败回退普通模式；后端读取即清除，仅弹一次）
+  // one-shot give-up notice (insufficient privilege/start failure fell back to normal mode; backend clears on read, toast once only)
   if (st.notice) toast(st.notice, 'err');
   const toggle = $('tun-mode');
   toggle.checked = TUN_ON;
   toggle.disabled = !TUN_SUPPORTED;
-  setText('tun-status-text', !TUN_SUPPORTED ? '当前平台不支持' : (TUN_ON ? (st.running ? '运行中' : '内核未运行') : '未开启'));
-  // 状态行：运行中 / 权限不足 / 上游不可达
+  setText('tun-status-text', !TUN_SUPPORTED ? AgI18n.t('sub.unsupported') : (TUN_ON ? (st.running ? AgI18n.t('common.running') : AgI18n.t('tun.kernelNotRunning')) : AgI18n.t('sub.notEnabled')));
+  // state line: running / insufficient privilege / upstream unreachable
   let stateTxt = '-';
-  if (!TUN_SUPPORTED) stateTxt = 'TUN 仅支持 Windows x64';
+  if (!TUN_SUPPORTED) stateTxt = AgI18n.t('tun.onlyWin64');
   else if (TUN_ON) {
-    if (!st.admin) stateTxt = '权限不足（需管理员）';
-    else if (st.upstream_ok === false) stateTxt = '上游不可达（未命中流量将失败）';
-    else if (st.running) stateTxt = '运行中（系统代理已托管 57890）';
-    else stateTxt = '内核未运行';
+    if (!st.admin) stateTxt = AgI18n.t('tun.needAdmin');
+    else if (st.upstream_ok === false) stateTxt = AgI18n.t('tun.upstreamBad');
+    else if (st.running) stateTxt = AgI18n.t('tun.runningManaged');
+    else stateTxt = AgI18n.t('tun.kernelNotRunning');
   }
   setText('tun-state', stateTxt);
-  // 互斥（§2.5）：TUN 下出站模式固定 rule（global/direct 会绕过 anet 分流）
+  // mutual exclusion (§2.5): outbound mode pinned to rule under TUN (global/direct would bypass anet routing)
   const modeSel = $('sub-mode');
   if (modeSel.disabled !== TUN_ON) { modeSel.disabled = TUN_ON; agSelectRefresh(modeSel); }
-  // 上游不可达灵动岛告警（签名去重：同一地址只弹一次，恢复后重置）
+  // Dynamic Island alert for unreachable upstream (sig dedup: same address toasts once, resets after recovery)
   if (TUN_ON && st.upstream_ok === false && window._tunWarnSig !== st.upstream) {
     window._tunWarnSig = st.upstream;
     warnTunUpstream(st);
@@ -771,7 +773,7 @@ function openTunElevateModal() {
 }
 
 function initTun() {
-  /* TUN 开关：非管理员 → 后端返回 NEED_ELEVATION，弹提权对话框（不直接 toast） */
+  /* TUN toggle: non-admin → backend returns NEED_ELEVATION, show elevation dialog (not a plain toast) */
   $('tun-mode').onchange = async (e) => {
     const on = e.target.checked;
     const el = e.target;
@@ -780,21 +782,21 @@ function initTun() {
       const st = await invoke('set_tun_mode', { enabled: on });
       applyTunStatus(st);
       if (on) {
-        toast('TUN 模式已开启（系统代理已托管 127.0.0.1:57890）', 'ok');
+        toast(AgI18n.t('tun.onToast'), 'ok');
         warnTunUpstream(st);
       } else {
-        toast('TUN 模式已关闭', 'ok');
+        toast(AgI18n.t('tun.offToast'), 'ok');
       }
     } catch (err) {
       el.checked = !on;
       if (String(err).indexOf('NEED_ELEVATION:') === 0) openTunElevateModal();
       else if (on && String(err).indexOf('NEED_DOWNLOAD:') === 0) {
-        /* 内核/wintun 未安装：后端已自动开始下载；done 后自动重试开启 TUN */
+        /* kernel/wintun not installed: backend already auto-started download; auto-retry enabling TUN after done */
         handleNeedDownload(async () => {
           try {
             const st2 = await invoke('set_tun_mode', { enabled: true });
             applyTunStatus(st2);
-            toast('TUN 模式已开启（系统代理已托管 127.0.0.1:57890）', 'ok');
+            toast(AgI18n.t('tun.onToast'), 'ok');
             warnTunUpstream(st2);
           } catch (e2) { toast(friendlyError(e2), 'err'); refreshTun(); }
         });
@@ -805,20 +807,20 @@ function initTun() {
     }
   };
 
-  /* 外部上游地址（agedit 行内编辑；后端严格校验：仅回环，严禁 57890/57892/59292） */
+  /* External upstream address (agedit inline edit; backend strict validation: loopback only, ports 57890/57892/59292 forbidden) */
   bindInlineEdit($('tun-upstream'), {
     get: () => TUN_UPSTREAM,
-    validate: (v) => /^\S+:\d+$/.test(v) ? null : '地址格式应为 ip:port（如 127.0.0.1:7890）',
+    validate: (v) => /^\S+:\d+$/.test(v) ? null : AgI18n.t('tun.addrFormat'),
     set: async (v) => {
       const st = await invoke('set_tun_upstream', { addr: v });
       TUN_UPSTREAM = v;
       applyTunStatus(st);
-      toast('外部上游已保存', 'ok');
+      toast(AgI18n.t('tun.upstreamSaved'), 'ok');
       warnTunUpstream(st);
     },
   });
 
-  /* 提权弹窗：确认 → runas 拉起重启（进程退出，无需后续）；取消 → 审计 declined */
+  /* Elevation modal: confirm → runas relaunch (process exits, nothing after); cancel → audit declined */
   $('tun-elevate-cancel').onclick = async () => {
     $('tun-elevate-modal').style.display = 'none';
     try { await invoke('tun_elevation_declined'); } catch (e) {}
@@ -835,19 +837,20 @@ function initTun() {
   };
 }
 
-/* ================= 制品下载管理（mihomo 内核 / wintun；进度卡 + 手动安装 + 哈希确认） =================
-   后端 dl_state 2s 轮询（与 SubTraffic 同槽）；状态机 idle/downloading/done/failed。
-   开启动作遇 NEED_DOWNLOAD：后端已自动开始下载，前端展示下载卡并记下原动作，
-   done 自动重试一次；failed 由用户决策（重试/手动安装/取消）。渲染全部走签名变更检测。 */
-const DL_LABEL = { kernel: '订阅内核', wintun: 'wintun 组件' };
-/* 官方下载页（版本钉值见 subscription.rs MIHOMO_VERSION / WINTUN_VERSION，升级时同步） */
+/* ================= Artifact download management (mihomo kernel / wintun; progress card + manual install + hash confirm) =================
+   Backend dl_state 2s poll (same slot as SubTraffic); state machine idle/downloading/done/failed.
+   Enable action hitting NEED_DOWNLOAD: backend already auto-started download, frontend shows download card and records the original action,
+   auto-retries once on done; failed left to user decision (retry/manual install/cancel). All rendering via sig change detection. */
+const DL_LABEL = { kernel: 'sub.dlKernel', wintun: 'sub.dlWintun' };
+function dlLabel(a) { return DL_LABEL[a] ? AgI18n.t(DL_LABEL[a]) : a; }
+/* Official download pages (pinned versions see subscription.rs MIHOMO_VERSION / WINTUN_VERSION, keep in sync on upgrade) */
 const DL_OFFICIAL = {
   kernel: 'https://github.com/MetaCubeX/mihomo/releases/tag/v1.19.29',
   wintun: 'https://www.wintun.net/',
 };
-let _dlSig = '';       // 渲染签名（变更检测）
-let _dlRetry = null;   // 下载/手动安装完成后自动重试的原开启动作
-let _dlDoneSeen = '';  // 已消费的 done 签名（防重复重试）
+let _dlSig = '';       // render sig (change detection)
+let _dlRetry = null;   // original enable action to auto-retry after download/manual install completes
+let _dlDoneSeen = '';  // consumed done sig (prevents duplicate retry)
 let _dlManualArtifact = 'kernel';
 
 async function pollDl() {
@@ -855,12 +858,12 @@ async function pollDl() {
   let st;
   try { st = await invoke('dl_state'); } catch (e) { return; }
   renderDlCard(st);
-  if (st.phase === 'downloading') _dlDoneSeen = ''; // 新一轮下载开始，重置 done 消费标记
+  if (st.phase === 'downloading') _dlDoneSeen = ''; // new download round started, reset done-consumed mark
   if (st.phase === 'done') {
     const sig = 'done:' + st.artifact;
     if (_dlDoneSeen !== sig) {
       _dlDoneSeen = sig;
-      toast(DL_LABEL[st.artifact] + ' 下载安装完成', 'ok');
+      toast(AgI18n.t('sub.dlDone', { name: dlLabel(st.artifact) }), 'ok');
       const retry = _dlRetry; _dlRetry = null;
       if (retry) retry();
     }
@@ -876,12 +879,12 @@ function renderDlCard(st) {
     return;
   }
   const sig = JSON.stringify(st);
-  if (sig === _dlSig) return; // 变更检测：进度未变不重绘
+  if (sig === _dlSig) return; // change detection: progress unchanged, skip redraw
   _dlSig = sig;
   card.style.display = '';
-  const label = DL_LABEL[st.artifact] || st.artifact;
+  const label = dlLabel(st.artifact);
   const downloading = st.phase === 'downloading';
-  setText('dl-title', downloading ? '正在下载' + label : label + ' 下载失败');
+  setText('dl-title', downloading ? AgI18n.t('sub.dlDownloading', { name: label }) : AgI18n.t('sub.dlFailed', { name: label }));
   $('dl-cancel-x').style.display = downloading ? '' : 'none';
   const bar = $('dl-progress').firstElementChild;
   if (downloading) {
@@ -889,22 +892,22 @@ function renderDlCard(st) {
     bar.style.width = pct.toFixed(1) + '%';
     const sizeTxt = st.total
       ? fmtBytes(st.downloaded) + ' / ' + fmtBytes(st.total) + '（' + pct.toFixed(0) + '%）'
-      : fmtBytes(st.downloaded) + '（大小未知）';
-    setText('dl-detail', sizeTxt + ' · ' + (st.mirror || '连接中…'));
+      : AgI18n.t('sub.dlSizeUnknown', { size: fmtBytes(st.downloaded) });
+    setText('dl-detail', sizeTxt + ' · ' + (st.mirror || AgI18n.t('sub.dlConnecting')));
   } else {
     bar.style.width = '0%';
-    setText('dl-detail', '可重试下载，或从官方渠道自行下载后手动安装');
+    setText('dl-detail', AgI18n.t('sub.dlFailHint'));
   }
   $('dl-err').style.display = downloading ? 'none' : '';
-  setText('dl-err', downloading ? '' : (st.reason || '下载失败'));
+  setText('dl-err', downloading ? '' : (st.reason || AgI18n.t('sub.dlFail')));
   $('dl-actions').style.display = downloading ? 'none' : 'flex';
   if (!downloading) $('dl-manual').dataset.artifact = st.artifact;
 }
 
-/* 开启动作遇 NEED_DOWNLOAD：提示 + 跳订阅页展示下载卡 + 登记完成后自动重试 */
+/* Enable action hits NEED_DOWNLOAD: toast + jump to subscription page to show download card + register auto-retry on completion */
 function handleNeedDownload(retry) {
   _dlRetry = retry;
-  toast('制品未安装，正在后台下载（进度见下载卡）', 'ok');
+  toast(AgI18n.t('sub.dlAutoStart'), 'ok');
   switchView('subscription');
   pollDl();
 }
@@ -912,13 +915,11 @@ function handleNeedDownload(retry) {
 function openDlManual(artifact) {
   _dlManualArtifact = artifact;
   const k = artifact === 'kernel';
-  setText('dl-manual-title', '手动安装' + (DL_LABEL[artifact] || artifact));
-  setText('dl-manual-hint', k
-    ? '支持官方 zip/gz 包（推荐，可对钉校验）或裸 mihomo 二进制（无法对钉，需确认风险）'
-    : '支持官方 wintun zip 包或 wintun.dll（Clash 系客户端通常自带同版本 dll）');
+  setText('dl-manual-title', AgI18n.t('sub.dlManualTitle', { name: dlLabel(artifact) }));
+  setText('dl-manual-hint', AgI18n.t(k ? 'sub.dlManualHintKernel' : 'sub.dlManualHintWintun'));
   const inp = $('dl-manual-path');
   inp.value = '';
-  inp.placeholder = k ? 'D:\\dl\\mihomo-windows-amd64-compatible-v1.19.29.zip' : 'D:\\dl\\wintun-0.14.1.zip 或 wintun.dll';
+  inp.placeholder = AgI18n.t(k ? 'sub.dlManualPhKernel' : 'sub.dlManualPhWintun');
   $('dl-manual-err').textContent = '';
   $('dl-manual-modal').style.display = 'flex';
   inp.focus();
@@ -926,7 +927,7 @@ function openDlManual(artifact) {
 
 async function submitDlManual(allowMismatch) {
   const path = $('dl-manual-path').value.trim();
-  if (!path) { $('dl-manual-err').textContent = '请填写文件完整路径'; return; }
+  if (!path) { $('dl-manual-err').textContent = AgI18n.t('sub.dlPathRequired'); return; }
   const btn = $('dl-manual-ok');
   btn.disabled = true;
   $('dl-manual-err').textContent = '';
@@ -935,12 +936,12 @@ async function submitDlManual(allowMismatch) {
     if (res.result === 'installed') {
       $('dl-manual-modal').style.display = 'none';
       $('dl-mismatch-modal').style.display = 'none';
-      toast((DL_LABEL[_dlManualArtifact] || '制品') + ' 已安装', 'ok');
+      toast(AgI18n.t('sub.dlInstalled', { name: DL_LABEL[_dlManualArtifact] ? AgI18n.t(DL_LABEL[_dlManualArtifact]) : AgI18n.t('sub.dlArtifact') }), 'ok');
       refreshSubFeature(); refreshSubStatus();
       const retry = _dlRetry; _dlRetry = null;
       if (retry) retry();
     } else if (res.result === 'hash_mismatch') {
-      // 钉值对不上/无法对钉：明示风险，用户确认才强装
+      // pinned version/hash mismatch or unverifiable: state risk explicitly, force-install only after user confirms
       setText('dl-mm-version', res.expect_version || '-');
       setText('dl-mm-hash', (res.actual_hash || '').slice(0, 12) + '…');
       $('dl-mismatch-modal').style.display = 'flex';
@@ -953,7 +954,7 @@ async function submitDlManual(allowMismatch) {
 }
 
 function initDl() {
-  /* 下载卡：取消（下载中）/ 重试 / 手动安装 / 取消（失败后放弃） */
+  /* Download card: cancel (while downloading) / retry / manual install / cancel (give up after failure) */
   $('dl-cancel-x').onclick = async () => {
     _dlRetry = null;
     try { await invoke('dl_cancel'); } catch (e) {}
@@ -970,18 +971,18 @@ function initDl() {
     try { await invoke('dl_cancel'); } catch (e) {}
     pollDl();
   };
-  /* 手动安装弹窗 */
+  /* Manual install modal */
   $('dl-manual-cancel').onclick = () => { $('dl-manual-modal').style.display = 'none'; };
   $('dl-manual-open').onclick = () => { invoke('open_url', { url: DL_OFFICIAL[_dlManualArtifact] }).catch(() => {}); };
   $('dl-manual-path').addEventListener('keydown', e => { if (e.key === 'Enter') $('dl-manual-ok').click(); });
   $('dl-manual-ok').onclick = () => submitDlManual(false);
-  /* 哈希不符确认弹窗：仍然使用 = 带 allow_mismatch 重调；放弃 = 回手动安装弹窗 */
+  /* Hash mismatch confirm modal: use anyway = re-invoke with allow_mismatch; give up = back to manual install modal */
   $('dl-mm-cancel').onclick = () => { $('dl-mismatch-modal').style.display = 'none'; };
   $('dl-mm-ok').onclick = () => submitDlManual(true);
 }
 
-/* ================= 拖拽导入订阅（Tauri 窗口级文件拖拽；.yaml/.yml 落窗即导入到订阅列表） =================
-   桌面端专属（HTTP_MODE/Android 跳过监听）；悬拖期间订阅列表卡虚线高亮（element.style + var token）。 */
+/* ================= Drag-drop subscription import (Tauri window-level file drag; dropping .yaml/.yml on the window imports into the subscription list) =================
+   Desktop only (HTTP_MODE/Android skip listeners); subscription list card dashed highlight while hovering (element.style + var token). */
 function initSubDragImport() {
   if (!TAURI || !TAURI.event || /Android/i.test(navigator.userAgent)) return;
   const card = $('subs-list').closest('.card');
@@ -996,11 +997,20 @@ function initSubDragImport() {
     hot(false);
     const paths = (e.payload && e.payload.paths) || [];
     const p = paths.find(x => /\.(yaml|yml)$/i.test(x));
-    if (!p) { toast('请拖入 .yaml / .yml 订阅文件', 'err'); return; }
+    if (!p) { toast(AgI18n.t('sub.dragHintToast'), 'err'); return; }
     try {
       const sub = await invoke('import_local_subscription', { path: p });
-      toast('订阅已导入（' + sub.node_count + ' 节点）', 'ok');
+      toast(AgI18n.t('sub.imported', { n: sub.node_count }), 'ok');
       refreshSubs();
     } catch (err) { toast(friendlyError(err), 'err'); }
   });
 }
+
+/* i18n: force re-render of this domain on language switch (sigs cleared, so change detection can't block old-language copy) */
+AgI18n.onChange(() => {
+  _testUiKey = ''; _dlSig = '';
+  const tabs = $('group-tabs'); if (tabs) tabs.dataset.sig = '';
+  const grid = $('node-grid'); if (grid) grid.dataset.sig = '';
+  const sl = $('scripts-list'); if (sl) sl.dataset.sig = '';
+  refreshSubs(); refreshSubStatus(); refreshSubScripts(); refreshSubFeature(); refreshTun(); pollDl();
+});

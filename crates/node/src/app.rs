@@ -1,17 +1,17 @@
-//! anet-svc — AgileNet 服务器二进制（同一内核无 GUI）。
+//! anet-svc — AgileNet server binary (same kernel, no GUI).
 //!
-//! 子命令（社区惯例）：
-//! - `start [config.toml] [-d|--daemon]`：启动节点服务（默认前台；裸 `anet-svc` 等同 start）
-//! - `stop` / `restart [config.toml]` / `status`：服务管理（PID 文件，无需登录）
-//! - `node status|rename <name>`：节点信息（管理面，需登录）
-//! - `rule|group|account|token|connector|admin|audit`：资源管理（需登录，对齐 Web 管理端）
-//! - `login|logout`：会话管理（~/.anet/session.json，0600）
-//! - `tool <sub>`：内置网络诊断工具集（tcping/curl/dns/scan/ping…，本机诊断，无需登录）
-//! - `doctor`：自我诊断（端口/系统代理/内核/网络/配置/规则体检，自动修复可修项，无需登录）
-//! - `client [config.toml]`：客户端角色（连上游 + 本地代理）
-//! - `tui [--db path]`：TUI 控制台（直连数据库兜底查看）
+//! Subcommands (community conventions):
+//! - `start [config.toml] [-d|--daemon]`: start the node service (foreground by default; bare `anet-svc` equals start)
+//! - `stop` / `restart [config.toml]` / `status`: service management (PID file, no login required)
+//! - `node status|rename <name>`: node info (admin surface, login required)
+//! - `rule|group|account|token|connector|admin|audit`: resource management (login required, aligned with the Web admin UI)
+//! - `login|logout`: session management (~/.anet/session.json, 0600)
+//! - `tool <sub>`: built-in network diagnostic toolkit (tcping/curl/dns/scan/ping…, local, no login required)
+//! - `doctor`: self-diagnostics (ports/system proxy/kernel/network/config/rules checkup, auto-fix where possible, no login required)
+//! - `client [config.toml]`: client role (connect to fan-out endpoints + local proxy)
+//! - `tui [--db path]`: TUI console (direct database read-only fallback)
 //!
-//! 兼容（隐藏）：`serve` = `start`；`cli ...` = 旧式管理入口（等同顶层同名命令）
+//! Compatibility (hidden): `serve` = `start`; `cli ...` = legacy admin entry (same as the top-level command of the same name)
 
 use crate::cli as anet_cli;
 use crate::logs::{LogBuffer, LogBufferLayer};
@@ -142,7 +142,7 @@ struct LegacyArgs {
     args: Vec<String>,
 }
 
-/// 旧式无子命令调用兼容：`anet-svc config.toml` → `anet-svc start config.toml`
+/// Legacy no-subcommand invocation compatibility: `anet-svc config.toml` → `anet-svc start config.toml`.
 fn shim_legacy_config(args: &mut Vec<String>) {
     const KNOWN: &[&str] = &[
         "start", "stop", "restart", "status", "node", "client", "tui", "init", "login", "logout",
@@ -159,7 +159,7 @@ fn shim_legacy_config(args: &mut Vec<String>) {
 
 pub async fn run() -> Result<()> {
     let mut args: Vec<String> = std::env::args().collect();
-    // 双人格：按 argv[0] 文件名区分入口（anet = 管理命令，anet-svc = 服务器）
+    // Dual persona: entry point decided by the argv[0] file name (anet = admin commands, anet-svc = server).
     let prog = std::path::Path::new(args.first().map(|s| s.as_str()).unwrap_or("anet-svc"))
         .file_stem()
         .and_then(|s| s.to_str())
@@ -179,7 +179,7 @@ pub async fn run() -> Result<()> {
     match app.command {
         None => {
             if prog == "anet" {
-                // 管理入口裸跑：打印帮助而非启动服务
+                // Bare admin entry: print help instead of starting the service.
                 App::command().bin_name(prog).print_help()?;
                 println!();
                 Ok(())
@@ -258,11 +258,11 @@ pub async fn run() -> Result<()> {
             anet_cli::dispatch(anet_cli::Commands::Audit(a), app.api, app.json).await
         }
         Some(Cmd::Tool(a)) => {
-            // 诊断工具集不走会话校验（dispatch 内部最先分流）
+            // The diagnostic toolkit skips session validation (split off first inside dispatch).
             anet_cli::dispatch(anet_cli::Commands::Tool(a), app.api, app.json).await
         }
         Some(Cmd::Doctor) => {
-            // 自我诊断同为免登录本机操作（dispatch 内打印并按 err 计数映射退出码）
+            // Doctor is likewise a login-free local operation (dispatch prints and maps the exit code by error count).
             anet_cli::dispatch(anet_cli::Commands::Doctor, app.api, app.json).await
         }
         Some(Cmd::Cli(l)) => {
@@ -277,7 +277,7 @@ pub async fn run() -> Result<()> {
     }
 }
 
-/// 装配并运行节点服务（前台；--daemon 由调用方先经 svc::spawn_daemon 分流）。
+/// Assemble and run the node service (foreground; --daemon is split off by the caller via svc::spawn_daemon first).
 async fn run_server(config_path: String, daemon: bool) -> Result<()> {
     svc::ensure_not_running()?;
     if daemon {
@@ -287,7 +287,7 @@ async fn run_server(config_path: String, daemon: bool) -> Result<()> {
         return Ok(());
     }
 
-    // 1. 先加载配置文件（决定文件日志目标；解析失败直接输出到 stderr）
+    // 1. Load the config file first (decides the file log target; parse failures go straight to stderr).
     let config = match load_config(&config_path) {
         Ok(c) => c,
         Err(e) => {
@@ -297,7 +297,7 @@ async fn run_server(config_path: String, daemon: bool) -> Result<()> {
     };
     let api_addr = config.api.addr.clone();
 
-    // 2. 日志初始化（内存环形缓冲 + stdout + 可选文件日志）
+    // 2. Logging init (in-memory ring buffer + stdout + optional file logging).
     let log_buffer = LogBuffer::new();
     let registry = tracing_subscriber::registry()
         .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
@@ -320,7 +320,7 @@ async fn run_server(config_path: String, daemon: bool) -> Result<()> {
             .unwrap_or_else(|| "agile-net".to_string());
         let file_appender = tracing_appender::rolling::daily(dir, format!("{prefix}.log"));
         let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
-        std::mem::forget(guard); // 进程生命周期内保持写入器存活
+        std::mem::forget(guard); // keep the writer alive for the process lifetime
         registry
             .with(
                 tracing_subscriber::fmt::layer()
@@ -336,7 +336,7 @@ async fn run_server(config_path: String, daemon: bool) -> Result<()> {
     tracing::info!("anet-svc v{VERSION} starting");
     tracing::info!(name = %config.name, "node config loaded");
 
-    // 3. 装配并启动节点（全部角色逻辑在 NodeServer）
+    // 3. Assemble and start the node (all role logic lives in NodeServer).
     let server = NodeServer::start_with(
         config,
         crate::service::NodeServerOptions {
@@ -346,7 +346,7 @@ async fn run_server(config_path: String, daemon: bool) -> Result<()> {
     )
     .await?;
 
-    // 4. 启动成功后才写 PID 文件（绑定失败不产生幻尸记录）
+    // 4. Write the PID file only after a successful start (no phantom record on bind failure).
     let rec = svc::PidRecord {
         pid: std::process::id(),
         config: config_path.clone(),
@@ -359,7 +359,7 @@ async fn run_server(config_path: String, daemon: bool) -> Result<()> {
 
     tracing::info!("anet-svc v{VERSION} ready");
 
-    // 5. 等待 shutdown 信号
+    // 5. Wait for the shutdown signal.
     tokio::signal::ctrl_c().await?;
     tracing::info!("shutting down anet-svc");
     server.stop().await;
@@ -368,7 +368,7 @@ async fn run_server(config_path: String, daemon: bool) -> Result<()> {
     Ok(())
 }
 
-/// client/cli 子命令的轻量日志（无内存缓冲/文件日志装配）。
+/// Lightweight logging for client/cli subcommands (no ring buffer / file logging assembly).
 fn init_plain_logging() {
     tracing_subscriber::fmt()
         .with_env_filter(

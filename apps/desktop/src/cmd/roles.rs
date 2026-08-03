@@ -1,4 +1,4 @@
-//! 从 lib.rs 拆分：角色开关（客户端 / 服务端 / Web 远程面 / 订阅 / TUN）与偏好设置（纯搬运，零逻辑变更）
+//! Split from lib.rs: role toggles (client / server / web remote / subscription / TUN) and preferences (pure move, zero logic change)
 
 use crate::roles::{self, RoleSettings};
 use crate::tun::{self, Elevation};
@@ -10,7 +10,7 @@ use serde::Serialize;
 use std::sync::Arc;
 use tauri::{Manager, State};
 
-/// 设置开机自启
+/// Enable/disable autostart on boot
 #[tauri::command]
 pub(crate) fn set_autostart(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
     use tauri_plugin_autostart::ManagerExt;
@@ -22,14 +22,14 @@ pub(crate) fn set_autostart(app: tauri::AppHandle, enabled: bool) -> Result<(), 
     }
 }
 
-/// 查询开机自启状态
+/// Query autostart-on-boot status
 #[tauri::command]
 pub(crate) fn get_autostart(app: tauri::AppHandle) -> Result<bool, String> {
     use tauri_plugin_autostart::ManagerExt;
     app.autolaunch().is_enabled().map_err(map_err)
 }
 
-// ==================== 三路角色开关（客户端 / 服务端 / Web 远程面） ====================
+// ==================== Three role toggles (client / server / web remote) ====================
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ServerStatus {
@@ -37,7 +37,7 @@ pub struct ServerStatus {
     pub has_admin: bool,
     pub api_addr: String,
     pub relay_addr: String,
-    /// 各扇出连接的（目标地址, 状态）（running 时实时；未运行为空）
+    /// (target addr, status) per fan-out connection (live while running; empty otherwise)
     pub connectors: Vec<(String, String)>,
 }
 
@@ -46,7 +46,7 @@ pub(crate) async fn get_role_settings(state: State<'_, AppState>) -> Result<Role
     Ok(state.roles.lock().await.clone())
 }
 
-/// 开关A：客户端角色。关闭即断开全部节点并停止本地代理。
+/// Toggle A: client role. Disabling disconnects all nodes and stops the local proxy.
 #[tauri::command]
 pub(crate) async fn set_client_role(state: State<'_, AppState>, enabled: bool) -> Result<(), String> {
     if !enabled {
@@ -64,7 +64,7 @@ pub(crate) async fn set_client_role(state: State<'_, AppState>, enabled: bool) -
     Ok(())
 }
 
-/// 服务端角色运行状态。
+/// Server role runtime status.
 #[tauri::command]
 pub(crate) async fn server_status(state: State<'_, AppState>) -> Result<ServerStatus, String> {
     let connectors = {
@@ -84,7 +84,7 @@ pub(crate) async fn server_status(state: State<'_, AppState>) -> Result<ServerSt
     })
 }
 
-/// 首开强制设管理密码：创建内嵌节点管理员（argon2id 哈希落库）。
+/// First-run forced admin password: create the embedded node admin (argon2id hash persisted to db).
 #[tauri::command]
 pub(crate) async fn init_server_admin(username: String, password: String) -> Result<(), String> {
     if username.trim().is_empty() {
@@ -102,7 +102,7 @@ pub(crate) async fn init_server_admin(username: String, password: String) -> Res
     Ok(())
 }
 
-/// 启动内嵌节点（读当前角色配置；注入客户端引擎路由再发布）。
+/// Start the embedded node (reads current role config; injects client engine routes before publishing).
 pub(crate) async fn start_embedded_node(state: &State<'_, AppState>) -> Result<NodeServer, String> {
     NodeServer::start_with(
         roles::build_embedded_config(),
@@ -122,7 +122,7 @@ pub(crate) async fn start_embedded_node(state: &State<'_, AppState>) -> Result<N
     .map_err(|e| format!("内嵌节点启动失败: {e}"))
 }
 
-/// 开关B：服务端角色。开启即启动内嵌节点（须先设管理密码），关闭即停机。
+/// Toggle B: server role. Enabling starts the embedded node (admin password required first); disabling stops it.
 #[tauri::command]
 pub(crate) async fn set_server_role(state: State<'_, AppState>, enabled: bool) -> Result<ServerStatus, String> {
     if enabled {
@@ -171,7 +171,7 @@ pub(crate) async fn has_web_password() -> Result<bool, String> {
     Ok(roles::has_web_password())
 }
 
-/// 设置 Web 远程面管理密码（argon2id 哈希落盘）。
+/// Set the web remote admin password (argon2id hash persisted to disk).
 #[tauri::command]
 pub(crate) async fn set_web_password(password: String) -> Result<(), String> {
     roles::set_web_password(&password)?;
@@ -179,7 +179,7 @@ pub(crate) async fn set_web_password(password: String) -> Result<(), String> {
     Ok(())
 }
 
-/// 开关C：Web 远程面。强制先设管理密码；开启即在监听地址上启动管理面 Web API。
+/// Toggle C: web remote. Admin password mandatory first; enabling starts the admin Web API on the listen addr.
 #[tauri::command]
 pub(crate) async fn set_web_role(state: State<'_, AppState>, enabled: bool, listen: Option<String>) -> Result<(), String> {
     if enabled && !roles::has_web_password() {
@@ -205,7 +205,7 @@ pub(crate) async fn set_web_role(state: State<'_, AppState>, enabled: bool, list
         new_listen
     };
 
-    // 先停旧实例（监听地址变更或关闭），再按需启动
+    // Stop the old instance first (listen addr changed or disabled), then start as needed
     if let Some(h) = state.web_api.lock().await.take() {
         h.stop().await;
     }
@@ -230,7 +230,7 @@ pub(crate) async fn set_web_role(state: State<'_, AppState>, enabled: bool, list
     Ok(())
 }
 
-/// 主题变更广播：控制台窗口（外部源 SPA）经 Tauri 事件实时跟随主窗主题
+/// Theme change broadcast: console window (external-source SPA) follows the main window theme in real time via Tauri events
 #[tauri::command]
 pub(crate) fn broadcast_theme(app: tauri::AppHandle, theme: String) -> Result<(), String> {
     use tauri::Emitter;
@@ -239,7 +239,7 @@ pub(crate) fn broadcast_theme(app: tauri::AppHandle, theme: String) -> Result<()
     app.emit("ag-theme", theme).map_err(map_err)
 }
 
-/// 启动时恢复服务端角色（上次退出时处于开启状态）。
+/// Restore the server role at startup (it was enabled at last exit).
 pub(crate) async fn restore_server_role(app: &tauri::AppHandle) {
     let state = app.state::<AppState>();
     let enabled = state.roles.lock().await.server;
@@ -262,7 +262,7 @@ pub(crate) async fn restore_server_role(app: &tauri::AppHandle) {
     }
 }
 
-/// 启动时恢复 Web 远程面（上次退出时处于开启状态且已设管理密码）。
+/// Restore web remote at startup (was enabled at last exit and an admin password is set).
 pub(crate) async fn restore_web_role(app: &tauri::AppHandle) {
     let state = app.state::<AppState>();
     let (enabled, listen) = {
@@ -296,29 +296,29 @@ pub(crate) async fn restore_web_role(app: &tauri::AppHandle) {
     }
 }
 
-// ==================== TUN 模式（docs/plan/tun.md P1：anet 在前 FlClash 在后） ====================
+// ==================== TUN mode (docs/plan/tun.md P1: anet in front, FlClash behind) ====================
 
-/// TUN 状态（前端轮询展示：运行中/权限不足/上游不可达）
+/// TUN status (polled by frontend: running / insufficient privileges / upstream unreachable)
 #[derive(Debug, Clone, Serialize)]
 pub struct TunStatus {
-    /// 当前平台支持 TUN（Windows x64 且内核可安装）
+    /// Current platform supports TUN (Windows x64 and kernel installable)
     pub supported: bool,
-    /// TUN 开关（持久化）
+    /// TUN toggle (persisted)
     pub enabled: bool,
-    /// 内核运行中（配置为 TUN 骨架）
+    /// Kernel running (configured as TUN skeleton)
     pub running: bool,
-    /// 当前进程已是管理员
+    /// Current process is already admin
     pub admin: bool,
-    /// 外部上游（回落目标）
+    /// External upstream (fallback target)
     pub upstream: String,
-    /// 最近一次拨测结果（None = 未拨测）
+    /// Latest probe result (None = not probed yet)
     pub upstream_ok: Option<bool>,
-    /// 放弃开启的一次性提示（读取即清除；前端 toast 后不再出现）
+    /// One-shot notice for an abandoned enable (cleared on read; frontend toasts it once)
     pub notice: Option<String>,
 }
 
-/// TUN 放弃开启的统一兜底：关开关持久化 + 审计 + 一次性提示。
-/// 语义（用户要求）：TUN 是独立可选项，权限不足/启动失败时安静放弃，绝不影响其它功能。
+/// Unified fallback for abandoning a TUN enable: persist toggle off + audit + one-shot notice.
+/// Semantics (per user request): TUN is an independent option; quietly abandon on privilege/start failure, never affecting other features.
 pub(crate) async fn abandon_tun(state: &State<'_, AppState>, reason: &str) {
     {
         let mut roles = state.roles.lock().await;
@@ -353,9 +353,9 @@ pub(crate) async fn tun_status(state: State<'_, AppState>) -> Result<TunStatus, 
     Ok(tun_status_of(&state).await)
 }
 
-/// TUN 开启后的数据面/系统代理副作用（开启与提权重启恢复共用）：
-/// 本地代理钉 57890（ANET-IN 目标）→ 回落 = 外部上游 → 系统代理自动托管 57890（§2.6）
-/// → 外部上游 TCP 拨测一次（不通仅前端灵动岛告警，不阻断；§2.4）。
+/// Data-plane/system-proxy side effects after enabling TUN (shared by enable and elevated-relaunch restore):
+/// pin local proxy to 57890 (ANET-IN target) → fallback = external upstream → system proxy auto-takeover of 57890 (§2.6)
+/// → probe external upstream once over TCP (unreachable only triggers a frontend Dynamic Island alert, non-blocking; §2.4).
 pub(crate) async fn tun_side_effects(app: &tauri::AppHandle, state: &State<'_, AppState>) -> Result<(), String> {
     let port = state.client.proxy_port();
     if port != 57890 {
@@ -369,7 +369,7 @@ pub(crate) async fn tun_side_effects(app: &tauri::AppHandle, state: &State<'_, A
     crate::apply_proxy_fallback(state).await;
     let server = crate::expected_sysproxy(state);
     let _ = tokio::task::spawn_blocking(move || sysproxy::engage(&server)).await;
-    // 拨测生效回落目标（订阅出口或外部上游；不通仅前端灵动岛告警，不阻断；§2.4）
+    // Probe the effective fallback target (subscription exit or external upstream; unreachable only triggers a frontend Dynamic Island alert, non-blocking; §2.4)
     let ok = match crate::effective_fallback(state).await {
         Some(sa) => tun::tcp_reachable(sa).await,
         None => false,
@@ -378,7 +378,7 @@ pub(crate) async fn tun_side_effects(app: &tauri::AppHandle, state: &State<'_, A
     Ok(())
 }
 
-/// TUN 模式开关（§2.2 提权 / §2.4 回落 / §2.5 互斥 / §2.6 系统代理）。
+/// TUN mode toggle (§2.2 elevation / §2.4 fallback / §2.5 mutual exclusion / §2.6 system proxy).
 #[tauri::command]
 pub(crate) async fn set_tun_mode(
     app: tauri::AppHandle,
@@ -386,9 +386,9 @@ pub(crate) async fn set_tun_mode(
     enabled: bool,
 ) -> Result<TunStatus, String> {
     if enabled {
-        // §2.2 管理员提权：非管理员 → NEED_ELEVATION（前端弹对话框走 runas 重启路径）
+        // §2.2 admin elevation: non-admin → NEED_ELEVATION (frontend shows a dialog and takes the runas relaunch path)
         tun::precheck(&tun::SystemElevation)?;
-        // 制品缺失不再当场下载：后台开始下载并返回 NEED_DOWNLOAD，前端展示下载卡，完成后自动重试
+        // Missing artifact is no longer downloaded on the spot: start a background download and return NEED_DOWNLOAD; frontend shows a download card and auto-retries on completion
         if !subscription::kernel_bin_exists() {
             state.dl.start(download::Artifact::Kernel)?;
             return Err(format!(
@@ -396,7 +396,7 @@ pub(crate) async fn set_tun_mode(
                 subscription::NEED_DOWNLOAD_PREFIX
             ));
         }
-        // §2.1 wintun.dll：已存在/本地候选复用即过；仍缺失 → 后台下载
+        // §2.1 wintun.dll: passes if already present or a local candidate is reused; still missing → background download
         if let Err(e) = subscription::ensure_wintun().await {
             if e.starts_with(subscription::NEED_DOWNLOAD_PREFIX) {
                 state.dl.start(download::Artifact::Wintun)?;
@@ -412,7 +412,7 @@ pub(crate) async fn set_tun_mode(
         }
         {
             let mut roles = state.roles.lock().await;
-            // §2.4 回落目标合法性（硬约束；违规拒绝开启）
+            // §2.4 fallback target validity (hard constraint; refuse to enable on violation)
             roles::validate_external_upstream(&roles.external_upstream)?;
             roles.tun_mode = true;
             roles.subscription = true;
@@ -422,7 +422,7 @@ pub(crate) async fn set_tun_mode(
             "gui.tun_enable",
             serde_json::json!({"upstream": state.roles.lock().await.external_upstream}),
         );
-        // 重启内核加载 TUN 骨架 + 数据面副作用；任一步失败都整体回退普通模式（订阅不受影响）
+        // Restart kernel to load the TUN skeleton + data-plane side effects; any failure rolls back entirely to normal mode (subscription unaffected)
         state.kernel.stop().await;
         let start_result = match state.kernel.start().await {
             Ok(()) => tun_side_effects(&app, &state).await,
@@ -430,7 +430,7 @@ pub(crate) async fn set_tun_mode(
         };
         if let Err(e) = start_result {
             abandon_tun(&state, &format!("启动失败（{e}）")).await;
-            // 回滚后尝试以普通模式重启内核，订阅角色保持可用
+            // After rollback, try restarting the kernel in normal mode so the subscription role stays usable
             let _ = state.kernel.start().await;
             crate::apply_proxy_fallback(&state).await;
             return Err(format!("TUN 开启失败，已回退普通模式: {e}"));
@@ -443,11 +443,11 @@ pub(crate) async fn set_tun_mode(
         }
         roles::audit("gui.tun_disable", serde_json::json!({}));
         *state.tun_upstream_ok.lock().await = None;
-        // 内核回到普通配置（订阅角色保持开启）
+        // Kernel returns to normal config (subscription role stays on)
         state.kernel.stop().await;
         state.kernel.start().await?;
         crate::apply_proxy_fallback(&state).await;
-        // §2.6 关 TUN：还原系统代理快照；系统代理偏好仍开且代理在跑则按偏好重新托管
+        // §2.6 TUN off: restore the system proxy snapshot; if the system proxy preference is still on and the proxy is running, re-take over per preference
         let _ = tokio::task::spawn_blocking(sysproxy::disengage).await;
         let system_pref = state.roles.lock().await.system_proxy;
         if system_pref && state.client.proxy_port() > 0 {
@@ -458,7 +458,7 @@ pub(crate) async fn set_tun_mode(
     Ok(tun_status_of(&state).await)
 }
 
-/// 「以管理员身份重启」（§2.2）：持久化 TUN 开关（重启后自动恢复开启）→ 审计 → runas 拉起自身 → 退出。
+/// "Relaunch as administrator" (§2.2): persist TUN toggle (auto-restored on after relaunch) → audit → runas self → exit.
 #[tauri::command]
 pub(crate) async fn tun_relaunch_elevated(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     {
@@ -473,14 +473,14 @@ pub(crate) async fn tun_relaunch_elevated(app: tauri::AppHandle, state: State<'_
     Ok(())
 }
 
-/// 提权对话框取消：停留现状，审计 declined（§2.2）。
+/// Elevation dialog cancelled: stay as-is, audit declined (§2.2).
 #[tauri::command]
 pub(crate) fn tun_elevation_declined() -> Result<(), String> {
     roles::audit("gui.tun_elevation", serde_json::json!({"granted": false}));
     Ok(())
 }
 
-/// 修改外部上游（§2.4）：严格校验（§2.5）后持久化；TUN 运行中即重应用回落并拨测。
+/// Change external upstream (§2.4): persist after strict validation (§2.5); if TUN is running, re-apply fallback and probe.
 #[tauri::command]
 pub(crate) async fn set_tun_upstream(state: State<'_, AppState>, addr: String) -> Result<TunStatus, String> {
     let sa = roles::validate_external_upstream(&addr)?;
@@ -498,8 +498,8 @@ pub(crate) async fn set_tun_upstream(state: State<'_, AppState>, addr: String) -
     Ok(tun_status_of(&state).await)
 }
 
-/// 开关D：订阅代理角色。开启即启动内核（崩溃自动退避重启），关闭即停机。
-/// 内核缺失时不再当场下载：后台开始下载并返回 NEED_DOWNLOAD，前端展示下载卡，完成后自动重试。
+/// Toggle D: subscription proxy role. Enabling starts the kernel (auto backoff-restart on crash); disabling stops it.
+/// Missing kernel is no longer downloaded on the spot: start a background download and return NEED_DOWNLOAD; frontend shows a download card and auto-retries on completion.
 #[tauri::command]
 pub(crate) async fn set_subscription_role(
     app: tauri::AppHandle,
@@ -537,14 +537,14 @@ pub(crate) async fn set_subscription_role(
     Ok(state.kernel.status().await)
 }
 
-/// 切换订阅出站模式：持久化；内核运行中走控制器 PATCH /configs 热切（失败则重启兜底）。
+/// Switch subscription outbound mode: persist; if the kernel is running, hot-switch via controller PATCH /configs (fall back to restart on failure).
 #[tauri::command]
 pub(crate) async fn set_sub_mode(state: State<'_, AppState>, mode: String) -> Result<(), String> {
     if !roles::valid_sub_mode(&mode) {
         return Err("非法出站模式（rule|global|direct）".into());
     }
-    // TUN 模式下出站模式固定为规则：global/direct 会绕过 rules（含 MATCH→ANET-IN），
-    // 流量不再经 anet 分流，违反 anet 在前设计
+    // In TUN mode the outbound mode is fixed to rule: global/direct would bypass rules (incl. MATCH→ANET-IN),
+    // traffic would no longer be split by anet, violating the anet-in-front design
     if state.roles.lock().await.tun_mode {
         return Err("TUN 模式下出站模式固定为规则（全局/直连会绕过 anet 分流）".into());
     }
@@ -560,7 +560,7 @@ pub(crate) async fn set_sub_mode(state: State<'_, AppState>, mode: String) -> Re
             Err(_) => false,
         };
         if !patched {
-            // 热切失败兜底：重启内核按新设置重生成配置
+            // Hot-switch fallback: restart the kernel to regenerate config with the new setting
             state.kernel.stop().await;
             state.kernel.start().await?;
             crate::apply_proxy_fallback(&state).await;
@@ -569,7 +569,7 @@ pub(crate) async fn set_sub_mode(state: State<'_, AppState>, mode: String) -> Re
     Ok(())
 }
 
-/// 系统代理锁定（硬核模式）：视同托管，巡检发现系统值被改即自动收回期望值。
+/// System proxy lock (hardcore mode): treated as taken over; patrol auto-restores expected values when system values are changed.
 #[tauri::command]
 pub(crate) async fn set_sysproxy_lock(state: State<'_, AppState>, on: bool) -> Result<(), String> {
     {
@@ -581,7 +581,7 @@ pub(crate) async fn set_sysproxy_lock(state: State<'_, AppState>, on: bool) -> R
     Ok(())
 }
 
-/// 性能模式（前端据此关模糊/动画；后端仅持久化存取）。
+/// Performance mode (frontend disables blur/animations based on this; backend only persists it).
 #[tauri::command]
 pub(crate) async fn set_reduce_effects(state: State<'_, AppState>, on: bool) -> Result<(), String> {
     {

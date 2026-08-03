@@ -1,8 +1,9 @@
-//! 节点服务进程管理：start / stop / restart / status（社区惯例单实例模型）。
+//! Node service process management: start / stop / restart / status (single-instance model).
 //!
-//! - PID 文件 `~/.agile-net/anet-svc.pid`（JSON：pid / config / api_addr / started_at）
-//! - 启动成功后才写 PID（绑定失败不产生幻尸记录）；正常退出（Ctrl-C）清除
-//! - 进程探测与终止经 `sysinfo`（跨平台，先 Term 后 Kill 兜底）
+//! - PID file `~/.agile-net/anet-svc.pid` (JSON: pid / config / api_addr / started_at)
+//! - PID written only after a successful bind (no phantom records on bind failure);
+//!   removed on clean exit (Ctrl-C)
+//! - Process probe/termination via `sysinfo` (cross-platform, Term first then Kill)
 
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
@@ -45,7 +46,7 @@ pub fn remove_pid() {
     let _ = std::fs::remove_file(pid_path());
 }
 
-/// 进程存活探测（pid 复用场景下以启动时间粗校验由调用方负责，单实例模型下从简）。
+/// Process liveness probe (start-time cross-check for pid reuse is the caller's job; kept simple under the single-instance model).
 pub fn process_alive(pid: u32) -> bool {
     use sysinfo::{Pid, ProcessesToUpdate, System};
     let pid = Pid::from_u32(pid);
@@ -54,7 +55,7 @@ pub fn process_alive(pid: u32) -> bool {
     sys.process(pid).is_some()
 }
 
-/// 终止进程：先 SIGTERM 等至多 5s，未退则 SIGKILL。返回是否已确认退出。
+/// Terminate a process: SIGTERM first, wait up to 5s, then SIGKILL. Returns whether exit was confirmed.
 pub fn kill_process(pid: u32) -> Result<bool> {
     use sysinfo::{Pid, ProcessesToUpdate, Signal, System};
     let spid = Pid::from_u32(pid);
@@ -67,7 +68,7 @@ pub fn kill_process(pid: u32) -> Result<bool> {
         return Ok(true);
     }
     if let Some(p) = sys.process(spid) {
-        // Windows 无 SIGTERM 语义，kill_with(Term) 直接硬终止；Unix 上为优雅停止
+        // Windows has no SIGTERM semantics; kill_with(Term) hard-kills there. On Unix it is a graceful stop.
         let _ = p.kill_with(Signal::Term);
     }
     for _ in 0..50 {
@@ -83,9 +84,9 @@ pub fn kill_process(pid: u32) -> Result<bool> {
     Ok(!fetch(&mut sys))
 }
 
-/// 运行中的服务记录（PID 存活）。探测失败不删文件——
-/// 新进程对 sysinfo 可能短暂不可见，幻尸记录无害（探测为死即视为未运行），
-/// 仅在 write/stop 时覆盖或清除。
+/// Running service record (PID alive). A failed probe does not delete the file —
+/// a fresh process may be briefly invisible to sysinfo, and a phantom record is harmless
+/// (a dead probe reads as not-running); it is only overwritten on write or cleared on stop.
 pub fn running_record() -> Option<PidRecord> {
     let rec = read_pid()?;
     if process_alive(rec.pid) { Some(rec) } else { None }
@@ -111,7 +112,7 @@ pub fn cmd_stop() -> Result<()> {
     }
 }
 
-/// `start` 前置检查：已在运行则报错。
+/// `start` precondition: fails if already running.
 pub fn ensure_not_running() -> Result<()> {
     if let Some(rec) = running_record() {
         bail!(
@@ -123,7 +124,7 @@ pub fn ensure_not_running() -> Result<()> {
     Ok(())
 }
 
-/// 后台守护：分离启动自身 `start <config>`，父进程立即返回。
+/// Background daemon: spawn a detached `start <config>` of self; the parent returns immediately.
 pub fn spawn_daemon(config: &str) -> Result<u32> {
     let exe = std::env::current_exe().context("无法定位当前可执行文件")?;
     let mut cmd = std::process::Command::new(exe);
@@ -210,7 +211,7 @@ mod tests {
 
     #[test]
     fn dead_pid_is_not_running() {
-        // 取一个几乎不可能存活的 PID
+        // pick a PID that is almost certainly not alive
         assert!(!process_alive(u32::MAX - 1));
     }
 }

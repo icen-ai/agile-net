@@ -1,12 +1,12 @@
-//! 会话级带宽限速（TokenBucket）端到端测试（mux 层）
+//! Session-level bandwidth rate limiting (TokenBucket) end-to-end tests (mux layer)
 //!
-//! - egress：发送方挂限速桶 → 接收方收满耗时被节流
-//! - ingress：接收方挂限速桶 → 读任务挂起形成 TCP 背压，收满耗时同样被节流
-//! - 不限速对照组：同量数据快速完成
+//! - egress: sender-side bucket throttles the receiver's drain time
+//! - ingress: receiver-side bucket stalls the read task into TCP backpressure, drain throttled likewise
+//! - unlimited control group: same payload completes fast
 //!
-//! 计时口径：limiter 64 KiB/s、burst 64 KiB，传 256 KiB。
-//! 理论最短耗时 = (256 KiB - 64 KiB burst) / 64 KiB/s = 3.0s，
-//! 断言取下界 2.8s（容忍 CI 调度抖动），上界 15s 防卡死。
+//! Timing: limiter 64 KiB/s, burst 64 KiB, transfer 256 KiB.
+//! Theoretical minimum = (256 KiB - 64 KiB burst) / 64 KiB/s = 3.0s;
+//! assert lower bound 2.8s (tolerates CI scheduling jitter), upper bound 15s (anti-hang).
 
 use agile_net_core::relay::limit::TokenBucket;
 use agile_net_core::relay::mux::MuxSession;
@@ -19,7 +19,7 @@ const TOTAL: usize = 256 * 1024; // 256 KiB
 const MIN_ELAPSED: Duration = Duration::from_millis(2800);
 const MAX_ELAPSED: Duration = Duration::from_secs(15);
 
-/// TCP 回环 mux 对，各自可独立挂限速桶
+/// TCP loopback mux pair; each side takes an independent rate limiter
 async fn mux_pair(
     limiter_a: Option<Arc<TokenBucket>>,
     limiter_b: Option<Arc<TokenBucket>>,
@@ -34,7 +34,7 @@ async fn mux_pair(
     (a, b)
 }
 
-/// A → B 传 TOTAL 字节，返回 (收到耗时, 收到的数据)
+/// A → B transfer of TOTAL bytes; returns (drain elapsed, received data)
 async fn transfer(a: &Arc<MuxSession>, b: &Arc<MuxSession>) -> (Duration, Vec<u8>) {
     let b2 = b.clone();
     let receiver = tokio::spawn(async move {
@@ -62,7 +62,7 @@ fn expected() -> Vec<u8> {
     (0..TOTAL).map(|i| (i % 251) as u8).collect()
 }
 
-/// egress 限速：发送方写任务节流，收满 256 KiB 耗时 >= 3s 量级且数据完整
+/// egress limit: sender write task throttled; draining 256 KiB takes >= 3s with data intact
 #[tokio::test]
 async fn egress_rate_limited() {
     let limiter = Arc::new(TokenBucket::new(RATE, RATE));
@@ -76,7 +76,7 @@ async fn egress_rate_limited() {
     assert_eq!(received, expected(), "数据不完整");
 }
 
-/// ingress 限速：接收方读任务分发前节流 → TCP 背压，收满耗时同样 >= 3s 量级
+/// ingress limit: receiver read task throttled before dispatch → TCP backpressure, drain also >= 3s
 #[tokio::test]
 async fn ingress_rate_limited() {
     let limiter = Arc::new(TokenBucket::new(RATE, RATE));
@@ -90,7 +90,7 @@ async fn ingress_rate_limited() {
     assert_eq!(received, expected(), "数据不完整");
 }
 
-/// 不限速对照：同量数据远快于 3s 完成（证明上述耗时确实来自限速桶）
+/// unlimited baseline: same payload finishes well under 3s (proves the delay above comes from the bucket)
 #[tokio::test]
 async fn unlimited_baseline() {
     let (a, b) = mux_pair(None, None).await;

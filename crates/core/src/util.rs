@@ -1,4 +1,4 @@
-//! 通用小工具：跨模块共享，避免逐字复制。
+//! Shared small utilities, kept in one place to avoid verbatim copies.
 
 use std::net::IpAddr;
 use std::sync::Arc;
@@ -6,14 +6,14 @@ use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
 
-/// SHA-256 十六进制摘要（Token 落库哈希 / 按哈希踢除会话等）。
+/// SHA-256 hex digest (token storage hash, kicking sessions by hash, etc.).
 pub fn sha256_hex(data: &[u8]) -> String {
     use sha2::Digest;
     let digest = sha2::Sha256::digest(data);
     format!("{:x}", digest)
 }
 
-/// 最小化 base64 编码（core 不引 base64 依赖，全项目保留手写单份）。
+/// Minimal base64 encoder (core avoids a base64 dependency; single hand-rolled copy project-wide).
 pub fn base64_encode(data: &[u8]) -> String {
     const TABLE: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(data.len() * 4 / 3 + 4);
@@ -38,10 +38,10 @@ pub fn base64_encode(data: &[u8]) -> String {
     out
 }
 
-/// 登录频率限制器：默认 5 次/分钟/IP，连续失败 5 次锁定 15 分钟。
+/// Login rate limiter: 5 attempts/min/IP by default, 15-minute lock after 5 consecutive failures.
 ///
-/// 服务端管理 API 与客户端 Web 远程面共用（原两处各自实现、逐字重复）；
-/// 无新增依赖，沿用 dashmap 分片表。
+/// Shared by the node admin API and the client web remote plane (previously two
+/// verbatim copies); no new dependencies, built on a sharded dashmap.
 #[derive(Clone)]
 pub struct LoginRateLimiter {
     inner: Arc<DashMap<IpAddr, LoginAttempts>>,
@@ -57,11 +57,11 @@ struct LoginAttempts {
     locked_until: Option<Instant>,
 }
 
-/// 登录被阻断的原因。
+/// Why a login attempt was blocked.
 pub enum LoginBlockReason {
-    /// 触发频率限制（每分钟次数超限）
+    /// Rate limit hit (too many attempts per minute)
     RateLimited,
-    /// 连续失败锁定（剩余锁定时长）
+    /// Locked after consecutive failures (remaining lock time)
     Locked(Duration),
 }
 
@@ -75,7 +75,7 @@ impl LoginRateLimiter {
         }
     }
 
-    /// 覆盖默认限流参数（对应 agile-net.toml [limits]）。
+    /// Override default limits (maps to agile-net.toml [limits]).
     pub fn with_config(
         mut self,
         max_per_minute: u32,
@@ -88,8 +88,8 @@ impl LoginRateLimiter {
         self
     }
 
-    /// 检查是否允许尝试登录（限流 + 锁定判定）。
-    /// 附带惰性清扫：条目数超 1024 时淘汰 30 分钟未活动的失败记录（防内存无上限增长）。
+    /// Check whether a login attempt is allowed (rate limit + lock check).
+    /// Lazy sweep included: above 1024 entries, failure records idle for 30 min are evicted (bounds memory growth).
     pub fn check(&self, ip: IpAddr) -> Result<(), LoginBlockReason> {
         if self.inner.len() > 1024 {
             self.inner
@@ -122,7 +122,7 @@ impl LoginRateLimiter {
         Ok(())
     }
 
-    /// 记录一次登录失败（连续失败达阈值则锁定）。
+    /// Record a login failure (locks once consecutive failures reach the threshold).
     pub fn record_failure(&self, ip: IpAddr) {
         let mut entry = self.inner.entry(ip).or_insert(LoginAttempts {
             window_start: Instant::now(),
@@ -137,7 +137,7 @@ impl LoginRateLimiter {
         }
     }
 
-    /// 登录成功，清零失败计数。
+    /// Login succeeded; reset the failure count.
     pub fn record_success(&self, ip: IpAddr) {
         self.inner.remove(&ip);
     }
@@ -155,7 +155,7 @@ mod tests {
 
     #[test]
     fn base64_rfc_vectors() {
-        // RFC 4648 测试向量
+        // RFC 4648 test vectors
         assert_eq!(base64_encode(b""), "");
         assert_eq!(base64_encode(b"f"), "Zg==");
         assert_eq!(base64_encode(b"fo"), "Zm8=");
@@ -173,7 +173,7 @@ mod tests {
             assert!(lim.check(ip).is_ok());
         }
         assert!(matches!(lim.check(ip), Err(LoginBlockReason::RateLimited)));
-        // 另一 IP 不受影响
+        // another IP is unaffected
         let other: IpAddr = "127.0.0.2".parse().unwrap();
         assert!(lim.check(other).is_ok());
     }

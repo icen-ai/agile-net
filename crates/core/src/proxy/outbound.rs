@@ -1,6 +1,6 @@
-//! 出站策略实现
+//! Outbound policy implementations
 //!
-//! 支持 DIRECT 直连出站、Tunnel 隧道转发出站与回环上游转发（mihomo sidecar）。
+//! DIRECT outbound, Tunnel outbound and loopback upstream forwarding (mihomo sidecar).
 
 use crate::error::{Error, Result};
 use crate::relay::bridge::bridge;
@@ -11,23 +11,24 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tracing::debug;
 
-/// 直连出站。
+/// Direct outbound.
 pub struct DirectOutbound;
 
 impl DirectOutbound {
-    /// 直接 TCP 连接到目标地址。
+    /// Plain TCP connect to the target address.
     pub async fn connect(target: SocketAddr) -> Result<TcpStream> {
         let stream = TcpStream::connect(target).await?;
         Ok(stream)
     }
 }
 
-/// 回环上游转发（mihomo sidecar mixed 入站）：
-/// 入站已完成与客户端的握手并解析出目标，此处作为 SOCKS5 客户端把目标转交上游内核。
+/// Loopback upstream forwarding (mihomo sidecar mixed inbound):
+/// the inbound already finished the client handshake and parsed the target; here we act
+/// as a SOCKS5 client handing the target to the upstream kernel.
 pub struct Socks5ForwardOutbound;
 
 impl Socks5ForwardOutbound {
-    /// 连接上游并完成 SOCKS5 CONNECT（无认证），返回已就绪的上游流。
+    /// Connect upstream and finish SOCKS5 CONNECT (no auth), returning a ready upstream stream.
     pub async fn connect(
         upstream: SocketAddr,
         target_host: &str,
@@ -35,7 +36,7 @@ impl Socks5ForwardOutbound {
     ) -> Result<TcpStream> {
         let mut up = TcpStream::connect(upstream).await?;
 
-        // 方法协商：仅 NO AUTH
+        // method negotiation: NO AUTH only
         up.write_all(&[0x05, 0x01, 0x00]).await?;
         let mut method_resp = [0u8; 2];
         up.read_exact(&mut method_resp).await?;
@@ -43,7 +44,7 @@ impl Socks5ForwardOutbound {
             return Err(Error::Protocol("upstream proxy rejected no-auth".into()));
         }
 
-        // CONNECT 请求
+        // CONNECT request
         let mut req = vec![0x05, 0x01, 0x00];
         if let Ok(ip4) = target_host.parse::<std::net::Ipv4Addr>() {
             req.push(0x01);
@@ -63,7 +64,7 @@ impl Socks5ForwardOutbound {
         req.extend_from_slice(&target_port.to_be_bytes());
         up.write_all(&req).await?;
 
-        // 应答：VER REP RSV ATYP BND.ADDR BND.PORT
+        // reply: VER REP RSV ATYP BND.ADDR BND.PORT
         let mut head = [0u8; 4];
         up.read_exact(&mut head).await?;
         if head[0] != 0x05 {
@@ -94,7 +95,7 @@ impl Socks5ForwardOutbound {
         Ok(up)
     }
 
-    /// 转发并桥接（SOCKS5 入站路径：握手已就绪后直接双向转发）。
+    /// Forward and bridge (SOCKS5 inbound path: handshake done, bidirectional forwarding right away).
     pub async fn proxy_stream<S>(
         upstream: SocketAddr,
         target_host: &str,
@@ -110,7 +111,7 @@ impl Socks5ForwardOutbound {
     }
 }
 
-/// Tunnel 隧道出站。
+/// Tunnel outbound.
 pub struct TunnelOutbound {
     opener: Arc<dyn ChannelOpener>,
 }
@@ -120,7 +121,7 @@ impl TunnelOutbound {
         Self { opener }
     }
 
-    /// 通过指定节点的隧道发起端到端转发
+    /// Start end-to-end forwarding through the given node's tunnel
     pub async fn proxy_stream<S>(
         &self,
         node_id: &str,
@@ -148,7 +149,7 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
-    /// 最小 SOCKS5 服务端：校验 greeting 与 CONNECT 目标，回显目标后透传。
+    /// Minimal SOCKS5 server: validates the greeting and CONNECT target, echoes one byte back.
     async fn mock_socks5_server(listener: TcpListener, expect_host: String, expect_port: u16) {
         let (mut stream, _) = listener.accept().await.unwrap();
         let mut greeting = [0u8; 3];
@@ -178,7 +179,7 @@ mod tests {
             .write_all(&[0x05, 0x00, 0x00, 0x01, 127, 0, 0, 1, 0, 80])
             .await
             .unwrap();
-        // 回显一字节后关闭
+        // echo one byte then close
         let mut b = [0u8; 1];
         stream.read_exact(&mut b).await.unwrap();
         stream.write_all(&b).await.unwrap();
@@ -215,7 +216,7 @@ mod tests {
             stream.write_all(&[0x05, 0x00]).await.unwrap();
             let mut head = [0u8; 4];
             stream.read_exact(&mut head).await.unwrap();
-            // 域名 + 端口读取后回 rep=0x05（连接被拒绝）
+            // after reading domain + port, reply rep=0x05 (connection refused)
             let mut len = [0u8; 1];
             stream.read_exact(&mut len).await.unwrap();
             let mut skip = vec![0u8; len[0] as usize + 2];

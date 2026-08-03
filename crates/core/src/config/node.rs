@@ -1,183 +1,183 @@
-//! 节点配置模型
+//! Node config model
 
 use serde::{Deserialize, Serialize};
 
-/// 节点总配置，对应 `agile-net.toml`。
+/// Top-level node config, corresponding to `agile-net.toml`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeConfig {
-    /// 节点显示名称
+    /// Node display name
     #[serde(default = "default_node_name")]
     pub name: String,
 
-    /// 数据库文件路径
+    /// Database file path
     #[serde(default = "default_db_path")]
     pub db_path: String,
 
-    /// 对外展示的公网接入地址（connect_url 用，不含端口）
+    /// Public access address shown to clients (for connect_url, without port)
     #[serde(default)]
     pub public_host: Option<String>,
 
-    /// HTTP API 监听配置
+    /// HTTP API listener config
     #[serde(default)]
     pub api: ApiConfig,
 
-    /// Relay listener 配置（扇入角色：接受扇入端点连入）
+    /// Relay listener config (fan-in role: accepts fan-in endpoints connecting in)
     pub listener: Option<ListenerConfig>,
 
-    /// Relay connector 配置（扇出角色：`[[connectors]]` 数组，多目标扇出/容灾）
+    /// Relay connector config (fan-out role: `[[connectors]]` array, multi-target fan-out/failover)
     #[serde(default)]
     pub connectors: Vec<ConnectorConfig>,
 
-    /// 本地代理入站配置
+    /// Local proxy inbound config
     pub proxy: Option<ProxyConfig>,
 
-    /// ACME 自动证书配置（Let's Encrypt，TLS-ALPN-01）
+    /// ACME auto-cert config (Let's Encrypt, TLS-ALPN-01)
     pub acme: Option<AcmeConfig>,
 
-    /// 文件日志配置
+    /// File log config
     pub log: Option<LogConfig>,
 
-    /// 安全限流配置
+    /// Security rate-limit config
     pub limits: Option<LimitsConfig>,
 }
 
-/// 文件日志配置。
+/// File log config.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LogConfig {
-    /// 日志目录（配置后启用按天滚动文件日志）
+    /// Log directory (enables daily rolling file logs when set)
     #[serde(default = "default_log_dir")]
     pub dir: String,
-    /// 文件名前缀
+    /// File name prefix
     #[serde(default = "default_log_prefix")]
     pub prefix: String,
 }
 
-/// 安全限流配置（数据面与 API 面）。
+/// Security rate-limit config (data plane and API plane).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LimitsConfig {
-    /// Relay 最大并发连接数
+    /// Relay max concurrent connections
     #[serde(default = "default_max_connections")]
     pub max_connections: usize,
-    /// Relay 最大待认证连接数
+    /// Relay max pending-auth connections
     #[serde(default = "default_max_pending_auth")]
     pub max_pending_auth: usize,
-    /// Relay 认证失败限流（次/分钟/IP）
+    /// Relay auth failure rate limit (per minute per IP)
     #[serde(default = "default_auth_failures")]
     pub auth_failures_per_minute: u32,
-    /// 登录限流（次/分钟/IP）
+    /// Login rate limit (per minute per IP)
     #[serde(default = "default_login_per_minute")]
     pub login_per_minute: u32,
-    /// 连续失败锁定阈值
+    /// Consecutive-failure lock threshold
     #[serde(default = "default_lock_threshold")]
     pub login_lock_threshold: u32,
-    /// 锁定时长（分钟）
+    /// Lock duration (minutes)
     #[serde(default = "default_lock_minutes")]
     pub login_lock_minutes: u32,
 }
 
-/// ACME 自动证书配置。
+/// ACME auto-cert config.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AcmeConfig {
-    /// 证书域名（须解析到本节点 Relay 端口）
+    /// Cert domain (must resolve to this node's relay port)
     pub domain: String,
 
-    /// 账户联系邮箱
+    /// Account contact email
     pub email: String,
 
-    /// 使用 Let's Encrypt Staging（测试用）
+    /// Use Let's Encrypt Staging (for testing)
     #[serde(default)]
     pub staging: bool,
 
-    /// 到期前多少天续期（默认 30）
+    /// Days before expiry to renew (default 30)
     #[serde(default = "default_renew_days")]
     pub renew_days: u32,
 
-    /// 自定义 CA directory URL（默认 Let's Encrypt）
+    /// Custom CA directory URL (default Let's Encrypt)
     #[serde(default)]
     pub directory_url: Option<String>,
 
-    /// 签发证书存放路径
+    /// Issued cert storage path
     #[serde(default = "default_acme_cert_path")]
     pub cert_path: String,
 
-    /// 签发私钥存放路径
+    /// Issued private key storage path
     #[serde(default = "default_acme_key_path")]
     pub key_path: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApiConfig {
-    /// 监听地址
+    /// Listen address
     #[serde(default = "default_api_addr")]
     pub addr: String,
 
-    /// API HTTPS 证书路径（配置后管理 API 以 HTTPS 提供）
+    /// API HTTPS cert path (admin API is served over HTTPS when set)
     #[serde(default)]
     pub tls_cert_path: Option<String>,
 
-    /// API HTTPS 私钥路径
+    /// API HTTPS private key path
     #[serde(default)]
     pub tls_key_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ListenerConfig {
-    /// 监听地址 (e.g. "0.0.0.0:443")
+    /// Listen address (e.g. "0.0.0.0:443")
     pub addr: String,
 
-    /// TLS 证书路径（不存在时自动生成自签证书并持久化）
+    /// TLS cert path (a self-signed cert is generated and persisted if absent)
     #[serde(default = "default_cert_path")]
     pub cert_path: String,
 
-    /// TLS 私钥路径
+    /// TLS private key path
     #[serde(default = "default_key_path")]
     pub key_path: String,
 
-    /// 自签证书 SAN / 对外 SNI 域名
+    /// Self-signed cert SAN / public SNI hostname
     #[serde(default = "default_sni")]
     pub sni_hostname: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConnectorConfig {
-    /// 上游地址 (e.g. "1.2.3.4:443")
+    /// Fan-in address (e.g. "1.2.3.4:443")
     pub upstream_addr: String,
 
-    /// 认证 token（relay PSK）
+    /// Auth token (relay PSK)
     pub token: String,
 
-    /// TLS SNI 域名（伪装用）
+    /// TLS SNI hostname (camouflage)
     #[serde(default = "default_sni")]
     pub sni_hostname: String,
 
-    /// 向上游通告的可服务网段/域名
+    /// Servable CIDRs/domains advertised to the fan-in side
     #[serde(default)]
     pub advertise: Vec<String>,
 
-    /// 自定义 CA 证书路径（PEM）
+    /// Custom CA cert path (PEM)
     #[serde(default)]
     pub ca_cert_path: Option<String>,
 
-    /// 证书固定：上游服务端证书路径（PEM，钉入信任）
+    /// Cert pinning: fan-in server cert path (PEM, pinned trust)
     #[serde(default)]
     pub pinned_cert_path: Option<String>,
 
-    /// 跳过证书校验（仅开发调试，生产严禁）
+    /// Skip cert verification (dev/debug only, forbidden in production)
     #[serde(default)]
     pub insecure: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProxyConfig {
-    /// 监听地址（默认仅 loopback；暴露到非 loopback 必须配置认证）
+    /// Listen address (loopback only by default; auth is required when exposing beyond loopback)
     #[serde(default = "default_proxy_addr")]
     pub addr: String,
 
-    /// 可选认证用户名
+    /// Optional auth username
     #[serde(default)]
     pub username: Option<String>,
 
-    /// 可选认证密码
+    /// Optional auth password
     #[serde(default)]
     pub password: Option<String>,
 }

@@ -1,7 +1,7 @@
-//! psinfo / killport — 进程信息与按端口杀进程（P0，sysinfo 薄封装）。
+//! psinfo / killport — process info and kill-by-port (P0, thin wrapper over sysinfo).
 //!
-//! killport 误杀保护：默认 SIGTERM，`--force` 才 SIGKILL；执行前打印将终止的
-//! 进程信息并要求 `-y` 确认（非交互终端必须显式确认，否则拒绝执行）。
+//! killport kill-safety: SIGTERM by default, SIGKILL only with `--force`; before acting it prints
+//! the processes to be terminated and requires `-y` (non-interactive terminals must confirm explicitly, otherwise it refuses).
 
 use super::netstat::{SocketInfo, sockets};
 use super::ToolOutcome;
@@ -11,7 +11,7 @@ use std::io::IsTerminal;
 use std::time::Duration;
 use sysinfo::{Pid, ProcessesToUpdate, Signal, System};
 
-/// `anet tool psinfo <pid>`：命令行、用户、exe 路径、CPU/内存。
+/// `anet tool psinfo <pid>`: command line, user, exe path, CPU/memory.
 pub fn psinfo(pid: u32) -> ToolOutcome {
     let spid = Pid::from_u32(pid);
     let mut sys = System::new();
@@ -22,7 +22,7 @@ pub fn psinfo(pid: u32) -> ToolOutcome {
             json!({ "pid": pid, "error": "not_found" }),
         );
     }
-    // CPU 占用需两次刷新取差值（sysinfo 要求最小间隔）
+    // CPU usage needs two refreshes for a delta (sysinfo requires a minimum interval)
     std::thread::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
     sys.refresh_processes(ProcessesToUpdate::Some(&[spid]), true);
     let Some(p) = sys.process(spid) else {
@@ -46,7 +46,7 @@ pub fn psinfo(pid: u32) -> ToolOutcome {
     let parent = p.parent().map(|p| p.as_u32());
     let start_time = p.start_time();
     let run_time = p.run_time();
-    // start_time 为 0 表示平台取不到（如 Windows 系统进程），显示 "-"
+    // start_time of 0 means the platform cannot provide it (e.g. Windows system processes); display "-"
     let started_at = (start_time > 0)
         .then(|| {
             chrono::DateTime::from_timestamp(start_time as i64, 0)
@@ -92,12 +92,12 @@ pub fn psinfo(pid: u32) -> ToolOutcome {
     )
 }
 
-/// `anet tool killport <port>`：经 [`sockets`] 找占用进程后终止。
+/// `anet tool killport <port>`: find the owning process via [`sockets`], then terminate it.
 pub fn killport(port: u16, force: bool, yes: bool) -> ToolOutcome {
     killport_impl(port, force, yes, std::io::stdin().is_terminal(), owners_of)
 }
 
-/// 端口占用者查询（killport 数据源；测试注入替身以脱离 netstat 实现）。
+/// Port-owner lookup (killport data source; tests inject a stub to stay independent of the netstat implementation).
 fn owners_of(port: u16) -> Result<Vec<SocketInfo>, String> {
     let all = sockets()?;
     Ok(all
@@ -106,12 +106,12 @@ fn owners_of(port: u16) -> Result<Vec<SocketInfo>, String> {
         .collect())
 }
 
-/// 从 "addr:port"（含 "[v6]:port"）提取本地端口。
+/// Extract the local port from "addr:port" (including "[v6]:port").
 fn local_port(local: &str) -> Option<u16> {
     local.rsplit_once(':')?.1.parse().ok()
 }
 
-/// killport 实现（interactive/owners 可注入，便于测试防误杀与杀进程链路）。
+/// killport implementation (interactive/owners injectable, so tests can cover kill-safety and the kill path).
 fn killport_impl(
     port: u16,
     force: bool,
@@ -132,7 +132,7 @@ fn killport_impl(
             json!({ "port": port, "signal": signal, "targets": [], "killed": 0 }),
         );
     }
-    // 按 PID 分组去重（同一进程可能持有同端口多个 socket）
+    // Group and dedup by PID (one process may hold multiple sockets on the same port)
     let mut by_pid: BTreeMap<u32, Vec<&SocketInfo>> = BTreeMap::new();
     for s in &targets {
         if let Some(pid) = s.pid {
@@ -146,7 +146,7 @@ fn killport_impl(
         );
     }
 
-    // 终止计划：富化进程名/exe（sysinfo 为准，socket 富化名为兜底）
+    // Termination plan: enrich process name/exe (sysinfo is authoritative, the socket-enriched name is the fallback)
     let mut sys = System::new();
     let mut plan_lines = Vec::new();
     let mut target_json = Vec::new();
@@ -184,7 +184,7 @@ fn killport_impl(
         plan_lines.join("\n")
     );
 
-    // 误杀保护：-y 直接放行；交互终端二次确认；非交互无 -y 拒绝
+    // Kill-safety: -y passes directly; interactive terminals get a second confirmation; non-interactive without -y is refused
     if !yes {
         if !interactive {
             return ToolOutcome::usage_error(format!(
@@ -250,7 +250,7 @@ fn killport_impl(
     }
 }
 
-/// 单进程终止结果。
+/// Termination result for a single process.
 struct KillResult {
     pid: u32,
     signal_sent: bool,
@@ -258,11 +258,11 @@ struct KillResult {
     note: Option<String>,
 }
 
-/// 终止指定进程：默认 SIGTERM，`--force` 用 SIGKILL；等待至多 3s 确认退出。
+/// Terminate the given process: SIGTERM by default, SIGKILL with `--force`; wait up to 3s to confirm exit.
 fn terminate(pid: u32, force: bool) -> KillResult {
     let spid = Pid::from_u32(pid);
     let mut sys = System::new();
-    // 存活判定：僵尸/死亡态视为已退出（子进程未被 wait 收割前仍挂在 /proc）
+    // Liveness check: zombie/dead states count as exited (a child stays in /proc until reaped by wait)
     let alive = |sys: &mut System| {
         sys.refresh_processes(ProcessesToUpdate::Some(&[spid]), true);
         match sys.process(spid) {
@@ -287,7 +287,7 @@ fn terminate(pid: u32, force: bool) -> KillResult {
     } else {
         match sys.process(spid).and_then(|p| p.kill_with(Signal::Term)) {
             Some(ok) => (ok, None),
-            // Windows 等平台无 SIGTERM 语义，退化为直接终止（等同 SIGKILL）
+            // Platforms like Windows have no SIGTERM semantics; degrade to a direct kill (equivalent to SIGKILL)
             None => {
                 let ok = sys.process(spid).map(|p| p.kill()).unwrap_or(false);
                 (ok, Some("平台不支持 SIGTERM，已直接终止".into()))
@@ -321,7 +321,7 @@ fn terminate(pid: u32, force: bool) -> KillResult {
     }
 }
 
-/// 字节数人类可读（KiB/MiB/GiB，一位小数）。
+/// Human-readable byte count (KiB/MiB/GiB, one decimal).
 fn fmt_bytes(n: u64) -> String {
     const KIB: u64 = 1024;
     const MIB: u64 = KIB * 1024;
@@ -337,7 +337,7 @@ fn fmt_bytes(n: u64) -> String {
     }
 }
 
-/// 秒数人类可读时长（如 1d2h3m）。
+/// Human-readable duration in seconds (e.g. 1d2h3m).
 fn fmt_duration_secs(secs: u64) -> String {
     let (d, rem) = (secs / 86400, secs % 86400);
     let (h, rem) = (rem / 3600, rem % 3600);
@@ -359,8 +359,8 @@ mod tests {
     use std::io::{BufRead, BufReader};
     use std::process::{Child, Command, Stdio};
 
-    /// 子进程入口（被 ignore，仅由 killport 测试经环境变量显式拉起）：
-    /// 绑定回环随机端口、经 stdout 报告端口号后常驻接受连接，等待被杀。
+    /// Child-process entry (ignored; spawned explicitly by the killport tests via env var):
+    /// binds a random loopback port, reports it on stdout, then accepts connections until killed.
     #[test]
     #[ignore = "子进程入口，由 killport 测试拉起"]
     fn killport_child_listener() {
@@ -377,7 +377,7 @@ mod tests {
         }
     }
 
-    /// 拉起 listener 子进程，返回句柄与其监听的回环端口。
+    /// Spawn the listener child process; returns the handle and its loopback listen port.
     fn spawn_listener_child() -> (Child, u16) {
         let exe = std::env::current_exe().expect("获取测试二进制路径失败");
         let mut child = Command::new(exe)
@@ -418,7 +418,7 @@ mod tests {
         (child, port)
     }
 
-    /// 构造占用者查询替身：声称 `port` 被 `pid` 以 TCP LISTEN 占用。
+    /// Build an owner-lookup stub: claims `port` is held by `pid` in TCP LISTEN state.
     fn fake_owner(pid: u32, port: u16) -> impl Fn(u16) -> Result<Vec<SocketInfo>, String> {
         move |p| {
             assert_eq!(p, port);
@@ -464,7 +464,7 @@ mod tests {
 
     #[test]
     fn psinfo_missing_process_fails() {
-        // u32::MAX 超出各平台合法 PID 范围，稳定不存在
+        // u32::MAX is outside every platform's valid PID range, so it reliably does not exist
         let outcome = psinfo(u32::MAX);
         assert!(!outcome.success);
         assert_eq!(outcome.exit_code, 1);
@@ -488,7 +488,7 @@ mod tests {
 
     #[test]
     fn killport_hides_pid_without_permission() {
-        // 有 socket 但拿不到 PID（权限受限）：如实报告而非静默
+        // Socket visible but PID hidden (permission-limited): report honestly instead of staying silent
         let finder = |_| {
             Ok(vec![SocketInfo {
                 proto: "tcp".into(),
@@ -505,7 +505,7 @@ mod tests {
         assert!(outcome.human.contains("无权限获取所属进程 PID"));
     }
 
-    /// 防误杀：非交互且无 -y 必须拒绝，目标进程保持存活。
+    /// Kill-safety: non-interactive without -y must refuse, and the target process must stay alive.
     #[test]
     fn killport_refuses_without_yes_non_interactive() {
         let (mut child, port) = spawn_listener_child();
@@ -513,13 +513,13 @@ mod tests {
         assert_eq!(outcome.exit_code, 2, "human: {}", outcome.human);
         assert!(outcome.human.contains("-y"));
         assert!(outcome.human.contains(&child.id().to_string()));
-        // 拒绝执行，子进程必须存活
+        // Refused to execute; the child must still be alive
         assert!(child.try_wait().expect("探测子进程失败").is_none());
         child.kill().expect("清理子进程失败");
         let _ = child.wait();
     }
 
-    /// SIGTERM / SIGKILL 两路：killport -y 终止 listener 子进程并释放端口。
+    /// Both SIGTERM and SIGKILL paths: killport -y terminates the listener child and frees the port.
     #[test]
     fn killport_terminates_child_and_frees_port() {
         for force in [false, true] {
@@ -534,9 +534,9 @@ mod tests {
             assert_eq!(outcome.exit_code, 0);
             assert_eq!(outcome.json["killed"], 1);
             assert_eq!(outcome.json["signal"], if force { "KILL" } else { "TERM" });
-            // 进程已退出（wait 收割）
+            // Process has exited (reaped by wait)
             let _ = child.wait().expect("等待子进程退出失败");
-            // 端口已释放：可重新绑定
+            // Port is free: can bind again
             let relisten = std::net::TcpListener::bind(("127.0.0.1", port));
             assert!(relisten.is_ok(), "force={force} 端口 {port} 未释放");
         }

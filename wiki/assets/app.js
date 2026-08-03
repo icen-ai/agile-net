@@ -1,42 +1,82 @@
 'use strict';
-/* AgileNet 文档站前端：hash 路由 + Markdown 渲染 + 大纲导航 + 全文搜索 + 主题切换。
-   无构建链：marked.min.js 本地内嵌，全部事件显式绑定（CSP script-src 'self'）。 */
+/* AgileNet docs site frontend: hash routing + Markdown rendering + outline nav + full-text search + theme toggle + bilingual (zh/en).
+   No build chain: marked.min.js inlined locally; all events bound explicitly (CSP script-src 'self').
+   Bilingual: nav titles are nav.json inline {zh,en}; body content is content/<path>.md per AgI18n.lang
+   or the English mirror content/en/<path>.md (falls back to zh with console.warn when the mirror is missing). */
 
 const $ = (id) => document.getElementById(id);
 const CONTENT_BASE = 'content/';
 let NAV = null;          // nav.json
-let PAGES = [];          // 展平的 [{group, title, path}]
+let PAGES = [];          // flattened [{group, title, path}] (titles already resolved to the current language)
 let currentPath = null;
-let searchIndex = null;  // 懒构建
+let searchIndex = null;  // built lazily
 let searchActive = 0;
 
-/* ================= 工具 ================= */
+/* ================= utils ================= */
 function esc(s) {
   return String(s ?? '').replace(/[&<>"'`]/g, c => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;', '`': '&#96;'
   }[c]));
 }
 
-/* ================= 主题 ================= */
+/* ================= i18n (AgI18n) ================= */
+// nav.json group/title are {zh, en} (plain strings tolerated)
+function label(v) {
+  if (v == null) return '';
+  if (typeof v === 'string') return v;
+  return v[AgI18n.lang] || v.zh || '';
+}
+
+// en mode prefers the content/en/ mirror; falls back to zh when missing
+async function fetchMd(path) {
+  if (AgI18n.lang === 'en') {
+    try {
+      const resp = await fetch(CONTENT_BASE + 'en/' + path + '.md');
+      if (resp.ok) return await resp.text();
+      console.warn('[i18n] en mirror missing, fallback to zh:', path);
+    } catch (e) {
+      console.warn('[i18n] en mirror fetch failed, fallback to zh:', path, e);
+    }
+  }
+  const resp = await fetch(CONTENT_BASE + path + '.md');
+  if (!resp.ok) throw new Error('HTTP ' + resp.status);
+  return resp.text();
+}
+
+// lang switch button: shows the target language name (zh page shows English, and vice versa)
+function applyLangBtn() {
+  $('btn-lang-label').textContent = AgI18n.t(AgI18n.lang === 'zh' ? 'lang.en' : 'lang.zh');
+}
+
+// data-i18n-title hydrates the title attribute; mirror it to aria-label (a11y)
+function syncAria() {
+  document.querySelectorAll('[data-i18n-title]').forEach(el => {
+    if (el.title) el.setAttribute('aria-label', el.title);
+  });
+}
+
+/* ================= theme ================= */
 function applyTheme() {
   document.documentElement.dataset.theme = localStorage.getItem('ag_theme') || 'light';
   $('btn-theme').innerHTML = AgIcon(document.documentElement.dataset.theme === 'dark' ? 'sun' : 'moon', 16);
 }
 
-/* ================= 导航 ================= */
+/* ================= nav ================= */
 async function loadNav() {
   const resp = await fetch(CONTENT_BASE + 'nav.json');
   NAV = await resp.json();
   PAGES = [];
   const navEl = $('nav');
   navEl.innerHTML = NAV.map(g => {
+    const group = label(g.group);
     const items = g.items.map(it => {
-      PAGES.push({ group: g.group, title: it.title, path: it.path });
+      const title = label(it.title);
+      PAGES.push({ group, title, path: it.path });
       return '<a class="nav-item" data-path="' + it.path + '" href="#/' + it.path + '">' +
-        AgIcon(it.icon || 'file-text', 14) + '<span>' + esc(it.title) + '</span></a>';
+        AgIcon(it.icon || 'file-text', 14) + '<span>' + esc(title) + '</span></a>';
     }).join('');
     return '<div class="nav-group"><div class="nav-group-title">' + AgIcon(g.icon || 'layers', 13) +
-      ' ' + esc(g.group) + '</div>' + items + '</div>';
+      ' ' + esc(group) + '</div>' + items + '</div>';
   }).join('');
 }
 
@@ -46,7 +86,7 @@ function markActiveNav(path) {
   });
 }
 
-/* ================= 路由与渲染 ================= */
+/* ================= routing & rendering ================= */
 function routePath() {
   const h = location.hash.replace(/^#\/?/, '');
   return h || 'index';
@@ -62,48 +102,47 @@ async function loadPage() {
   const content = $('content');
   let md;
   try {
-    const resp = await fetch(CONTENT_BASE + path + '.md');
-    if (!resp.ok) throw new Error('HTTP ' + resp.status);
-    md = await resp.text();
+    md = await fetchMd(path);
   } catch (e) {
-    content.innerHTML = '<h1>页面不存在</h1><p>路径 <code>' + esc(path) + '</code> 没有对应文档。</p>' +
-      '<p><a href="#/">返回首页</a></p>';
+    content.innerHTML = '<h1>' + esc(AgI18n.t('ui.pageNotFound')) + '</h1>' +
+      '<p>' + AgI18n.t('ui.noDocForPath', { path: '<code>' + esc(path) + '</code>' }) + '</p>' +
+      '<p><a href="#/">' + esc(AgI18n.t('ui.backHome')) + '</a></p>';
     buildToc();
     return;
   }
 
-  // marked：GFM 表格、删除线；headerIds 关闭（自行生成锚点）
+  // marked: GFM tables, strikethrough; headerIds off (anchors generated manually)
   marked.setOptions({ gfm: true, breaks: false, headerIds: false, mangle: false });
   content.innerHTML = marked.parse(md);
   postRender(content);
   buildToc();
   const page = PAGES.find(p => p.path === path);
-  document.title = (page ? page.title + ' — ' : '') + 'AgileNet 文档';
+  document.title = (page ? page.title + ' — ' : '') + AgI18n.t('ui.siteTitle');
   window.scrollTo(0, 0);
 }
 
 function postRender(root) {
-  // 标题锚点
+  // heading anchors
   root.querySelectorAll('h2, h3').forEach(h => {
     if (!h.id) h.id = slugify(h.textContent);
   });
-  // 外链新窗口 + 图标
+  // external links: new window + icon
   root.querySelectorAll('a[href^="http"]').forEach(a => {
     a.target = '_blank';
     a.rel = 'noopener';
   });
-  // 代码块复制按钮
+  // code block copy button
   root.querySelectorAll('pre').forEach(pre => {
     const btn = document.createElement('button');
     btn.className = 'copy-btn';
-    btn.innerHTML = AgIcon('copy', 12) + '复制';
+    btn.innerHTML = AgIcon('copy', 12) + esc(AgI18n.t('ui.copy'));
     btn.addEventListener('click', async () => {
       const code = pre.querySelector('code');
       try {
         await navigator.clipboard.writeText(code ? code.textContent : pre.textContent);
-        btn.innerHTML = AgIcon('check', 12) + '已复制';
-        setTimeout(() => { btn.innerHTML = AgIcon('copy', 12) + '复制'; }, 1600);
-      } catch (e) { /* 剪贴板不可用时静默 */ }
+        btn.innerHTML = AgIcon('check', 12) + esc(AgI18n.t('ui.copied'));
+        setTimeout(() => { btn.innerHTML = AgIcon('copy', 12) + esc(AgI18n.t('ui.copy')); }, 1600);
+      } catch (e) { /* clipboard unavailable: stay silent */ }
     });
     pre.appendChild(btn);
   });
@@ -116,12 +155,12 @@ function slugify(text) {
     .slice(0, 64);
 }
 
-/* ================= 右侧 TOC ================= */
+/* ================= right-side TOC ================= */
 function buildToc() {
   const toc = $('toc');
   const heads = $('content').querySelectorAll('h2, h3');
   if (!heads.length) { toc.innerHTML = ''; return; }
-  let html = '<div class="toc-title">本页内容</div>';
+  let html = '<div class="toc-title">' + esc(AgI18n.t('ui.tocTitle')) + '</div>';
   heads.forEach(h => {
     html += '<a href="#' + h.id + '" data-h="' + h.id + '" class="' + (h.tagName === 'H3' ? 'l3' : '') + '">' +
       esc(h.textContent) + '</a>';
@@ -137,7 +176,7 @@ function buildToc() {
   });
 }
 
-// 滚动高亮当前小节
+// scroll-spy: highlight the current section
 let tocSpy = false;
 function initTocSpy() {
   if (tocSpy) return;
@@ -154,20 +193,19 @@ function initTocSpy() {
   }, { passive: true });
 }
 
-/* ================= 侧栏（移动端抽屉） ================= */
+/* ================= sidebar (mobile drawer) ================= */
 function closeSidebar() {
   $('sidebar').classList.remove('open');
   $('sidebar-mask').classList.remove('open');
 }
 
-/* ================= 搜索 ================= */
+/* ================= search ================= */
 async function ensureSearchIndex() {
   if (searchIndex) return searchIndex;
   const pages = PAGES.map(p => p.path);
   const texts = await Promise.all(pages.map(async p => {
     try {
-      const resp = await fetch(CONTENT_BASE + p + '.md');
-      return resp.ok ? await resp.text() : '';
+      return await fetchMd(p);
     } catch (e) { return ''; }
   }));
   searchIndex = texts.map((raw, i) => ({
@@ -175,7 +213,7 @@ async function ensureSearchIndex() {
     title: (PAGES.find(p => p.path === pages[i]) || {}).title || pages[i],
     group: (PAGES.find(p => p.path === pages[i]) || {}).group || '',
     text: raw
-      .replace(/```[\s\S]*?```/g, ' ')   // 去代码块
+      .replace(/```[\s\S]*?```/g, ' ')   // strip code blocks
       .replace(/[#>*`|\-[\]()]/g, ' ')
       .replace(/\s+/g, ' ')
       .trim(),
@@ -187,13 +225,13 @@ function doSearch(q) {
   const box = $('search-results');
   q = q.trim().toLowerCase();
   searchActive = 0;
-  if (!q) { box.innerHTML = '<div class="search-empty">输入关键字开始搜索</div>'; return; }
+  if (!q) { box.innerHTML = '<div class="search-empty">' + esc(AgI18n.t('ui.searchEmpty')) + '</div>'; return; }
   const terms = q.split(/\s+/);
   const hits = [];
   for (const doc of searchIndex) {
     const lower = doc.text.toLowerCase();
     if (terms.every(t => lower.includes(t))) {
-      // 取首个关键词的上下文片段
+      // context snippet around the first keyword
       const idx = lower.indexOf(terms[0]);
       const start = Math.max(0, idx - 40);
       const snip = (start > 0 ? '…' : '') + doc.text.slice(start, idx + 90) + '…';
@@ -202,7 +240,7 @@ function doSearch(q) {
     if (hits.length >= 12) break;
   }
   if (!hits.length) {
-    box.innerHTML = '<div class="search-empty">没有找到「' + esc(q) + '」相关内容</div>';
+    box.innerHTML = '<div class="search-empty">' + esc(AgI18n.t('ui.searchNoHit', { q })) + '</div>';
     return;
   }
   box.innerHTML = hits.map((h, i) =>
@@ -236,10 +274,26 @@ function closeSearch() {
   $('search-mask').style.display = 'none';
 }
 
-/* ================= 启动 ================= */
+/* ================= startup ================= */
 window.addEventListener('DOMContentLoaded', async () => {
   hydrateIcons(document);
+  AgI18n.hydrate(document);
+  syncAria();
+  applyLangBtn();
   applyTheme();
+  $('btn-lang').addEventListener('click', () => {
+    AgI18n.setLang(AgI18n.lang === 'zh' ? 'en' : 'zh');
+  });
+  // lang switch: setLang has already hydrated static chrome; here rebuild nav/body/search index
+  AgI18n.onChange(async () => {
+    applyLangBtn();
+    syncAria();
+    searchIndex = null;
+    await loadNav();
+    markActiveNav(currentPath);
+    currentPath = null;   // force refetching the body in the new language
+    await loadPage();
+  });
   $('btn-theme').addEventListener('click', () => {
     localStorage.setItem('ag_theme', document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark');
     applyTheme();

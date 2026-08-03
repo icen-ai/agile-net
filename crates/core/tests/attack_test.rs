@@ -1,7 +1,7 @@
-//! 攻击面测试（数据面）：模糊帧、暴力认证、Slowloris、通道劫持、
-//! 自连环、头部炸弹、证书固定绕过、代理认证绕过。
+//! Attack surface tests (data plane): frame fuzzing, auth brute force, Slowloris, channel hijack,
+//! self-connect loops, header bombs, cert pinning bypass, proxy auth bypass.
 //!
-//! 原则：每个攻击都必须被安全拒绝，且服务在攻击后仍然可用。
+//! Principle: every attack must be safely rejected, and the service must stay usable afterwards.
 
 use agile_net_core::error::Result;
 use agile_net_core::proto::frame::{Frame, FrameType};
@@ -38,10 +38,10 @@ fn decode_blocking(bytes: Vec<u8>) -> std::io::Result<Frame> {
     rt.block_on(Frame::read_from(&mut cursor))
 }
 
-/// A1: 帧解码器模糊测试 —— 随机字节/畸形长度/截断，必须干净报错不得 panic
+/// A1: frame decoder fuzzing — random bytes / malformed lengths / truncation must error cleanly, never panic
 #[test]
 fn fuzz_frame_decoder_never_panics() {
-    // 简单 xorshift 伪随机（确定性）
+    // simple xorshift PRNG (deterministic)
     let mut seed: u64 = 0x1234_5678_9abc_def0;
     let mut rand = move || {
         seed ^= seed << 13;
@@ -50,13 +50,13 @@ fn fuzz_frame_decoder_never_panics() {
         seed
     };
 
-    // 1) 纯随机字节
+    // 1) pure random bytes
     for i in 0..200 {
         let len = (rand() % 64) as usize;
         let buf: Vec<u8> = (0..len).map(|_| rand() as u8).collect();
-        let _ = decode_blocking(buf); // Err 或 Ok 都行，关键是不 panic
+        let _ = decode_blocking(buf); // Err or Ok both fine — must not panic
         if i % 50 == 0 {
-            // 2) 巨大 len 声明 + 短 payload
+            // 2) huge len claim + short payload
             let mut buf = Vec::new();
             buf.extend_from_slice(&u32::MAX.to_be_bytes());
             buf.extend_from_slice(&[0x20, 0, 0, 0, 1, 1, 2, 3]);
@@ -64,14 +64,14 @@ fn fuzz_frame_decoder_never_panics() {
         }
     }
 
-    // 3) 合法帧的逐字节截断
+    // 3) byte-by-byte truncation of a valid frame
     let frame = Frame::new(FrameType::Data, 7, Bytes::from("attack-payload"));
     let encoded = frame.encode();
     for cut in 0..encoded.len() {
         let _ = decode_blocking(encoded[..cut].to_vec());
     }
 
-    // 4) len 字段与 type 的边界组合
+    // 4) boundary combinations of len field and type
     for len in [0u32, 1, 4, 5, 6, 65541, 65542, 262149, 262150, u32::MAX - 1] {
         let mut buf = Vec::new();
         buf.extend_from_slice(&len.to_be_bytes());
@@ -81,7 +81,7 @@ fn fuzz_frame_decoder_never_panics() {
     }
 }
 
-/// A2: 向 Listener 发送 TLS 层垃圾，连接被关闭且后续正常认证不受影响
+/// A2: TLS-layer garbage at the listener — connection closed, subsequent normal auth unaffected
 #[tokio::test]
 async fn garbage_then_valid_auth() -> Result<()> {
     let addr = get_free_addr();
@@ -92,7 +92,7 @@ async fn garbage_then_valid_auth() -> Result<()> {
     });
     tokio::time::sleep(Duration::from_millis(60)).await;
 
-    // 垃圾数据
+    // garbage data
     let mut junk = TcpStream::connect(addr).await?;
     junk.write_all(b"\x16\x03\x01\xff\xff not-a-tls-handshake \x00\x01\x02")
         .await?;
@@ -100,14 +100,14 @@ async fn garbage_then_valid_auth() -> Result<()> {
     let _ = tokio::time::timeout(Duration::from_secs(2), junk.read(&mut buf)).await;
     drop(junk);
 
-    // 正常连接仍可用
+    // normal connection still works
     let connector = RelayConnector::new(addr, "node-b", "good_token")?;
     connector.connect().await?;
     assert!(connector.is_connected());
     Ok(())
 }
 
-/// A3: 首帧非 Auth → 拒绝
+/// A3: first frame not Auth → rejected
 #[tokio::test]
 async fn first_frame_must_be_auth() -> Result<()> {
     let addr = get_free_addr();
@@ -118,7 +118,7 @@ async fn first_frame_must_be_auth() -> Result<()> {
     });
     tokio::time::sleep(Duration::from_millis(60)).await;
 
-    // 手工 TLS 客户端，首帧发 Data
+    // manual TLS client sending Data as the first frame
     let tls = TlsConfigBuilder::new()
         .allow_self_signed(true)
         .build_client()?;
@@ -131,16 +131,16 @@ async fn first_frame_must_be_auth() -> Result<()> {
         .write_to(&mut stream)
         .await?;
 
-    // 应收到 AuthFail 或被关闭
+    // expect AuthFail or a closed connection
     let res = tokio::time::timeout(Duration::from_secs(3), Frame::read_from(&mut stream)).await;
-    // 连接被直接关闭也可接受
+    // a straight connection close is also acceptable
     if let Ok(Ok(f)) = res {
         assert_eq!(f.frame_type, FrameType::AuthFail);
     }
     Ok(())
 }
 
-/// A4: 错误 Token 的 AuthFail 带随机延迟惩罚（>=100ms），且常数时间比较
+/// A4: AuthFail for a wrong token carries a random penalty delay (>=100ms) and constant-time comparison
 #[tokio::test]
 async fn wrong_token_has_penalty_delay() -> Result<()> {
     let addr = get_free_addr();
@@ -184,7 +184,7 @@ async fn wrong_token_has_penalty_delay() -> Result<()> {
     Ok(())
 }
 
-/// A5: 认证频率限制 —— 同一 IP 20 次/分钟后的连接被直接丢弃
+/// A5: auth rate limiting — connections from the same IP beyond 20/min are dropped outright
 #[tokio::test]
 async fn auth_rate_limit_drops_flood() -> Result<()> {
     let addr = get_free_addr();
@@ -195,13 +195,13 @@ async fn auth_rate_limit_drops_flood() -> Result<()> {
     });
     tokio::time::sleep(Duration::from_millis(60)).await;
 
-    // 25 次错误尝试（每次都会在认证阶段消耗一次配额）
+    // 25 bad attempts (each consumes one auth-stage quota)
     for _ in 0..25 {
         let c = RelayConnector::new(addr, "attacker", "bad");
         let _ = c?.connect().await;
     }
 
-    // 超限后：即使持有正确 token 也被限流（连接在认证前即被丢弃）
+    // over the limit: even the correct token is throttled (connection dropped before auth)
     let valid = RelayConnector::new(addr, "node-b", "real_token")?;
     let res = tokio::time::timeout(Duration::from_secs(3), valid.connect()).await;
     assert!(
@@ -209,13 +209,13 @@ async fn auth_rate_limit_drops_flood() -> Result<()> {
         "限流未生效：超过 20 次/分钟后仍能认证"
     );
 
-    // Listener 仍然存活（端口可连接）
+    // listener still alive (port connectable)
     let probe = TcpStream::connect(addr).await;
     assert!(probe.is_ok(), "限流后 Listener 进程必须仍然存活");
     Ok(())
 }
 
-/// A6: Slowloris 半开连接 —— 待认证连接达上限后拒绝新连接，10s 超时后恢复
+/// A6: Slowloris half-open connections — new connections refused once the pending-auth cap is hit, recovers after the 10s timeout
 #[tokio::test]
 async fn slowloris_pending_auth_capped() -> Result<()> {
     let addr = get_free_addr();
@@ -226,7 +226,7 @@ async fn slowloris_pending_auth_capped() -> Result<()> {
     });
     tokio::time::sleep(Duration::from_millis(60)).await;
 
-    // 打开 270 个半开连接（超过 256 上限）
+    // open 270 half-open connections (above the 256 cap)
     let mut holders = Vec::new();
     for _ in 0..270 {
         if let Ok(s) = TcpStream::connect(addr).await {
@@ -235,7 +235,7 @@ async fn slowloris_pending_auth_capped() -> Result<()> {
     }
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    // 此时新连接被待认证上限拒绝（快速失败）
+    // new connections now fail fast against the pending-auth cap
     let probe = RelayConnector::new(addr, "node-b", "tok")?;
     let res = tokio::time::timeout(Duration::from_secs(3), probe.connect()).await;
     assert!(
@@ -243,7 +243,7 @@ async fn slowloris_pending_auth_capped() -> Result<()> {
         "Slowloris 期间不应还能完成认证"
     );
 
-    // 等待握手超时（10s）释放槽位后，正常认证恢复
+    // after the handshake timeout (10s) frees slots, normal auth recovers
     drop(holders);
     tokio::time::sleep(Duration::from_millis(10500)).await;
     let valid = RelayConnector::new(addr, "node-b", "tok")?;
@@ -252,7 +252,7 @@ async fn slowloris_pending_auth_capped() -> Result<()> {
     Ok(())
 }
 
-/// A7: 通道劫持注入 —— 未知 channel_id 的 Data 帧被静默丢弃，会话保持
+/// A7: channel hijack injection — Data frames with unknown channel_id dropped silently, session kept
 #[tokio::test]
 async fn channel_hijack_dropped() -> Result<()> {
     let addr = get_free_addr();
@@ -267,22 +267,22 @@ async fn channel_hijack_dropped() -> Result<()> {
     connector.connect().await?;
     assert!(connector.is_connected());
 
-    // 在已认证会话上注入伪造的 Data 帧（通过手工 TLS 会话难以构造，
-    // 改为直接验证 MuxSession 行为：未知通道的 Data 被丢弃）
+    // injecting forged Data frames into an authenticated session is hard to build over a manual TLS
+    // session; verify MuxSession behavior directly instead: Data for unknown channels is dropped
     let (s1, _s2) = tokio::io::duplex(4096);
     let (mux, _h) = MuxSession::start(s1, 1, None, false, None);
-    // 会话未注册通道 999，直接 close 不应 panic
+    // channel 999 is not registered; closing it must not panic
     mux.close_channel(999);
     assert_eq!(mux.channel_count(), 0);
     Ok(())
 }
 
-/// A8: 证书固定 —— 钉错证书必须握手失败，钉对证书成功
+/// A8: cert pinning — wrong pinned cert must fail the handshake, right pinned cert succeeds
 #[tokio::test]
 async fn cert_pinning_enforced() -> Result<()> {
     let addr = get_free_addr();
 
-    // Listener 使用固定证书
+    // listener uses a fixed certificate
     let (certs, key) = generate_self_signed("cdn.cloudflare.com")?;
     let server_config = rustls::ServerConfig::builder()
         .with_no_client_auth()
@@ -296,7 +296,7 @@ async fn cert_pinning_enforced() -> Result<()> {
     });
     tokio::time::sleep(Duration::from_millis(60)).await;
 
-    // 钉对证书 → 成功
+    // right pinned cert → success
     let good = TlsConfigBuilder::new()
         .pinned_certs(certs.clone())
         .sni_hostname("cdn.cloudflare.com");
@@ -304,7 +304,7 @@ async fn cert_pinning_enforced() -> Result<()> {
     connector.connect().await?;
     assert!(connector.is_connected());
 
-    // 钉错证书 → 失败
+    // wrong pinned cert → failure
     let (evil_certs, _) = generate_self_signed("cdn.cloudflare.com")?;
     let bad = TlsConfigBuilder::new()
         .pinned_certs(evil_certs)
@@ -315,7 +315,7 @@ async fn cert_pinning_enforced() -> Result<()> {
     Ok(())
 }
 
-/// A9b: 证书指纹固定 —— 指纹匹配放行，不匹配即拒（connect_url 一键 pinning）
+/// A9b: cert fingerprint pinning — matching fingerprint passes, mismatch rejected (one-step pinning via connect_url)
 #[tokio::test]
 async fn cert_fingerprint_pinning() -> Result<()> {
     let addr = get_free_addr();
@@ -335,7 +335,7 @@ async fn cert_fingerprint_pinning() -> Result<()> {
     });
     tokio::time::sleep(Duration::from_millis(60)).await;
 
-    // 正确指纹 → 放行
+    // correct fingerprint → pass
     let good = TlsConfigBuilder::new()
         .pinned_fingerprint(&fp)
         .sni_hostname("cdn.cloudflare.com");
@@ -343,7 +343,7 @@ async fn cert_fingerprint_pinning() -> Result<()> {
     connector.connect().await?;
     assert!(connector.is_connected());
 
-    // 错误指纹 → 拒绝
+    // wrong fingerprint → reject
     let wrong_fp = "00".repeat(32);
     let bad = TlsConfigBuilder::new()
         .pinned_fingerprint(&wrong_fp)
@@ -351,7 +351,7 @@ async fn cert_fingerprint_pinning() -> Result<()> {
     let attacker = RelayConnector::with_tls_builder(addr, "node-evil", "tok", bad)?;
     assert!(attacker.connect().await.is_err(), "错误指纹必须被拒绝");
 
-    // 畸形指纹 → 构建即报错
+    // malformed fingerprint → build fails immediately
     assert!(
         TlsConfigBuilder::new()
             .pinned_fingerprint("not-hex")
@@ -361,7 +361,7 @@ async fn cert_fingerprint_pinning() -> Result<()> {
     Ok(())
 }
 
-/// A9: kind 强制 —— 节点 PSK 不能用于 client 类型认证
+/// A9: kind enforcement — a node PSK must not authenticate as client kind
 #[test]
 fn auth_kind_enforced() {
     let v = StaticTokenValidator::new("node-psk");
@@ -380,7 +380,7 @@ fn auth_kind_enforced() {
     assert!(matches!(v.validate(&auth), Some(AuthIdentity::Node { .. })));
 }
 
-/// A10: 自连环防护 —— CONNECT 代理自身监听地址被拒绝
+/// A10: self-connect loop guard — CONNECT to the proxy's own listen address is refused
 #[tokio::test]
 async fn self_connect_refused() -> Result<()> {
     let proxy_addr = get_free_addr();
@@ -391,7 +391,7 @@ async fn self_connect_refused() -> Result<()> {
     });
     tokio::time::sleep(Duration::from_millis(60)).await;
 
-    // SOCKS5 CONNECT 到代理自身
+    // SOCKS5 CONNECT to the proxy itself
     let mut sock = TcpStream::connect(proxy_addr).await?;
     sock.write_all(&[0x05, 0x01, 0x00]).await?;
     let mut resp = [0u8; 2];
@@ -405,7 +405,7 @@ async fn self_connect_refused() -> Result<()> {
     sock.read_exact(&mut resp).await?;
     assert_eq!(resp[1], 0x02, "CONNECT 代理自身必须被拒绝");
 
-    // 代理仍然可用（新连接正常握手）
+    // proxy still usable (fresh connection handshakes normally)
     let mut sock2 = TcpStream::connect(proxy_addr).await?;
     sock2.write_all(&[0x05, 0x01, 0x00]).await?;
     let mut resp2 = [0u8; 2];
@@ -414,7 +414,7 @@ async fn self_connect_refused() -> Result<()> {
     Ok(())
 }
 
-/// A11: HTTP 头部炸弹 —— 超过 16KB 的头部返回 431
+/// A11: HTTP header bomb — headers over 16KB get a 431
 #[tokio::test]
 async fn http_header_bomb() -> Result<()> {
     let proxy_addr = get_free_addr();
@@ -442,13 +442,13 @@ async fn http_header_bomb() -> Result<()> {
     Ok(())
 }
 
-/// A12: SOCKS5 认证强制 —— 无凭据/错误凭据被拒，正确凭据放行
+/// A12: SOCKS5 auth enforcement — no credentials / wrong credentials refused, correct credentials pass
 #[tokio::test]
 async fn socks5_auth_enforced() -> Result<()> {
     let proxy_addr = get_free_addr();
     let echo_addr = get_free_addr();
 
-    // Echo 服务
+    // echo service
     let echo = TcpListener::bind(echo_addr).await?;
     tokio::spawn(async move {
         if let Ok((mut s, _)) = echo.accept().await {
@@ -466,14 +466,14 @@ async fn socks5_auth_enforced() -> Result<()> {
     });
     tokio::time::sleep(Duration::from_millis(60)).await;
 
-    // 1) 客户端不提供认证方式 → 0xFF 拒绝
+    // 1) client offers no auth method → 0xFF refusal
     let mut s1 = TcpStream::connect(proxy_addr).await?;
-    s1.write_all(&[0x05, 0x01, 0x00]).await?; // 只声明 NO AUTH
+    s1.write_all(&[0x05, 0x01, 0x00]).await?; // declares NO AUTH only
     let mut r = [0u8; 2];
     s1.read_exact(&mut r).await?;
     assert_eq!(r, [0x05, 0xFF], "无认证方式必须被拒");
 
-    // 2) 错误凭据 → 子协商失败
+    // 2) wrong credentials → sub-negotiation fails
     let mut s2 = TcpStream::connect(proxy_addr).await?;
     s2.write_all(&[0x05, 0x01, 0x02]).await?;
     let mut r = [0u8; 2];
@@ -485,7 +485,7 @@ async fn socks5_auth_enforced() -> Result<()> {
     s2.read_exact(&mut r2).await?;
     assert_eq!(r2, [0x01, 0x01], "错误凭据必须被拒");
 
-    // 3) 正确凭据 → 放行并转发
+    // 3) correct credentials → pass and forward
     let mut s3 = TcpStream::connect(proxy_addr).await?;
     s3.write_all(&[0x05, 0x01, 0x02]).await?;
     let mut r = [0u8; 2];
@@ -512,7 +512,7 @@ async fn socks5_auth_enforced() -> Result<()> {
     Ok(())
 }
 
-/// A14: TLS 版本强制 —— TLS 1.2 客户端必须握手失败（仅允许 TLS 1.3）
+/// A14: TLS version enforcement — TLS 1.2 clients must fail the handshake (TLS 1.3 only)
 #[tokio::test]
 async fn tls12_rejected() -> Result<()> {
     let addr = get_free_addr();
@@ -523,7 +523,7 @@ async fn tls12_rejected() -> Result<()> {
     });
     tokio::time::sleep(Duration::from_millis(60)).await;
 
-    // 仅支持 TLS 1.2 的客户端配置
+    // client config supporting TLS 1.2 only
     let _ = rustls::crypto::ring::default_provider().install_default();
     let client_config =
         rustls::ClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS12])
@@ -537,14 +537,14 @@ async fn tls12_rejected() -> Result<()> {
     let res = connector.connect(server_name, tcp).await;
     assert!(res.is_err(), "TLS 1.2 必须被拒绝（仅允许 TLS 1.3）");
 
-    // TLS 1.3 客户端正常
+    // TLS 1.3 client works
     let good = RelayConnector::new(addr, "node-b", "tok")?;
     good.connect().await?;
     assert!(good.is_connected());
     Ok(())
 }
 
-/// 测试用无校验验证器
+/// Test verifier that skips all validation
 #[derive(Debug)]
 struct NoVerify;
 
@@ -580,7 +580,7 @@ impl rustls::client::danger::ServerCertVerifier for NoVerify {
     }
 }
 
-/// A13: SOCKS5 畸形数据后监听器仍可用
+/// A13: listener survives malformed SOCKS5 data
 #[tokio::test]
 async fn socks5_malformed_survives() -> Result<()> {
     let proxy_addr = get_free_addr();
@@ -591,17 +591,17 @@ async fn socks5_malformed_survives() -> Result<()> {
     });
     tokio::time::sleep(Duration::from_millis(60)).await;
 
-    // 发送截断的 SOCKS5 握手
+    // send a truncated SOCKS5 handshake
     let mut s = TcpStream::connect(proxy_addr).await?;
     s.write_all(&[0x05, 0xff, 0xff, 0xff]).await?;
     drop(s);
 
-    // 发送垃圾首字节
+    // send garbage leading bytes
     let mut s2 = TcpStream::connect(proxy_addr).await?;
     s2.write_all(&[0x99, 0x00, 0x00]).await?;
     drop(s2);
 
-    // 正常 SOCKS5 握手仍可用
+    // a normal SOCKS5 handshake still works
     let mut s3 = TcpStream::connect(proxy_addr).await?;
     s3.write_all(&[0x05, 0x01, 0x00]).await?;
     let mut r = [0u8; 2];
@@ -610,9 +610,9 @@ async fn socks5_malformed_survives() -> Result<()> {
     Ok(())
 }
 
-/// A15: Open 洪泛 —— 单会话对端 Open 并发达上限后，超额 Open 立即收到 OpenFail，
-/// 且 Listener 与新会话不受影响（本端 open_channel 有 MAX_CHANNELS_PER_SESSION，
-/// 对端方向由 MAX_INBOUND_OPENS_PER_SESSION 补齐）
+/// A15: Open flood — once a single session's inbound Open concurrency hits the cap, excess Opens get
+/// an immediate OpenFail, and the listener plus other sessions stay unaffected (local open_channel has
+/// MAX_CHANNELS_PER_SESSION; the inbound direction is covered by MAX_INBOUND_OPENS_PER_SESSION)
 #[tokio::test]
 async fn open_flood_capped() -> Result<()> {
     let addr = get_free_addr();
@@ -622,7 +622,7 @@ async fn open_flood_capped() -> Result<()> {
         let _ = l.start().await;
     });
 
-    // 黑洞目标：接受连接但永不读写，让 Open 处理任务挂起占住许可
+    // blackhole target: accepts connections but never reads/writes, stalling Open handler tasks on their permits
     let blackhole = TcpListener::bind("127.0.0.1:0").await?;
     let bh_port = blackhole.local_addr()?.port();
     tokio::spawn(async move {
@@ -633,7 +633,7 @@ async fn open_flood_capped() -> Result<()> {
     });
     tokio::time::sleep(Duration::from_millis(60)).await;
 
-    // 手工 TLS 客户端完成节点认证
+    // manual TLS client completing node auth
     let tls = TlsConfigBuilder::new()
         .allow_self_signed(true)
         .build_client()?;
@@ -656,7 +656,7 @@ async fn open_flood_capped() -> Result<()> {
     let f = Frame::read_from(&mut stream).await?;
     assert_eq!(f.frame_type, FrameType::AuthOk);
 
-    // 洪泛：上限 + 64 个 Open 全部直指黑洞（前 256 个占住许可挂起，后 64 个应被拒）
+    // flood: cap + 64 Opens all aimed at the blackhole (first 256 stall holding permits, last 64 must be refused)
     const EXTRA: usize = 64;
     let total = MAX_INBOUND_OPENS_PER_SESSION + EXTRA;
     let open_payload = Bytes::from(
@@ -672,10 +672,10 @@ async fn open_flood_capped() -> Result<()> {
             .write_to(&mut stream)
             .await?;
     }
-    // rustls 写侧有内部缓冲：整批写完后必须 flush，否则尾部密文滞留不出栈
+    // rustls buffers writes internally: flush after the batch or trailing ciphertext never leaves the stack
     stream.flush().await?;
 
-    // 逐帧统计：恰好 上限 个 OpenOk、EXTRA 个 OpenFail
+    // count frame by frame: exactly cap OpenOk and EXTRA OpenFail
     let mut ok_count = 0usize;
     let mut fail_count = 0usize;
     for _ in 0..total {
@@ -694,7 +694,7 @@ async fn open_flood_capped() -> Result<()> {
     );
     assert_eq!(fail_count, EXTRA, "超限的 Open 必须被立即拒绝");
 
-    // 洪泛期间 Listener 照常服务新会话
+    // listener serves new sessions normally during the flood
     let valid = RelayConnector::new(addr, "node-b", "tok")?;
     valid.connect().await?;
     assert!(valid.is_connected(), "Open 洪泛不得影响其他会话");

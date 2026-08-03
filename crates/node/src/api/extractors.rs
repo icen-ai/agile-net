@@ -1,4 +1,4 @@
-//! Axum 提取器：角色化认证与客户端 IP
+//! Axum extractors: role-based auth and client IP
 
 use crate::api::{ApiState, codes, err};
 use crate::auth::jwt::Claims;
@@ -9,9 +9,9 @@ use axum::{
 };
 use std::net::{IpAddr, SocketAddr};
 
-/// 从请求头解析并验证 Bearer JWT，返回 Claims。
+/// Parse and verify the Bearer JWT from request headers, returning Claims.
 ///
-/// Err 直接携带 axum Response 是该框架提取器的惯用模式（体积换少一次封装）。
+/// Err carrying an axum Response is the idiomatic extractor pattern (size for one less wrapper).
 #[allow(clippy::result_large_err)]
 fn extract_claims(parts: &Parts) -> Result<Claims, Response> {
     let auth_header = parts
@@ -61,12 +61,12 @@ fn extract_claims(parts: &Parts) -> Result<Claims, Response> {
     Ok(claims)
 }
 
-/// Admin 角色认证（管理面 API 强制）。
+/// Admin role auth (enforced on control-plane APIs).
 ///
-/// scope 三档强制（管理链接/中继票据换取的受限管理会话）：
-/// - `full`：全部管理端点
-/// - `rules`：GET + 规则端点写（/api/v1/admin/rules*）
-/// - `ro`：仅 GET
+/// Three scope tiers enforced (restricted admin sessions from admin links / relay tickets):
+/// - `full`: all admin endpoints
+/// - `rules`: GET + rule endpoint writes (/api/v1/admin/rules*)
+/// - `ro`: GET only
 pub struct AdminAuth(pub Claims);
 
 impl FromRequestParts<ApiState> for AdminAuth {
@@ -92,7 +92,7 @@ impl FromRequestParts<ApiState> for AdminAuth {
                     || parts.uri.path().starts_with("/api/v1/admin/rules")
             }
             "ro" => parts.method == axum::http::Method::GET,
-            // 未知档位按只读收紧（fail-closed）
+            // Unknown tiers degrade to read-only (fail-closed)
             _ => parts.method == axum::http::Method::GET,
         };
         if !scope_allowed {
@@ -106,7 +106,7 @@ impl FromRequestParts<ApiState> for AdminAuth {
     }
 }
 
-/// Client 角色认证（客户端 API 强制）。
+/// Client role auth (enforced on client APIs).
 pub struct ClientAuth(pub Claims);
 
 impl FromRequestParts<ApiState> for ClientAuth {
@@ -129,7 +129,7 @@ impl FromRequestParts<ApiState> for ClientAuth {
     }
 }
 
-/// 任意已认证身份。
+/// Any authenticated identity.
 pub struct AnyAuth(pub Claims);
 
 impl FromRequestParts<ApiState> for AnyAuth {
@@ -144,7 +144,7 @@ impl FromRequestParts<ApiState> for AnyAuth {
     }
 }
 
-/// 客户端来源 IP（需要 ConnectInfo）。
+/// Client source IP (requires ConnectInfo).
 pub struct ClientIp(pub IpAddr);
 
 impl FromRequestParts<ApiState> for ClientIp {

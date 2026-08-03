@@ -1,8 +1,8 @@
 'use strict';
-/* 启动装配（拆分后保留）：Web 远程面登录 / applySubFeature / 标题栏 / 视图导航与窗口控制 / 启动序列。
-   域代码见 app-core.js / app-views.js / app-subscription.js / app-hero.js / app-logs.js / app-settings.js（纯搬运，零逻辑变更） */
+/* Startup assembly (kept after the split): Web remote panel login / applySubFeature / titlebar / view navigation & window control / startup sequence.
+   Domain code lives in app-core.js / app-views.js / app-subscription.js / app-hero.js / app-logs.js / app-settings.js (pure move, zero logic change) */
 
-/* ---- Web 远程面登录 ---- */
+/* ---- Web remote panel login ---- */
 function showLogin() {
   $('login-modal').style.display = 'flex';
   const p = $('login-pass');
@@ -18,16 +18,16 @@ async function webLogin() {
       body: JSON.stringify({ password: pass }),
     });
     const json = await resp.json();
-    if (json.code !== 0) { toast(json.message || '登录失败', 'err'); return; }
+    if (json.code !== 0) { toast(json.message || AgI18n.t('app.loginFailed'), 'err'); return; }
     httpToken = json.data.access_token;
     localStorage.setItem('ag_web_token', httpToken);
     location.reload();
   } catch (e) {
-    toast('无法连接管理服务', 'err');
+    toast(AgI18n.t('app.loginUnreachable'), 'err');
   }
 }
 
-/** 功能入口可见性（安装激活后侧栏出现「订阅/代理」；仪表盘订阅卡切引导态） */
+/** Feature-entry visibility (after install/activation the sidebar shows 「订阅/代理」; the dashboard subscription card switches to guide state) */
 function applySubFeature(on) {
   document.querySelectorAll('.nav-item.sub-feature').forEach(n => { n.style.display = on ? '' : 'none'; });
   $('btn-activate-sub').style.display = on ? 'none' : '';
@@ -38,7 +38,7 @@ function applySubFeature(on) {
   if (sw) sw.style.display = on ? '' : 'none';
 }
 
-/* ================= 标题栏（折叠 / 更多菜单 / 关于） ================= */
+/* ================= Titlebar (collapse / more menu / about) ================= */
 const LINKS = {
   docs: 'https://anet.icen.ai',
   issue: 'https://github.com/icen-ai/agile-net/issues',
@@ -50,13 +50,13 @@ function openLink(url) {
   else window.open(url, '_blank', 'noopener');
 }
 function initTitlebarExtra() {
-  // 侧栏折叠（记忆）
+  // Sidebar collapse (remembered)
   if (localStorage.getItem('ag_sidebar') === 'collapsed') document.body.classList.add('collapsed');
   $('btn-collapse').onclick = () => {
     const collapsed = document.body.classList.toggle('collapsed');
     localStorage.setItem('ag_sidebar', collapsed ? 'collapsed' : '');
   };
-  // 更多菜单（点外部关闭）
+  // More menu (click outside to close)
   const menu = $('more-menu');
   $('btn-more').onclick = (e) => {
     e.stopPropagation();
@@ -65,7 +65,7 @@ function initTitlebarExtra() {
   document.addEventListener('click', (e) => {
     if (!e.target.closest('#more-menu') && !e.target.closest('#btn-more')) menu.style.display = 'none';
   });
-  // 菜单与关于弹窗动作
+  // Menu and about-modal actions
   document.addEventListener('click', (e) => {
     const btn = e.target.closest('[data-more]');
     if (!btn) return;
@@ -80,10 +80,10 @@ function initTitlebarExtra() {
   $('about-close').onclick = () => { $('about-modal').style.display = 'none'; };
 }
 
-/* ================= 视图导航 & 窗口控制 ================= */
+/* ================= View navigation & window control ================= */
 let CUR_VIEW = 'connect';
 function switchView(v) {
-  if (CUR_VIEW === 'logs' && v !== 'logs') LogsView.stop(); // 离开日志页即停轮询
+  if (CUR_VIEW === 'logs' && v !== 'logs') LogsView.stop(); // Leaving the logs view stops polling immediately
   CUR_VIEW = v;
   document.querySelectorAll('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.view === v));
   document.querySelectorAll('#bnav .bnav-item').forEach(n => n.classList.toggle('active', n.dataset.view === v));
@@ -105,7 +105,7 @@ function initTitlebar() {
   $('tb-close').onclick = () => win.close();
 }
 
-/* ================= 启动 ================= */
+/* ================= Startup ================= */
 function toggleManual(open) {
   const f = $('manual-form');
   const show = open === true ? true : f.style.display === 'none';
@@ -123,33 +123,33 @@ window.addEventListener('DOMContentLoaded', async () => {
   initRules();
   initLogs();
 
-  // 浏览器模式（Web 远程面）：本机专属卡片/开关经 .local-only 隐藏，未登录先出登录框
+  // Browser mode (Web remote panel): local-only cards/toggles hidden via .local-only; show the login modal first when unauthenticated
   if (HTTP_MODE) {
     document.body.classList.add('http-mode');
     const as = $('s-autostart'); if (as) { const l = as.closest('label'); if (l) l.style.display = 'none'; }
     const sp = $('proxy-mode'); if (sp) sp.style.display = 'none';
     const subNav = document.querySelector('.nav-item[data-view="subscription"]');
     if (subNav) subNav.style.display = 'none';
-    // 日志视图（订阅内核可观测）与本机专属设置项为桌面端能力，Web 远程面隐藏
+    // Logs view (subscription kernel observability) and local-only settings are desktop capabilities; hidden on the Web remote panel
     const logsNav = document.querySelector('.nav-item[data-view="logs"]');
     if (logsNav) logsNav.style.display = 'none';
-    // 窄屏底部导航含日志等桌面端入口，Web 远程面整体隐藏（内联 none 覆盖 ≤720px 断点的 flex）
+    // Narrow-screen bottom nav holds desktop entries like logs; hide it entirely on the Web remote panel (inline none overrides the ≤720px breakpoint's flex)
     $('bnav').style.display = 'none';
     ['row-sysproxy-lock', 'row-doctor', 'row-float-ball', 'row-notify-float', 'row-reduce-effects', 'sync-card'].forEach(id => {
       const r = $(id); if (r) r.style.display = 'none';
     });
-    // 管理端控制台为本机专属能力（票据/转发器仅 loopback），Web 远程面隐藏入口
+    // Admin console is a local-only capability (ticket/forwarder loopback only); hide its entry on the Web remote panel
     $('btn-admin').style.display = 'none';
     $('login-ok').onclick = webLogin;
     $('login-pass').addEventListener('keydown', e => { if (e.key === 'Enter') webLogin(); });
     if (!httpToken) { showLogin(); return; }
   }
 
-  // 卸载：仅桌面端（Windows 安装版）展示；浏览器远程面与 Android 隐藏
+  // Uninstall: shown only on desktop (Windows installed build); hidden on the browser remote panel and Android
   const unCard = $('btn-uninstall') && $('btn-uninstall').closest('.card');
   if (HTTP_MODE || /Android/i.test(navigator.userAgent)) {
     if (unCard) unCard.style.display = 'none';
-    // 桌面悬浮球为桌面端窗口能力，Android 同步隐藏（气泡通知行随行联动隐藏）
+    // Desktop float ball is a desktop window capability; hide on Android too (the bubble-notification row hides along with it)
     const fb = $('row-float-ball'); if (fb) fb.style.display = 'none';
     const nf = $('row-notify-float'); if (nf) nf.style.display = 'none';
   } else {
@@ -158,7 +158,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     $('un-ok').onclick = async () => {
       const prefs = $('un-prefs').checked;
       $('un-ok').disabled = true;
-      $('un-ok').textContent = '正在卸载…';
+      $('un-ok').textContent = AgI18n.t('app.uninstalling');
       if (prefs) localStorage.clear();
       try {
         await invoke('uninstall_app', {
@@ -169,10 +169,10 @@ window.addEventListener('DOMContentLoaded', async () => {
             audit: $('un-audit').checked,
           },
         });
-        // 后端随即退出进程并拉起系统卸载程序，此处无需再处理
+        // The backend then exits the process and launches the system uninstaller; nothing more to do here
       } catch (err) {
         $('un-ok').disabled = false;
-        $('un-ok').textContent = '卸载';
+        $('un-ok').textContent = AgI18n.t('app.uninstall');
         $('uninstall-modal').style.display = 'none';
         toast(friendlyError(err), 'err');
       }
@@ -193,7 +193,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   $('connect-url-hero').focus();
   $('btn-connect').onclick = () => {
     const addr = $('m-addr').value.trim(), user = $('m-user').value.trim(), pass = $('m-pass').value;
-    if (!addr || !user || !pass) { toast('请填写完整信息', 'err'); return; }
+    if (!addr || !user || !pass) { toast(AgI18n.t('app.err.fillAll'), 'err'); return; }
     connectWith({
       addr, username: user, password: pass,
       insecure: $('m-insecure').checked,
@@ -204,7 +204,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   };
   $('d-proxy').onchange = toggleProxy;
   $('btn-net-refresh').onclick = () => { NetProbe.refresh(true); NetProbe.refreshLan(); };
-  // 仪表盘卡片：点非开关/按钮区跳对应页面（开关经 change 事件自行处理）
+  // Dashboard cards: clicking a non-switch/button area jumps to the matching view (switches handle themselves via change events)
   $('dash-grid').addEventListener('click', (e) => {
     if (e.target.closest('.switch, button, input, select, a, .group-tabs')) return;
     const card = e.target.closest('[data-goto]');
@@ -212,7 +212,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   });
   $('btn-refresh').onclick = () => { refreshNodes(true); refreshCreds(); refreshProxy(); };
 
-  // 列表动作事件委托（CSP 禁止内联 onclick）
+  // Event delegation for list actions (CSP forbids inline onclick)
   $('creds-list').addEventListener('click', (e) => {
     const btn = e.target.closest('button[data-act]');
     if (!btn) return;
@@ -230,8 +230,8 @@ window.addEventListener('DOMContentLoaded', async () => {
 
   await loadSettings();
   await initRoles();
-  initHero();        // 中控台英雄卡（总开关/曲线/摘要；须晚于 initRoles 的 r-client 初值）
-  Onboarding.init(); // 新手检查单（dismissed/done 标记在则整卡不渲染）
+  initHero();        // Dashboard hero card (master switch/curve/summary; must run after initRoles sets the r-client initial value)
+  Onboarding.init(); // Onboarding checklist (whole card skipped when dismissed/done flags exist)
   initInlineEdits();
   initSubscription();
   initSubDragImport();
@@ -245,7 +245,9 @@ window.addEventListener('DOMContentLoaded', async () => {
   refreshSubScripts();
   refreshSysproxy();
   refreshTun();
-  $('s-lang').value = localStorage.getItem('ag_lang') || 'zh';
+  const savedLang = localStorage.getItem('ag_lang');
+  if (savedLang && savedLang !== AgI18n.lang) AgI18n.setLang(savedLang);
+  $('s-lang').value = AgI18n.lang;
   $('s-theme').value = localStorage.getItem('ag_theme') || 'light';
   agSelectEnhance(document);
   $('s-lang').onchange = (e) => { localStorage.setItem('ag_lang', e.target.value); applyLanguage(); };
@@ -253,7 +255,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     localStorage.setItem('ag_theme', e.target.value);
     applyTheme();
     invoke('broadcast_theme', { theme: e.target.value }).catch(() => {});
-    // 管理端 iframe 同步（跨源 postMessage）
+    // Admin console iframe sync (cross-origin postMessage)
     if (ADMIN) {
       const f = $('admin-frame');
       if (f && f.contentWindow) f.contentWindow.postMessage({ type: 'ag-theme', theme: e.target.value }, ADMIN.origin);
@@ -269,23 +271,23 @@ window.addEventListener('DOMContentLoaded', async () => {
   refreshCombos();
   await refreshCreds();
 
-  // 启动时自动重连已保存的扇入
+  // Auto-reconnect saved fan-ins on startup
   if (PREFS.autoreconnect && window._creds) {
     const keys = Object.keys(window._creds);
     if (keys.length) {
-      toast(T('reconnecting-nodes').replace('{n}', keys.length), 'ok');
+      toast(T('reconnecting-nodes', { n: keys.length }), 'ok');
       for (const key of keys) {
         await reconnectSaved(key, null);
       }
     }
   }
 
-  /* ---- 主窗轮询调度：窗口隐藏时暂停三路定时器，可见时恢复并立即刷新一次（托盘/悬浮球同款 visibilitychange 模式） ---- */
+  /* ---- Main-window poll scheduling: pause the three timers while the window is hidden, resume and refresh immediately when visible (same visibilitychange pattern as tray/float ball) ---- */
   let mainT10 = 0, mainT2 = 0, mainT30 = 0;
   function mainTick10s() { refreshNodes(); refreshProxy(); refreshSubStatus(); refreshSysproxy(); refreshTun(); renderDashFanout(); refreshCustomRules(); refreshCombos(); Hero.tick10s(); }
-  // 订阅内核流量 + 制品下载状态 2s 轮询（sub_traffic 读 Atomic 快照、dl_state 读内存状态，廉价；内部变更检测不重绘）
+  // 2s poll of subscription kernel traffic + artifact download state (sub_traffic reads an Atomic snapshot, dl_state reads in-memory state — cheap; internal change detection avoids repaints)
   function mainTick2s() { SubTraffic.poll(); pollDl(); }
-  // 出口 IP 探测 30s 轮询（结果带签名对比，不变不重绘）
+  // 30s poll of the egress IP probe (results signature-compared, no repaint when unchanged)
   function mainTick30s() { NetProbe.refresh(); }
   function startMainLoops(immediate) {
     if (mainT10) return;
@@ -299,5 +301,5 @@ window.addEventListener('DOMContentLoaded', async () => {
     mainT10 = mainT2 = mainT30 = 0;
   }
   document.addEventListener('visibilitychange', () => { document.hidden ? stopMainLoops() : startMainLoops(true); });
-  startMainLoops(false); // 启动时上方已逐项刷新过一轮，此处仅挂定时器
+  startMainLoops(false); // Startup already refreshed everything one round above; just arm the timers here
 });

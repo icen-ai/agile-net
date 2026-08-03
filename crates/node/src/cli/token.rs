@@ -1,4 +1,4 @@
-//! Relay 令牌管理（`anet token ...`）。
+//! Relay token management (`anet token ...`).
 
 use anyhow::Result;
 use clap::{Args, Subcommand};

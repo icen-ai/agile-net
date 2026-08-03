@@ -1,25 +1,25 @@
 'use strict';
-/* 悬浮球：72×72 全透明窗口常驻（恒等尺寸，前端不做任何 setSize/setPosition 扩容）。
-   - 球内实时网速（↓ 主显 / ↑ 次显，2s 轮询 sub_traffic；无流量显示 logo 点）
-   - 左键拖拽（>4px 阈值 → startDragging；dragging 态缩放 .94 + 阴影加深；松手边缘吸附）
-   - 单击播 Q 弹动画（260ms 定时器与双击区分；动画无害，双击不抑制）/ 双击开主窗口
-   - 右键 invoke float_open_menu()（后端在球旁创建/显示 float-menu 窗）
-   渲染纪律：签名对比，数据不变不动 DOM；窗口不可见暂停轮询。 */
-/* 主题须首行执行防闪烁（本脚本在 head 同步加载，先于首次绘制） */
+/* Float ball: 72×72 fully transparent always-on window (fixed size; frontend never grows it via setSize/setPosition).
+   - In-ball live speed (↓ primary / ↑ secondary, 2s polling of sub_traffic; logo dot when no traffic)
+   - Left-drag (>4px threshold → startDragging; dragging state scales .94 + deeper shadow; edge snap on release)
+   - Single click plays boing animation (260ms timer tells it apart from double click; animation harmless, not suppressed by double click) / double click opens main window
+   - Right click invoke float_open_menu() (backend creates/shows float-menu window next to the ball)
+   Render discipline: sig-compare, no DOM touch when data unchanged; polling paused while window hidden. */
+/* Theme must run on the first line to prevent flash (this script loads synchronously in head, before first paint) */
 document.documentElement.dataset.theme = localStorage.getItem('ag_theme') || 'light';
 
 const TAURI = window.__TAURI__;
 const invoke = TAURI && TAURI.core ? TAURI.core.invoke : null;
 const $ = (id) => document.getElementById(id);
 
-let speedSig = '';         // 网速签名
+let speedSig = '';         // speed sig
 let dragging = false;
 let clickTimer = 0;
 
 function win() { return TAURI.window.getCurrentWindow(); }
 function inv(cmd, args) { return invoke(cmd, args).catch(() => null); }
 
-/* ---------------- 轮询（2s）：实时网速 ---------------- */
+/* ---------------- Polling (2s): live speed ---------------- */
 function fmtShort(b) {
   b = +b || 0;
   if (b >= 1048576) return (b / 1048576).toFixed(1) + 'M';
@@ -28,7 +28,7 @@ function fmtShort(b) {
 }
 
 async function tick() {
-  let sig = 'x'; // 默认：无数据 → logo 点
+  let sig = 'x'; // default: no data → logo dot
   try {
     const tr = await invoke('sub_traffic');
     if (tr) {
@@ -48,7 +48,7 @@ async function tick() {
       }
       return;
     }
-  } catch (e) { /* 命令失败按无数据处理 */ }
+  } catch (e) { /* treat command failure as no data */ }
   if (sig !== speedSig) {
     speedSig = sig;
     $('ball-speed').hidden = true;
@@ -60,14 +60,14 @@ let pollT = 0;
 function startLoops() { if (!pollT && invoke) { tick(); pollT = setInterval(tick, 2000); } }
 function stopLoops() { clearInterval(pollT); pollT = 0; }
 
-/* ---------------- 单击 Q 弹 ---------------- */
+/* ---------------- Single-click boing ---------------- */
 function boing() {
   const ball = $('ball');
-  if (ball.classList.contains('boing')) return; // 连击不叠加
+  if (ball.classList.contains('boing')) return; // no stacking on rapid clicks
   ball.classList.add('boing');
 }
 
-/* ---------------- 拖拽 / 单击 / 双击 / 右键 ---------------- */
+/* ---------------- Drag / click / double-click / right-click ---------------- */
 let moveTimer = 0;
 
 function endDrag() {
@@ -77,9 +77,9 @@ function endDrag() {
   snapEdge();
 }
 
-/* 边缘吸附：贴近屏幕左右边缘 24px 内则吸附（无权限静默跳过）。
-   必须用 inner_*（可视区）：outer_* 在 Windows 含 DWM 隐形边框（72→170），
-   混用会把球算出屏外（真实事故：右缘吸附后球被裁掉一半）。 */
+/* Edge snap: snap when within 24px of the left/right screen edge (silently skip without permission).
+   Must use inner_* (client area): outer_* on Windows includes the DWM invisible border (72→170);
+   mixing them computes the ball off-screen (real incident: after right-edge snap half the ball was clipped). */
 async function snapEdge() {
   if (!TAURI || !TAURI.window) return;
   try {
@@ -87,9 +87,9 @@ async function snapEdge() {
     const [opos, ipos, isize, sf] = await Promise.all([
       w.outerPosition(), w.innerPosition(), w.innerSize(), w.scaleFactor(),
     ]);
-    const offX = opos.x - ipos.x; // 外框相对可视区的偏移（写回 outer 用）
-    const ixL = ipos.x / sf;      // 球可视区左上 x（逻辑）
-    const bwL = isize.width / sf; // 球可视区宽（逻辑，72）
+    const offX = opos.x - ipos.x; // outer frame offset vs client area (used when writing back outer)
+    const ixL = ipos.x / sf;      // ball client-area top-left x (logical)
+    const bwL = isize.width / sf; // ball client-area width (logical, 72)
     const sw = window.screen.width;
     let tx = null;
     if (ixL <= 24) tx = 0;
@@ -130,7 +130,7 @@ function bindBall() {
     window.addEventListener('mouseup', onUp);
   });
 
-  // 原生拖拽期间 webview 收不到 mouseup：用窗口移动事件 180ms 静默判定拖拽结束
+  // webview gets no mouseup during native drag: use window move events with 180ms silence to decide drag end
   if (TAURI && TAURI.window) {
     try {
       win().listen('tauri://move', () => {
@@ -141,7 +141,7 @@ function bindBall() {
     } catch (e) {}
   }
 
-  // 单击（260ms 与双击区分）：仅播 Q 弹动画；双击：直接开主窗口
+  // single click (260ms to distinguish from double click): play boing only; double click: open main window directly
   function tap() {
     if (clickTimer) {
       clearTimeout(clickTimer);
@@ -152,15 +152,17 @@ function bindBall() {
     clickTimer = setTimeout(() => { clickTimer = 0; boing(); }, 260);
   }
 
-  // 右键：后端在球旁定位创建/显示 float-menu 窗（toggle 语义）
+  // right click: backend positions/creates/shows the float-menu window next to the ball (toggle semantics)
   document.addEventListener('contextmenu', (e) => {
     e.preventDefault();
     inv('float_open_menu');
   });
 }
 
-/* ---------------- 启动 ---------------- */
+/* ---------------- Startup ---------------- */
 window.addEventListener('DOMContentLoaded', () => {
+  AgI18n.hydrate(document);
+  $('ball').setAttribute('aria-label', AgI18n.t('float.winTitle'));
   if (!invoke) {
     $('fl-noenv').hidden = false;
     return;
@@ -172,6 +174,6 @@ window.addEventListener('DOMContentLoaded', () => {
   document.addEventListener('visibilitychange', () => { document.hidden ? stopLoops() : startLoops(); });
   bindBall();
   startLoops();
-  // 初始位置校正一次：后端按 outer 框算落点，Windows 隐形边框会让可视区偏出屏外
+  // one-time initial position fix: backend computes placement from the outer frame; the Windows invisible border pushes the client area off-screen
   snapEdge();
 });

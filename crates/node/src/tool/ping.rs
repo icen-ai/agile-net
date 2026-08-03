@@ -1,8 +1,8 @@
-//! ping — ICMP echo + TCP 降级链（P2，surge-ping）。
+//! ping — ICMP echo + TCP fallback chain (P2, surge-ping).
 //!
-//! 权限与降级：Linux 需 root / CAP_NET_RAW（`sudo setcap cap_net_raw+ep anet-svc`）
-//! 或内核开放 net.ipv4.ping_group_range；Windows 无需管理员。ICMP 不可用时自动
-//! 降级为 TCP ping（tcp_fallback_port，默认 443），输出显式标注 mode=icmp|tcp。
+//! Permissions and fallback: Linux needs root / CAP_NET_RAW (`sudo setcap cap_net_raw+ep anet-svc`)
+//! or a kernel-opened net.ipv4.ping_group_range; Windows needs no admin. When ICMP is unavailable
+//! it falls back to TCP ping (tcp_fallback_port, default 443), and the output explicitly marks mode=icmp|tcp.
 
 use super::tcping;
 use super::ToolOutcome;
@@ -11,16 +11,16 @@ use std::net::IpAddr;
 use std::time::Duration;
 use surge_ping::{Client, Config, PingIdentifier, PingSequence, SurgeError, ICMP};
 
-/// ICMP echo 负载（内容无意义，仅为对齐系统 ping 的非空包体）。
+/// ICMP echo payload (content is meaningless, just a non-empty body matching system ping).
 const PAYLOAD: &[u8] = b"anet-tool-ping";
 
-/// ping 探测的结构化报告（ping/diag 复用）。
+/// Structured ping report (shared by ping/diag).
 #[derive(Debug, Clone, Serialize)]
 pub struct PingReport {
     pub host: String,
-    /// 探测方式："icmp" | "tcp"
+    /// Probe mode: "icmp" | "tcp"
     pub mode: String,
-    /// TCP 降级时的目标端口（ICMP 模式为 None）
+    /// Target port on TCP fallback (None in ICMP mode)
     pub port: Option<u16>,
     pub sent: u32,
     pub received: u32,
@@ -31,33 +31,33 @@ pub struct PingReport {
     pub error: Option<String>,
 }
 
-/// 单次探测样本（模块内部：逐次输出与统计的中间载体）。
+/// A single probe sample (module-internal carrier between per-probe output and statistics).
 #[derive(Debug, Clone)]
 struct Sample {
     seq: u32,
-    /// 本次往返延迟（丢包/失败为 None）
+    /// Round-trip latency of this probe (None on loss/failure)
     rtt_ms: Option<f64>,
-    /// 失败原因（超时/连接拒绝/权限等）
+    /// Failure reason (timeout/connection refused/permission etc.)
     err: Option<String>,
 }
 
-/// ping 的完整内部结果：聚合报告 + 逐次样本 + 降级说明（human 渲染用）。
+/// Full internal ping result: aggregate report + per-probe samples + fallback note (for human rendering).
 struct PingDetail {
     report: PingReport,
     samples: Vec<Sample>,
-    /// 降级原因（走 TCP 时必有值，ICMP 直通为 None）
+    /// Fallback reason (always set when on TCP, None when ICMP works directly)
     fallback_note: Option<String>,
 }
 
-/// ICMP 主路径的内部结果。
+/// Internal result of the ICMP main path.
 enum IcmpPath {
-    /// ICMP 探测执行完毕（样本中可能含超时丢包）
+    /// ICMP probing finished (samples may include timeouts/loss)
     Done(Vec<Sample>),
-    /// ICMP 不可用（socket 创建失败或发包即硬错），需降级 TCP
+    /// ICMP unavailable (socket creation failed or every send hard-errors); fall back to TCP
     Unavailable(String),
 }
 
-/// ping 探测核心（ping/diag 复用）：ICMP 主路径，不可用时降级 TCP。
+/// Ping probe core (shared by ping/diag): ICMP main path, TCP fallback when unavailable.
 pub async fn ping_inner(
     host: &str,
     count: u32,
@@ -69,12 +69,12 @@ pub async fn ping_inner(
         .report
 }
 
-/// `anet tool ping <host>`：输出逐次结果、统计与 mode 标注。
+/// `anet tool ping <host>`: print per-probe results, statistics, and the mode marker.
 pub async fn ping(host: &str, count: u32, timeout: Duration, tcp_fallback_port: u16) -> ToolOutcome {
     let detail = ping_collect(host, count, timeout, tcp_fallback_port).await;
     let report = &detail.report;
 
-    // 人类可读输出：逐次结果 + ping 风格统计 + mode/降级标注
+    // Human-readable output: per-probe results + ping-style statistics + mode/fallback markers
     let mut human = format!(
         "PING {host}（{} 次，超时 {}s）mode={}",
         report.sent,
@@ -124,7 +124,7 @@ pub async fn ping(host: &str, count: u32, timeout: Duration, tcp_fallback_port: 
     }
 }
 
-/// 完整探测流程：解析地址 → ICMP 主路径 → 不可用时降级 TCP。
+/// Full probe flow: resolve address → ICMP main path → TCP fallback when unavailable.
 async fn ping_collect(
     host: &str,
     count: u32,
@@ -133,7 +133,7 @@ async fn ping_collect(
 ) -> PingDetail {
     let count = count.max(1);
 
-    // 解析地址：IP 字面量直接可用，域名仅在 ICMP 主路径前解析一次
+    // Resolve address: IP literals are used directly; domain names are resolved once before the ICMP path
     let addr = match resolve_host(host).await {
         Ok(addr) => addr,
         Err(e) => {
@@ -164,7 +164,7 @@ async fn ping_collect(
             fallback_note: None,
         },
         IcmpPath::Unavailable(reason) => {
-            // TCP 降级：复用 tcping 的 connect 探测核心（域名由 probe 自行解析）
+            // TCP fallback: reuse tcping's connect-probe core (probe resolves domain names itself)
             let samples = tcp_samples(host, tcp_fallback_port, count, timeout).await;
             let note = format!(
                 "ICMP 不可用（{reason}），已降级 TCP ping 端口 {tcp_fallback_port}；\
@@ -180,13 +180,13 @@ async fn ping_collect(
     }
 }
 
-/// ICMP 主路径：socket 打不开 / 发包即硬错视为不可用，超时只是丢包。
+/// ICMP main path: an unopenable socket or per-send hard errors mean unavailable; timeouts are just loss.
 async fn icmp_path(addr: IpAddr, count: u32, timeout: Duration) -> IcmpPath {
     let config = match addr {
         IpAddr::V4(_) => Config::default(),
         IpAddr::V6(_) => Config::builder().kind(ICMP::V6).build(),
     };
-    // Client::new 内部先试 DGRAM 再退化 RAW，两者都失败即无 ICMP 权限
+    // Client::new tries DGRAM first then degrades to RAW; if both fail there is no ICMP permission
     let client = match Client::new(&config) {
         Ok(client) => client,
         Err(e) => return IcmpPath::Unavailable(format!("ICMP socket 创建失败：{e}")),
@@ -222,7 +222,7 @@ async fn icmp_path(addr: IpAddr, count: u32, timeout: Duration) -> IcmpPath {
             }
         }
     }
-    // socket 建得起但逐次发包全是硬错（如沙箱 EPERM）：同样视为 ICMP 不可用
+    // Socket created but every send hard-errors (e.g. sandbox EPERM): also treat as ICMP unavailable
     let received = samples.iter().filter(|s| s.rtt_ms.is_some()).count();
     if received == 0
         && let Some(e) = hard_err
@@ -232,7 +232,7 @@ async fn icmp_path(addr: IpAddr, count: u32, timeout: Duration) -> IcmpPath {
     IcmpPath::Done(samples)
 }
 
-/// TCP 降级路径：逐次调用 tcping 探测核心采集样本。
+/// TCP fallback path: collect samples by calling the tcping probe core per probe.
 async fn tcp_samples(host: &str, port: u16, count: u32, timeout: Duration) -> Vec<Sample> {
     let mut samples = Vec::with_capacity(count as usize);
     for seq in 0..count {
@@ -246,7 +246,7 @@ async fn tcp_samples(host: &str, port: u16, count: u32, timeout: Duration) -> Ve
     samples
 }
 
-/// 由逐次样本聚合结构化报告（received=0 时汇总首个失败原因）。
+/// Aggregate per-probe samples into a structured report (with received=0, summarize the first failure reason).
 fn make_report(host: &str, mode: &str, port: Option<u16>, samples: &[Sample]) -> PingReport {
     let sent = samples.len() as u32;
     let rtts: Vec<f64> = samples.iter().filter_map(|s| s.rtt_ms).collect();
@@ -264,7 +264,7 @@ fn make_report(host: &str, mode: &str, port: Option<u16>, samples: &[Sample]) ->
         let avg = rtts.iter().sum::<f64>() / rtts.len() as f64;
         (Some(min), Some(avg), Some(max))
     };
-    // 全部失败时汇总首个失败原因；有接收即视为可达，不置错误
+    // On total failure summarize the first failure reason; any reception means reachable, so no error
     let error = if received == 0 {
         Some(
             samples
@@ -289,7 +289,7 @@ fn make_report(host: &str, mode: &str, port: Option<u16>, samples: &[Sample]) ->
     }
 }
 
-/// 解析目标主机为 IP（域名走系统解析器，IP 字面量零开销）。
+/// Resolve the target host to an IP (domains go through the system resolver, IP literals cost nothing).
 async fn resolve_host(host: &str) -> Result<IpAddr, String> {
     if let Ok(ip) = host.parse::<IpAddr>() {
         return Ok(ip);
@@ -309,14 +309,14 @@ mod tests {
     use super::*;
     use tokio::net::TcpListener;
 
-    /// 起临时 listener，返回其端口（listen backlog 即可 accept 连接，无需显式 accept 循环）。
+    /// Start a temporary listener and return its port (the listen backlog accepts connections, no explicit accept loop needed).
     async fn bind_listener() -> (TcpListener, u16) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         (listener, port)
     }
 
-    /// 绑定后立即释放，拿到一个确定关闭的回环端口。
+    /// Bind then immediately release, yielding a loopback port that is definitely closed.
     async fn closed_port() -> u16 {
         let (listener, port) = bind_listener().await;
         drop(listener);
@@ -325,7 +325,7 @@ mod tests {
 
     #[tokio::test]
     async fn tcp_fallback_full_chain_against_listener() {
-        // TCP 降级对临时 listener 全链路：逐次样本 → 聚合报告
+        // Full TCP-fallback chain against a temporary listener: per-probe samples → aggregate report
         let (_listener, port) = bind_listener().await;
         let samples = tcp_samples("127.0.0.1", port, 3, Duration::from_secs(1)).await;
         assert_eq!(samples.len(), 3);
@@ -359,7 +359,7 @@ mod tests {
 
     #[tokio::test]
     async fn icmp_path_gracefully_handles_permission() {
-        // ICMP 主路径：有权限时回环应有结果；无权限时必须优雅返回 Unavailable 而非 panic
+        // ICMP main path: with permission, loopback should yield results; without, it must return Unavailable gracefully, not panic
         let addr: IpAddr = "127.0.0.1".parse().unwrap();
         match icmp_path(addr, 1, Duration::from_millis(500)).await {
             IcmpPath::Done(samples) => assert_eq!(samples.len(), 1),
@@ -369,7 +369,7 @@ mod tests {
 
     #[tokio::test]
     async fn ping_inner_loopback_succeeds_via_icmp_or_tcp() {
-        // 全链路：ICMP 直通或降级 TCP 打临时 listener，两条路都必须可达
+        // Full chain: ICMP direct or TCP fallback against a temporary listener — both paths must be reachable
         let (_listener, port) = bind_listener().await;
         let report = ping_inner("127.0.0.1", 2, Duration::from_secs(1), port).await;
         assert!(report.mode == "icmp" || report.mode == "tcp");
@@ -382,7 +382,7 @@ mod tests {
 
     #[tokio::test]
     async fn ping_inner_unresolvable_host_is_fail_report() {
-        // 含空格的非法主机名在本地解析即失败，不产生外网查询
+        // A hostname containing spaces fails local resolution without issuing any external query
         let report = ping_inner("not a valid hostname", 2, Duration::from_millis(200), 443).await;
         assert_eq!(report.sent, 0);
         assert_eq!(report.received, 0);
@@ -401,7 +401,7 @@ mod tests {
         let mode = out.json["mode"].as_str().unwrap();
         assert!(mode == "icmp" || mode == "tcp");
         assert!(out.json["received"].as_u64().unwrap() > 0);
-        // TCP 降级时 human 必须给出权限指引
+        // On TCP fallback the human output must include the permission guidance
         if mode == "tcp" {
             assert!(out.human.contains("已降级 TCP ping"));
             assert!(out.human.contains("cap_net_raw"));
@@ -414,13 +414,13 @@ mod tests {
         let out = ping("127.0.0.1", 2, Duration::from_millis(500), port).await;
         assert!(out.human.contains("mode="));
         if out.json["mode"] == "tcp" {
-            // 无 ICMP 权限的环境：TCP 打关闭端口必须失败（exit 1，正常输出而非 Err）
+            // Environments without ICMP permission: TCP against a closed port must fail (exit 1, normal output not Err)
             assert!(!out.success);
             assert_eq!(out.exit_code, 1);
             assert_eq!(out.json["received"], 0);
             assert!(out.human.contains("错误："));
         } else {
-            // 有 ICMP 权限的环境：回环直通，丢包率不作硬性断言
+            // Environments with ICMP permission: loopback works directly; no hard assertion on loss rate
             assert_eq!(out.json["mode"], "icmp");
         }
     }
@@ -451,7 +451,7 @@ mod tests {
         assert_eq!(r.min_ms, Some(10.0));
         assert_eq!(r.avg_ms, Some(15.0));
         assert_eq!(r.max_ms, Some(20.0));
-        // 部分丢包仍有接收：视为可达，不置错误
+        // Partial loss with some reception: treated as reachable, no error set
         assert!(r.error.is_none());
     }
 }

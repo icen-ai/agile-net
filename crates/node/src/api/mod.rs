@@ -1,7 +1,7 @@
-//! HTTP API 路由与共享设施
+//! HTTP API routes and shared helpers
 //!
-//! 统一响应体：成功 `{"code":0,"data":...}`，错误 `{"code":xxxxx,"message":"..."}`。
-//! 错误码段遵循 docs/api/overview.md。
+//! Uniform response body: success `{"code":0,"data":...}`, error `{"code":xxxxx,"message":"..."}`.
+//! Error code ranges follow docs/api/overview.md.
 
 pub mod extractors;
 pub mod handlers;
@@ -22,30 +22,30 @@ use serde::Serialize;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-// 登录限流器实现已下沉 core（服务端/客户端两端共用），此处再导出保持 crate::api 路径不变
+// Login rate limiter lives in core (shared by server/client); re-exported to keep the crate::api path
 pub use agile_net_core::util::{LoginBlockReason, LoginRateLimiter};
 
-/// 运行时共享状态（数据面句柄，供状态 API 读取）。
+/// Runtime shared state (data-plane handles, read by status APIs).
 pub struct NodeRuntime {
     pub started_at: Instant,
     pub listener: Option<Arc<RelayListener>>,
-    /// 扇出 connector 管理器（多目标扇出/容灾；DB 为唯一事实来源）
+    /// Fan-out connector manager (multi-target fan-out/failover; DB is the single source of truth)
     pub connector_manager: Arc<ConnectorManager>,
     pub proxy_stats: Option<Arc<ProxyStats>>,
     pub proxy_listen: Option<String>,
     pub log_buffer: LogBuffer,
-    /// Relay 证书 SHA-256 指纹（客户端证书固定用；ACME 模式为 None）
+    /// Relay cert SHA-256 fingerprint (for client cert pinning; None in ACME mode)
     pub cert_fingerprint: Option<String>,
-    /// 可管理上游注册表（握手 v2 发现；config 下发与状态展示用）
+    /// Manageable upstream registry (handshake v2 discovery; for config delivery and status display)
     pub manageable: crate::relay_auth::ManageableRegistry,
-    /// 客户端角色代理状态槽（GUI 宿主写入；有值时 status 的 proxy 段以它为准）
+    /// Client-role proxy state slot (written by the GUI host; overrides the status proxy section when set)
     pub client_proxy_slot: crate::service::ClientProxySlot,
-    /// 中继途径核算表（listener/connector/proxy 三处打点；status transit 段数据源）
+    /// Relay transit meter (instrumented at listener/connector/proxy; data source for the status transit section)
     pub transit_meter: Arc<TransitMeter>,
 }
 
 impl NodeRuntime {
-    /// 扇出汇总状态：任一连通则 connected，全无扇出配置则 disabled。
+    /// Aggregate fan-out status: connected if any link is up, disabled when no fan-out is configured.
     pub fn connector_status(&self) -> &'static str {
         self.connector_manager.aggregate_status()
     }
@@ -61,17 +61,17 @@ pub struct ApiState {
     pub jwt: Arc<JwtService>,
     pub runtime: Arc<NodeRuntime>,
     pub login_limiter: LoginRateLimiter,
-    /// refresh 端点限流（10 次/分钟/IP；refresh 每次执行 DB 写入轮换，必须限速）
+    /// Rate limit for the refresh endpoint (10/min/IP; refresh rotates with a DB write per call, must be throttled)
     pub refresh_limiter: LoginRateLimiter,
-    /// admin-bootstrap 票据兑换限流（10 次/分钟/IP；票据可枚举兑换，防暴力枚举）
+    /// Rate limit for admin-bootstrap ticket redemption (10/min/IP; tickets are enumerable, anti brute-force)
     pub bootstrap_limiter: LoginRateLimiter,
-    /// 创建/重置账号后的 connect_url 短期缓存（3 分钟，供二维码取用；含明文密码不宜长存）
+    /// Short-lived connect_url cache after account create/reset (3 min, for QR code fetch; holds plaintext password, must not persist)
     connect_url_cache: Arc<DashMap<String, (String, Instant)>>,
-    /// 节点公网接入地址（运行时可通过设置 API 热更新）
+    /// Node public endpoint host (hot-updatable via the settings API at runtime)
     public_host: Arc<arc_swap::ArcSwap<String>>,
-    /// 管理 API 端口（connect_url 指向此端点登录）
+    /// Admin API port (connect_url points at this endpoint for login)
     api_port: u16,
-    /// Relay 数据面端口（config.tunnel 指向此端点建立隧道）
+    /// Relay data-plane port (config.tunnel points at this endpoint to establish tunnels)
     relay_port: u16,
 }
 
@@ -98,19 +98,19 @@ impl ApiState {
         }
     }
 
-    /// 管理 API 端口（启动值；动态端口场景由 NodeServer 回填实际值）。
+    /// Admin API port (startup value; NodeServer backfills the actual value for dynamic ports).
     pub fn api_port(&self) -> u16 {
         self.api_port
     }
 
-    /// 回填实际绑定的 API 端口（端口 0 动态分配后调用）。
+    /// Backfill the actually bound API port (called after port 0 dynamic allocation).
     pub fn set_api_port(&mut self, port: u16) {
         self.api_port = port;
     }
 
-    /// 客户端 API 接入端点（connect_url 用）。
+    /// Client API access endpoint (for connect_url).
     pub async fn public_api_endpoint(&self) -> (String, u16) {
-        // 优先读数据库中的运行时设置，回落到启动值
+        // Prefer the runtime setting from DB, fall back to the startup value
         let host = self
             .db_call(|db| db.get_config("public_host"))
             .await
@@ -121,16 +121,16 @@ impl ApiState {
         (host, self.api_port)
     }
 
-    /// 数据面隧道端点（client config 用）。
+    /// Data-plane tunnel endpoint (for client config).
     pub async fn public_tunnel_endpoint(&self) -> (String, u16) {
         let (host, _) = self.public_api_endpoint().await;
         (host, self.relay_port)
     }
 
-    /// 同步 DB 调用卸载到阻塞线程池。
+    /// Offload synchronous DB calls to the blocking thread pool.
     ///
-    /// rusqlite 为同步 API，直接在 async handler 里调用会占住 tokio worker
-    /// （聚合查询尤为明显）；handlers 下全部 DB 访问一律经此包装。
+    /// rusqlite is a sync API; calling it directly in an async handler holds a tokio worker
+    /// (aggregate queries especially); all DB access under handlers goes through this wrapper.
     pub async fn db_call<F, T>(&self, f: F) -> agile_net_core::error::Result<T>
     where
         F: FnOnce(&Database) -> agile_net_core::error::Result<T> + Send + 'static,
@@ -141,7 +141,7 @@ impl ApiState {
     }
 
     pub fn remember_connect_url(&self, account_id: &str, url: &str) {
-        // 顺带清理过期项
+        // Sweep expired entries along the way
         self.connect_url_cache
             .retain(|_, (_, ts)| ts.elapsed() < Duration::from_secs(600));
         self.connect_url_cache
@@ -151,7 +151,7 @@ impl ApiState {
     pub fn take_connect_url(&self, account_id: &str) -> Option<String> {
         self.connect_url_cache.get(account_id).and_then(|e| {
             let (url, ts) = e.value();
-            // 含明文密码，仅短期缓存 3 分钟
+            // Holds a plaintext password; cache for 3 minutes only
             if ts.elapsed() < Duration::from_secs(180) {
                 Some(url.clone())
             } else {
@@ -161,11 +161,11 @@ impl ApiState {
     }
 }
 
-// ==================== 阻塞工作卸载 ====================
+// ==================== Blocking work offload ====================
 
-/// 同步阻塞工作的统一卸载点：argon2id 哈希/校验、JWT 签发轮换（内部含 DB 写）
-/// 等 CPU/IO 密集调用一律经此进入 tokio 阻塞线程池，避免占住 async worker。
-/// DB 访问请用 `ApiState::db_call`（本函数的便捷包装，自动注入连接池句柄）。
+/// Unified offload point for sync blocking work: argon2id hash/verify, JWT issue/rotation
+/// (with internal DB writes) and other CPU/IO-heavy calls enter the tokio blocking pool
+/// here, never holding an async worker. DB access: `ApiState::db_call` (wraps this fn).
 pub(crate) async fn offload<F, T>(f: F) -> agile_net_core::error::Result<T>
 where
     F: FnOnce() -> agile_net_core::error::Result<T> + Send + 'static,
@@ -179,13 +179,13 @@ where
     }
 }
 
-// ==================== 统一响应体 ====================
+// ==================== Uniform response body ====================
 
 pub fn ok<T: Serialize>(data: T) -> axum::response::Response {
     axum::Json(serde_json::json!({ "code": 0, "data": data })).into_response()
 }
 
-/// 201 Created（资源创建成功）
+/// 201 Created (resource created)
 pub fn ok_created<T: Serialize>(data: T) -> axum::response::Response {
     (
         axum::http::StatusCode::CREATED,
@@ -215,17 +215,17 @@ pub mod codes {
     pub const FORBIDDEN: u32 = 40300;
     pub const ADMIN_ONLY: u32 = 40301;
     pub const NOT_FOUND: u32 = 40400;
-    /// 对端存在但未连接（或无可用对端），如 bandwidth 目标 connector 非 connected
+    /// Peer exists but is not connected (or no usable peer), e.g. bandwidth target connector not connected
     pub const PEER_UNAVAILABLE: u32 = 40401;
     pub const DUPLICATE: u32 = 40900;
     pub const RATE_LIMITED: u32 = 42900;
     pub const INTERNAL: u32 = 50000;
 }
 
-/// 分页参数规范化（page >= 1，page_size 1..=100）。
+/// Normalize pagination params (page >= 1, page_size 1..=100).
 ///
-/// 注意：serde_urlencoded 不支持 #[serde(flatten)]，
-/// 查询结构体请直接内联 page/page_size 字段并调用本函数。
+/// Note: serde_urlencoded does not support #[serde(flatten)];
+/// query structs must inline page/page_size fields and call this directly.
 pub fn normalize_page(page: u32, page_size: u32) -> (u32, u32) {
     (page.max(1), page_size.clamp(1, 100))
 }
@@ -358,7 +358,7 @@ pub fn create_app(state: ApiState) -> Router {
             post(handlers::connectors::disable_connector),
         )
         .route("/api/v1/admin/node/events", any(handlers::node::events_ws))
-        // ---- Admin: Tool（批次四 bandwidth，tool 集中唯一经 API 的命令） ----
+        // ---- Admin: Tool (batch-4 bandwidth, the only tool command exposed via API) ----
         .route(
             "/api/v1/admin/tool/bandwidth",
             post(handlers::tool::bandwidth_test),

@@ -1,16 +1,16 @@
 'use strict';
-/* 从 app.js 拆分：扇入/扇出/规则/自定义规则/组合/管理端/代理控制/仪表盘卡（纯搬运，零逻辑变更） */
+/* Split from app.js: fan-in/fan-out/rules/custom rules/combos/admin console/proxy control/dashboard cards (pure move, zero logic change) */
 
-/* ================= 空状态引导 ================= */
+/* ================= Empty state guide ================= */
 function updateOnboarding(nodes) {
-  // 无任何活跃连接且未保存扇入 = 空状态：只显示接入引导；有数据后显示仪表盘卡片网格
+  // no active connections and no saved fan-in = empty state: show only the connect guide; show dashboard card grid once data exists
   const empty = (!nodes || nodes.length === 0) && !(window._credsRaw || []).length;
   $('onboarding').style.display = empty ? 'block' : 'none';
   const dg = $('dash-grid');
   if (dg) dg.style.display = empty ? 'none' : '';
 }
 
-/* ================= 列表过滤（搜索） ================= */
+/* ================= List filter (search) ================= */
 const FILTERS = { creds: '', rules: '' };
 function bindSearch() {
   document.querySelectorAll('.search-toggle').forEach(btn => {
@@ -32,7 +32,7 @@ function setFilter(key, v) {
   if (key === 'creds') renderCredList(window._credsRaw || [], window._nodeStatus || {});
 }
 
-/* ================= 节点管理 ================= */
+/* ================= Node management ================= */
 let lastNodesSig = null;
 const restoredPaused = new Set();
 
@@ -69,7 +69,7 @@ function statusBadgeHtml(s) {
   return '<span class="badge b-off">' + T('st-disconnected') + '</span>';
 }
 
-/* ---- 规则统一表格（自定义 放行/映射 + 端点拉取合并；类型过滤 RL_FILTER 与搜索 FILTERS.rules 叠加） ---- */
+/* ---- Unified rules table (custom bypass/map + endpoint-pulled merged; type filter RL_FILTER stacks with search FILTERS.rules) ---- */
 function ruleKey(r) { return (r.type + ':' + r.value).toLowerCase(); }
 async function loadPaused(nodes) {
   const map = {};
@@ -103,39 +103,39 @@ function renderMergedRules(nodes) {
   const custom = window._custom || { bypass: [], hosts: [] };
   const hit = (...xs) => !f || xs.some(x => x && String(x).toLowerCase().includes(f));
   const rows = [];
-  // 自定义放行（引擎优先级最高，排在最前）
+  // custom bypass (highest engine priority, listed first)
   if (tf === 'all' || tf === 'bypass') {
     for (const r of custom.bypass) {
-      const way = r.via_subscription ? '经过订阅' : '直连';
-      if (!hit(r.pattern, '放行', way, '自定义')) continue;
+      const way = r.via_subscription ? AgI18n.t('views.rule-via-sub') : AgI18n.t('views.rule-direct');
+      if (!hit(r.pattern, AgI18n.t('views.rule-bypass'), way, AgI18n.t('views.src-custom'))) continue;
       rows.push('<tr class="' + (r.enabled ? '' : 'rule-paused') + '">' +
-        '<td><span class="badge b-ok">放行</span></td>' +
+        '<td><span class="badge b-ok">' + AgI18n.t('views.rule-bypass') + '</span></td>' +
         '<td class="mono">' + esc(r.pattern) + '</td>' +
         '<td>' + way + '</td>' +
-        '<td class="dim">自定义</td>' +
+        '<td class="dim">' + AgI18n.t('views.src-custom') + '</td>' +
         '<td><label class="switch"><input type="checkbox" data-cr="' + esc(r.id) + '"' + (r.enabled ? ' checked' : '') + '><span class="slider"></span></label></td>' +
-        '<td><button class="danger small icon-btn" title="删除该放行规则" data-crdel="' + esc(r.id) + '">' + AgIcon('trash-2', 13) + '</button></td></tr>');
+        '<td><button class="danger small icon-btn" title="' + AgI18n.t('views.del-bypass-title') + '" data-crdel="' + esc(r.id) + '">' + AgIcon('trash-2', 13) + '</button></td></tr>');
     }
   }
-  // hosts 映射（用户自建可启停/删除；系统既有只读不显示操作）
+  // hosts mapping (user-created can be toggled/deleted; system entries read-only, no actions shown)
   if (tf === 'all' || tf === 'host') {
     for (const r of custom.hosts) {
       const sys = r.source === 'system';
-      const src = sys ? '系统 hosts' : '自定义';
-      if (!hit(r.hostname, r.ip, '映射', src)) continue;
+      const src = sys ? AgI18n.t('views.src-system-hosts') : AgI18n.t('views.src-custom');
+      if (!hit(r.hostname, r.ip, AgI18n.t('views.rule-map'), src)) continue;
       rows.push('<tr class="' + (r.enabled ? '' : 'rule-paused') + '">' +
-        '<td><span class="badge b-gray">映射</span></td>' +
+        '<td><span class="badge b-gray">' + AgI18n.t('views.rule-map') + '</span></td>' +
         '<td class="mono">' + esc(r.hostname) + '</td>' +
         '<td class="mono">→ ' + esc(r.ip) + '</td>' +
         '<td class="dim">' + src + '</td>' +
         (sys
-          ? '<td><span class="dim">只读</span></td><td></td>'
+          ? '<td><span class="dim">' + AgI18n.t('views.readonly') + '</span></td><td></td>'
           : '<td><label class="switch"><input type="checkbox" data-cr="' + esc(r.id) + '"' + (r.enabled ? ' checked' : '') + '><span class="slider"></span></label></td>' +
-            '<td><button class="danger small icon-btn" title="删除该映射" data-crdel="' + esc(r.id) + '">' + AgIcon('trash-2', 13) + '</button></td>') +
+            '<td><button class="danger small icon-btn" title="' + AgI18n.t('views.del-map-title') + '" data-crdel="' + esc(r.id) + '">' + AgIcon('trash-2', 13) + '</button></td>') +
         '</tr>');
     }
   }
-  // 端点拉取（来源即端点名；启停走既有暂停语义）
+  // endpoint-pulled (source is the endpoint name; toggle uses existing pause semantics)
   if (tf === 'all' || tf === 'pulled') {
     for (const n of nodes) {
       const dot = n.status === 'Connected' ? 'ok' : (n.status === 'Disconnected' ? 'down' : 'warn');
@@ -153,7 +153,7 @@ function renderMergedRules(nodes) {
       }
     }
   }
-  $('rules-body').innerHTML = rows.join('') || '<tr><td colspan="6" class="empty">' + ((f || tf !== 'all') ? '无匹配结果' : T('no-rules')) + '</td></tr>';
+  $('rules-body').innerHTML = rows.join('') || '<tr><td colspan="6" class="empty">' + ((f || tf !== 'all') ? AgI18n.t('views.no-match') : T('no-rules')) + '</td></tr>';
 }
 async function toggleRule(nodeId, key, paused) {
   try {
@@ -164,27 +164,27 @@ async function toggleRule(nodeId, key, paused) {
     persistPaused();
     const tr = document.querySelector('input[data-node][data-rule="' + CSS.escape(key) + '"]');
     if (tr) tr.closest('tr').classList.toggle('rule-paused', paused);
-    toast(paused ? '已暂停该规则（立即生效）' : '已恢复该规则', 'ok');
+    toast(paused ? AgI18n.t('views.rule-paused-toast') : AgI18n.t('views.rule-resumed-toast'), 'ok');
   } catch (e) {
     toast(friendlyError(e), 'err');
     refreshNodes(true);
   }
 }
 
-/* ================= 自定义规则（放行 / hosts 映射）与组合 =================
-   后端契约（apps/desktop/src/custom_rules.rs + lib.rs 命令层，GUI 本机能力，Web 远程面隐藏）：
+/* ================= Custom rules (bypass / hosts mapping) and combos =================
+   Backend contract (apps/desktop/src/custom_rules.rs + lib.rs command layer; GUI local capability, hidden on Web remote panel):
    list_custom_rules() -> { bypass:[{id,pattern,via_subscription,enabled}],
-                            hosts:[{id,hostname,ip,enabled,source}] }（source=user|system，system 只读）；
-   组合 rule_keys：自定义 = 其 id，拉取 = ruleKey(r)（type:value 小写）。
-   组合中的拉取 key 引擎忽略，由本模块经既有暂停接口编排（orchestrateCombo）。 */
-let RL_FILTER = 'all';    // 类型过滤（与搜索叠加）：all | bypass | host | pulled
-let CUSTOM_SIG = null;    // list_custom_rules 轮询变更检测签名
+                            hosts:[{id,hostname,ip,enabled,source}] } (source=user|system, system is read-only);
+   combo rule_keys: custom = its id, pulled = ruleKey(r) (type:value lowercased).
+   Pulled keys in combos are ignored by the engine; this module orchestrates them via the existing pause API (orchestrateCombo). */
+let RL_FILTER = 'all';    // type filter (stacks with search): all | bypass | host | pulled
+let CUSTOM_SIG = null;    // list_custom_rules polling change detection signature
 let COMBO_ITEMS = [];
 let COMBO_SIG = null;
 let COMBO_EDIT_ID = null;
-let CE_MEMBERS = new Set(); // 组合编辑弹窗成员工作集（搜索重渲染不丢勾选）
+let CE_MEMBERS = new Set(); // combo edit modal member working set (search re-render doesn't lose selections)
 
-/* ---- 自定义规则数据（10s 轮询 + 变更后调用；签名一致不重绘） ---- */
+/* ---- Custom rules data (10s polling + call after changes; no redraw when signature matches) ---- */
 async function refreshCustomRules(force) {
   if (HTTP_MODE) return;
   let data;
@@ -196,7 +196,7 @@ async function refreshCustomRules(force) {
   renderMergedRules(window._nodes || []);
 }
 
-/* ---- 单条启停 / 删除（立即生效；后端落盘并热更引擎） ---- */
+/* ---- Per-rule toggle / delete (immediate effect; backend persists and hot-reloads engine) ---- */
 async function toggleCustomRule(id, enabled, cb) {
   try {
     await invoke('set_custom_rule_enabled', { id, enabled });
@@ -207,7 +207,7 @@ async function toggleCustomRule(id, enabled, cb) {
     }
     const tr = cb.closest('tr');
     if (tr) tr.classList.toggle('rule-paused', !enabled);
-    toast(enabled ? '规则已启用（立即生效）' : '规则已停用（立即生效）', 'ok');
+    toast(enabled ? AgI18n.t('views.rule-enabled-toast') : AgI18n.t('views.rule-disabled-toast'), 'ok');
   } catch (e) {
     cb.checked = !enabled;
     toast(friendlyError(e), 'err');
@@ -217,19 +217,19 @@ async function deleteCustomRule(id, btn) {
   if (btn.dataset.confirm === '1') {
     try {
       await invoke('remove_custom_rule', { id });
-      toast('规则已删除', 'ok');
+      toast(AgI18n.t('views.rule-deleted'), 'ok');
       refreshCustomRules(true);
-      refreshCombos(true); // 后端级联清理组合成员中的失效 key
+      refreshCombos(true); // backend cascades removal of dead keys from combo members
     } catch (e) { toast(friendlyError(e), 'err'); }
     return;
   }
   btn.dataset.confirm = '1';
   const old = btn.innerHTML;
-  btn.innerHTML = '<span style="font-size:11px">确认</span>';
+  btn.innerHTML = '<span style="font-size:11px">' + AgI18n.t('common.confirm') + '</span>';
   setTimeout(() => { if (btn.isConnected) { btn.dataset.confirm = ''; btn.innerHTML = old; } }, 2500);
 }
 
-/* ---- 前端预校验（后端仍兜底；错误就地展示在弹窗内） ---- */
+/* ---- Frontend pre-validation (backend still the fallback; errors shown in-modal) ---- */
 function validIPv4(ip) {
   const m = ip.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
   return !!m && m.slice(1).every(o => +o <= 255);
@@ -238,7 +238,7 @@ function validIP(ip) {
   return validIPv4(ip) || (ip.includes(':') && /^[0-9a-fA-F:]+$/.test(ip));
 }
 
-/* ---- 组合数据与列表 ---- */
+/* ---- Combo data and list ---- */
 async function refreshCombos(force) {
   if (HTTP_MODE) return;
   let items;
@@ -252,24 +252,24 @@ async function refreshCombos(force) {
 function renderComboList() {
   const list = $('combo-list');
   if (!COMBO_ITEMS.length) {
-    list.innerHTML = '<div class="empty">尚未创建组合（组合 = 成组启停的命名规则集合）</div>';
+    list.innerHTML = '<div class="empty">' + AgI18n.t('views.combo-empty') + '</div>';
     return;
   }
   list.innerHTML = COMBO_ITEMS.map(c =>
     '<div class="node-card"><div class="info">' +
-    '<div class="name">' + esc(c.name) + ' ' + (c.enabled ? '<span class="badge b-ok">已启用</span>' : '<span class="badge b-gray">已停用</span>') + '</div>' +
-    '<div class="addr">成员 ' + c.rule_keys.length + ' 条</div>' +
+    '<div class="name">' + esc(c.name) + ' ' + (c.enabled ? '<span class="badge b-ok">' + AgI18n.t('common.enabled') + '</span>' : '<span class="badge b-gray">' + AgI18n.t('common.disabled') + '</span>') + '</div>' +
+    '<div class="addr">' + AgI18n.t('views.combo-members', { n: c.rule_keys.length }) + '</div>' +
     '</div><div class="card-actions">' +
     '<label class="switch"><input type="checkbox" data-combo-toggle="' + esc(c.id) + '"' + (c.enabled ? ' checked' : '') + '><span class="slider"></span></label>' +
-    '<button class="ghost small" data-combo-edit="' + esc(c.id) + '">编辑</button>' +
-    '<button class="danger small" data-combo-del="' + esc(c.id) + '">删除</button>' +
+    '<button class="ghost small" data-combo-edit="' + esc(c.id) + '">' + AgI18n.t('common.edit') + '</button>' +
+    '<button class="danger small" data-combo-del="' + esc(c.id) + '">' + AgI18n.t('common.delete') + '</button>' +
     '</div></div>').join('');
 }
 
-/* 组合启停编排：组合中的拉取成员（type:value key）引擎忽略，由前端经既有暂停接口处理——
-   启用 → 拉取成员全部取消暂停；停用 → 拉取成员暂停，
-   但成员同时被另一个已启用组合覆盖则不动（交叉组网语义）。
-   作用于当前持有该规则的端点；window._paused 缓存同步并本地持久。 */
+/* Combo toggle orchestration: pulled members in a combo (type:value keys) are ignored by the engine, handled by the
+   frontend via the existing pause API -- enable -> unpause all pulled members; disable -> pause pulled members,
+   but leave members still covered by another enabled combo untouched (cross-mesh semantics).
+   Applies to endpoints currently holding the rule; window._paused cache synced and persisted locally. */
 function comboPulledKeys(ruleKeys) {
   const ids = new Set();
   const c = window._custom;
@@ -280,7 +280,7 @@ async function orchestrateCombo(combo, enabling) {
   let keys = comboPulledKeys(combo.rule_keys);
   if (!keys.length) return;
   if (!enabling) {
-    // 交叉覆盖保护：仍被其他已启用组合引用的成员保持现状
+    // cross-coverage protection: members still referenced by other enabled combos stay as-is
     const covered = new Set();
     for (const o of COMBO_ITEMS) {
       if (o.id !== combo.id && o.enabled) (o.rule_keys || []).forEach(k => covered.add(k));
@@ -298,7 +298,7 @@ async function orchestrateCombo(combo, enabling) {
       try {
         await invoke('set_rule_paused', { nodeId: n.node_id, ruleKey: k, paused: !enabling });
         if (enabling) set.delete(k); else set.add(k);
-      } catch (e) { /* 单条失败不阻断其余成员编排 */ }
+      } catch (e) { /* single failure doesn't block orchestration of the remaining members */ }
     }
   }
   persistPaused();
@@ -312,7 +312,7 @@ async function toggleCombo(id, enabled, cb) {
     await refreshCombos(true);
     await orchestrateCombo(combo, enabled);
     renderMergedRules(window._nodes || []);
-    toast(enabled ? '组合已启用（成员规则生效）' : '组合已停用（拉取成员已暂停）', 'ok');
+    toast(enabled ? AgI18n.t('views.combo-enabled-toast') : AgI18n.t('views.combo-disabled-toast'), 'ok');
   } catch (e) {
     if (cb) cb.checked = !enabled;
     toast(friendlyError(e), 'err');
@@ -324,23 +324,23 @@ async function deleteCombo(id, btn) {
     try {
       await invoke('remove_combo', { id });
       await refreshCombos(true);
-      // 删除已启用组合 ≈ 停用：其拉取成员按交叉覆盖保护暂停
+      // deleting an enabled combo ≈ disabling: its pulled members are paused under cross-coverage protection
       if (combo && combo.enabled) {
         await orchestrateCombo(combo, false);
         renderMergedRules(window._nodes || []);
       }
       if (COMBO_EDIT_ID === id) { $('combo-edit-modal').style.display = 'none'; COMBO_EDIT_ID = null; }
-      toast('组合已删除', 'ok');
+      toast(AgI18n.t('views.combo-deleted'), 'ok');
     } catch (e) { toast(friendlyError(e), 'err'); }
     return;
   }
   btn.dataset.confirm = '1';
   const old = btn.innerHTML;
-  btn.innerHTML = '<span style="font-size:11px">确认</span>';
+  btn.innerHTML = '<span style="font-size:11px">' + AgI18n.t('common.confirm') + '</span>';
   setTimeout(() => { if (btn.isConnected) { btn.dataset.confirm = ''; btn.innerHTML = old; } }, 2500);
 }
 
-/* ---- 编辑组合弹窗（名称 + 全部规则简洁清单复选） ---- */
+/* ---- Edit combo modal (name + checkbox compact list of all rules) ---- */
 function comboEditOpen(c) {
   COMBO_EDIT_ID = c.id;
   CE_MEMBERS = new Set(c.rule_keys);
@@ -351,13 +351,13 @@ function comboEditOpen(c) {
   $('combo-edit-modal').style.display = 'flex';
   $('ce-name').focus();
 }
-/* 全部规则简洁清单（自定义 + 拉取；系统 hosts 只读不可选；拉取跨端点同 key 去重） */
+/* Compact list of all rules (custom + pulled; system hosts read-only, not selectable; pulled deduped by key across endpoints) */
 function allRuleChoices() {
   const out = [];
   const c = window._custom || { bypass: [], hosts: [] };
-  (c.bypass || []).forEach(r => out.push({ key: r.id, badge: '放行', cls: 'b-ok', value: r.pattern, source: '自定义' }));
+  (c.bypass || []).forEach(r => out.push({ key: r.id, badge: AgI18n.t('views.rule-bypass'), cls: 'b-ok', value: r.pattern, source: AgI18n.t('views.src-custom') }));
   (c.hosts || []).forEach(r => {
-    if (r.source !== 'system') out.push({ key: r.id, badge: '映射', cls: 'b-gray', value: r.hostname + ' → ' + r.ip, source: '自定义' });
+    if (r.source !== 'system') out.push({ key: r.id, badge: AgI18n.t('views.rule-map'), cls: 'b-gray', value: r.hostname + ' → ' + r.ip, source: AgI18n.t('views.src-custom') });
   });
   const seen = new Set(out.map(o => o.key));
   for (const n of (window._nodes || [])) {
@@ -378,11 +378,11 @@ function renderComboEditList(f) {
     '<span class="badge ' + it.cls + '">' + esc(it.badge) + '</span>' +
     '<span class="mono combo-rule-val">' + esc(it.value) + '</span>' +
     '<span class="combo-rule-src">' + esc(it.source) + '</span></label>').join('')
-    : '<div class="empty">' + (f ? '无匹配结果' : '暂无可选规则（先连接扇入或新建放行/映射）') + '</div>';
+    : '<div class="empty">' + (f ? AgI18n.t('views.no-match') : AgI18n.t('views.combo-no-choices')) + '</div>';
 }
 async function comboEditSave() {
   const name = $('ce-name').value.trim();
-  if (!name) { $('ce-err').textContent = '组合名称不能为空'; return; }
+  if (!name) { $('ce-err').textContent = AgI18n.t('views.combo-name-required'); return; }
   const combo = COMBO_ITEMS.find(c => c.id === COMBO_EDIT_ID);
   const before = new Set(combo ? combo.rule_keys : []);
   const btn = $('ce-ok');
@@ -392,7 +392,7 @@ async function comboEditSave() {
     $('combo-edit-modal').style.display = 'none';
     COMBO_EDIT_ID = null;
     await refreshCombos(true);
-    // 已启用组合成员变更同步编排：新增拉取成员取消暂停，移除的按交叉覆盖保护暂停
+    // enabled combo membership change re-orchestrates: newly added pulled members unpaused, removed ones paused under cross-coverage protection
     if (combo && combo.enabled) {
       const added = [...CE_MEMBERS].filter(k => !before.has(k));
       const removed = [...before].filter(k => !CE_MEMBERS.has(k));
@@ -400,7 +400,7 @@ async function comboEditSave() {
       if (removed.length) await orchestrateCombo({ id: combo.id, rule_keys: removed }, false);
       if (added.length || removed.length) renderMergedRules(window._nodes || []);
     }
-    toast('组合已保存', 'ok');
+    toast(AgI18n.t('views.combo-saved'), 'ok');
   } catch (e) {
     $('ce-err').textContent = friendlyError(e);
   } finally {
@@ -408,10 +408,10 @@ async function comboEditSave() {
   }
 }
 
-/* ---- 规则页全部事件绑定（CSP 禁内联事件，统一显式绑定/委托） ---- */
+/* ---- All rules-page event bindings (CSP forbids inline events; unified explicit binding/delegation) ---- */
 function initRules() {
   agTabsBind($('rl-tabs'), (key) => { if (key === 'combo') refreshCombos(true); });
-  // 类型过滤 chips（与搜索叠加）
+  // type filter chips (stack with search)
   $('rl-filter').addEventListener('click', (e) => {
     const b = e.target.closest('[data-rfilter]');
     if (!b || b.classList.contains('active')) return;
@@ -419,7 +419,7 @@ function initRules() {
     $('rl-filter').querySelectorAll('.agtab').forEach(t => t.classList.toggle('active', t === b));
     renderMergedRules(window._nodes || []);
   });
-  // 统一表格事件委托：自定义行启停 / 删除（拉取行启停见启动区既有绑定）
+  // unified table event delegation: custom row toggle / delete (pulled row toggle bound in the startup section)
   $('rules-body').addEventListener('change', (e) => {
     const cb = e.target.closest('input[data-cr]');
     if (cb) toggleCustomRule(cb.dataset.cr, cb.checked, cb);
@@ -429,7 +429,7 @@ function initRules() {
     if (btn) deleteCustomRule(btn.dataset.crdel, btn);
   });
 
-  /* ---- 新增放行弹窗 ---- */
+  /* ---- Add bypass modal ---- */
   $('btn-add-bypass').onclick = () => {
     $('bp-pattern').value = '';
     $('bp-via').value = 'direct';
@@ -442,13 +442,13 @@ function initRules() {
   $('bp-pattern').addEventListener('keydown', e => { if (e.key === 'Enter') $('bp-ok').click(); });
   $('bp-ok').onclick = async () => {
     const pattern = $('bp-pattern').value.trim();
-    if (!pattern || /\s/.test(pattern)) { $('bp-err').textContent = '匹配值不能为空且不含空白字符'; return; }
+    if (!pattern || /\s/.test(pattern)) { $('bp-err').textContent = AgI18n.t('views.bp-pattern-invalid'); return; }
     const btn = $('bp-ok');
     btn.disabled = true;
     try {
       await invoke('add_bypass_rule', { pattern, viaSubscription: $('bp-via').value === 'sub' });
       $('bypass-modal').style.display = 'none';
-      toast('放行规则已添加（默认启用，立即生效）', 'ok');
+      toast(AgI18n.t('views.bp-added'), 'ok');
       refreshCustomRules(true);
     } catch (e) {
       $('bp-err').textContent = friendlyError(e);
@@ -457,7 +457,7 @@ function initRules() {
     }
   };
 
-  /* ---- 新增映射弹窗 ---- */
+  /* ---- Add mapping modal ---- */
   $('btn-add-host').onclick = () => {
     $('hm-name').value = '';
     $('hm-ip').value = '';
@@ -472,16 +472,16 @@ function initRules() {
     const hostname = $('hm-name').value.trim().toLowerCase();
     const ip = $('hm-ip').value.trim();
     if (!hostname || /\s/.test(hostname) || hostname.includes('*') || hostname.includes('#')) {
-      $('hm-err').textContent = '主机名不合法（不含空白、*、#）'; return;
+      $('hm-err').textContent = AgI18n.t('views.hm-host-invalid'); return;
     }
-    if (validIP(hostname)) { $('hm-err').textContent = '主机名不能是 IP'; return; }
-    if (!validIP(ip)) { $('hm-err').textContent = 'IP 地址不合法'; return; }
+    if (validIP(hostname)) { $('hm-err').textContent = AgI18n.t('views.hm-host-is-ip'); return; }
+    if (!validIP(ip)) { $('hm-err').textContent = AgI18n.t('views.hm-ip-invalid'); return; }
     const btn = $('hm-ok');
     btn.disabled = true;
     try {
       const r = await invoke('add_host_mapping', { hostname, ip, toSystem: $('hm-system').checked });
       $('host-modal').style.display = 'none';
-      toast(r.persisted === 'system' ? '映射已添加，已写入系统 hosts' : '映射已添加，仅本软件内生效（无系统 hosts 写权限）', 'ok');
+      toast(r.persisted === 'system' ? AgI18n.t('views.hm-added-system') : AgI18n.t('views.hm-added-local'), 'ok');
       refreshCustomRules(true);
     } catch (e) {
       $('hm-err').textContent = friendlyError(e);
@@ -490,7 +490,7 @@ function initRules() {
     }
   };
 
-  /* ---- 新建组合弹窗 ---- */
+  /* ---- New combo modal ---- */
   $('btn-add-combo').onclick = () => {
     $('cb-name').value = '';
     $('cb-err').textContent = '';
@@ -501,13 +501,13 @@ function initRules() {
   $('cb-name').addEventListener('keydown', e => { if (e.key === 'Enter') $('cb-ok').click(); });
   $('cb-ok').onclick = async () => {
     const name = $('cb-name').value.trim();
-    if (!name) { $('cb-err').textContent = '请填写组合名称'; return; }
+    if (!name) { $('cb-err').textContent = AgI18n.t('views.combo-name-required'); return; }
     const btn = $('cb-ok');
     btn.disabled = true;
     try {
       await invoke('add_combo', { name });
       $('combo-modal').style.display = 'none';
-      toast('组合已创建，点「编辑」勾选成员', 'ok');
+      toast(AgI18n.t('views.combo-created'), 'ok');
       refreshCombos(true);
     } catch (e) {
       $('cb-err').textContent = friendlyError(e);
@@ -516,7 +516,7 @@ function initRules() {
     }
   };
 
-  /* ---- 组合列表（启停 / 编辑 / 删除）与编辑弹窗 ---- */
+  /* ---- Combo list (toggle / edit / delete) and edit modal ---- */
   $('combo-list').addEventListener('change', (e) => {
     const cb = e.target.closest('input[data-combo-toggle]');
     if (cb) toggleCombo(cb.dataset.comboToggle, cb.checked, cb);
@@ -551,25 +551,25 @@ async function disconnectNode(nodeId) {
   } catch (e) { toast(friendlyError(e), 'err'); }
 }
 
-/** 带加载状态的连接执行 */
+/** Connect with loading state */
 async function connectWith(input, btn) {
   let originalText = null;
   if (btn) {
     originalText = btn.innerHTML;
     btn.disabled = true;
-    btn.innerHTML = '<span class="spinner"></span>连接中…';
+    btn.innerHTML = '<span class="spinner"></span>' + AgI18n.t('views.connecting');
   }
   try {
     const st = await invoke('connect_node', { input });
     toast(T('connected-toast').replace('{name}', st.node_name).replace('{n}', st.rules.length), 'ok');
-    // 连接成功后按需自动启动代理
+    // auto-start proxy after successful connect if needed
     if (PREFS.autoproxy) {
       try {
         const ps = await invoke('proxy_status');
         if (!ps.running) {
           await invoke('start_proxy', { port: proxyPort() });
         }
-      } catch (e) { /* 代理自启失败不阻塞连接 */ }
+      } catch (e) { /* proxy auto-start failure doesn't block the connection */ }
     }
     refreshNodes(true);
     refreshCreds();
@@ -586,7 +586,7 @@ async function connectWith(input, btn) {
   }
 }
 
-/* ================= 管理端模式（内嵌 iframe 承载管理 SPA；不开子窗口） ================= */
+/* ================= Admin console mode (embedded iframe hosts the admin SPA; no child window) ================= */
 let ADMIN = null; // { label, url, origin }
 
 const curTheme = () => localStorage.getItem('ag_theme') || 'light';
@@ -598,15 +598,15 @@ async function enterAdmin(nodeId, upstream, label) {
   } catch (e) { toast(friendlyError(e), 'err'); return; }
   ADMIN = { label, url, origin: new URL(url).origin };
   $('admin-frame').src = url;
-  LogsView.stop(); // 进入管理端等同离开日志页：停轮询
+  LogsView.stop(); // entering admin console = leaving logs page: stop polling
   document.querySelector('.content').classList.add('admin-mode');
   $('nav-client').style.display = 'none';
   $('nav-admin').style.display = 'flex';
-  $('side-foot').style.display = 'none'; // 侧栏底部区属于客户端导航
-  $('bnav').style.display = 'none'; // 窄屏底部导航同属客户端导航
+  $('side-foot').style.display = 'none'; // sidebar footer belongs to client navigation
+  $('bnav').style.display = 'none'; // narrow-screen bottom nav also belongs to client navigation
   document.querySelectorAll('.view').forEach(s => { s.hidden = s.id !== 'view-admin'; });
   adminNavActivate('dashboard');
-  toast('已进入管理端：' + label, 'ok');
+  toast(AgI18n.t('views.admin-entered', { name: label }), 'ok');
 }
 
 function exitAdmin() {
@@ -617,7 +617,7 @@ function exitAdmin() {
   $('nav-admin').style.display = 'none';
   $('nav-client').style.display = 'flex';
   $('side-foot').style.display = '';
-  $('bnav').style.display = ''; // 交还 CSS 断点控制（HTTP_MODE 无管理端入口，无冲突）
+  $('bnav').style.display = ''; // hand back to CSS breakpoint control (HTTP_MODE has no admin console entry, no conflict)
   switchView('connect');
 }
 
@@ -630,12 +630,12 @@ function adminNavActivate(v) {
   }
 }
 
-/** 标题栏管理端入口：本机服务端恒第一，可管理端点/扇出按名称排序；无项置灰 */
+/** Title-bar admin console entry: local server always first, manageable endpoints/fan-out sorted by name; grayed out when empty */
 async function refreshAdminEntry() {
   const items = [];
   try {
     const st = await invoke('server_status');
-    if (st && st.running) items.push({ kind: 'local', label: '本机服务端', sub: '内嵌端点' });
+    if (st && st.running) items.push({ kind: 'local', label: AgI18n.t('views.admin-local'), sub: AgI18n.t('views.admin-local-sub') });
   } catch (e) {}
   const nodes = window._nodes || [];
   const remotes = [];
@@ -645,11 +645,11 @@ async function refreshAdminEntry() {
     }
     for (const m of (n.manageable || [])) {
       if (n.status === 'Connected') {
-        remotes.push({ kind: 'up', id: n.node_id, up: m.node_name, label: m.node_name, sub: '扇出 · 经 ' + n.node_name });
+        remotes.push({ kind: 'up', id: n.node_id, up: m.node_name, label: m.node_name, sub: AgI18n.t('views.admin-up-sub', { name: n.node_name }) });
       }
     }
   }
-  remotes.sort((a, b) => a.label.localeCompare(b.label, 'zh'));
+  remotes.sort((a, b) => a.label.localeCompare(b.label, AgI18n.lang));
   items.push(...remotes);
   const btn = $('btn-admin');
   btn.classList.toggle('disabled', !items.length);
@@ -658,7 +658,7 @@ async function refreshAdminEntry() {
     ? items.map((it, i) =>
         '<button data-aitem="' + i + '">' + AgIcon('fingerprint', 13) + '<span class="aitem-label">' + esc(it.label) + '</span><span class="aitem-sub">' + esc(it.sub) + '</span></button>'
       ).join('')
-    : '<button disabled>暂无可管理端点</button>';
+    : '<button disabled>' + AgI18n.t('views.admin-none') + '</button>';
   menu._items = items;
 }
 
@@ -667,7 +667,7 @@ function initAdminMode() {
   document.querySelectorAll('#nav-admin .nav-item[data-aview]').forEach(n => {
     n.onclick = () => adminNavActivate(n.dataset.aview);
   });
-  // 内嵌管理端（SPA）toast 统一接入灵动岛（origin 校验，只收当前管理 iframe）
+  // embedded admin console (SPA) toasts routed into Dynamic Island (origin-checked, only from the current admin iframe)
   window.addEventListener('message', (e) => {
     if (ADMIN && e.origin === ADMIN.origin && e.data && e.data.type === 'ag-toast') {
       toast(String(e.data.msg || ''), typeof e.data.kind === 'string' ? e.data.kind : 'info');
@@ -692,21 +692,21 @@ function initAdminMode() {
   });
 }
 
-/* ================= 控制台通道（管理此端点；内嵌进主窗口） ================= */
+/* ================= Console channel (manage this endpoint; embedded in main window) ================= */
 async function openNodeConsole(nodeId) {
   const n = (window._nodes || []).find(x => x.node_id === nodeId);
   const label = n ? n.node_name + (n.username ? ' · ' + n.username : '') : nodeId;
   await enterAdmin(nodeId, null, label);
 }
 
-/* ================= 接入链接导入 ================= */
+/* ================= Connect-link import ================= */
 async function importUrl(url, btn) {
   url = (url || '').trim();
   if (!url) { toast(T('err-need-url'), 'err'); return; }
   if (!url.startsWith('agilenet://connect?')) { toast(T('err-bad-url'), 'err'); return; }
   try {
     const input = await invoke('parse_connect_url', { url });
-    if (input.admin) toast('该链接为管理版：连接后可在端点卡片管理此端点', 'info');
+    if (input.admin) toast(AgI18n.t('views.url-admin-note'), 'info');
     await connectWith(input, btn);
   } catch (e) { toast(friendlyError(e), 'err'); }
 }
@@ -727,9 +727,9 @@ async function pasteFromClipboard() {
   }
 }
 
-/* ================= 代理控制 ================= */
-/* 本地代理端口：运行中以 proxy_status 为准；未运行取本地保存值（默认 57890）。
-   端口修改走代理卡监听行 inline-edit（bindInlineEdit），变更即重启代理生效。 */
+/* ================= Proxy control ================= */
+/* Local proxy port: proxy_status is authoritative while running; use locally saved value when stopped (default 57890).
+   Port changes go through the proxy card listen-row inline-edit (bindInlineEdit); a change restarts the proxy to take effect. */
 let PROXY_ST = { running: false, port: 0 };
 let proxyAddrEdit = null;
 function proxyPort() {
@@ -738,15 +738,15 @@ function proxyPort() {
   return p >= 1 && p <= 65535 ? p : 57890;
 }
 function validPort(v) {
-  if (!/^\d+$/.test(v)) return '端口须为 1-65535 的数字';
+  if (!/^\d+$/.test(v)) return AgI18n.t('views.port-not-number');
   const p = parseInt(v, 10);
-  return (p >= 1 && p <= 65535) ? null : '端口须为 1-65535';
+  return (p >= 1 && p <= 65535) ? null : AgI18n.t('views.port-invalid-range');
 }
 async function refreshProxy() {
   try {
     const st = await invoke('proxy_status');
     PROXY_ST = st;
-    // 运行中的实际端口同步为本地基准（外部变更也能对齐）
+    // sync actual running port as the local baseline (stays aligned with external changes)
     if (st.running && st.port) localStorage.setItem('ag_proxy_port', String(st.port));
     const nodes = await invoke('list_nodes').catch(() => []);
     const degraded = nodes.filter(n => n.status !== 'Connected');
@@ -762,17 +762,17 @@ async function refreshProxy() {
       text = T('proxy-stopped');
     }
     Island.setStatus(mode, text, degraded);
-    // 侧栏底部代理状态行（与灵动岛同一数据源）
-    setText('sf-status', st.running ? '代理 127.0.0.1:' + st.port : '代理已停止');
-    // 仪表盘代理卡：开关态 / 状态徽标 / 监听地址（inline-edit 自行变更检测）
+    // sidebar footer proxy status row (same data source as Dynamic Island)
+    setText('sf-status', st.running ? AgI18n.t('views.sf-proxy-running', { addr: '127.0.0.1:' + st.port }) : AgI18n.t('views.proxy-off-state'));
+    // dashboard proxy card: switch state / status badge / listen address (inline-edit does its own change detection)
     if ($('d-proxy').checked !== st.running) $('d-proxy').checked = st.running;
-    setHtml('d-proxy-badge', st.running ? '<span class="badge b-ok">运行中</span>' : '<span class="badge b-gray">未启动</span>');
+    setHtml('d-proxy-badge', st.running ? '<span class="badge b-ok">' + AgI18n.t('common.running') + '</span>' : '<span class="badge b-gray">' + AgI18n.t('views.not-started') + '</span>');
     if (proxyAddrEdit) proxyAddrEdit.refresh();
     const hint = st.running
       ? (CUR_PROXY_MODE === 'system'
-        ? '已接管系统代理 127.0.0.1:' + st.port + '，浏览器即开即用'
-        : '本地代理运行中，应用手动指向 127.0.0.1:' + st.port + ' 即可')
-      : '系统代理：自动接管系统流量（推荐）；本地代理：仅监听端口，需手动配置应用';
+        ? AgI18n.t('views.hint-sysproxy', { addr: '127.0.0.1:' + st.port })
+        : AgI18n.t('views.hint-local-run', { addr: '127.0.0.1:' + st.port }))
+      : AgI18n.t('views.hint-proxy-off');
     if ($('proxy-hint').textContent !== hint) $('proxy-hint').textContent = hint;
   } catch (e) {}
 }
@@ -793,8 +793,8 @@ async function toggleProxy(e) {
   }
 }
 
-/* ================= 仪表盘：扇入卡（已连接 / 已保存概览 + 流量趋势） ================= */
-// 扇入流量速率序列（list_nodes 每次轮询累一点；计数为当前会话语义，重连归零按新基准）
+/* ================= Dashboard: fan-in card (connected / saved overview + traffic trend) ================= */
+// fan-in traffic rate series (accumulate one point per list_nodes poll; counters are per-session, reset to a new baseline on reconnect)
 let _tfLast = null, _tfSeries = [];
 function trackFaninTraffic(nodes) {
   const up = nodes.reduce((s, n) => s + (n.bytes_up || 0), 0);
@@ -802,7 +802,7 @@ function trackFaninTraffic(nodes) {
   const total = up + down;
   if (_tfLast !== null) {
     let delta = total - _tfLast;
-    if (delta < 0) delta = total; // 会话重连计数归零：负差按新基准
+    if (delta < 0) delta = total; // session reconnect resets counters: negative delta uses new baseline
     _tfSeries.push(delta);
     if (_tfSeries.length > 90) _tfSeries.shift();
   }
@@ -814,8 +814,8 @@ function updateDashFanin() {
   const saved = (window._credsRaw || []).length;
   const conn = nodes.filter(n => n.status === 'Connected').length;
   const trying = nodes.length - conn;
-  setText('d-fanin-val', conn + ' 已连接');
-  setText('d-fanin-sub', saved + ' 个已保存' + (trying ? ' · ' + trying + ' 个连接中/重连中' : ''));
+  setText('d-fanin-val', AgI18n.t('views.fanin-conn', { n: conn }));
+  setText('d-fanin-sub', AgI18n.t('views.fanin-saved', { n: saved }) + (trying ? AgI18n.t('views.fanin-trying', { n: trying }) : ''));
   const tf = window._tfTotals || { up: 0, down: 0 };
   const has = tf.up + tf.down > 0;
   const tfEl = $('d-fanin-tf'), sparkEl = $('d-fanin-spark');
@@ -829,7 +829,7 @@ function updateDashFanin() {
   }
 }
 
-/* ================= 扇入列表（已保存扇入为主体 + 未保存的活跃连接；连接/断开/导出/删除） ================= */
+/* ================= Fan-in list (saved fan-ins as main body + unsaved active connections; connect/disconnect/export/delete) ================= */
 async function refreshCreds() {
   try {
     const creds = await invoke('list_credentials');
@@ -844,46 +844,46 @@ function renderCredList(creds, statusMap) {
   const list = $('creds-list');
   const f = FILTERS.creds;
   const nodeMap = Object.fromEntries((window._nodes || []).map(n => [n.node_id, n]));
-  // 未保存的活跃连接（手动连接未勾选保存凭据）：附在已保存扇入之后，仅可断开/管理
+  // unsaved active connections (manual connect without saving credential): appended after saved fan-ins, disconnect/manage only
   const savedKeys = new Set(creds.map(([k]) => k));
   const unsaved = (window._nodes || []).filter(n => !savedKeys.has(n.node_id));
   const live = (st) => st === 'Connected' || st === 'Connecting' || st === 'Reconnecting';
   const match = (name, username, addr, st) => !f ||
     name.toLowerCase().includes(f) || (username || '').toLowerCase().includes(f) ||
-    addr.toLowerCase().includes(f) || (st ? statusText(st) : '未连接').includes(f);
+    addr.toLowerCase().includes(f) || (st ? statusText(st) : AgI18n.t('common.disconnected')).includes(f);
   const shownCreds = creds.filter(([key, c]) =>
     match(key.includes('@') ? key.slice(0, key.indexOf('@')) : key, c.username, c.addr, statusMap[key]));
   const shownUnsaved = unsaved.filter(n => match(n.node_name, n.username, n.addr, n.status));
   if (!shownCreds.length && !shownUnsaved.length) {
-    list.innerHTML = '<div class="empty">' + (f ? '无匹配结果' : T('no-creds')) + '</div>';
+    list.innerHTML = '<div class="empty">' + (f ? AgI18n.t('views.no-match') : T('no-creds')) + '</div>';
     return;
   }
   list.innerHTML = shownCreds.map(([key, c]) => {
     const st = statusMap[key];
     const n = nodeMap[key];
-    const badge = st ? statusBadgeHtml(st) : '<span class="badge b-gray">未连接</span>';
+    const badge = st ? statusBadgeHtml(st) : '<span class="badge b-gray">' + AgI18n.t('common.disconnected') + '</span>';
     const mainBtn = st === 'Connected'
-      ? '<button class="ghost small" data-act="disconnect" data-key="' + esc(key) + '">断开</button>'
-      : '<button class="small" data-act="reconnect" data-key="' + esc(key) + '">' + (st ? '重连' : '连接') + '</button>';
+      ? '<button class="ghost small" data-act="disconnect" data-key="' + esc(key) + '">' + AgI18n.t('views.disconnect') + '</button>'
+      : '<button class="small" data-act="reconnect" data-key="' + esc(key) + '">' + AgI18n.t(st ? 'views.reconnect' : 'views.connect') + '</button>';
     const epName = key.includes('@') ? key.slice(0, key.indexOf('@')) : key;
     return '<div class="node-card' + (live(st) ? '' : ' down') + '"><div class="info">' +
       '<div class="name">' + esc(epName) + ' <span class="dim">· ' + esc(c.username) + '</span> ' + badge + '</div>' +
       '<div class="addr mono">' + esc(c.addr) + (c.insecure ? ' · <span class="badge b-warn">insecure</span>' : '') + '</div>' +
       '</div><div class="card-actions">' +
       (n && n.admin_console && st === 'Connected' && !HTTP_MODE
-        ? '<button class="ghost small" data-act="console" data-id="' + esc(key) + '">' + AgIcon('monitor', 13) + ' 管理</button>' : '') +
+        ? '<button class="ghost small" data-act="console" data-id="' + esc(key) + '">' + AgIcon('monitor', 13) + ' ' + AgI18n.t('views.manage') + '</button>' : '') +
       mainBtn +
-      '<button class="ghost small icon-btn" title="导出接入链接（复制到剪贴板）" data-act="export" data-key="' + esc(key) + '">' + AgIcon('share-2', 13) + '</button>' +
-      '<button class="danger small icon-btn" title="删除该扇入" data-act="delcred" data-key="' + esc(key) + '">' + AgIcon('trash-2', 13) + '</button>' +
+      '<button class="ghost small icon-btn" title="' + AgI18n.t('views.export-title') + '" data-act="export" data-key="' + esc(key) + '">' + AgIcon('share-2', 13) + '</button>' +
+      '<button class="danger small icon-btn" title="' + AgI18n.t('views.del-fanin-title') + '" data-act="delcred" data-key="' + esc(key) + '">' + AgIcon('trash-2', 13) + '</button>' +
       '</div></div>';
   }).join('') + shownUnsaved.map(n =>
     '<div class="node-card' + (live(n.status) ? '' : ' down') + '"><div class="info">' +
-    '<div class="name">' + esc(n.node_name) + (n.username ? ' <span class="dim">· ' + esc(n.username) + '</span>' : '') + ' ' + statusBadgeHtml(n.status) + ' <span class="badge b-gray">未保存</span></div>' +
+    '<div class="name">' + esc(n.node_name) + (n.username ? ' <span class="dim">· ' + esc(n.username) + '</span>' : '') + ' ' + statusBadgeHtml(n.status) + ' <span class="badge b-gray">' + AgI18n.t('views.unsaved') + '</span></div>' +
     '<div class="addr mono">' + esc(n.addr) + '</div>' +
     '</div><div class="card-actions">' +
     (n.admin_console && n.status === 'Connected' && !HTTP_MODE
-      ? '<button class="ghost small" data-act="console" data-id="' + esc(n.node_id) + '">' + AgIcon('monitor', 13) + ' 管理</button>' : '') +
-    '<button class="danger small" data-act="disconnect" data-key="' + esc(n.node_id) + '">断开</button></div></div>'
+      ? '<button class="ghost small" data-act="console" data-id="' + esc(n.node_id) + '">' + AgIcon('monitor', 13) + ' ' + AgI18n.t('views.manage') + '</button>' : '') +
+    '<button class="danger small" data-act="disconnect" data-key="' + esc(n.node_id) + '">' + AgI18n.t('views.disconnect') + '</button></div></div>'
   ).join('');
 }
 async function reconnectSaved(key, btn) {
@@ -896,62 +896,62 @@ async function reconnectSaved(key, btn) {
   }, btn || null);
 }
 async function exportCred(key) {
-  // 凭据导出含明文密码：Web 远程面需二次确认
-  if (HTTP_MODE && !window.confirm('导出的接入链接包含明文密码，确定导出到剪贴板吗？')) return;
+  // credential export contains plaintext password: Web remote panel requires a second confirmation
+  if (HTTP_MODE && !window.confirm(AgI18n.t('views.export-confirm'))) return;
   try {
     const url = await invoke('export_credential', { key });
     await navigator.clipboard.writeText(url);
-    toast('接入链接已复制到剪贴板（含明文密码，谨慎分享）', 'ok');
+    toast(AgI18n.t('views.export-done'), 'ok');
   } catch (e) { toast(friendlyError(e), 'err'); }
 }
 async function deleteCred(key, btn) {
   if (btn.dataset.confirm === '1') {
     try {
       await invoke('delete_credential', { key });
-      toast('已删除保存的扇入', 'ok');
+      toast(AgI18n.t('views.fanin-deleted'), 'ok');
       refreshCreds();
     } catch (e) { toast(friendlyError(e), 'err'); }
     return;
   }
   btn.dataset.confirm = '1';
   const old = btn.innerHTML;
-  btn.innerHTML = '<span style="font-size:11px">确认</span>';
+  btn.innerHTML = '<span style="font-size:11px">' + AgI18n.t('common.confirm') + '</span>';
   setTimeout(() => { if (btn.isConnected) { btn.dataset.confirm = ''; btn.innerHTML = old; } }, 2500);
 }
 
-/* ================= 扇出连接（内嵌节点 DB 管理，变更热生效） ================= */
+/* ================= Fan-out connections (embedded node DB managed, changes hot-applied) ================= */
 let FO_EDIT_ID = null;
 let FO_ITEMS = [];
 
 function foBadge(c) {
-  if (!c.enabled) return '<span class="badge b-off">已禁用</span>';
+  if (!c.enabled) return '<span class="badge b-off">' + AgI18n.t('common.disabled') + '</span>';
   const st = c.state;
-  if (st === 'connected') return '<span class="badge b-ok">已连接</span>';
-  if (st === 'connecting') return '<span class="badge b-warn"><span class="pulse"></span>连接中</span>';
-  if (st === 'reconnecting') return '<span class="badge b-warn"><span class="pulse"></span>重连中</span>';
-  if (st === 'disconnected') return '<span class="badge b-off">已断开</span>';
-  return '<span class="badge b-gray">未启动</span>';
+  if (st === 'connected') return '<span class="badge b-ok">' + AgI18n.t('common.connected') + '</span>';
+  if (st === 'connecting') return '<span class="badge b-warn"><span class="pulse"></span>' + AgI18n.t('views.st-connecting') + '</span>';
+  if (st === 'reconnecting') return '<span class="badge b-warn"><span class="pulse"></span>' + AgI18n.t('views.st-reconnecting') + '</span>';
+  if (st === 'disconnected') return '<span class="badge b-off">' + AgI18n.t('views.st-down') + '</span>';
+  return '<span class="badge b-gray">' + AgI18n.t('views.not-started') + '</span>';
 }
 
-/** 权限组下拉：拉本机内嵌节点组清单（保留当前选择；失败不阻断列表） */
+/** Group dropdown: fetch local embedded node group list (keep current selection; failure doesn't block the list) */
 async function foLoadGroups() {
   try {
     const groups = await invoke('list_embedded_groups');
     const cur = $('fo-group').value;
-    $('fo-group').innerHTML = '<option value="">不收敛（放行一切）</option>' +
+    $('fo-group').innerHTML = '<option value="">' + AgI18n.t('views.fo-no-group') + '</option>' +
       groups.map(g => '<option value="' + esc(g.id) + '">' + esc(g.name) + '</option>').join('');
     if (groups.some(g => g.id === cur)) $('fo-group').value = cur;
     agSelectRefresh($('fo-group'));
-  } catch (e) { /* 组清单加载失败不阻断扇出列表 */ }
+  } catch (e) { /* group list load failure doesn't block the fan-out list */ }
 }
 
 async function refreshUpstreams() {
   foLoadGroups();
   try {
     FO_ITEMS = await invoke('list_server_connectors');
-  } catch (e) { $('fo-list').innerHTML = '<div class="empty">加载失败</div>'; return; }
+  } catch (e) { $('fo-list').innerHTML = '<div class="empty">' + AgI18n.t('views.load-failed') + '</div>'; return; }
   if (!FO_ITEMS.length) {
-    $('fo-list').innerHTML = '<div class="empty">尚未配置扇出连接（添加后内嵌端点将扇出到目标端点）</div>';
+    $('fo-list').innerHTML = '<div class="empty">' + AgI18n.t('views.fo-empty') + '</div>';
     return;
   }
   $('fo-list').innerHTML = FO_ITEMS.map(c =>
@@ -959,19 +959,19 @@ async function refreshUpstreams() {
     '<div class="name">' + esc(c.name || c.upstream_addr) + ' ' + foBadge(c) + '</div>' +
     '<div class="addr mono">' + esc(c.upstream_addr) + ' · ' + esc(c.token_prefix) + ' · SNI ' + esc(c.sni_hostname) +
     (c.insecure ? ' · <span class="badge b-warn">insecure</span>' : '') +
-    ' · 组 ' + (c.group_name ? esc(c.group_name) : '不收敛') + '</div>' +
+    AgI18n.t('views.fo-group-fmt', { name: c.group_name ? esc(c.group_name) : AgI18n.t('views.fo-group-none') }) + '</div>' +
     '</div><div class="card-actions">' +
-    '<button class="ghost small" data-fo-edit="' + esc(c.id) + '">编辑</button>' +
-    '<button class="danger small" data-fo-del="' + esc(c.id) + '">删除</button>' +
+    '<button class="ghost small" data-fo-edit="' + esc(c.id) + '">' + AgI18n.t('common.edit') + '</button>' +
+    '<button class="danger small" data-fo-del="' + esc(c.id) + '">' + AgI18n.t('common.delete') + '</button>' +
     '</div></div>'
   ).join('');
 }
 
-/* ---- 新建/编辑扇出模态（字段对齐管理端「新建扇出」；advertise 每行一条，逗号拼接入库） ---- */
+/* ---- New/edit fan-out modal (fields aligned with admin console 「新建扇出」; advertise one per line, comma-joined on save) ---- */
 function foOpenModal(c) {
   FO_EDIT_ID = c ? c.id : null;
-  $('fo-modal-title').textContent = c ? '编辑扇出' : '新建扇出';
-  $('fo-ok').textContent = c ? '保存' : '创建';
+  $('fo-modal-title').textContent = c ? AgI18n.t('views.fo-title-edit') : AgI18n.t('views.fo-title-new');
+  $('fo-ok').textContent = c ? AgI18n.t('common.save') : AgI18n.t('views.create');
   $('fo-token-hint').style.display = c ? '' : 'none';
   $('fo-name').value = c ? c.name : '';
   $('fo-addr').value = c ? c.upstream_addr : '';
@@ -1002,16 +1002,16 @@ function initUpstreams() {
     const groupId = $('fo-group').value || null;
     const advertise = $('fo-advertise').value.split('\n').map(s => s.trim()).filter(Boolean).join(',');
     const remark = $('fo-remark').value.trim();
-    if (!addr) { $('fo-err').textContent = '请填写目标地址'; return; }
-    if (!FO_EDIT_ID && !token) { $('fo-err').textContent = '请填写 Relay Token'; return; }
+    if (!addr) { $('fo-err').textContent = AgI18n.t('views.fo-addr-required'); return; }
+    if (!FO_EDIT_ID && !token) { $('fo-err').textContent = AgI18n.t('views.fo-token-required'); return; }
     $('fo-err').textContent = '';
     try {
       if (FO_EDIT_ID) {
         await invoke('update_server_connector', { id: FO_EDIT_ID, name, upstreamAddr: addr, token, sniHostname: sni, insecure, groupId, advertise, remark });
-        toast('扇出连接已更新（热生效）', 'ok');
+        toast(AgI18n.t('views.fo-updated'), 'ok');
       } else {
         await invoke('add_server_connector', { name, upstreamAddr: addr, token, sniHostname: sni, insecure, groupId, advertise, remark });
-        toast('扇出连接已添加（热生效）', 'ok');
+        toast(AgI18n.t('views.fo-added'), 'ok');
       }
       foCloseModal();
       refreshUpstreams();
@@ -1028,7 +1028,7 @@ function initUpstreams() {
     if (delBtn) {
       try {
         await invoke('remove_server_connector', { id: delBtn.dataset.foDel });
-        toast('扇出连接已删除（热生效）', 'ok');
+        toast(AgI18n.t('views.fo-deleted'), 'ok');
         if (FO_EDIT_ID === delBtn.dataset.foDel) foCloseModal();
         refreshUpstreams();
       } catch (err) { toast(friendlyError(err), 'err'); }
@@ -1036,7 +1036,7 @@ function initUpstreams() {
   });
 }
 
-/* 仪表盘扇出卡：监听状态徽标 + 连通数 + API/Relay 地址简述（10s 轮询 + 变更后调用） */
+/* Dashboard fan-out card: listening status badge + connected count + API/Relay address summary (10s polling + call after changes) */
 async function renderDashFanout() {
   if (HTTP_MODE) return;
   let st = null, conns = [];
@@ -1045,9 +1045,21 @@ async function renderDashFanout() {
   const running = !!(st && st.running);
   const total = conns.length;
   const ok = conns.filter(c => c.enabled && c.state === 'connected').length;
-  setHtml('d-server-badge', running ? '<span class="badge b-ok">监听中</span>' : '<span class="badge b-gray">未开启</span>');
-  setText('d-fanout-val', total ? ok + ' / ' + total + ' 连通' : '未扇出');
+  setHtml('d-server-badge', running ? '<span class="badge b-ok">' + AgI18n.t('views.fo-listening') + '</span>' : '<span class="badge b-gray">' + AgI18n.t('views.fo-off') + '</span>');
+  setText('d-fanout-val', total ? AgI18n.t('views.dash-fo-count', { ok, total }) : AgI18n.t('views.dash-fo-none'));
   setText('d-fanout-sub', running
     ? 'API ' + (st.api_addr || '-') + ' · Relay ' + (st.relay_addr || '-')
-    : (total ? '扇出监听未开启 · ' + total + ' 条扇出已配置' : '扇出监听未开启'));
+    : (total ? AgI18n.t('views.dash-fo-off-count', { n: total }) : AgI18n.t('views.dash-fo-off')));
 }
+
+
+/* Language switch: dynamically rendered areas (lists/badges/hints) force re-render in the new language (polling signature unchanged won't self-update; must force) */
+if (window.AgI18n) AgI18n.onChange(() => {
+  refreshNodes(true);
+  refreshProxy();
+  refreshCreds();
+  refreshCombos(true);
+  refreshCustomRules(true);
+  if (!HTTP_MODE) refreshUpstreams();
+  renderDashFanout();
+});

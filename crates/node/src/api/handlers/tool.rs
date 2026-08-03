@@ -1,8 +1,9 @@
-//! 诊断工具 API Handlers（cli-tool.md 批次四：bandwidth 链路吞吐测试）
+//! Doctor tool API handlers (cli-tool.md batch 4: bandwidth link throughput test)
 //!
-//! `anet tool bandwidth` 是 tool 集中唯一经 API 的命令：CLI 是独立进程，拿不到
-//! 运行中 anet-svc 的隧道句柄，测量必须在服务端执行。带宽流属正常诊断流量：
-//! 不写审计日志、不接触任何凭据明文（扇出 token 只在 ConnectorManager 建连时使用）。
+//! `anet tool bandwidth` is the only tool command exposed via API: the CLI is a separate process
+//! without the running anet-svc tunnel handles, so measurement must run server-side. Bandwidth
+//! streams are normal doctor traffic: no audit log, no credential plaintext (fan-out tokens are
+//! only used by ConnectorManager when connecting).
 
 use crate::api::extractors::AdminAuth;
 use crate::api::{ApiState, codes, err, ok};
@@ -13,19 +14,19 @@ use serde::Deserialize;
 use serde_json::json;
 use std::time::Duration;
 
-/// 带宽测量整体超时（防对端异常挂死管理请求）。
+/// Overall bandwidth measurement timeout (prevents a stuck peer from hanging the admin request).
 const MEASURE_TIMEOUT: Duration = Duration::from_secs(120);
 
 #[derive(Deserialize)]
 pub struct BandwidthRequest {
-    /// 对端（connector 名称或上游地址；缺省 = 第一个 connected connector）
+    /// Peer (connector name or upstream address; default = first connected connector)
     #[serde(default)]
     pub peer: Option<String>,
 }
 
 /// POST /api/v1/admin/tool/bandwidth
 ///
-/// 经扇出隧道到指定对端的实际吞吐/RTT 测试（协议级 echo/sink/source 诊断流）。
+/// Real throughput/RTT test to the given peer over the fan-out tunnel (protocol-level echo/sink/source doctor streams).
 /// data: {peer, rtt:{min_ms,avg_ms,max_ms}, up:{bytes,ms,mbps}, down:{bytes,ms,mbps}}
 pub async fn bandwidth_test(
     AdminAuth(_): AdminAuth,

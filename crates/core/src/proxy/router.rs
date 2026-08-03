@@ -1,20 +1,20 @@
-//! CIDR / HOST 路由表
+//! CIDR / HOST routing table
 //!
-//! 支持最长前缀 IP/CIDR 匹配、全域名匹配和通配符域名后缀匹配。
+//! Longest-prefix IP/CIDR match, exact domain match and wildcard domain suffix match.
 
 use ip_network::IpNetwork;
 use ip_network_table::IpNetworkTable;
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 
-/// 出站策略。
+/// Outbound policy.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outbound {
-    /// 直连
+    /// Direct connection
     Direct,
-    /// 通过隧道转发到指定节点
+    /// Forward through a tunnel to the given node
     Tunnel { node_id: String },
-    /// 转发到本地回环上游代理（mihomo sidecar mixed 入站，SOCKS5 二次握手）
+    /// Forward to a local loopback upstream proxy (mihomo sidecar mixed inbound, second SOCKS5 handshake)
     Forward { addr: SocketAddr },
 }
 
@@ -30,29 +30,29 @@ impl Outbound {
     }
 }
 
-/// 代理路由表。
+/// Proxy routing table.
 pub struct ProxyRouter {
-    /// CIDR 路由：IP → 出站策略
+    /// CIDR routes: IP -> outbound policy
     cidr_table: IpNetworkTable<Outbound>,
-    /// HOST 精确匹配路由：域名 → 出站策略
+    /// Exact HOST routes: domain -> outbound policy
     host_exact: HashMap<String, Outbound>,
-    /// HOST Suffix 后缀匹配路由 (e.g. ".dev.internal" -> Outbound)
+    /// HOST suffix routes (e.g. ".dev.internal" -> Outbound)
     host_suffixes: Vec<(String, Outbound)>,
-    /// 默认出站
+    /// Default outbound
     default: Outbound,
-    /// 自定义规则层：hosts 映射（hostname 小写 → IP；仅本地代理入站评估，见 map_host）
+    /// Custom rule layer: hosts mapping (lowercase hostname -> IP; evaluated by local proxy inbound only, see map_host)
     hosts_map: HashMap<String, IpAddr>,
-    /// 自定义规则层：放行（通配 pattern → 出站；仅本地代理入站评估，见 custom_bypass_match）
+    /// Custom rule layer: bypass rules (wildcard pattern -> outbound; evaluated by local proxy inbound only, see custom_bypass_match)
     custom_bypass: Vec<(String, Outbound)>,
 }
 
-/// 通配匹配（自定义放行规则；大小写不敏感）：
-/// - 无通配符：精确匹配（`foo.com` 仅命中 `foo.com`）
-/// - 前通配 `*.baidu.com`：后缀匹配（含裸域 `baidu.com` 本身；不带点的 `*foo.com` 退化为纯后缀）
-/// - 后通配 `127.*`：前缀匹配
-/// - 前后通配 `*.alibaba.*`：包含匹配（内核去掉两侧 `.`，即包含 `alibaba`，裸串 `alibaba.cn` 亦命中）
+/// Wildcard match (custom bypass rules; case-insensitive):
+/// - no wildcard: exact match (`foo.com` hits only `foo.com`)
+/// - leading `*.baidu.com`: suffix match (includes the bare domain `baidu.com`; `*foo.com` without a dot degrades to plain suffix)
+/// - trailing `127.*`: prefix match
+/// - both `*.alibaba.*`: contains match (kernel strips the dots on both sides, i.e. contains `alibaba`; bare `alibaba.cn` also hits)
 ///
-/// 域名与 IP 字符串同口径（IP 场景用精确/前缀，如 `10.0.0.1` / `127.*`）。
+/// Domains and IP strings share the same semantics (IPs use exact/prefix, e.g. `10.0.0.1` / `127.*`).
 pub fn wildcard_match(pattern: &str, target: &str) -> bool {
     let pat = pattern.trim().to_lowercase();
     let target = target.trim().to_lowercase();
@@ -63,7 +63,7 @@ pub fn wildcard_match(pattern: &str, target: &str) -> bool {
         (true, false) => {
             let rest = &pat[1..];
             if let Some(dom) = rest.strip_prefix('.') {
-                // "*.baidu.com"：命中裸域与全部子域，不误伤 evilbaidu.com
+                // "*.baidu.com": hits the bare domain and all subdomains, spare evilbaidu.com
                 target == dom || target.ends_with(rest)
             } else {
                 target.ends_with(rest)
@@ -75,7 +75,7 @@ pub fn wildcard_match(pattern: &str, target: &str) -> bool {
 }
 
 impl ProxyRouter {
-    /// 创建空路由表（默认全部 DIRECT）。
+    /// Create an empty routing table (everything DIRECT by default).
     pub fn new() -> Self {
         Self {
             cidr_table: IpNetworkTable::new(),
@@ -87,12 +87,12 @@ impl ProxyRouter {
         }
     }
 
-    /// 设置默认出站策略
+    /// Set the default outbound policy
     pub fn set_default(&mut self, outbound: Outbound) {
         self.default = outbound;
     }
 
-    /// 插入 CIDR 路由规则
+    /// Insert a CIDR route
     pub fn add_cidr(&mut self, cidr_str: &str, outbound: Outbound) -> Result<(), String> {
         let cidr: IpNetwork = cidr_str
             .parse()
@@ -101,30 +101,30 @@ impl ProxyRouter {
         Ok(())
     }
 
-    /// 插入 精确域名 规则
+    /// Insert an exact-domain rule
     pub fn add_host_exact(&mut self, host: impl Into<String>, outbound: Outbound) {
         self.host_exact.insert(host.into().to_lowercase(), outbound);
     }
 
-    /// 插入 域名后缀 规则 (如 "*.dev.internal" 或 ".dev.internal")
+    /// Insert a domain-suffix rule (e.g. "*.dev.internal" or ".dev.internal")
     pub fn add_host_suffix(&mut self, pattern: &str, outbound: Outbound) {
         let mut suffix = pattern.trim_start_matches('*').to_lowercase();
-        // 统一补点前缀，避免 "internal" 误匹配 "evilinternal"
+        // normalize to a leading dot so "internal" cannot match "evilinternal"
         if !suffix.starts_with('.') {
             suffix = format!(".{suffix}");
         }
         self.host_suffixes.push((suffix, outbound));
-        // 按后缀长度从长到短排序，优先最长匹配
+        // sort longest suffix first for longest-match priority
         self.host_suffixes.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
     }
 
-    /// 匹配 IP 地址路由
+    /// Match a route by IP address string
     pub fn resolve_ip(&self, ip_str: &str) -> Option<&Outbound> {
         let ip: IpAddr = ip_str.parse().ok()?;
         self.cidr_table.longest_match(ip).map(|(_, out)| out)
     }
 
-    /// 根据 IP 地址对象匹配路由
+    /// Match a route by IP address
     pub fn route_ip(&self, ip: IpAddr) -> &Outbound {
         self.cidr_table
             .longest_match(ip)
@@ -132,16 +132,16 @@ impl ProxyRouter {
             .unwrap_or(&self.default)
     }
 
-    /// 匹配 域名 路由
+    /// Match a route by domain
     pub fn resolve_host(&self, host: &str) -> Option<&Outbound> {
         let host_lower = host.to_lowercase();
 
-        // 1. 精确匹配
+        // 1. exact match
         if let Some(outbound) = self.host_exact.get(&host_lower) {
             return Some(outbound);
         }
 
-        // 2. 后缀匹配
+        // 2. suffix match
         for (suffix, outbound) in &self.host_suffixes {
             if host_lower.ends_with(suffix) {
                 return Some(outbound);
@@ -151,24 +151,25 @@ impl ProxyRouter {
         None
     }
 
-    // ==================== 自定义规则层（客户端 GUI 自定义规则） ====================
+    // ==================== Custom rule layer (client GUI custom rules) ====================
     //
-    // 仅本地代理入站（ProxyInbound）评估：hosts 映射先改写解析目标（map_host），
-    // 放行命中（custom_bypass_match）优先于一切合并路由与默认出站。
-    // route_target / rule_values / matches 均不感知本层——中继 connector 的
-    // 扇入数据面与路由再发布不受本机自定义规则影响。
+    // Evaluated by local proxy inbound (ProxyInbound) only: the hosts mapping rewrites
+    // the resolve target first (map_host); a bypass hit (custom_bypass_match) beats all
+    // merged routes and the default outbound. route_target / rule_values / matches are
+    // unaware of this layer — the relay connector's fan-in data plane and route
+    // re-advertise are unaffected by local custom rules.
 
-    /// 整体替换 hosts 映射（键须为小写 hostname；空表 = 清除）。
+    /// Replace the whole hosts mapping (keys must be lowercase hostnames; empty = clear).
     pub fn set_hosts_map(&mut self, map: HashMap<String, IpAddr>) {
         self.hosts_map = map;
     }
 
-    /// 追加一条放行规则（pattern 通配语义见 wildcard_match；先加先判）。
+    /// Append a bypass rule (wildcard semantics see wildcard_match; first added, first checked).
     pub fn add_custom_bypass(&mut self, pattern: &str, outbound: Outbound) {
         self.custom_bypass.push((pattern.to_lowercase(), outbound));
     }
 
-    /// 查询 hosts 映射（大小写不敏感；入参为纯主机名，不含端口）。
+    /// Look up the hosts mapping (case-insensitive; input is a bare hostname, no port).
     pub fn map_host(&self, host: &str) -> Option<IpAddr> {
         if self.hosts_map.is_empty() {
             return None;
@@ -176,7 +177,7 @@ impl ProxyRouter {
         self.hosts_map.get(host.to_lowercase().as_str()).copied()
     }
 
-    /// 放行规则匹配（大小写不敏感；入参为纯主机名或 IP 字符串，不含端口）。
+    /// Match bypass rules (case-insensitive; input is a bare hostname or IP string, no port).
     pub fn custom_bypass_match(&self, host: &str) -> Option<&Outbound> {
         if self.custom_bypass.is_empty() {
             return None;
@@ -190,7 +191,7 @@ impl ProxyRouter {
         None
     }
 
-    /// 结合域名与 IP 进行全能解析
+    /// Resolve by domain and IP combined
     pub fn route_target(&self, host_or_ip: &str) -> &Outbound {
         let host_only = if let Ok(addr) = host_or_ip.parse::<SocketAddr>() {
             addr.ip().to_string()
@@ -211,10 +212,10 @@ impl ProxyRouter {
         }
     }
 
-    /// 按纯主机名/IP（不含端口）匹配路由。
+    /// Match a route by bare hostname/IP (no port).
     ///
-    /// 调用方已解析出 host/port 时使用（如代理入站），与 `route_target("host:port")`
-    /// 判定口径一致，但免去临时串拼接与端口剥离分配。
+    /// Used when the caller already split host/port (e.g. proxy inbound); same semantics
+    /// as `route_target("host:port")` without temporary concatenation and port-stripping allocs.
     pub fn route_host(&self, host: &str) -> &Outbound {
         if let Ok(ip) = host.parse::<IpAddr>() {
             self.route_ip(ip)
@@ -225,10 +226,10 @@ impl ProxyRouter {
         }
     }
 
-    /// 判断目标是否命中任意非默认路由（ACL 判定用，忽略默认出站）。
+    /// Whether the target hits any non-default route (for ACL checks; default outbound ignored).
     ///
-    /// 与 `route_target` 同样的方式剥离端口 / 解析 IP，
-    /// 直接查 longest_match / host_exact / host_suffixes，不比较 Outbound 值。
+    /// Strips the port / parses the IP the same way as `route_target`,
+    /// querying longest_match / host_exact / host_suffixes directly without comparing Outbound values.
     pub fn matches(&self, target: &str) -> bool {
         let host_only = if let Ok(addr) = target.parse::<SocketAddr>() {
             addr.ip().to_string()
@@ -247,12 +248,12 @@ impl ProxyRouter {
         }
     }
 
-    /// 判断目标是否命中任意规则（ACL 判定用，忽略默认出站）。
+    /// Whether the target hits any rule (for ACL checks; default outbound ignored).
     pub fn matches_target(&self, host_or_ip: &str) -> bool {
         self.matches(host_or_ip)
     }
 
-    /// 全部规则值（CIDR 字面值与域名模式）——路由再发布（re-advertise）用。
+    /// All rule values (CIDR literals and domain patterns) — for route re-advertise.
     pub fn rule_values(&self) -> Vec<String> {
         let mut out = Vec::new();
         for (net, _) in self.cidr_table.iter() {
@@ -266,13 +267,13 @@ impl ProxyRouter {
         out
     }
 
-    /// 当前路由条目总数。
+    /// Total number of route entries.
     pub fn route_count(&self) -> usize {
         let (ipv4_count, ipv6_count) = self.cidr_table.len();
         ipv4_count + ipv6_count + self.host_exact.len() + self.host_suffixes.len()
     }
 
-    /// 清空所有路由。
+    /// Clear all routes.
     pub fn clear(&mut self) {
         self.cidr_table = IpNetworkTable::new();
         self.host_exact.clear();
@@ -359,56 +360,56 @@ mod tests {
         router.add_host_exact("git.internal", Outbound::tunnel("tunnel-b"));
         router.add_host_suffix("*.dev.internal", Outbound::tunnel("tunnel-b"));
 
-        // IP / 带端口 IP
+        // IP / IP with port
         assert!(router.matches("10.12.1.1"));
         assert!(router.matches("10.12.1.1:8080"));
         assert!(!router.matches("8.8.8.8"));
         assert!(!router.matches("8.8.8.8:443"));
-        // 精确域名 / 后缀域名 / 带端口域名
+        // exact domain / suffix domain / domain with port
         assert!(router.matches("git.internal"));
         assert!(router.matches("git.internal:22"));
         assert!(router.matches("app.dev.internal"));
         assert!(router.matches("app.dev.internal:443"));
         assert!(!router.matches("google.com"));
         assert!(!router.matches("google.com:443"));
-        // 默认出站不参与判定
+        // default outbound does not participate
         router.set_default(Outbound::Direct);
         assert!(!router.matches("8.8.8.8"));
     }
 
     #[test]
     fn wildcard_exact_and_case() {
-        // 无通配 = 精确（大小写不敏感）
+        // no wildcard = exact (case-insensitive)
         assert!(wildcard_match("foo.com", "foo.com"));
         assert!(wildcard_match("Foo.COM", "foo.com"));
         assert!(wildcard_match("foo.com", "FOO.COM"));
         assert!(!wildcard_match("foo.com", "www.foo.com"));
         assert!(!wildcard_match("foo.com", "foo.com.cn"));
-        // IP 精确
+        // IP exact
         assert!(wildcard_match("10.0.0.1", "10.0.0.1"));
         assert!(!wildcard_match("10.0.0.1", "10.0.0.2"));
     }
 
     #[test]
     fn wildcard_suffix() {
-        // "*.baidu.com" 后缀匹配：含裸域，不误伤同尾异名
+        // "*.baidu.com" suffix match: includes the bare domain, spares same-tail lookalikes
         assert!(wildcard_match("*.baidu.com", "baidu.com"));
         assert!(wildcard_match("*.baidu.com", "www.baidu.com"));
         assert!(wildcard_match("*.baidu.com", "a.b.baidu.com"));
         assert!(!wildcard_match("*.baidu.com", "evilbaidu.com"));
         assert!(!wildcard_match("*.baidu.com", "baidu.com.cn"));
-        // 不带点的前通配退化为纯后缀
+        // leading wildcard without a dot degrades to plain suffix
         assert!(wildcard_match("*baidu.com", "evilbaidu.com"));
     }
 
     #[test]
     fn wildcard_prefix_and_contains() {
-        // "127.*" 前缀匹配（IP 场景）
+        // "127.*" prefix match (IP case)
         assert!(wildcard_match("127.*", "127.0.0.1"));
         assert!(wildcard_match("127.*", "127.255.255.254"));
         assert!(!wildcard_match("127.*", "128.0.0.1"));
         assert!(!wildcard_match("127.*", "2127.0.0.1"));
-        // "*.alibaba.*" 前后通配 = 包含
+        // "*.alibaba.*" leading+trailing wildcards = contains
         assert!(wildcard_match("*.alibaba.*", "www.alibaba.com"));
         assert!(wildcard_match("*.alibaba.*", "alibaba.cn"));
         assert!(wildcard_match("*.alibaba.*", "a.alibaba.b.c"));
@@ -418,7 +419,7 @@ mod tests {
 
     #[test]
     fn wildcard_edge_patterns() {
-        // "*" 匹配一切；"**" 同理；空 pattern 仅命中空目标
+        // "*" matches everything; "**" likewise; empty pattern only hits an empty target
         assert!(wildcard_match("*", "anything.example"));
         assert!(wildcard_match("*", "1.2.3.4"));
         assert!(wildcard_match("**", "x.y"));
@@ -432,7 +433,7 @@ mod tests {
         router.add_custom_bypass("*.corp.internal", Outbound::Direct);
         router.add_custom_bypass("10.*", Outbound::Direct);
 
-        // 放行命中（后缀 / 前缀）
+        // bypass hit (suffix / prefix)
         assert!(matches!(
             router.custom_bypass_match("app.corp.internal"),
             Some(Outbound::Direct)
@@ -441,15 +442,15 @@ mod tests {
             router.custom_bypass_match("10.1.2.3"),
             Some(Outbound::Direct)
         ));
-        // 未命中返回 None（调用方继续走 route_target）
+        // miss returns None (caller falls through to route_target)
         assert!(router.custom_bypass_match("a.com").is_none());
-        // 自定义层不进 route_target：扇入数据面与路由再发布不受影响
+        // the custom layer never enters route_target: fan-in data plane and route re-advertise unaffected
         assert!(matches!(
             router.route_target("app.corp.internal:443"),
             Outbound::Direct
-        )); // 默认出站
+        )); // default outbound
         assert!(router.rule_values().iter().all(|v| !v.contains("corp")));
-        // clear 一并清空自定义层
+        // clear also clears the custom layer
         router.clear();
         assert!(router.custom_bypass_match("app.corp.internal").is_none());
     }
@@ -468,7 +469,7 @@ mod tests {
             Some("10.9.9.9".parse().unwrap())
         );
         assert_eq!(router.map_host("other.internal"), None);
-        // 空映射零开销路径
+        // zero-cost path for an empty map
         router.set_hosts_map(HashMap::new());
         assert_eq!(router.map_host("foo.internal"), None);
     }

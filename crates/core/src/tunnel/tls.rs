@@ -1,9 +1,9 @@
-//! TLS 1.3 配置构建器
+//! TLS 1.3 config builder
 //!
-//! 提供 ServerConfig / ClientConfig 构建，支持：
-//! - 自签证书自动生成（开发环境）
-//! - 外部证书加载（生产环境）
-//! - SNI 域名伪装
+//! Builds ServerConfig / ClientConfig with support for:
+//! - automatic self-signed cert generation (development)
+//! - external cert loading (production)
+//! - SNI hostname camouflage
 
 use crate::error::{Error, Result};
 use crate::util::base64_encode;
@@ -12,20 +12,20 @@ use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, Serve
 use std::path::PathBuf;
 use std::sync::Arc;
 
-/// TLS 配置构建器。
+/// TLS config builder.
 pub struct TlsConfigBuilder {
-    /// 服务端证书路径（listener 模式）
+    /// Server cert path (listener mode)
     cert_path: Option<PathBuf>,
     key_path: Option<PathBuf>,
-    /// 客户端自定义 CA 根证书（connector 模式）
+    /// Client custom CA root certs (connector mode)
     ca_cert: Option<Vec<CertificateDer<'static>>>,
-    /// 服务端证书固定（pinning）：仅信任列出的证书（connector 模式）
+    /// Server cert pinning: trust only the listed certs (connector mode)
     pinned_certs: Option<Vec<CertificateDer<'static>>>,
-    /// 服务端证书 SHA-256 指纹固定（connector 模式，connect_url 一键分发）
+    /// Server cert SHA-256 fingerprint pinning (connector mode, one-click distribution via connect_url)
     pinned_fingerprint: Option<String>,
-    /// SNI 域名（connector 模式，伪装用）
+    /// SNI hostname (connector mode, camouflage)
     pub sni_hostname: String,
-    /// 是否允许自签证书（开发模式）
+    /// Whether self-signed certs are allowed (dev mode)
     allow_self_signed: bool,
 }
 
@@ -57,9 +57,9 @@ impl TlsConfigBuilder {
         self
     }
 
-    /// 证书固定：仅信任指定的服务端证书（等效于把对端证书钉入根存储）。
+    /// Cert pinning: trust only the given server certs (equivalent to pinning the peer cert into the root store).
     ///
-    /// 这是私有化部署下抗 MITM 的推荐方式——节点证书指纹通过带外渠道分发。
+    /// Recommended MITM resistance for private deployments — the node cert fingerprint is distributed out-of-band.
     pub fn pinned_certs(mut self, certs: Vec<CertificateDer<'static>>) -> Self {
         if !certs.is_empty() {
             self.pinned_certs = Some(certs);
@@ -67,7 +67,7 @@ impl TlsConfigBuilder {
         self
     }
 
-    /// 证书指纹固定（SHA-256 hex，connect_url 分发的轻量 pinning）。
+    /// Cert fingerprint pinning (SHA-256 hex, lightweight pinning distributed via connect_url).
     pub fn pinned_fingerprint(mut self, fingerprint: impl Into<String>) -> Self {
         self.pinned_fingerprint = Some(fingerprint.into());
         self
@@ -83,9 +83,9 @@ impl TlsConfigBuilder {
         self
     }
 
-    /// 构建 rustls ServerConfig（listener 用）。
+    /// Build a rustls ServerConfig (listener).
     ///
-    /// 如果没有配置证书路径，自动生成自签证书。
+    /// Generates a self-signed cert when no cert path is configured.
     pub fn build_server(
         &self,
     ) -> Result<(Arc<rustls::ServerConfig>, Vec<CertificateDer<'static>>)> {
@@ -102,26 +102,26 @@ impl TlsConfigBuilder {
                 .with_no_client_auth()
                 .with_single_cert(certs.clone(), key)
                 .map_err(|e| Error::Tls(e.to_string()))?;
-        // ALPN 拟态：真实浏览器 ClientHello 必带 h2/http1.1，空 ALPN 是最廉价的 DPI 单字段筛子
+        // ALPN mimicry: a real browser ClientHello always carries h2/http1.1; empty ALPN is the cheapest single-field DPI filter
         server_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
 
         Ok((Arc::new(server_config), certs))
     }
 
-    /// 构建 rustls ClientConfig（connector 用）。
+    /// Build a rustls ClientConfig (connector).
     ///
-    /// 信任策略优先级：证书固定 (pinning) > 自定义 CA > 跳过验证（开发） > 系统 CA。
+    /// Trust policy precedence: cert pinning > custom CA > skip verification (dev) > system CA.
     pub fn build_client(&self) -> Result<Arc<rustls::ClientConfig>> {
         let _ = rustls::crypto::ring::default_provider().install_default();
         let mut config = if let Some(fp) = &self.pinned_fingerprint {
-            // 证书指纹固定：哈希比对 + rustls 原生签名校验，抗 MITM 且免分发证书文件
+            // fingerprint pinning: hash comparison + rustls native signature check; MITM-resistant without distributing cert files
             let verifier = danger::PinnedFingerprintVerifier::new(fp)?;
             rustls::ClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
                 .dangerous()
                 .with_custom_certificate_verifier(Arc::new(verifier))
                 .with_no_client_auth()
         } else if let Some(pinned) = &self.pinned_certs {
-            // 证书固定：钉入的证书作为唯一信任根，抗 MITM
+            // cert pinning: the pinned certs act as the only trust roots, MITM-resistant
             let mut root_store = rustls::RootCertStore::empty();
             for cert in pinned {
                 root_store
@@ -132,7 +132,7 @@ impl TlsConfigBuilder {
                 .with_root_certificates(root_store)
                 .with_no_client_auth()
         } else if let Some(ca_certs) = &self.ca_cert {
-            // 使用自定义 CA
+            // use custom CA
             let mut root_store = rustls::RootCertStore::empty();
             for cert in ca_certs {
                 root_store
@@ -143,14 +143,14 @@ impl TlsConfigBuilder {
                 .with_root_certificates(root_store)
                 .with_no_client_auth()
         } else if self.allow_self_signed {
-            // 开发模式：信任所有证书（仅调试用，生产禁用）
+            // dev mode: trust all certs (debug only, forbidden in production)
             let verifier = danger::NoCertificateVerification::new();
             rustls::ClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
                 .dangerous()
                 .with_custom_certificate_verifier(Arc::new(verifier))
                 .with_no_client_auth()
         } else {
-            // 默认：使用 webpki-roots 内嵌的 CA 列表
+            // default: CA list embedded via webpki-roots
             let mut root_store = rustls::RootCertStore::empty();
             root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
             rustls::ClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
@@ -158,12 +158,12 @@ impl TlsConfigBuilder {
                 .with_no_client_auth()
         };
 
-        // ALPN 拟态（与服务端同列表；对端为旧版无 ALPN 时握手不受影响，向后兼容）
+        // ALPN mimicry (same list as the server; handshake with old ALPN-less peers is unaffected, backwards compatible)
         config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
         Ok(Arc::new(config))
     }
 
-    /// 获取 ServerName 用于 TLS 连接。
+    /// Get the ServerName for a TLS connection.
     pub fn server_name(&self) -> Result<ServerName<'static>> {
         ServerName::try_from(self.sni_hostname.clone())
             .map_err(|e| Error::Tls(format!("invalid SNI hostname: {e}")))
@@ -176,7 +176,7 @@ impl Default for TlsConfigBuilder {
     }
 }
 
-/// 从 PEM 文件加载证书和私钥。
+/// Load cert and private key from PEM files.
 fn load_certs_from_file(
     cert_path: &PathBuf,
     key_path: &PathBuf,
@@ -201,7 +201,7 @@ fn load_certs_from_file(
     Ok((certs, key))
 }
 
-/// 生成自签证书（开发用）。
+/// Generate a self-signed cert (development).
 pub fn generate_self_signed(
     hostname: &str,
 ) -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)> {
@@ -210,15 +210,16 @@ pub fn generate_self_signed(
     params
         .distinguished_name
         .push(rcgen::DnType::CommonName, hostname);
-    // Subject 拟态：空 O/C 字段是自建隧道的强指纹，仿真正常 CDN 证书
+    // Subject mimicry: empty O/C fields are a strong homebrew-tunnel fingerprint; mimic a normal CDN cert
     params
         .distinguished_name
         .push(rcgen::DnType::OrganizationName, "Cloudflare, Inc.");
     params
         .distinguished_name
         .push(rcgen::DnType::CountryName, "US");
-    // 到期日随机化（2032-2038 随机年月）：全量节点统一 2036-01-01 是大规模扫描的关联特征；
-    // 已持久化的存量证书不受影响（load_or_generate 只在首次生成时走这里）
+    // randomized expiry (random date in 2032-2038): a uniform 2036-01-01 across all nodes is a
+    // correlation marker for large-scale scans; persisted existing certs are unaffected
+    // (load_or_generate only reaches here on first generation)
     let year = (2032 + rand::random::<u32>() % 7) as i32;
     let month = (1 + rand::random::<u32>() % 12) as u8;
     let day = (1 + rand::random::<u32>() % 28) as u8;
@@ -235,9 +236,9 @@ pub fn generate_self_signed(
     Ok((vec![cert_der], key_der))
 }
 
-/// 加载已有证书，不存在时生成自签证书并持久化到磁盘（PEM 格式）。
+/// Load an existing cert, or generate a self-signed one and persist it to disk (PEM).
 ///
-/// 持久化保证节点重启后证书不变，客户端可以稳定地做证书固定 (pinning)。
+/// Persistence keeps the cert stable across node restarts so clients can pin it reliably.
 pub fn load_or_generate_self_signed(
     cert_path: &std::path::Path,
     key_path: &std::path::Path,
@@ -253,7 +254,7 @@ pub fn load_or_generate_self_signed(
         std::fs::create_dir_all(parent).map_err(|e| Error::Tls(format!("create cert dir: {e}")))?;
     }
 
-    // 写 PEM
+    // write PEM
     let cert_pem = certs
         .iter()
         .map(|c| {
@@ -273,7 +274,7 @@ pub fn load_or_generate_self_signed(
     );
     std::fs::write(key_path, key_pem).map_err(|e| Error::Tls(format!("write key: {e}")))?;
 
-    // 私钥文件权限收紧（Unix 0600）
+    // tighten private key file permissions (Unix 0600)
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -283,14 +284,14 @@ pub fn load_or_generate_self_signed(
     Ok((certs, key))
 }
 
-/// 计算证书的 SHA-256 指纹（hex，用于证书固定配置分发）。
+/// Compute a cert's SHA-256 fingerprint (hex, for distributing pinning configs).
 pub fn cert_fingerprint_sha256(cert: &CertificateDer<'_>) -> String {
     use sha2::Digest;
     let digest = sha2::Sha256::digest(cert.as_ref());
     digest.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// PEM 按 64 列折行。
+/// Wrap PEM base64 at 64 columns.
 fn wrap64(b64: &str) -> String {
     b64.as_bytes()
         .chunks(64)
@@ -299,17 +300,18 @@ fn wrap64(b64: &str) -> String {
         .join("\n")
 }
 
-/// 危险的证书验证器——开发模式使用，跳过所有验证。
+/// Dangerous cert verifiers — dev mode, skips all verification.
 mod danger {
     use rustls::DigitallySignedStruct;
     use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
     use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 
-    /// 证书 SHA-256 指纹固定验证器。
+    /// Cert SHA-256 fingerprint pinning verifier.
     ///
-    /// 安全性论证：哈希比对确认对端出示的即是目标证书（公钥），
-    /// TLS 握手 CertificateVerify 由 rustls 原生验签（证明私钥持有），
-    /// 两者结合等价于证书固定，抗 MITM，且无需分发证书文件。
+    /// Security argument: the hash comparison confirms the peer presents the target cert
+    /// (public key); the TLS handshake CertificateVerify is natively verified by rustls
+    /// (proving private-key possession). Together this is equivalent to cert pinning,
+    /// MITM-resistant, and needs no cert file distribution.
     #[derive(Debug)]
     pub(super) struct PinnedFingerprintVerifier {
         expected: [u8; 32],
@@ -459,7 +461,7 @@ mod tests {
         let builder = TlsConfigBuilder::new().sni_hostname("test.example.com");
         let (config, certs) = builder.build_server().unwrap();
         assert!(!certs.is_empty());
-        // ServerConfig 已成功创建
+        // ServerConfig created successfully
         let _ = config;
     }
 

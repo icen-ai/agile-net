@@ -1,4 +1,4 @@
-//! Admin 管理员管理（列表/新建/删除/修改密码）
+//! Admin management (list/create/delete/change password)
 
 use super::audit;
 use super::auth::validate_admin_credentials;
@@ -66,7 +66,7 @@ pub async fn create_admin(
             "admin username already exists",
         );
     }
-    // argon2id 哈希卸载到阻塞线程池
+    // argon2id hash offloaded to the blocking pool
     let password = req.password.clone();
     let hash = match offload(move || hash_password(&password)).await {
         Ok(h) => h,
@@ -137,7 +137,7 @@ pub async fn delete_admin(
     };
     match state.db_call(move |db| db.delete_admin(&id)).await {
         Ok(_) => {
-            // 吊销被删管理员的全部会话
+            // Revoke all sessions of the deleted admin
             let jwt = state.jwt.clone();
             let aid = target.id.clone();
             let _ = offload(move || jwt.revoke_all(&aid)).await;
@@ -166,7 +166,7 @@ pub struct ChangePasswordRequest {
     pub new_password: String,
 }
 
-/// 修改自己的密码（任意已认证 admin；成功后吊销本人全部 refresh token）。
+/// Change own password (any authenticated admin; all own refresh tokens revoked on success).
 pub async fn change_password(
     AdminAuth(claims): AdminAuth,
     State(state): State<ApiState>,
@@ -181,7 +181,7 @@ pub async fn change_password(
     else {
         return err(StatusCode::NOT_FOUND, codes::NOT_FOUND, "admin not found");
     };
-    // argon2id 校验/哈希卸载到阻塞线程池
+    // argon2id verify/hash offloaded to the blocking pool
     let (old, hash) = (req.old_password.clone(), admin.password_hash.clone());
     let verified = offload(move || crate::db::verify_password(&old, &hash))
         .await

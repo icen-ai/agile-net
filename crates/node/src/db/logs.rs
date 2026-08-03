@@ -1,4 +1,4 @@
-//! 从 db/mod.rs 拆分：audit_log/traffic_log/node_traffic_log/refresh_token 表（纯搬运，零逻辑变更）
+//! Split from db/mod.rs: audit_log/traffic_log/node_traffic_log/refresh_token tables (pure move, no logic change)
 
 use super::models::*;
 use super::pool::{Database, db_err, now_rfc3339};
@@ -44,7 +44,7 @@ impl Database {
         let conn = self.conn();
         let mut where_clauses = Vec::new();
         let mut bind: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
-        // 空串过滤等同不过滤（与原 pattern.is_empty() 分支行为一致）
+        // Empty-string filter = no filter (matches the old pattern.is_empty() branch)
         if let Some(a) = action.filter(|a| !a.is_empty()) {
             where_clauses.push("action = ?");
             bind.push(Box::new(a.to_string()));
@@ -74,7 +74,7 @@ impl Database {
         )
     }
 
-    /// 清理 N 天前的审计日志，返回删除条数。
+    /// Delete audit logs older than N days; returns rows deleted.
     pub fn cleanup_audit_log(&self, days: i64) -> Result<usize> {
         let conn = self.conn();
         let cutoff = (chrono::Utc::now() - chrono::Duration::days(days))
@@ -90,7 +90,7 @@ impl Database {
 
     // ==================== Traffic Log ====================
 
-    /// 按小时聚合 upsert 流量统计
+    /// Upsert hourly-aggregated traffic stats
     pub fn add_traffic(
         &self,
         account_id: &str,
@@ -120,7 +120,7 @@ impl Database {
         Ok(())
     }
 
-    /// 按账号聚合流量（period 小时窗口）
+    /// Traffic aggregated by account (window of `hours` hours)
     pub fn traffic_by_account(&self, hours: i64) -> Result<(Vec<TrafficStatRecord>, i64, i64)> {
         let conn = self.conn();
         let since = hours_ago(hours);
@@ -155,7 +155,7 @@ impl Database {
         Ok((items, total_tx, total_rx))
     }
 
-    /// 按时间序列聚合流量（每小时一个点）
+    /// Traffic aggregated as a time series (one point per hour)
     pub fn traffic_by_time(&self, hours: i64) -> Result<Vec<TrafficPoint>> {
         let conn = self.conn();
         let since = hours_ago(hours);
@@ -181,9 +181,9 @@ impl Database {
         Ok(items)
     }
 
-    // ==================== Node Traffic Log（节点级三维流量序列） ====================
+    // ==================== Node Traffic Log (node-level 3-dim traffic series) ====================
 
-    /// 节点级流量差分入库（dim+src+dst+小时桶 upsert 累加；双零增量直接跳过）
+    /// Record node-level traffic delta (upsert-accumulate by dim+src+dst+hour bucket; skip zero deltas)
     pub fn add_node_traffic(
         &self,
         dim: &str,
@@ -217,7 +217,7 @@ impl Database {
         Ok(())
     }
 
-    /// 最近 24h 节点级流量序列（按小时聚合；fanin/fanout 跨标识汇总，transit 跨途径对汇总）
+    /// Last 24h node-level traffic series (hourly; fanin/fanout summed across ids, transit across route pairs)
     pub fn node_traffic_24h(&self) -> Result<NodeTraffic24h> {
         let conn = self.conn();
         let since = local_hours_ago(24);
@@ -252,7 +252,7 @@ impl Database {
         Ok(out)
     }
 
-    /// 清理过期的节点级流量序列（保留 days 天；随日级留存任务调用）
+    /// Delete node-level traffic series older than `days` days (called by the daily retention task)
     pub fn cleanup_node_traffic(&self, days: i64) -> Result<usize> {
         let conn = self.conn();
         let cutoff = local_hours_ago(days * 24);
@@ -283,7 +283,7 @@ impl Database {
         Ok(())
     }
 
-    /// 校验 refresh token 未吊销且未过期
+    /// Check a refresh token is neither revoked nor expired
     pub fn is_refresh_token_valid(&self, jti_hash: &str) -> Result<bool> {
         let conn = self.conn();
         let mut stmt = conn
@@ -310,7 +310,7 @@ impl Database {
         Ok(())
     }
 
-    /// 吊销某主体的全部 refresh token（禁用账号/改密码时）
+    /// Revoke all refresh tokens of a subject (on account disable / password change)
     pub fn revoke_all_refresh_tokens(&self, subject: &str) -> Result<()> {
         let conn = self.conn();
         conn.execute(
@@ -321,7 +321,7 @@ impl Database {
         Ok(())
     }
 
-    /// 清理过期的 refresh token（启动时调用）
+    /// Delete expired refresh tokens (called at startup)
     pub fn cleanup_expired_refresh_tokens(&self) -> Result<()> {
         let conn = self.conn();
         conn.execute(
@@ -333,7 +333,7 @@ impl Database {
     }
 }
 
-/// 当前小时桶 'YYYY-MM-DDTHH:00:00Z'
+/// Current hour bucket 'YYYY-MM-DDTHH:00:00Z'
 fn current_hour_bucket() -> String {
     let now = chrono::Utc::now();
     now.format("%Y-%m-%dT%H:00:00Z").to_string()
@@ -344,12 +344,12 @@ fn hours_ago(hours: i64) -> String {
     t.format("%Y-%m-%dT%H:00:00Z").to_string()
 }
 
-/// 当前本地小时桶 'YYYY-MM-DD HH:00'（node_traffic_log / traffic_24h 契约格式）
+/// Current local hour bucket 'YYYY-MM-DD HH:00' (node_traffic_log / traffic_24h contract format)
 fn local_hour_bucket() -> String {
     chrono::Local::now().format("%Y-%m-%d %H:00").to_string()
 }
 
-/// hours 前的本地小时桶（24h 窗口过滤用）
+/// Local hour bucket `hours` ago (for the 24h window filter)
 fn local_hours_ago(hours: i64) -> String {
     let t = chrono::Local::now() - chrono::Duration::hours(hours);
     t.format("%Y-%m-%d %H:00").to_string()
@@ -363,11 +363,11 @@ mod tests {
     fn node_traffic_add_aggregate_and_cleanup() {
         let db = Database::in_memory().unwrap();
 
-        // 双零增量跳过（不落库）
+        // Zero delta skipped (not persisted)
         db.add_node_traffic("fanin", "n1", "", 0, 0).unwrap();
         assert!(db.node_traffic_24h().unwrap().fanin.is_empty());
 
-        // 同桶累加 + 跨标识/途径对写入
+        // Same-bucket accumulate + write across ids / route pairs
         db.add_node_traffic("fanin", "n1", "", 100, 200).unwrap();
         db.add_node_traffic("fanin", "n1", "", 1, 2).unwrap();
         db.add_node_traffic("fanin", "n2", "", 50, 60).unwrap();
@@ -376,22 +376,22 @@ mod tests {
         db.add_node_traffic("transit", "proxy", "local", 5, 6).unwrap();
 
         let agg = db.node_traffic_24h().unwrap();
-        // fanin 跨对端汇总为同一小时桶
+        // fanin summed across peers into the same hour bucket
         assert_eq!(agg.fanin.len(), 1);
         assert_eq!(agg.fanin[0].up, 151);
         assert_eq!(agg.fanin[0].down, 262);
-        // 小时桶为本地时间格式 'YYYY-MM-DD HH:00'
+        // Hour bucket uses local-time format 'YYYY-MM-DD HH:00'
         assert_eq!(agg.fanin[0].hour.len(), 16);
         assert!(agg.fanin[0].hour.ends_with(":00"));
         assert_eq!(&agg.fanin[0].hour[10..11], " ");
         assert_eq!(agg.fanout.len(), 1);
         assert_eq!(agg.fanout[0].up, 7);
-        // transit 跨途径对汇总
+        // transit summed across route pairs
         assert_eq!(agg.transit.len(), 1);
         assert_eq!(agg.transit[0].up, 8);
         assert_eq!(agg.transit[0].down, 10);
 
-        // 留存清理：40 天前的旧行删除，当前行保留
+        // Retention cleanup: rows older than 40 days deleted, current rows kept
         let old_hour = (chrono::Local::now() - chrono::Duration::days(40))
             .format("%Y-%m-%d %H:00")
             .to_string();
@@ -404,7 +404,7 @@ mod tests {
             .unwrap();
         let removed = db.cleanup_node_traffic(30).unwrap();
         assert_eq!(removed, 1);
-        // 24h 聚合不含旧行
+        // 24h aggregate excludes old rows
         let agg = db.node_traffic_24h().unwrap();
         assert_eq!(agg.fanin.len(), 1);
         assert_eq!(agg.fanin[0].up, 151);

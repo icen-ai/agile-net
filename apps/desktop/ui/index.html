@@ -3,20 +3,20 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AgileNet 客户端</title>
+<title data-i18n="app.title">AgileNet 客户端</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%233C3F43' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z'/></svg>">
 <link rel="stylesheet" href="tokens.css">
 <link rel="stylesheet" href="components.css">
 <link rel="stylesheet" href="style.css">
 <style>
-/* ===== 中控台英雄卡（页面级布局：左速率曲线 / 中摘要列 / 右总开关；色值全走 token，第二次需要再沉淀共享层） ===== */
+/* ===== Dashboard hero card (page-level layout: left rate chart / center summary column / right master switch; colors all via tokens, promote to shared layer if needed twice) ===== */
 .hero-stats { display: flex; flex-direction: column; gap: 10px; flex-shrink: 0; min-width: 132px; align-items: flex-end; text-align: right; }
 .hstat { display: flex; flex-direction: column; gap: 1px; align-items: flex-end; min-width: 0; }
 .hstat-l { display: inline-flex; align-items: center; gap: 4px; font-size: 10.5px; letter-spacing: .04em; color: var(--dim2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .hstat-v { font-size: 18px; font-weight: 600; line-height: 1.3; color: var(--text-strong); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
 .hstat-s { font-size: 10px; color: var(--dim2); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
 @media (max-width: 860px) {
-  /* 摘要列折到曲线下方，水平均布一行（≤720px 亦保持一行三枚） */
+  /* Summary column wraps below the chart, evenly spread in one row (stays one row of three even ≤720px) */
   #hero-card .hero-stats { order: 3; flex-basis: 100%; flex-direction: row; align-items: stretch; text-align: left; min-width: 0; gap: 14px; }
   #hero-card .hstat { flex: 1; align-items: flex-start; }
 }
@@ -27,25 +27,25 @@
 </style>
 </head>
 <body>
-<!-- 一体化标题栏（无边框窗口，左侧拖拽区 + 右侧窗口控制；中央灵动岛） -->
+<!-- Unified titlebar (frameless window: left drag region + right window controls; Dynamic Island centered) -->
 <header class="titlebar">
   <div class="tb-drag" data-tauri-drag-region>
-    <button id="btn-collapse" class="tb-icon" title="收起 / 展开菜单"><i data-ic="panel-left" data-sz="16"></i></button>
-    <button id="btn-more" class="tb-icon" title="更多"><i data-ic="menu" data-sz="16"></i></button>
-    <button id="btn-admin" class="tb-icon disabled" title="管理端点"><i data-ic="fingerprint" data-sz="16"></i></button>
+    <button id="btn-collapse" class="tb-icon" title="收起 / 展开菜单" data-i18n-title="menu.collapse"><i data-ic="panel-left" data-sz="16"></i></button>
+    <button id="btn-more" class="tb-icon" title="更多" data-i18n-title="menu.more"><i data-ic="menu" data-sz="16"></i></button>
+    <button id="btn-admin" class="tb-icon disabled" title="管理端点" data-i18n-title="menu.admin"><i data-ic="fingerprint" data-sz="16"></i></button>
     <span class="tb-spacer"></span>
   </div>
-  <!-- 管理端入口（本机服务端恒第一，其余按名称排序；无可管理端点时图标置灰） -->
+  <!-- Admin console entry (local server always first, rest sorted by name; icon grayed when no manageable endpoints) -->
   <div class="more-menu" id="admin-menu" style="display:none;left:80px"></div>
-  <!-- 更多菜单（文档 / Issue / 检查更新 / 关于） -->
+  <!-- More menu (docs / Issue / check update / about) -->
   <div class="more-menu" id="more-menu" style="display:none">
-    <button data-more="docs"><i data-ic="book-open" data-sz="14"></i>文档</button>
+    <button data-more="docs"><i data-ic="book-open" data-sz="14"></i><span data-i18n="menu.docs">文档</span></button>
     <button data-more="issue"><i data-ic="circle-dot" data-sz="14"></i>Issue</button>
-    <button data-more="update"><i data-ic="refresh-cw" data-sz="14"></i>检查更新</button>
+    <button data-more="update"><i data-ic="refresh-cw" data-sz="14"></i><span data-i18n="menu.update">检查更新</span></button>
     <div class="more-sep"></div>
-    <button data-more="about"><i data-ic="info" data-sz="14"></i>关于</button>
+    <button data-more="about"><i data-ic="info" data-sz="14"></i><span data-i18n="menu.about">关于</span></button>
   </div>
-  <!-- 灵动岛：状态摘要 + 通知弹出 + 网络异常可展开详情 -->
+  <!-- Dynamic Island: status summary + notification popups + expandable details on network anomalies -->
   <div class="island" id="island">
     <div class="island-bar" id="island-bar">
       <span class="dot off" id="proxy-dot"></span><span id="proxy-text">代理未启动</span><span class="island-chev" id="island-chev"><i data-ic="chevron-down" data-sz="12"></i></span>
@@ -54,27 +54,27 @@
     <div class="island-detail" id="island-detail"></div>
   </div>
   <div class="tb-controls">
-    <button id="tb-min" title="最小化"><i data-ic="minus" data-sz="15"></i></button>
-    <button id="tb-max" title="最大化 / 还原"><i data-ic="square" data-sz="12"></i></button>
-    <button id="tb-close" class="close" title="关闭（最小化到托盘）"><i data-ic="x" data-sz="16"></i></button>
+    <button id="tb-min" title="最小化" data-i18n-title="menu.min"><i data-ic="minus" data-sz="15"></i></button>
+    <button id="tb-max" title="最大化 / 还原" data-i18n-title="menu.max"><i data-ic="square" data-sz="12"></i></button>
+    <button id="tb-close" class="close" title="关闭（最小化到托盘）" data-i18n-title="menu.closeWin"><i data-ic="x" data-sz="16"></i></button>
   </div>
 </header>
 
 <div class="shell">
   <aside class="sidebar">
     <div id="nav-client">
-      <div class="nav-item active" data-view="connect"><i data-ic="home"></i><span class="nav-label">首页</span></div>
-      <div class="nav-item" data-view="nodes"><i data-ic="orbit"></i><span class="nav-label">扇入</span></div>
-      <div class="nav-item" data-view="upstreams"><i data-ic="git-fork"></i><span class="nav-label">扇出</span></div>
-      <div class="nav-item" data-view="routes"><i data-ic="route"></i><span class="nav-label">规则</span></div>
+      <div class="nav-item active" data-view="connect"><i data-ic="home"></i><span class="nav-label" data-i18n="menu.home">首页</span></div>
+      <div class="nav-item" data-view="nodes"><i data-ic="orbit"></i><span class="nav-label" data-i18n="term.fanin">扇入</span></div>
+      <div class="nav-item" data-view="upstreams"><i data-ic="git-fork"></i><span class="nav-label" data-i18n="term.fanout">扇出</span></div>
+      <div class="nav-item" data-view="routes"><i data-ic="route"></i><span class="nav-label" data-i18n="term.rule">规则</span></div>
       <div class="nav-sep"></div>
-      <div class="nav-item sub-feature" data-view="subscription" style="display:none"><i data-ic="satellite"></i><span class="nav-label">订阅</span></div>
-      <div class="nav-item sub-feature" data-view="proxy" style="display:none"><i data-ic="earth"></i><span class="nav-label">节点</span></div>
+      <div class="nav-item sub-feature" data-view="subscription" style="display:none"><i data-ic="satellite"></i><span class="nav-label" data-i18n="term.subscription">订阅</span></div>
+      <div class="nav-item sub-feature" data-view="proxy" style="display:none"><i data-ic="earth"></i><span class="nav-label" data-i18n="term.node">节点</span></div>
       <div class="nav-sep"></div>
-      <div class="nav-item" data-view="logs"><i data-ic="scroll-text"></i><span class="nav-label">日志</span></div>
-      <div class="nav-item" data-view="settings"><i data-ic="settings"></i><span class="nav-label">设置</span></div>
+      <div class="nav-item" data-view="logs"><i data-ic="scroll-text"></i><span class="nav-label" data-i18n="term.logs">日志</span></div>
+      <div class="nav-item" data-view="settings"><i data-ic="settings"></i><span class="nav-label" data-i18n="menu.settings">设置</span></div>
     </div>
-    <!-- 侧栏底部状态区：订阅内核实时速率（未运行显「未运行」）+ 代理状态小字；2s 轮询驱动，全部变更检测写入 -->
+    <!-- Sidebar footer status: subscription kernel live rates (shows 「未运行」 when not running) + proxy status small text; driven by 2s polling, all writes via change detection -->
     <div class="side-foot" id="side-foot">
       <div class="side-foot-rate">
         <span class="up" id="sf-up" style="display:none">0 B/s</span>
@@ -84,34 +84,34 @@
       <div class="hint" id="sf-status" style="margin-top:0">代理已停止</div>
     </div>
     <div id="nav-admin" style="display:none">
-      <div class="nav-item" id="nav-admin-back"><i data-ic="user"></i><span class="nav-label">返回客户端</span></div>
+      <div class="nav-item" id="nav-admin-back"><i data-ic="user"></i><span class="nav-label" data-i18n="menu.backClient">返回客户端</span></div>
       <div class="nav-sep"></div>
-      <div class="nav-item active" data-aview="dashboard"><i data-ic="layout-dashboard"></i><span class="nav-label">首页</span></div>
-      <div class="nav-item" data-aview="accounts"><i data-ic="users"></i><span class="nav-label">账号</span></div>
-      <div class="nav-item" data-aview="groups"><i data-ic="shield"></i><span class="nav-label">权限</span></div>
-      <div class="nav-item" data-aview="rules"><i data-ic="route"></i><span class="nav-label">规则</span></div>
+      <div class="nav-item active" data-aview="dashboard"><i data-ic="layout-dashboard"></i><span class="nav-label" data-i18n="menu.home">首页</span></div>
+      <div class="nav-item" data-aview="accounts"><i data-ic="users"></i><span class="nav-label" data-i18n="term.account">账号</span></div>
+      <div class="nav-item" data-aview="groups"><i data-ic="shield"></i><span class="nav-label" data-i18n="menu.groups">权限</span></div>
+      <div class="nav-item" data-aview="rules"><i data-ic="route"></i><span class="nav-label" data-i18n="term.rule">规则</span></div>
       <div class="nav-sep"></div>
-      <div class="nav-item" data-aview="fanin"><i data-ic="orbit"></i><span class="nav-label">扇入</span></div>
-      <div class="nav-item" data-aview="connectors"><i data-ic="git-fork"></i><span class="nav-label">扇出</span></div>
-      <div class="nav-item" data-aview="audit"><i data-ic="scroll-text"></i><span class="nav-label">审计</span></div>
+      <div class="nav-item" data-aview="fanin"><i data-ic="orbit"></i><span class="nav-label" data-i18n="term.fanin">扇入</span></div>
+      <div class="nav-item" data-aview="connectors"><i data-ic="git-fork"></i><span class="nav-label" data-i18n="term.fanout">扇出</span></div>
+      <div class="nav-item" data-aview="audit"><i data-ic="scroll-text"></i><span class="nav-label" data-i18n="menu.audit">审计</span></div>
       <div class="nav-sep"></div>
-      <div class="nav-item" data-aview="settings"><i data-ic="settings"></i><span class="nav-label">设置</span></div>
+      <div class="nav-item" data-aview="settings"><i data-ic="settings"></i><span class="nav-label" data-i18n="menu.settings">设置</span></div>
     </div>
   </aside>
 
   <main class="content">
-    <!-- 客户端角色关闭时的全局提示 -->
-    <div id="role-banner" class="net-banner" style="display:none"><i data-ic="info" data-sz="14"></i>扇入已停用：下游连接与本地代理均已关闭，可在首页重新开启</div>
-    <!-- 首页：运行概览仪表盘（代理 / 扇入 / 扇出 / 订阅 / 远程 / 网络检测；首次接入引导） -->
+    <!-- Global banner shown when client role is off -->
+    <div id="role-banner" class="net-banner" style="display:none"><i data-ic="info" data-sz="14"></i><span data-i18n="home.roleBanner">扇入已停用：下游连接与本地代理均已关闭，可在首页重新开启</span></div>
+    <!-- Home: runtime overview dashboard (proxy / fan-in / fan-out / subscription / remote / network check; first-connect onboarding) -->
     <section class="view" id="view-connect">
-      <div class="page-title"><i data-ic="home" data-sz="19"></i>首页</div>
-      <div class="page-desc">运行概览：代理 / 扇入 / 扇出 / 订阅 / 远程与网络检测；开关在卡片右侧，点卡片进入对应页面</div>
+      <div class="page-title"><i data-ic="home" data-sz="19"></i><span data-i18n="menu.home">首页</span></div>
+      <div class="page-desc" data-i18n="home.desc">运行概览：代理 / 扇入 / 扇出 / 订阅 / 远程与网络检测；开关在卡片右侧，点卡片进入对应页面</div>
 
-      <!-- 中控台英雄卡：左速率读数+曲线 / 中摘要列（今日已用·活跃连接·当前模式，stacked） / 右代理总开关。
-           速率与流量仅取订阅内核数据源（anet 代理流量无计数器，不造假）；数字滚动走 .odo 组件（odoSet 驱动）；
-           窄屏重排见 head style 块（≤860px 摘要折行均布，≤720px 开关缩 64px） -->
+      <!-- Dashboard hero card: left rate readout + chart / center summary column (today's usage · active conns · current mode, stacked) / right proxy master switch.
+           Rates and traffic come only from the subscription kernel data source (anet proxy traffic has no counters, no faking); number roll via .odo component (driven by odoSet);
+           narrow-screen reflow in head style block (≤860px summary wraps into even row, ≤720px switch shrinks to 64px) -->
       <div class="card" id="hero-card" style="display:flex;align-items:center;gap:20px;flex-wrap:wrap">
-        <!-- 左区：速率读数行（下行大字 / 上行小字同行）+ 双序列曲线（min-width:0 防挤压摘要列） -->
+        <!-- Left: rate readout row (large down / small up on same line) + dual-series chart (min-width:0 prevents squeezing the summary column) -->
         <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:6px">
           <div style="display:flex;align-items:baseline;gap:16px">
             <span style="font-size:24px;font-weight:600;color:var(--chart-down);font-variant-numeric:tabular-nums;white-space:nowrap">↓&nbsp;<span class="odo" id="hero-rate-down">-</span></span>
@@ -119,82 +119,82 @@
           </div>
           <div id="hero-chart" style="height:76px;min-width:0"></div>
           <div class="empty-state" id="hero-chart-empty" style="display:none;padding:18px 20px">
-            <div class="empty-t" style="margin-top:0">订阅内核未运行，暂无速率数据</div>
+            <div class="empty-t" style="margin-top:0" data-i18n="home.chartEmpty">订阅内核未运行，暂无速率数据</div>
           </div>
         </div>
-        <!-- 中区：摘要列（stacked：图标+标签在上，数值等宽大字在下；右对齐） -->
+        <!-- Center: summary column (stacked: icon+label on top, tabular large value below; right-aligned) -->
         <div class="hero-stats">
           <div class="hstat">
-            <span class="hstat-l"><i data-ic="gauge" data-sz="11"></i>今日已用</span>
+            <span class="hstat-l"><i data-ic="gauge" data-sz="11"></i><span data-i18n="home.todayUsed">今日已用</span></span>
             <span class="hstat-v odo" id="hero-traffic">-</span>
             <span class="hstat-s" id="hero-traffic-split"></span>
           </div>
           <div class="hstat">
-            <span class="hstat-l"><i data-ic="activity" data-sz="11"></i>活跃连接</span>
+            <span class="hstat-l"><i data-ic="activity" data-sz="11"></i><span data-i18n="home.activeConns">活跃连接</span></span>
             <span class="hstat-v odo" id="hero-conns">-</span>
           </div>
           <div class="hstat">
-            <span class="hstat-l"><i data-ic="route" data-sz="11"></i>当前模式</span>
+            <span class="hstat-l"><i data-ic="route" data-sz="11"></i><span data-i18n="home.curMode">当前模式</span></span>
             <span class="hstat-v" id="hero-mode" style="font-size:14px">-</span>
           </div>
         </div>
-        <!-- 右区：代理总开关 + 状态文字（右撇子顺手位） -->
+        <!-- Right: proxy master switch + status text (handy position for right-handed users) -->
         <div style="display:flex;flex-direction:column;align-items:center;gap:6px;flex-shrink:0">
-          <button id="btn-power" class="power-btn" title="代理总开关"><i data-ic="power" data-sz="32"></i></button>
+          <button id="btn-power" class="power-btn" title="代理总开关" data-i18n-title="home.powerTitle"><i data-ic="power" data-sz="32"></i></button>
           <div id="hero-power-state" style="font-size:12px;font-weight:600;color:var(--text-strong);text-align:center;max-width:120px">已停止</div>
           <div class="hint" id="hero-power-hint" style="margin-top:0;display:none;text-align:center;font-size:10px;max-width:120px"></div>
         </div>
       </div>
 
-      <!-- 新手检查单（首次成功路径显性化：激活订阅功能 → 添加订阅 → 开启本地代理 → 出口探测成功；
-           四步全就绪 5s 后淡出并记 ag_ob_done；「不再显示」记 ag_ob_dismissed；有任一标记不渲染） -->
+      <!-- Onboarding checklist (makes first-success path explicit: activate subscription → add subscription → enable local proxy → egress probe success;
+           all four steps done → fade out after 5s and record ag_ob_done; 「不再显示」 records ag_ob_dismissed; any flag set → don't render) -->
       <div class="card" id="ob-card" style="display:none">
         <h3><i data-ic="rocket"></i><span id="ob-title">新手检查单</span>
-          <span class="h3-tools"><button class="ghost small" id="ob-dismiss">不再显示</button></span>
+          <span class="h3-tools"><button class="ghost small" id="ob-dismiss" data-i18n="home.obDismiss">不再显示</button></span>
         </h3>
         <div class="role-list" id="ob-list"></div>
       </div>
 
-      <!-- 空状态引导（未连接任何节点时显示） -->
+      <!-- Empty state onboarding (shown when no nodes connected) -->
       <div id="onboarding" class="hero" style="display:none">
         <div class="hero-logo"><i data-ic="zap" data-sz="30"></i></div>
-        <h1>欢迎使用 AgileNet</h1>
-        <p class="hero-sub">企业级网络穿透与代理链路由 · 三步接入您的内网</p>
+        <h1 data-i18n="home.welcome">欢迎使用 AgileNet</h1>
+        <p class="hero-sub" data-i18n="home.heroSub">企业级网络穿透与代理链路由 · 三步接入您的内网</p>
         <div class="hero-steps">
-          <div class="hero-step"><span class="num">1</span>向管理员索取<b>接入链接</b><br><span class="dim">(agilenet://connect?...)</span></div>
-          <div class="hero-step"><span class="num">2</span>粘贴到下方<b>一键连接</b></div>
-          <div class="hero-step"><span class="num">3</span>启动<b>代理</b>即可访问内网</div>
+          <div class="hero-step"><span class="num">1</span><span data-i18n="home.step1a">向管理员索取</span><b data-i18n="home.step1b">接入链接</b><br><span class="dim">(agilenet://connect?...)</span></div>
+          <div class="hero-step"><span class="num">2</span><span data-i18n="home.step2a">粘贴到下方</span><b data-i18n="home.step2b">一键连接</b></div>
+          <div class="hero-step"><span class="num">3</span><span data-i18n="home.step3a">启动</span><b data-i18n="home.step3b">代理</b><span data-i18n="home.step3c">即可访问内网</span></div>
         </div>
         <div class="hero-input">
-          <input id="connect-url-hero" class="mono" placeholder="粘贴接入链接 agilenet://connect?...">
-          <button id="btn-import-hero" class="big"><i data-ic="rocket" data-sz="17"></i>一键接入</button>
+          <input id="connect-url-hero" class="mono" placeholder="粘贴接入链接 agilenet://connect?..." data-i18n-ph="home.connectPh">
+          <button id="btn-import-hero" class="big"><i data-ic="rocket" data-sz="17"></i><span data-i18n="home.connectBtn">一键接入</span></button>
         </div>
-        <div class="hero-alt">或 <a href="javascript:void(0)" id="link-paste">从剪贴板导入</a> · <a href="javascript:void(0)" id="link-manual">手动填写</a></div>
+        <div class="hero-alt"><span data-i18n="home.or">或</span> <a href="javascript:void(0)" id="link-paste" data-i18n="common.pasteImport">从剪贴板导入</a> · <a href="javascript:void(0)" id="link-manual" data-i18n="home.manualFill">手动填写</a></div>
       </div>
 
-      <!-- 仪表盘卡片网格（风格对齐管理端概览；local-only 卡在 Web 远程面隐藏） -->
+      <!-- Dashboard card grid (style aligns with admin console overview; local-only cards hidden in Web remote panel) -->
       <div class="dash-grid" id="dash-grid">
 
-        <!-- 代理：系统/本地模式 + 端口 + 启停开关 + 系统代理冲突 banner -->
+        <!-- Proxy: system/local mode + port + on/off switch + system-proxy-conflict banner -->
         <div class="dcard" id="dc-proxy">
-          <div class="dc-head"><i data-ic="power" data-sz="15"></i>代理 <span id="d-proxy-badge"></span>
+          <div class="dc-head"><i data-ic="power" data-sz="15"></i><span data-i18n="term.proxy">代理</span> <span id="d-proxy-badge"></span>
             <label class="switch dc-switch"><input type="checkbox" id="d-proxy"><span class="slider"></span></label>
           </div>
           <div class="group-tabs" id="proxy-mode" style="margin-bottom:0">
-            <button class="group-tab" data-proxy-mode="system">系统代理</button>
-            <button class="group-tab" data-proxy-mode="local">本地代理</button>
+            <button class="group-tab" data-proxy-mode="system" data-i18n="home.modeSystem">系统代理</button>
+            <button class="group-tab" data-proxy-mode="local" data-i18n="home.modeLocal">本地代理</button>
           </div>
-          <div class="dc-kv"><span class="k">监听</span><span id="d-proxy-addr" class="v2"></span></div>
+          <div class="dc-kv"><span class="k" data-i18n="common.listen">监听</span><span id="d-proxy-addr" class="v2"></span></div>
           <div class="hint" id="proxy-hint" style="margin-top:0"></div>
           <div class="net-banner" id="sysproxy-banner" style="display:none;margin-top:0">
             <i data-ic="triangle-alert" data-sz="14"></i><span id="sysproxy-banner-text">系统代理已被外部修改</span>
-            <button class="ghost small" id="btn-sysproxy-reclaim" style="margin-left:auto">收回</button>
+            <button class="ghost small" id="btn-sysproxy-reclaim" style="margin-left:auto" data-i18n="sysproxy.reclaim">收回</button>
           </div>
         </div>
 
-        <!-- 扇入：客户端角色开关 + 已连接/已保存数量（点卡片进扇入页） -->
+        <!-- Fan-in: client role switch + connected/saved counts (click card to open fan-in page) -->
         <div class="dcard" id="dc-fanin" data-goto="nodes">
-          <div class="dc-head"><i data-ic="orbit" data-sz="15"></i>扇入 <span id="d-fanin-off" style="display:none"><span class="badge b-off">已停用</span></span>
+          <div class="dc-head"><i data-ic="orbit" data-sz="15"></i><span data-i18n="term.fanin">扇入</span> <span id="d-fanin-off" style="display:none"><span class="badge b-off" data-i18n="home.faninOff">已停用</span></span>
             <label class="switch dc-switch local-only"><input type="checkbox" id="r-client" checked><span class="slider"></span></label>
           </div>
           <div class="dc-val" id="d-fanin-val">-</div>
@@ -203,18 +203,18 @@
           <div class="dc-spark" id="d-fanin-spark" style="display:none"></div>
         </div>
 
-        <!-- 扇出：监听开关 + 连通数 + API/Relay 地址简述（点卡片进扇出页；服务端角色属 Beta 实验区） -->
+        <!-- Fan-out: listen switch + connected count + API/Relay address summary (click card to open fan-out page; server role is Beta lab) -->
         <div class="dcard local-only" id="dc-fanout" data-goto="upstreams">
-          <div class="dc-head"><i data-ic="git-fork" data-sz="15"></i>扇出 <span class="badge-beta">Beta</span> <span id="d-server-badge"></span>
+          <div class="dc-head"><i data-ic="git-fork" data-sz="15"></i><span data-i18n="term.fanout">扇出</span> <span class="badge-beta">Beta</span> <span id="d-server-badge"></span>
             <label class="switch dc-switch"><input type="checkbox" id="d-server"><span class="slider"></span></label>
           </div>
           <div class="dc-val" id="d-fanout-val">-</div>
           <div class="dc-sub" id="d-fanout-sub">扇出监听状态加载中…</div>
         </div>
 
-        <!-- 订阅：内核开关 + 激活订阅/节点数 + 当前节点延迟；功能未激活显示引导态 -->
+        <!-- Subscription: kernel switch + active subscription/node count + current node latency; shows guide state when feature not activated -->
         <div class="dcard local-only" id="dc-sub" data-goto="subscription">
-          <div class="dc-head"><i data-ic="satellite" data-sz="15"></i>订阅 <span id="d-sub-badge"></span>
+          <div class="dc-head"><i data-ic="satellite" data-sz="15"></i><span data-i18n="term.subscription">订阅</span> <span id="d-sub-badge"></span>
             <label class="switch dc-switch" id="d-sub-switch"><input type="checkbox" id="d-sub"><span class="slider"></span></label>
           </div>
           <div id="d-sub-body">
@@ -224,262 +224,262 @@
             <div class="dc-spark" id="d-sub-spark" style="display:none"></div>
           </div>
           <div id="d-sub-guide" style="display:none">
-            <div class="dc-sub">订阅代理（mihomo 内核）未启用</div>
-            <div class="dc-sub">到「设置 → 订阅内核」安装内核并激活，即可导入 Clash 系订阅</div>
+            <div class="dc-sub" data-i18n="home.subGuide1">订阅代理（mihomo 内核）未启用</div>
+            <div class="dc-sub" data-i18n="home.subGuide2">到「设置 → 订阅内核」安装内核并激活，即可导入 Clash 系订阅</div>
           </div>
         </div>
 
-        <!-- 远程：Web 远程面开关 + 监听地址（原 web-panel 迁入） -->
+        <!-- Remote: Web remote panel switch + listen address (migrated from former web-panel) -->
         <div class="dcard local-only" id="dc-web">
-          <div class="dc-head"><i data-ic="monitor" data-sz="15"></i>远程 <span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip">Web 远程面：把本机管理界面经 HTTP 暴露（默认仅 127.0.0.1，须先设管理密码）</span></span>
+          <div class="dc-head"><i data-ic="monitor" data-sz="15"></i><span data-i18n="home.remote">远程</span> <span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip" data-i18n="home.remoteTip">Web 远程面：把本机管理界面经 HTTP 暴露（默认仅 127.0.0.1，须先设管理密码）</span></span>
             <label class="switch dc-switch"><input type="checkbox" id="r-web"><span class="slider"></span></label>
           </div>
           <div id="web-panel" style="display:none">
-            <div class="dc-kv"><span class="k">监听地址</span><span id="web-listen" class="v2"></span></div>
+            <div class="dc-kv"><span class="k" data-i18n="home.listenAddr">监听地址</span><span id="web-listen" class="v2"></span></div>
             <div class="hint" id="web-status" style="margin-top:4px"></div>
           </div>
         </div>
 
-        <!-- 网络检测：出口 IP + 文字归属地 + 内网 IP + 手动刷新 -->
+        <!-- Network check: egress IP + text geolocation + LAN IP + manual refresh -->
         <div class="dcard local-only" id="dc-net">
-          <div class="dc-head"><i data-ic="activity" data-sz="15"></i>网络检测
-            <span class="h3-tools"><button class="ghost small icon-btn" id="btn-net-refresh" title="重新探测"><i data-ic="refresh-cw" data-sz="13"></i></button></span>
+          <div class="dc-head"><i data-ic="activity" data-sz="15"></i><span data-i18n="home.netCheck">网络检测</span>
+            <span class="h3-tools"><button class="ghost small icon-btn" id="btn-net-refresh" title="重新探测" data-i18n-title="home.reprobe"><i data-ic="refresh-cw" data-sz="13"></i></button></span>
           </div>
           <div class="dc-val mono" id="d-net-ip">探测中…</div>
           <div class="dc-sub" id="d-net-geo"></div>
-          <div class="dc-kv"><span class="k">内网 IP</span><span class="mono v2" id="d-net-lan">-</span></div>
+          <div class="dc-kv"><span class="k" data-i18n="home.lanIp">内网 IP</span><span class="mono v2" id="d-net-lan">-</span></div>
         </div>
 
       </div>
 
     </section>
 
-    <!-- 扇出：本机内嵌端点作为扇出方连接目标端点（路由再发布；多目标扇出/容灾） -->
+    <!-- Fan-out: local embedded endpoint acts as fan-out side connecting to target endpoints (route re-advertise; multi-target fan-out/DR) -->
     <section class="view" id="view-upstreams" hidden>
-      <div class="page-title"><i data-ic="git-fork" data-sz="19"></i>扇出</div>
-      <div class="page-desc">内嵌端点作为扇出方连接目标端点（多目标扇出/容灾）；客户端隧道规则将转售给扇入端点。需扇出监听开启后生效，变更即热生效</div>
+      <div class="page-title"><i data-ic="git-fork" data-sz="19"></i><span data-i18n="term.fanout">扇出</span></div>
+      <div class="page-desc" data-i18n="fanout.desc">内嵌端点作为扇出方连接目标端点（多目标扇出/容灾）；客户端隧道规则将转售给扇入端点。需扇出监听开启后生效，变更即热生效</div>
       <div class="agtabs" id="fo-tabs">
         <div class="agtabs-pill">
-          <button class="agtab active" data-agtab="listen">监听</button>
-          <button class="agtab" data-agtab="conn">连接</button>
+          <button class="agtab active" data-agtab="listen" data-i18n="common.listen">监听</button>
+          <button class="agtab" data-agtab="conn" data-i18n="fanout.tabConn">连接</button>
         </div>
       </div>
 
-      <!-- 扇出监听（扇出能力本体）：内嵌完整端点 —— Beta 实验区（将付费能力，Beta 期间限时免费） -->
+      <!-- Fan-out listen (the fan-out capability itself): embedded full endpoint — Beta lab (will be paid, free during Beta) -->
       <div data-agpanel="listen">
         <div class="card beta-card">
           <div class="beta-head">
             <span class="badge-beta">Beta</span>
-            <span class="beta-note">实验区 · Beta 期间限时免费，正式版将纳入付费计划</span>
+            <span class="beta-note" data-i18n="fanout.betaNote">实验区 · Beta 期间限时免费，正式版将纳入付费计划</span>
           </div>
           <div class="role-list">
             <div class="role-row">
-              <div class="role-info"><b>扇出监听（服务端角色） <span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip">内嵌完整端点（Relay / 账号 / 规则 / 审计），本机可作为转发机或留守管理端</span></span></b></div>
+              <div class="role-info"><b><span data-i18n="fanout.listenRole">扇出监听（服务端角色）</span> <span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip" data-i18n="fanout.listenTip">内嵌完整端点（Relay / 账号 / 规则 / 审计），本机可作为转发机或留守管理端</span></span></b></div>
               <label class="switch"><input type="checkbox" id="r-server"><span class="slider"></span></label>
             </div>
             <div id="server-panel" style="display:none">
-              <div class="kv"><span class="k">管理 API</span><span class="mono" id="sv-api">-</span></div>
-              <div class="kv"><span class="k">Relay 监听</span><span class="mono" id="sv-relay">-</span></div>
+              <div class="kv"><span class="k" data-i18n="fanout.adminApi">管理 API</span><span class="mono" id="sv-api">-</span></div>
+              <div class="kv"><span class="k" data-i18n="fanout.relayListen">Relay 监听</span><span class="mono" id="sv-relay">-</span></div>
               <div class="row" style="margin-top:8px">
-                <button id="btn-open-console" class="ghost small"><i data-ic="external-link" data-sz="13"></i> 打开控制台（账号 / Relay Token / 权限组）</button>
+                <button id="btn-open-console" class="ghost small"><i data-ic="external-link" data-sz="13"></i> <span data-i18n="fanout.openConsole">打开控制台（账号 / Relay Token / 权限组）</span></button>
               </div>
             </div>
             <div class="role-row beta-soon">
-              <div class="role-info"><b>Relay 接入凭据配额 · 带机量限制 <span class="badge-soon">敬请期待</span></b>
-                <span class="hint">按套餐限制单节点可签发的 Relay Token 数量与并发接入数（详见产品计划）</span>
+              <div class="role-info"><b><span data-i18n="fanout.quota">Relay 接入凭据配额 · 带机量限制</span> <span class="badge-soon" data-i18n="common.comingSoon">敬请期待</span></b>
+                <span class="hint" data-i18n="fanout.quotaHint">按套餐限制单节点可签发的 Relay Token 数量与并发接入数（详见产品计划）</span>
               </div>
             </div>
             <div class="role-row beta-soon">
-              <div class="role-info"><b>企业联邦对接（节点连节点） <span class="badge-soon">敬请期待</span></b>
-                <span class="hint">Site-to-Site 互联凭证，含带宽/并发/IP 白名单细粒度控制</span>
+              <div class="role-info"><b><span data-i18n="fanout.federation">企业联邦对接（节点连节点）</span> <span class="badge-soon" data-i18n="common.comingSoon">敬请期待</span></b>
+                <span class="hint" data-i18n="fanout.federationHint">Site-to-Site 互联凭证，含带宽/并发/IP 白名单细粒度控制</span>
               </div>
             </div>
           </div>
         </div>
       </div>
 
-      <!-- 扇出连接：列表 + 弹窗新建/编辑 -->
+      <!-- Fan-out connections: list + create/edit modal -->
       <div data-agpanel="conn" hidden>
         <div class="card">
-          <h3><i data-ic="git-fork"></i>扇出连接
-            <span class="h3-tools"><button class="ghost small icon-btn" id="btn-fo-refresh" title="刷新"><i data-ic="refresh-cw" data-sz="13"></i></button></span>
+          <h3><i data-ic="git-fork"></i><span data-i18n="fanout.connList">扇出连接</span>
+            <span class="h3-tools"><button class="ghost small icon-btn" id="btn-fo-refresh" title="刷新" data-i18n-title="common.refresh"><i data-ic="refresh-cw" data-sz="13"></i></button></span>
           </h3>
           <div class="row" style="margin-bottom:12px;justify-content:flex-end">
-            <button id="btn-fo-add" class="small"><i data-ic="plus" data-sz="13"></i> 添加扇出连接</button>
+            <button id="btn-fo-add" class="small"><i data-ic="plus" data-sz="13"></i> <span data-i18n="fanout.addConn">添加扇出连接</span></button>
           </div>
           <div id="fo-list"><div class="empty">尚未配置扇出连接</div></div>
         </div>
       </div>
     </section>
 
-    <!-- 扇入（下游）：本机连入的 AgileNet 端点 —— 添加 / 连接 / 消费管理 -->
+    <!-- Fan-in (downstream): AgileNet endpoints this machine connects to — add / connect / consumption management -->
     <section class="view" id="view-nodes" hidden>
-      <div class="page-title"><i data-ic="orbit" data-sz="19"></i>扇入</div>
-      <div class="page-desc">下游连接的消费管理：以已保存扇入为主体，叠加实时状态</div>
+      <div class="page-title"><i data-ic="orbit" data-sz="19"></i><span data-i18n="term.fanin">扇入</span></div>
+      <div class="page-desc" data-i18n="fanin.desc">下游连接的消费管理：以已保存扇入为主体，叠加实时状态</div>
       <div id="net-banner" class="net-banner" style="display:none"></div>
 
-      <!-- 快速接入（导入条） -->
+      <!-- Quick connect (import bar) -->
       <div class="card" id="quick-card">
         <div class="row">
-          <input id="connect-url" class="grow mono" placeholder="粘贴接入链接添加扇入 agilenet://connect?...">
-          <button id="btn-import">导入并连接</button>
-          <button id="btn-paste" class="ghost icon-btn" title="从剪贴板导入"><i data-ic="clipboard" data-sz="15"></i></button>
+          <input id="connect-url" class="grow mono" placeholder="粘贴接入链接添加扇入 agilenet://connect?..." data-i18n-ph="fanin.connectPh">
+          <button id="btn-import" data-i18n="fanin.import">导入并连接</button>
+          <button id="btn-paste" class="ghost icon-btn" title="从剪贴板导入" data-i18n-title="common.pasteImport"><i data-ic="clipboard" data-sz="15"></i></button>
         </div>
       </div>
 
-      <!-- 手动添加扇入（折叠） -->
+      <!-- Manually add fan-in (collapsed) -->
       <div class="card">
-        <h3 id="manual-toggle" style="cursor:pointer"><i data-ic="plus"></i>手动添加扇入 <span class="hint" id="manual-arrow"><i data-ic="chevron-right" data-sz="13"></i></span></h3>
+        <h3 id="manual-toggle" style="cursor:pointer"><i data-ic="plus"></i><span data-i18n="fanin.manualAdd">手动添加扇入</span> <span class="hint" id="manual-arrow"><i data-ic="chevron-right" data-sz="13"></i></span></h3>
         <div id="manual-form" style="display:none">
           <div class="grid2">
-            <div><label>扇入端点地址（host:port 或 https://…）</label><input id="m-addr" placeholder="cdn.example.com:59090"></div>
-            <div><label>账号</label><input id="m-user" placeholder="zhangsan"></div>
-            <div><label>密码</label><input id="m-pass" type="password" placeholder="sk-..."></div>
-            <div><label>证书固定 PEM 路径（可选，生产推荐）</label><input id="m-pin" placeholder="certs/node.pem"></div>
+            <div><label data-i18n="fanin.addrLabel">扇入端点地址（host:port 或 https://…）</label><input id="m-addr" placeholder="cdn.example.com:59090"></div>
+            <div><label data-i18n="term.account">账号</label><input id="m-user" placeholder="zhangsan"></div>
+            <div><label data-i18n="common.password">密码</label><input id="m-pass" type="password" placeholder="sk-..."></div>
+            <div><label data-i18n="fanin.pinLabel">证书固定 PEM 路径（可选，生产推荐）</label><input id="m-pin" placeholder="certs/node.pem"></div>
           </div>
           <div class="row" style="margin-top:10px">
-            <label class="chk"><input type="checkbox" id="m-insecure"> 跳过证书校验（仅开发）</label>
-            <label class="chk"><input type="checkbox" id="m-hosts"> 管理系统 hosts</label>
-            <label class="chk"><input type="checkbox" id="m-save" checked> 保存凭据</label>
-            <button id="btn-connect">连接</button>
+            <label class="chk"><input type="checkbox" id="m-insecure"> <span data-i18n="fanin.insecure">跳过证书校验（仅开发）</span></label>
+            <label class="chk"><input type="checkbox" id="m-hosts"> <span data-i18n="fanin.manageHosts">管理系统 hosts</span></label>
+            <label class="chk"><input type="checkbox" id="m-save" checked> <span data-i18n="fanin.saveCred">保存凭据</span></label>
+            <button id="btn-connect" data-i18n="common.connect">连接</button>
           </div>
         </div>
       </div>
 
-      <!-- 扇入列表（已保存扇入为主体 + 实时状态；连接/断开/分享/删除） -->
+      <!-- Fan-in list (saved fan-ins as primary + live status; connect/disconnect/share/delete) -->
       <div class="card" id="creds-card">
-        <h3><i data-ic="orbit"></i>扇入列表
+        <h3><i data-ic="orbit"></i><span data-i18n="fanin.list">扇入列表</span>
           <span class="h3-tools">
-            <button class="ghost small icon-btn" id="btn-refresh" title="刷新"><i data-ic="refresh-cw" data-sz="13"></i></button>
-            <button class="ghost small icon-btn search-toggle" data-search="creds" title="搜索"><i data-ic="search" data-sz="13"></i></button>
+            <button class="ghost small icon-btn" id="btn-refresh" title="刷新" data-i18n-title="common.refresh"><i data-ic="refresh-cw" data-sz="13"></i></button>
+            <button class="ghost small icon-btn search-toggle" data-search="creds" title="搜索" data-i18n-title="common.search"><i data-ic="search" data-sz="13"></i></button>
           </span>
         </h3>
-        <div class="list-search" id="search-creds" hidden><input placeholder="搜索名称 / 账号 / 地址 / 状态"></div>
+        <div class="list-search" id="search-creds" hidden><input placeholder="搜索名称 / 账号 / 地址 / 状态" data-i18n-ph="fanin.searchPh"></div>
         <div id="creds-list"><div class="empty">尚未添加扇入</div></div>
       </div>
     </section>
 
-    <!-- 规则：全部（自定义 放行/映射 + 端点拉取 统一表格）与组合（成组启停）；长表粘性表头 + 内部滚动 -->
+    <!-- Rules: All (custom bypass/mapping + endpoint-pulled in one table) and Combos (group on/off); long table with sticky header + internal scroll -->
     <section class="view" id="view-routes" hidden>
-      <div class="page-title"><i data-ic="route" data-sz="19"></i>路由规则</div>
-      <div class="page-desc">放行/映射为本地自定义规则，优先级高于订阅与端点规则；组合 = 成组启停的规则集合；开关立即生效并本地记忆</div>
+      <div class="page-title"><i data-ic="route" data-sz="19"></i><span data-i18n="rules.title">路由规则</span></div>
+      <div class="page-desc" data-i18n="rules.desc">放行/映射为本地自定义规则，优先级高于订阅与端点规则；组合 = 成组启停的规则集合；开关立即生效并本地记忆</div>
       <div class="agtabs" id="rl-tabs">
         <div class="agtabs-pill">
-          <button class="agtab active" data-agtab="all">全部</button>
-          <button class="agtab local-only" data-agtab="combo">组合</button>
+          <button class="agtab active" data-agtab="all" data-i18n="common.all">全部</button>
+          <button class="agtab local-only" data-agtab="combo" data-i18n="rules.combo">组合</button>
         </div>
       </div>
 
-      <!-- 全部：统一表格（自定义 + 拉取），工具行 = 类型过滤 chips + 新建按钮 + 搜索 -->
+      <!-- All: unified table (custom + pulled); toolbar = type filter chips + create buttons + search -->
       <div data-agpanel="all">
         <div class="card" id="rules-card">
-          <h3><i data-ic="route"></i>生效规则 <span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip">hosts 映射先改写解析；放行命中后直连或经订阅；两者优先级高于订阅与端点规则</span></span>
-            <span class="h3-tools"><button class="ghost small icon-btn search-toggle" data-search="rules" title="搜索"><i data-ic="search" data-sz="13"></i></button></span>
+          <h3><i data-ic="route"></i><span data-i18n="rules.effective">生效规则</span> <span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip" data-i18n="rules.effectiveTip">hosts 映射先改写解析；放行命中后直连或经订阅；两者优先级高于订阅与端点规则</span></span>
+            <span class="h3-tools"><button class="ghost small icon-btn search-toggle" data-search="rules" title="搜索" data-i18n-title="common.search"><i data-ic="search" data-sz="13"></i></button></span>
           </h3>
           <div class="rl-toolbar">
             <div class="agtabs-pill" id="rl-filter">
-              <button class="agtab active" data-rfilter="all">全部</button>
-              <button class="agtab" data-rfilter="bypass">放行</button>
-              <button class="agtab" data-rfilter="host">映射</button>
-              <button class="agtab" data-rfilter="pulled">拉取</button>
+              <button class="agtab active" data-rfilter="all" data-i18n="common.all">全部</button>
+              <button class="agtab" data-rfilter="bypass" data-i18n="rules.bypass">放行</button>
+              <button class="agtab" data-rfilter="host" data-i18n="rules.mapping">映射</button>
+              <button class="agtab" data-rfilter="pulled" data-i18n="rules.pulled">拉取</button>
             </div>
             <span class="rl-tools">
-              <button id="btn-add-bypass" class="small local-only"><i data-ic="plus" data-sz="13"></i> 放行</button>
-              <button id="btn-add-host" class="small local-only"><i data-ic="plus" data-sz="13"></i> 映射</button>
+              <button id="btn-add-bypass" class="small local-only"><i data-ic="plus" data-sz="13"></i> <span data-i18n="rules.bypass">放行</span></button>
+              <button id="btn-add-host" class="small local-only"><i data-ic="plus" data-sz="13"></i> <span data-i18n="rules.mapping">映射</span></button>
             </span>
           </div>
-          <div class="list-search" id="search-rules" hidden><input placeholder="搜索类型 / 匹配值 / 来源"></div>
+          <div class="list-search" id="search-rules" hidden><input placeholder="搜索类型 / 匹配值 / 来源" data-i18n-ph="rules.searchPh"></div>
           <div class="table-scroll">
-            <table><thead><tr><th>类型</th><th>匹配值</th><th>方式</th><th>来源</th><th>启用</th><th>操作</th></tr></thead><tbody id="rules-body"></tbody></table>
+            <table><thead><tr><th data-i18n="rules.colType">类型</th><th data-i18n="rules.colMatch">匹配值</th><th data-i18n="rules.colVia">方式</th><th data-i18n="rules.colSource">来源</th><th data-i18n="common.enable">启用</th><th data-i18n="common.action">操作</th></tr></thead><tbody id="rules-body"></tbody></table>
           </div>
         </div>
       </div>
 
-      <!-- 组合：命名规则集合（成员 = 自定义规则 + 拉取规则），整体启停 -->
+      <!-- Combos: named rule sets (members = custom rules + pulled rules), toggled as a whole -->
       <div data-agpanel="combo" hidden>
         <div class="card">
-          <h3><i data-ic="layers"></i>规则组合 <span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip">启用组合 = 成员规则全部生效（拉取成员自动取消暂停）；停用 = 拉取成员暂停，但被其他已启用组合覆盖的成员不动</span></span></h3>
+          <h3><i data-ic="layers"></i><span data-i18n="rules.comboTitle">规则组合</span> <span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip" data-i18n="rules.comboTip">启用组合 = 成员规则全部生效（拉取成员自动取消暂停）；停用 = 拉取成员暂停，但被其他已启用组合覆盖的成员不动</span></span></h3>
           <div class="row" style="margin-bottom:12px;justify-content:flex-end">
-            <button id="btn-add-combo" class="small"><i data-ic="plus" data-sz="13"></i> 新建组合</button>
+            <button id="btn-add-combo" class="small"><i data-ic="plus" data-sz="13"></i> <span data-i18n="rules.comboAdd">新建组合</span></button>
           </div>
           <div id="combo-list"><div class="empty">尚未创建组合</div></div>
         </div>
       </div>
     </section>
 
-    <!-- 订阅：订阅列表管理（激活单选） -->
+    <!-- Subscription: subscription list management (single active selection) -->
     <section class="view" id="view-subscription" hidden>
-      <div class="page-title"><i data-ic="satellite" data-sz="19"></i>订阅</div>
-      <div class="page-desc">导入 Clash 系订阅，无需第三方客户端；内核由应用托管（钉版本 SHA-256 校验）</div>
+      <div class="page-title"><i data-ic="satellite" data-sz="19"></i><span data-i18n="term.subscription">订阅</span></div>
+      <div class="page-desc" data-i18n="sub.desc">导入 Clash 系订阅，无需第三方客户端；内核由应用托管（钉版本 SHA-256 校验）</div>
 
       <div class="card">
-        <h3><i data-ic="power"></i>订阅内核 <span class="hint inline" id="sub-status-text">未开启</span>
+        <h3><i data-ic="power"></i><span data-i18n="sub.kernel">订阅内核</span> <span class="hint inline" id="sub-status-text">未开启</span>
           <span class="h3-tools"><label class="switch"><input type="checkbox" id="r-sub"><span class="slider"></span></label></span>
         </h3>
-        <div class="kv"><span class="k">内核版本</span><span class="mono" id="sub-version">-</span></div>
-        <div class="kv"><span class="k">本地出口</span><span class="mono">127.0.0.1:57892（mixed）</span></div>
-        <div class="kv"><span class="k">出站模式 <span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip">规则：按订阅规则分流；全局：全部流量走选中节点；直连：全部直连。切换即热生效</span></span></span>
+        <div class="kv"><span class="k" data-i18n="sub.version">内核版本</span><span class="mono" id="sub-version">-</span></div>
+        <div class="kv"><span class="k" data-i18n="sub.localExit">本地出口</span><span class="mono">127.0.0.1:57892（mixed）</span></div>
+        <div class="kv"><span class="k"><span data-i18n="sub.outMode">出站模式</span> <span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip" data-i18n="sub.outModeTip">规则：按订阅规则分流；全局：全部流量走选中节点；直连：全部直连。切换即热生效</span></span></span>
           <select id="sub-mode" class="small" style="width:104px">
-            <option value="rule">规则</option>
-            <option value="global">全局</option>
-            <option value="direct">直连</option>
+            <option value="rule" data-i18n="sub.modeRule">规则</option>
+            <option value="global" data-i18n="sub.modeGlobal">全局</option>
+            <option value="direct" data-i18n="sub.modeDirect">直连</option>
           </select>
         </div>
-        <div class="kv"><span class="k">出口 IP</span><span class="mono" id="sub-exit-ip">内核未运行</span></div>
+        <div class="kv"><span class="k" data-i18n="sub.exitIp">出口 IP</span><span class="mono" id="sub-exit-ip">内核未运行</span></div>
         <div class="hint" id="sub-exit-geo" style="margin-top:4px"></div>
-        <div class="kv" id="sub-traffic-row" style="display:none"><span class="k">流量</span><span class="mono" id="sub-traffic-total">-</span></div>
+        <div class="kv" id="sub-traffic-row" style="display:none"><span class="k" data-i18n="sub.traffic">流量</span><span class="mono" id="sub-traffic-total">-</span></div>
         <div class="dc-spark" id="sub-spark" style="display:none"></div>
-        <div class="hint" style="margin-top:6px">未命中 AgileNet 规则的流量自动经订阅出口</div>
+        <div class="hint" style="margin-top:6px" data-i18n="sub.fallHint">未命中 AgileNet 规则的流量自动经订阅出口</div>
       </div>
 
-      <!-- 制品下载卡（mihomo 内核 / wintun 共用；dl_state 轮询驱动，仅下载中/失败时可见） -->
+      <!-- Artifact download card (shared by mihomo kernel / wintun; driven by dl_state polling, visible only while downloading/failed) -->
       <div class="card" id="dl-card" style="display:none">
         <h3><i data-ic="download"></i><span id="dl-title">下载制品</span>
-          <span class="h3-tools"><button class="ghost small icon-btn" id="dl-cancel-x" title="取消下载"><i data-ic="x" data-sz="14"></i></button></span>
+          <span class="h3-tools"><button class="ghost small icon-btn" id="dl-cancel-x" title="取消下载" data-i18n-title="dl.cancelDl"><i data-ic="x" data-sz="14"></i></button></span>
         </h3>
         <div class="sub-progress" id="dl-progress"><i style="width:0%"></i></div>
         <div class="hint mono" id="dl-detail">-</div>
         <div class="hint sm-err" id="dl-err" style="display:none"></div>
         <div class="row" id="dl-actions" style="display:none;margin-top:8px">
-          <button id="dl-retry" class="ghost small"><i data-ic="refresh-cw" data-sz="13"></i> 重试下载</button>
-          <button id="dl-manual" class="ghost small"><i data-ic="download" data-sz="13"></i> 手动安装</button>
-          <button id="dl-dismiss" class="ghost small">取消</button>
+          <button id="dl-retry" class="ghost small"><i data-ic="refresh-cw" data-sz="13"></i> <span data-i18n="dl.retry">重试下载</span></button>
+          <button id="dl-manual" class="ghost small"><i data-ic="download" data-sz="13"></i> <span data-i18n="dl.manual">手动安装</span></button>
+          <button id="dl-dismiss" class="ghost small" data-i18n="common.cancel">取消</button>
         </div>
       </div>
 
-      <!-- TUN 模式（docs/plan/tun.md P1：网卡层接管，anet 在前 FlClash 在后；仅 Windows x64，需管理员） -->
+      <!-- TUN mode (docs/plan/tun.md P1: NIC-level takeover, anet in front, FlClash behind; Windows x64 only, requires admin) -->
       <div class="card" id="tun-card">
-        <h3><i data-ic="layers"></i>TUN 模式 <span class="hint inline" id="tun-status-text">未开启</span>
-          <span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip">虚拟网卡接管全部流量（含不读系统代理的应用）：先走 anet 分流，命中规则走隧道，未命中回落订阅出口（无订阅时回落外部上游）；需管理员权限</span></span>
+        <h3><i data-ic="layers"></i><span data-i18n="tun.mode">TUN 模式</span> <span class="hint inline" id="tun-status-text">未开启</span>
+          <span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip" data-i18n="tun.tip">虚拟网卡接管全部流量（含不读系统代理的应用）：先走 anet 分流，命中规则走隧道，未命中回落订阅出口（无订阅时回落外部上游）；需管理员权限</span></span>
           <span class="h3-tools"><label class="switch"><input type="checkbox" id="tun-mode"><span class="slider"></span></label></span>
         </h3>
-        <div class="kv"><span class="k">外部上游 <span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip">无可用订阅时未命中流量的回落目标（如 FlClash mixed 入站）；有订阅时未命中流量自动走订阅出口（127.0.0.1:57893）；仅允许本机回环地址</span></span></span>
+        <div class="kv"><span class="k"><span data-i18n="tun.upstream">外部上游</span> <span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip" data-i18n="tun.upstreamTip">无可用订阅时未命中流量的回落目标（如 FlClash mixed 入站）；有订阅时未命中流量自动走订阅出口（127.0.0.1:57893）；仅允许本机回环地址</span></span></span>
           <span id="tun-upstream" class="mono"></span>
         </div>
-        <div class="kv"><span class="k">状态</span><span class="mono" id="tun-state">-</span></div>
-        <div class="hint" style="margin-top:6px">未命中流量默认走订阅出口；若与 FlClash 共存，建议关闭其「系统代理」开关（保持内核监听即可），避免两软件互抢注册表</div>
+        <div class="kv"><span class="k" data-i18n="common.status">状态</span><span class="mono" id="tun-state">-</span></div>
+        <div class="hint" style="margin-top:6px" data-i18n="tun.coexistHint">未命中流量默认走订阅出口；若与 FlClash 共存，建议关闭其「系统代理」开关（保持内核监听即可），避免两软件互抢注册表</div>
       </div>
 
       <div class="card">
-        <h3><i data-ic="rss"></i>订阅列表
-          <span class="h3-tools"><button class="ghost small icon-btn" id="btn-add-sub" title="添加订阅"><i data-ic="plus" data-sz="14"></i></button></span>
+        <h3><i data-ic="rss"></i><span data-i18n="sub.list">订阅列表</span>
+          <span class="h3-tools"><button class="ghost small icon-btn" id="btn-add-sub" title="添加订阅" data-i18n-title="sub.add"><i data-ic="plus" data-sz="14"></i></button></span>
         </h3>
         <div id="subs-list" class="sub-grid"><div class="empty">尚未添加订阅</div></div>
       </div>
 
       <div class="card">
-        <h3><i data-ic="scroll-text"></i>覆写脚本
-          <span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip">订阅配置交给内核前按序执行的 JS（main(config) 返回新配置）；拖拽调整执行顺序；执行失败的脚本自动跳过并告警</span></span>
-          <span class="h3-tools"><button class="ghost small icon-btn" id="btn-add-script" title="新建脚本"><i data-ic="plus" data-sz="14"></i></button></span>
+        <h3><i data-ic="scroll-text"></i><span data-i18n="sub.scripts">覆写脚本</span>
+          <span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip" data-i18n="sub.scriptsTip">订阅配置交给内核前按序执行的 JS（main(config) 返回新配置）；拖拽调整执行顺序；执行失败的脚本自动跳过并告警</span></span>
+          <span class="h3-tools"><button class="ghost small icon-btn" id="btn-add-script" title="新建脚本" data-i18n-title="sub.scriptAdd"><i data-ic="plus" data-sz="14"></i></button></span>
         </h3>
         <div id="scripts-list"><div class="empty">尚未添加脚本</div></div>
       </div>
     </section>
 
-    <!-- 代理：激活订阅的节点组与切换（工具行：组页签 + 排序切换 + 组测速；标题行右侧「全部测速」） -->
+    <!-- Proxy: node groups of active subscription and switching (toolbar: group tabs + sort toggle + group latency test; 「全部测速」 at title row right) -->
     <section class="view" id="view-proxy" hidden>
-      <div class="page-title"><i data-ic="earth" data-sz="19"></i>节点
-        <span class="h3-tools"><button class="ghost small" id="btn-test-all"><i data-ic="gauge" data-sz="14"></i>全部测速</button></span>
+      <div class="page-title"><i data-ic="earth" data-sz="19"></i><span data-i18n="term.node">节点</span>
+        <span class="h3-tools"><button class="ghost small" id="btn-test-all"><i data-ic="gauge" data-sz="14"></i><span data-i18n="proxy.testAll">全部测速</span></button></span>
       </div>
       <div class="page-desc" id="proxy-sub-desc">激活订阅的节点列表；点击卡片切换，按组批量测速后自动推荐最快节点</div>
       <div class="card" id="groups-card">
@@ -487,42 +487,42 @@
           <div class="group-tabs" id="group-tabs" style="margin-bottom:0"></div>
           <span class="rl-tools">
             <span class="agtabs-pill" id="sort-tabs">
-              <button class="agtab active" data-sort="default" style="padding:3px 12px;font-size:12px">默认</button>
-              <button class="agtab" data-sort="delay" style="padding:3px 12px;font-size:12px">按延迟</button>
+              <button class="agtab active" data-sort="default" style="padding:3px 12px;font-size:12px" data-i18n="proxy.sortDefault">默认</button>
+              <button class="agtab" data-sort="delay" style="padding:3px 12px;font-size:12px" data-i18n="proxy.sortDelay">按延迟</button>
             </span>
-            <button class="ghost small" id="btn-test-group"><i data-ic="zap" data-sz="13"></i>测速</button>
+            <button class="ghost small" id="btn-test-group"><i data-ic="zap" data-sz="13"></i><span data-i18n="proxy.test">测速</span></button>
           </span>
         </div>
         <div class="node-grid" id="node-grid"><div class="empty">订阅内核未运行</div></div>
       </div>
     </section>
 
-    <!-- 日志：订阅内核实时可观测（连接 / 日志 / 规则命中）；仅本页打开时轮询，离开即停 -->
+    <!-- Logs: subscription kernel live observability (connections / logs / rule hits); polls only while this page is open, stops on leave -->
     <section class="view" id="view-logs" hidden>
-      <div class="page-title"><i data-ic="scroll-text" data-sz="19"></i>日志</div>
-      <div class="page-desc">订阅内核实时可观测：连接（右键行可强制打断 / 一键加规则）、内核日志与规则命中统计</div>
+      <div class="page-title"><i data-ic="scroll-text" data-sz="19"></i><span data-i18n="term.logs">日志</span></div>
+      <div class="page-desc" data-i18n="logs.desc">订阅内核实时可观测：连接（右键行可强制打断 / 一键加规则）、内核日志与规则命中统计</div>
       <div class="agtabs" id="lg-tabs">
         <div class="agtabs-pill">
-          <button class="agtab active" data-agtab="conn">实时连接</button>
-          <button class="agtab" data-agtab="log">实时日志</button>
-          <button class="agtab" data-agtab="hits">命中追踪</button>
-          <button class="agtab" data-agtab="ev">事件</button>
+          <button class="agtab active" data-agtab="conn" data-i18n="logs.tabConn">实时连接</button>
+          <button class="agtab" data-agtab="log" data-i18n="logs.tabLog">实时日志</button>
+          <button class="agtab" data-agtab="hits" data-i18n="logs.tabHits">命中追踪</button>
+          <button class="agtab" data-agtab="ev" data-i18n="term.events">事件</button>
         </div>
       </div>
 
-      <!-- 实时连接：活跃置顶（左 3px accent 条），已关闭灰显在后（1s 轮询） -->
+      <!-- Live connections: active pinned on top (3px accent bar left), closed grayed below (1s polling) -->
       <div data-agpanel="conn">
         <div class="card">
           <div class="table-scroll">
             <table class="tbl tbl-dense">
               <thead><tr>
-                <th>目标</th>
-                <th style="width:12%">进程</th>
-                <th style="width:17%">规则</th>
-                <th style="width:15%">出口</th>
+                <th data-i18n="logs.colTarget">目标</th>
+                <th style="width:12%" data-i18n="logs.colProcess">进程</th>
+                <th style="width:17%" data-i18n="term.rule">规则</th>
+                <th style="width:15%" data-i18n="logs.colExit">出口</th>
                 <th style="width:9%">↓</th>
                 <th style="width:9%">↑</th>
-                <th style="width:8%">耗时</th>
+                <th style="width:8%" data-i18n="logs.colDuration">耗时</th>
               </tr></thead>
               <tbody id="lg-conn-body"></tbody>
             </table>
@@ -530,38 +530,38 @@
         </div>
       </div>
 
-      <!-- 实时日志：内核日志增量流（1s 轮询；过滤/级别/清空；自动滚底，上滚暂停跟随） -->
+      <!-- Live logs: kernel log incremental stream (1s polling; filter/level/clear; auto-scroll to bottom, scroll up pauses follow) -->
       <div data-agpanel="log" hidden>
         <div class="card">
           <div class="rl-toolbar">
-            <input id="lg-log-filter" style="flex:1;min-width:160px" placeholder="关键字过滤（命中高亮）">
+            <input id="lg-log-filter" style="flex:1;min-width:160px" placeholder="关键字过滤（命中高亮）" data-i18n-ph="logs.filterPh">
             <select id="lg-log-level" class="small" style="width:96px">
-              <option value="">全部级别</option>
+              <option value="" data-i18n="logs.allLevels">全部级别</option>
               <option value="info">info</option>
               <option value="warning">warning</option>
               <option value="error">error</option>
             </select>
-            <span class="rl-tools"><button id="btn-lg-clear" class="ghost small">清空</button></span>
+            <span class="rl-tools"><button id="btn-lg-clear" class="ghost small" data-i18n="common.clear">清空</button></span>
           </div>
           <div class="logv" id="lg-log-view" style="height:calc(100vh - 320px);min-height:200px"></div>
         </div>
       </div>
 
-      <!-- 命中追踪：规则命中聚合（2s 轮询，次数降序） -->
+      <!-- Hit tracking: rule hit aggregation (2s polling, sorted by count desc) -->
       <div data-agpanel="hits" hidden>
         <div class="card">
           <div class="rl-toolbar">
-            <span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip">规则命中按次数降序（top 100）；「清空」同时重置实时日志缓冲</span></span>
-            <span class="rl-tools"><button id="btn-hits-clear" class="ghost small">清空</button></span>
+            <span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip" data-i18n="logs.hitsTip">规则命中按次数降序（top 100）；「清空」同时重置实时日志缓冲</span></span>
+            <span class="rl-tools"><button id="btn-hits-clear" class="ghost small" data-i18n="common.clear">清空</button></span>
           </div>
           <div class="table-scroll">
             <table class="tbl tbl-dense">
               <thead><tr>
-                <th style="width:18%">规则</th>
-                <th style="width:26%">载荷</th>
-                <th style="width:8%">次数</th>
-                <th style="width:28%">最近目标</th>
-                <th>最近时间</th>
+                <th style="width:18%" data-i18n="term.rule">规则</th>
+                <th style="width:26%" data-i18n="logs.colPayload">载荷</th>
+                <th style="width:8%" data-i18n="logs.colCount">次数</th>
+                <th style="width:28%" data-i18n="logs.colLastTarget">最近目标</th>
+                <th data-i18n="logs.colLastTime">最近时间</th>
               </tr></thead>
               <tbody id="lg-hits-body"></tbody>
             </table>
@@ -569,514 +569,518 @@
         </div>
       </div>
 
-      <!-- 事件中心：本机操作与系统事件审计（进页签拉取 + 10s 轮询 + 手动刷新，新 → 旧） -->
+      <!-- Event center: audit of local operations and system events (fetch on tab entry + 10s polling + manual refresh, new → old) -->
       <div data-agpanel="ev" hidden>
         <div class="card">
           <div class="rl-toolbar">
-            <span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip">来自本机操作与系统事件审计，新 → 旧</span></span>
-            <span class="rl-tools"><button id="btn-ev-refresh" class="ghost small"><i data-ic="refresh-cw" data-sz="13"></i> 刷新</button></span>
+            <span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip" data-i18n="logs.evTip">来自本机操作与系统事件审计，新 → 旧</span></span>
+            <span class="rl-tools"><button id="btn-ev-refresh" class="ghost small"><i data-ic="refresh-cw" data-sz="13"></i> <span data-i18n="common.refresh">刷新</span></button></span>
           </div>
           <div class="ev-list" id="lg-ev-list"></div>
         </div>
       </div>
     </section>
 
-    <!-- 管理端：内嵌 iframe（本机服务端 / 远端端点 / 可管理扇出），导航经 postMessage 驱动 -->
+    <!-- Admin console: embedded iframe (local server / remote endpoints / manageable fan-outs), navigation driven via postMessage -->
     <section class="view admin-view" id="view-admin" hidden>
-      <iframe id="admin-frame" title="管理端"></iframe>
+      <iframe id="admin-frame" title="管理端" data-i18n-title="admin.frameTitle"></iframe>
     </section>
 
-    <!-- 设置（分区：通用 → 连接 → 订阅内核 → 系统 → 同步与备份 → 关于与卸载；元素 id 不变，JS 绑定不受影响） -->
+    <!-- Settings (sections: General → Connection → Subscription Kernel → System → Sync & Backup → About & Uninstall; element ids unchanged, JS bindings unaffected) -->
     <section class="view" id="view-settings" hidden>
-      <div class="page-title"><i data-ic="settings" data-sz="19"></i>设置</div>
-      <div class="page-desc">通用、连接、订阅内核与系统项（角色开关：扇入/远程在首页，服务端在扇出页）</div>
+      <div class="page-title"><i data-ic="settings" data-sz="19"></i><span data-i18n="menu.settings">设置</span></div>
+      <div class="page-desc" data-i18n="settings.desc">通用、连接、订阅内核与系统项（角色开关：扇入/远程在首页，服务端在扇出页）</div>
 
-      <!-- 通用：语言与主题 -->
+      <!-- General: language and theme -->
       <div class="card">
-        <h3><i data-ic="settings"></i>通用</h3>
+        <h3><i data-ic="settings"></i><span data-i18n="settings.general">通用</span></h3>
         <div class="lang-theme" style="margin-top:0">
-          <select id="s-lang">
-            <option value="zh">中文</option>
-            <option value="en">English</option>
+          <select id="lang-select">
+            <option value="zh" data-i18n="lang.zh">中文</option>
+            <option value="en" data-i18n="lang.en">English</option>
+          </select>
+          <select id="s-lang" data-agsel="1" hidden>
+            <option value="zh" data-i18n="lang.zh">中文</option>
+            <option value="en" data-i18n="lang.en">English</option>
           </select>
           <select id="s-theme">
-            <option value="light">浅色</option>
-            <option value="dark">深色</option>
+            <option value="light" data-i18n="settings.themeLight">浅色</option>
+            <option value="dark" data-i18n="settings.themeDark">深色</option>
           </select>
         </div>
         <div class="role-list">
           <div class="role-row" id="row-float-ball">
-            <div class="role-info"><b>桌面悬浮球 <span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip">常驻桌面显示实时网速，可拖拽/双击打开主面板/右键菜单（仅桌面端）</span></span></b></div>
+            <div class="role-info"><b><span data-i18n="settings.floatBall">桌面悬浮球</span> <span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip" data-i18n="settings.floatBallTip">常驻桌面显示实时网速，可拖拽/双击打开主面板/右键菜单（仅桌面端）</span></span></b></div>
             <label class="switch"><input type="checkbox" id="s-float-ball"><span class="slider"></span></label>
           </div>
           <div class="role-row" id="row-notify-float">
-            <div class="role-info"><b>悬浮球气泡通知 <span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip">内核异常、系统代理冲突等事件在悬浮球旁弹气泡；关闭后仅记录在日志页事件签</span></span></b></div>
+            <div class="role-info"><b><span data-i18n="settings.floatNotify">悬浮球气泡通知</span> <span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip" data-i18n="settings.floatNotifyTip">内核异常、系统代理冲突等事件在悬浮球旁弹气泡；关闭后仅记录在日志页事件签</span></span></b></div>
             <label class="switch"><input type="checkbox" id="s-notify-float"><span class="slider"></span></label>
           </div>
           <div class="role-row" id="row-reduce-effects">
-            <div class="role-info"><b>性能模式 <span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip">关闭毛玻璃与动画特效，低配/国产 Linux 建议开启</span></span></b></div>
+            <div class="role-info"><b><span data-i18n="settings.perfMode">性能模式</span> <span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip" data-i18n="settings.perfModeTip">关闭毛玻璃与动画特效，低配/国产 Linux 建议开启</span></span></b></div>
             <label class="switch"><input type="checkbox" id="s-reduce-effects"><span class="slider"></span></label>
           </div>
         </div>
       </div>
 
-      <!-- 连接：代理与重连偏好 -->
+      <!-- Connection: proxy and reconnect preferences -->
       <div class="card">
-        <h3><i data-ic="orbit"></i>连接</h3>
+        <h3><i data-ic="orbit"></i><span data-i18n="settings.conn">连接</span></h3>
         <div class="row col">
-          <label class="chk"><input type="checkbox" id="s-autoproxy" checked> 连接扇入后自动启动本地代理</label>
-          <label class="chk"><input type="checkbox" id="s-autoreconnect" checked> 自动重连已保存的扇入</label>
+          <label class="chk"><input type="checkbox" id="s-autoproxy" checked> <span data-i18n="settings.autoProxy">连接扇入后自动启动本地代理</span></label>
+          <label class="chk"><input type="checkbox" id="s-autoreconnect" checked> <span data-i18n="settings.autoReconnect">自动重连已保存的扇入</span></label>
         </div>
       </div>
 
-      <!-- 订阅内核：安装内核 → 激活功能（侧栏出现「订阅/节点」） -->
+      <!-- Subscription kernel: install kernel → activate feature (sidebar gains 「订阅/节点」) -->
       <div class="card" id="sub-feature-card">
-        <h3><i data-ic="satellite"></i>订阅内核 <span class="hint inline" id="sub-install-status">未安装</span> <span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip">导入 Clash 系订阅的可选附加服务；内核（mihomo）钉版本下载并 SHA-256 校验，仅在本地运行</span></span></h3>
+        <h3><i data-ic="satellite"></i><span data-i18n="sub.kernel">订阅内核</span> <span class="hint inline" id="sub-install-status">未安装</span> <span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip" data-i18n="sub.kernelTip">导入 Clash 系订阅的可选附加服务；内核（mihomo）钉版本下载并 SHA-256 校验，仅在本地运行</span></span></h3>
         <div class="row">
-          <button id="btn-install-kernel" class="ghost small"><i data-ic="download" data-sz="13"></i> 下载并安装内核</button>
-          <button id="btn-manual-kernel" class="ghost small">手动安装（本地文件）</button>
-          <button id="btn-activate-sub" class="small" disabled>激活订阅功能</button>
-          <button id="btn-deactivate-sub" class="danger small" style="display:none">停用订阅功能</button>
+          <button id="btn-install-kernel" class="ghost small"><i data-ic="download" data-sz="13"></i> <span data-i18n="sub.install">下载并安装内核</span></button>
+          <button id="btn-manual-kernel" class="ghost small" data-i18n="sub.installManual">手动安装（本地文件）</button>
+          <button id="btn-activate-sub" class="small" disabled data-i18n="sub.activate">激活订阅功能</button>
+          <button id="btn-deactivate-sub" class="danger small" style="display:none" data-i18n="sub.deactivate">停用订阅功能</button>
         </div>
       </div>
 
-      <!-- 系统：开机启动 / 锁定系统代理 / 自我诊断 -->
+      <!-- System: autostart / lock system proxy / doctor -->
       <div class="card">
-        <h3><i data-ic="power"></i>系统</h3>
-        <label class="chk"><input type="checkbox" id="s-autostart"> 开机自动启动 AgileNet</label>
+        <h3><i data-ic="power"></i><span data-i18n="settings.system">系统</span></h3>
+        <label class="chk"><input type="checkbox" id="s-autostart"> <span data-i18n="settings.autostart">开机自动启动 AgileNet</span></label>
         <div class="role-list">
           <div class="role-row" id="row-sysproxy-lock">
-            <div class="role-info"><b>锁定系统代理 <span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip">其他软件抢占系统代理时自动收回（30s 巡检）</span></span></b></div>
+            <div class="role-info"><b><span data-i18n="sysproxy.lock">锁定系统代理</span> <span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip" data-i18n="sysproxy.lockTip">其他软件抢占系统代理时自动收回（30s 巡检）</span></span></b></div>
             <label class="switch"><input type="checkbox" id="s-sysproxy-lock"><span class="slider"></span></label>
           </div>
           <div class="role-row" id="row-doctor">
-            <div class="role-info"><b>自我诊断 <span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip">逐项检查本机运行环境（内核 / 系统代理 / 网络），可自动修复的项会就地修复</span></span></b></div>
-            <button id="btn-doctor-run" class="ghost small"><i data-ic="stethoscope" data-sz="13"></i> 开始诊断</button>
+            <div class="role-info"><b><span data-i18n="doctor.title">自我诊断</span> <span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip" data-i18n="doctor.tip">逐项检查本机运行环境（内核 / 系统代理 / 网络），可自动修复的项会就地修复</span></span></b></div>
+            <button id="btn-doctor-run" class="ghost small"><i data-ic="stethoscope" data-sz="13"></i> <span data-i18n="doctor.run">开始诊断</span></button>
           </div>
         </div>
         <div id="doctor-panel" style="display:none"></div>
       </div>
 
-      <!-- 同步与备份：设置/规则/订阅同步到 WebDAV/S3 或手动文件导入导出（PIN 不落盘，每次操作取卡上输入） -->
+      <!-- Sync & backup: sync settings/rules/subscriptions to WebDAV/S3 or manual file import/export (PIN never persisted, taken from card input each operation) -->
       <div class="card" id="sync-card">
-        <h3><i data-ic="refresh-cw"></i>同步与备份 <span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip">设置/规则/订阅加密同步到 WebDAV/S3 或导出文件；版本号+1 即上传成功；拉取按版本号比对新旧</span></span></h3>
+        <h3><i data-ic="refresh-cw"></i><span data-i18n="sync.title">同步与备份</span> <span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip" data-i18n="sync.tip">设置/规则/订阅加密同步到 WebDAV/S3 或导出文件；版本号+1 即上传成功；拉取按版本号比对新旧</span></span></h3>
         <div class="role-list">
           <div class="role-row">
-            <div class="role-info"><b>同步通道</b></div>
+            <div class="role-info"><b data-i18n="sync.channel">同步通道</b></div>
             <select id="sync-target" class="small" style="width:152px">
-              <option value="none">关闭</option>
+              <option value="none" data-i18n="sync.off">关闭</option>
               <option value="webdav">WebDAV</option>
               <option value="s3">S3</option>
-              <option value="file">手动导入导出</option>
+              <option value="file" data-i18n="sync.fileManual">手动导入导出</option>
             </select>
           </div>
         </div>
-        <!-- WebDAV 通道配置（密码回显掩码，留空 = 保留原值） -->
+        <!-- WebDAV channel config (password echo masked, blank = keep existing) -->
         <div id="sync-cfg-webdav" style="display:none;margin-top:4px">
           <div class="row" style="align-items:flex-start">
-            <div class="grow"><label>WebDAV 地址</label><input id="sync-wd-url" class="mono" placeholder="https://dav.jianguoyun.com/dav/"></div>
-            <div class="grow"><label>用户名</label><input id="sync-wd-user"></div>
-            <div class="grow"><label>密码</label><input id="sync-wd-pass" type="password" placeholder="留空保持不变"></div>
+            <div class="grow"><label data-i18n="sync.wdUrl">WebDAV 地址</label><input id="sync-wd-url" class="mono" placeholder="https://dav.jianguoyun.com/dav/"></div>
+            <div class="grow"><label data-i18n="sync.username">用户名</label><input id="sync-wd-user"></div>
+            <div class="grow"><label data-i18n="common.password">密码</label><input id="sync-wd-pass" type="password" placeholder="留空保持不变" data-i18n-ph="sync.keepPh"></div>
           </div>
         </div>
-        <!-- S3 通道配置（SK 同掩码语义） -->
+        <!-- S3 channel config (SK same masking semantics) -->
         <div id="sync-cfg-s3" style="display:none;margin-top:4px">
           <div class="row" style="align-items:flex-start">
-            <div class="grow"><label>Endpoint</label><input id="sync-s3-endpoint" class="mono" placeholder="s3.amazonaws.com 或 minio.example.com"></div>
+            <div class="grow"><label>Endpoint</label><input id="sync-s3-endpoint" class="mono" placeholder="s3.amazonaws.com 或 minio.example.com" data-i18n-ph="sync.s3EndpointPh"></div>
             <div class="grow"><label>Bucket</label><input id="sync-s3-bucket" class="mono"></div>
           </div>
           <div class="row" style="align-items:flex-start;margin-top:8px">
             <div class="grow"><label>Access Key</label><input id="sync-s3-ak" class="mono"></div>
-            <div class="grow"><label>Secret Key</label><input id="sync-s3-sk" type="password" placeholder="留空保持不变"></div>
+            <div class="grow"><label>Secret Key</label><input id="sync-s3-sk" type="password" placeholder="留空保持不变" data-i18n-ph="sync.keepPh"></div>
           </div>
           <div class="row" style="align-items:flex-start;margin-top:8px">
-            <div class="grow"><label>Region</label><input id="sync-s3-region" placeholder="可选，默认 auto"></div>
-            <div class="grow"><label>Prefix</label><input id="sync-s3-prefix" class="mono" placeholder="可选，默认根目录"></div>
+            <div class="grow"><label>Region</label><input id="sync-s3-region" placeholder="可选，默认 auto" data-i18n-ph="sync.regionPh"></div>
+            <div class="grow"><label>Prefix</label><input id="sync-s3-prefix" class="mono" placeholder="可选，默认根目录" data-i18n-ph="sync.prefixPh"></div>
           </div>
         </div>
-        <!-- 手动文件通道（导出 = 版本+1 写本地存档；导入 = 恢复确认弹窗后重启） -->
+        <!-- Manual file channel (export = version+1 written to local archive; import = restart after restore confirmation modal) -->
         <div id="sync-cfg-file" style="display:none;margin-top:4px">
-          <label>导出路径</label>
+          <label data-i18n="sync.exportPath">导出路径</label>
           <div class="row" style="flex-wrap:nowrap">
-            <input id="sync-file-export" class="mono" placeholder="如 D:\backup\agile-net-sync.json">
-            <button id="btn-sync-export" class="ghost small" style="flex-shrink:0">导出存档</button>
+            <input id="sync-file-export" class="mono" placeholder="如 D:\backup\agile-net-sync.json" data-i18n-ph="sync.exportPh">
+            <button id="btn-sync-export" class="ghost small" style="flex-shrink:0" data-i18n="sync.exportBtn">导出存档</button>
           </div>
-          <label style="margin-top:8px">导入路径</label>
+          <label style="margin-top:8px" data-i18n="sync.importPath">导入路径</label>
           <div class="row" style="flex-wrap:nowrap">
-            <input id="sync-file-import" class="mono" placeholder="要恢复的存档文件路径">
-            <button id="btn-sync-import" class="ghost small" style="flex-shrink:0">导入并恢复</button>
+            <input id="sync-file-import" class="mono" placeholder="要恢复的存档文件路径" data-i18n-ph="sync.importPh">
+            <button id="btn-sync-import" class="ghost small" style="flex-shrink:0" data-i18n="sync.importBtn">导入并恢复</button>
           </div>
         </div>
         <div class="row" style="align-items:flex-end;margin-top:10px">
           <div class="grow" style="max-width:280px">
-            <label>PIN <span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip">PIN 仅混淆级保护，忘记无法找回；空=存档明文</span></span></label>
-            <input id="sync-pin" maxlength="4" inputmode="numeric" placeholder="4 位数字密码，留空不加密">
+            <label>PIN <span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip" data-i18n="sync.pinTip">PIN 仅混淆级保护，忘记无法找回；空=存档明文</span></span></label>
+            <input id="sync-pin" maxlength="4" inputmode="numeric" placeholder="4 位数字密码，留空不加密" data-i18n-ph="sync.pinPh">
           </div>
         </div>
-        <div class="hint" id="sync-state" style="margin-top:10px">当前版本 <span class="odo" id="sync-ver">v0</span><span id="sync-state-rest"> · 尚未上传过存档</span></div>
+        <div class="hint" id="sync-state" style="margin-top:10px"><span data-i18n="sync.curVer">当前版本</span> <span class="odo" id="sync-ver">v0</span><span id="sync-state-rest"> · 尚未上传过存档</span></div>
         <div class="hint" id="sync-check-result" style="display:none"></div>
         <div class="row" style="margin-top:10px">
-          <button id="btn-sync-save" class="ghost small">保存配置</button>
-          <button id="btn-sync-check" class="ghost small" style="display:none">检查远端</button>
-          <button id="btn-sync-upload" class="small" style="display:none"><i data-ic="upload" data-sz="13"></i> 立即上传</button>
-          <button id="btn-sync-restore" class="ghost small" style="display:none"><i data-ic="download" data-sz="13"></i> 拉取恢复</button>
+          <button id="btn-sync-save" class="ghost small" data-i18n="sync.save">保存配置</button>
+          <button id="btn-sync-check" class="ghost small" style="display:none" data-i18n="sync.check">检查远端</button>
+          <button id="btn-sync-upload" class="small" style="display:none"><i data-ic="upload" data-sz="13"></i> <span data-i18n="sync.upload">立即上传</span></button>
+          <button id="btn-sync-restore" class="ghost small" style="display:none"><i data-ic="download" data-sz="13"></i> <span data-i18n="sync.restore">拉取恢复</span></button>
         </div>
       </div>
 
-      <!-- 关于与卸载 -->
+      <!-- About & Uninstall -->
       <div class="card">
-        <h3><i data-ic="zap"></i>关于</h3>
-        <div class="kv"><span class="k">版本</span><span>v<span id="ver">-</span></span></div>
-        <div class="hint">关闭主窗口将最小化到系统托盘，右键托盘图标可退出</div>
+        <h3><i data-ic="zap"></i><span data-i18n="menu.about">关于</span></h3>
+        <div class="kv"><span class="k" data-i18n="settings.version">版本</span><span>v<span id="ver">-</span></span></div>
+        <div class="hint" data-i18n="settings.trayHint">关闭主窗口将最小化到系统托盘，右键托盘图标可退出</div>
       </div>
       <div class="card">
-        <h3><i data-ic="trash-2"></i>卸载</h3>
+        <h3><i data-ic="trash-2"></i><span data-i18n="settings.uninstall">卸载</span></h3>
         <div class="row" style="justify-content:space-between">
-          <span class="hint">从这台电脑移除 AgileNet，可选择保留或清理本地数据</span>
-          <button id="btn-uninstall" class="danger">卸载 AgileNet</button>
+          <span class="hint" data-i18n="settings.uninstallHint">从这台电脑移除 AgileNet，可选择保留或清理本地数据</span>
+          <button id="btn-uninstall" class="danger" data-i18n="settings.uninstallBtn">卸载 AgileNet</button>
         </div>
       </div>
     </section>
   </main>
-  <!-- 窄屏底部导航（≤720px 由 components.css 同断点显示，桌面恒 display:none；active 态由 switchView 同步，HTTP_MODE/管理端模式 JS 隐藏） -->
+  <!-- Narrow-screen bottom nav (≤720px shown by components.css at same breakpoint, always display:none on desktop; active state synced by switchView, hidden by JS in HTTP_MODE/admin console mode) -->
   <nav class="bnav" id="bnav">
-    <div class="bnav-item active" data-view="connect"><i data-ic="home"></i><span>首页</span></div>
-    <div class="bnav-item" data-view="nodes"><i data-ic="orbit"></i><span>扇入</span></div>
-    <div class="bnav-item" data-view="logs"><i data-ic="scroll-text"></i><span>日志</span></div>
-    <div class="bnav-item" data-view="settings"><i data-ic="settings"></i><span>设置</span></div>
+    <div class="bnav-item active" data-view="connect"><i data-ic="home"></i><span data-i18n="menu.home">首页</span></div>
+    <div class="bnav-item" data-view="nodes"><i data-ic="orbit"></i><span data-i18n="term.fanin">扇入</span></div>
+    <div class="bnav-item" data-view="logs"><i data-ic="scroll-text"></i><span data-i18n="term.logs">日志</span></div>
+    <div class="bnav-item" data-view="settings"><i data-ic="settings"></i><span data-i18n="menu.settings">设置</span></div>
   </nav>
 </div>
 
-<!-- Web 远程面登录弹窗（仅浏览器模式） -->
+<!-- Web remote panel login modal (browser mode only) -->
 <div class="modal-mask" id="login-modal" style="display:none">
   <div class="modal">
-    <h3><i data-ic="shield" data-sz="16"></i> Web 远程面</h3>
+    <h3><i data-ic="shield" data-sz="16"></i> <span data-i18n="login.title">Web 远程面</span></h3>
     <div class="row col" style="gap:10px;margin-top:12px">
-      <div><label>管理密码</label><input id="login-pass" type="password" autocomplete="current-password"></div>
+      <div><label data-i18n="login.password">管理密码</label><input id="login-pass" type="password" autocomplete="current-password"></div>
     </div>
     <div class="row" style="justify-content:flex-end;margin-top:14px">
-      <button id="login-ok">登录</button>
+      <button id="login-ok" data-i18n="login.submit">登录</button>
     </div>
   </div>
 </div>
 
-<!-- 强制设置管理密码弹窗（服务端角色 / Web 远程面首开） -->
+<!-- Forced admin password setup modal (server role / first Web remote panel open) -->
 <div class="modal-mask" id="pwd-modal" style="display:none">
   <div class="modal">
     <h3 id="pwd-title"><i data-ic="shield" data-sz="16"></i> 设置管理密码</h3>
     <div class="hint" id="pwd-desc" style="margin:6px 0 12px"></div>
     <div class="row col" style="gap:10px">
-      <div id="pwd-user-row"><label>管理员账号</label><input id="pwd-user" value="admin" autocomplete="off"></div>
-      <div><label>管理密码（至少 10 位）</label><input id="pwd-pass" type="password" autocomplete="new-password"></div>
-      <div><label>重复密码</label><input id="pwd-pass2" type="password" autocomplete="new-password"></div>
+      <div id="pwd-user-row"><label data-i18n="pwd.user">管理员账号</label><input id="pwd-user" value="admin" autocomplete="off"></div>
+      <div><label data-i18n="pwd.pass">管理密码（至少 10 位）</label><input id="pwd-pass" type="password" autocomplete="new-password"></div>
+      <div><label data-i18n="pwd.pass2">重复密码</label><input id="pwd-pass2" type="password" autocomplete="new-password"></div>
     </div>
     <div class="row" style="justify-content:flex-end;margin-top:14px">
-      <button id="pwd-cancel" class="ghost">取消</button>
-      <button id="pwd-ok">确认并继续</button>
+      <button id="pwd-cancel" class="ghost" data-i18n="common.cancel">取消</button>
+      <button id="pwd-ok" data-i18n="pwd.ok">确认并继续</button>
     </div>
   </div>
 </div>
 
-<!-- 关于弹窗 -->
+<!-- About modal -->
 <div class="modal-mask" id="about-modal" style="display:none">
   <div class="modal about-modal">
     <div class="about-logo"><i data-ic="zap" data-sz="26"></i></div>
-    <h3>AgileNet 客户端</h3>
+    <h3 data-i18n="app.title">AgileNet 客户端</h3>
     <div class="hint">v<span id="about-ver">-</span></div>
-    <p class="about-desc">高安全、轻量级的企业级网络穿透与代理链路由；双产物 anet-gui / anet-svc。</p>
+    <p class="about-desc" data-i18n="about.desc">高安全、轻量级的企业级网络穿透与代理链路由；双产物 anet-gui / anet-svc。</p>
     <div class="about-links">
-      <button class="ghost small" data-more="docs"><i data-ic="book-open" data-sz="13"></i> 文档</button>
+      <button class="ghost small" data-more="docs"><i data-ic="book-open" data-sz="13"></i> <span data-i18n="menu.docs">文档</span></button>
       <button class="ghost small" data-more="issue"><i data-ic="circle-dot" data-sz="13"></i> Issue</button>
       <button class="ghost small" data-more="github"><i data-ic="external-link" data-sz="13"></i> GitHub</button>
     </div>
     <div class="row" style="justify-content:center;margin-top:16px">
-      <button id="about-close" class="ghost">关闭</button>
+      <button id="about-close" class="ghost" data-i18n="common.close">关闭</button>
     </div>
   </div>
 </div>
 
-<!-- 添加订阅弹窗（宽版优雅设计） -->
+<!-- Add subscription modal (wide elegant design) -->
 <div class="modal-mask" id="sub-modal" style="display:none">
   <div class="modal sub-modal">
     <div class="sm-head">
       <span class="sm-logo"><i data-ic="satellite" data-sz="20"></i></span>
       <div>
-        <h3>添加订阅</h3>
-        <div class="hint">拉取校验通过才会保存；URL 视为凭据，绝不写入日志</div>
+        <h3 data-i18n="sub.add">添加订阅</h3>
+        <div class="hint" data-i18n="sub.addHint">拉取校验通过才会保存；URL 视为凭据，绝不写入日志</div>
       </div>
     </div>
     <div class="sm-body">
-      <label>备注名（可选）</label>
-      <input id="sub-name" placeholder="例如：我的机场">
-      <label>订阅地址</label>
+      <label data-i18n="sub.nameLabel">备注名（可选）</label>
+      <input id="sub-name" placeholder="例如：我的机场" data-i18n-ph="sub.namePh">
+      <label data-i18n="sub.urlLabel">订阅地址</label>
       <div class="sm-url-row">
-        <input id="sub-url" class="mono" placeholder="https://…（Clash 订阅链接）">
-        <button id="sub-paste" class="ghost small icon-btn" title="从剪贴板粘贴"><i data-ic="clipboard" data-sz="15"></i></button>
+        <input id="sub-url" class="mono" placeholder="https://…（Clash 订阅链接）" data-i18n-ph="sub.urlPh">
+        <button id="sub-paste" class="ghost small icon-btn" title="从剪贴板粘贴" data-i18n-title="common.paste"><i data-ic="clipboard" data-sz="15"></i></button>
       </div>
       <div class="hint sm-err" id="sub-err"></div>
-      <div class="hint">也可直接拖拽 .yaml 文件到列表</div>
+      <div class="hint" data-i18n="sub.dragHint">也可直接拖拽 .yaml 文件到列表</div>
     </div>
     <div class="row" style="justify-content:flex-end">
-      <button id="sub-cancel" class="ghost">取消</button>
-      <button id="sub-ok">拉取并添加</button>
+      <button id="sub-cancel" class="ghost" data-i18n="common.cancel">取消</button>
+      <button id="sub-ok" data-i18n="sub.fetchAdd">拉取并添加</button>
     </div>
   </div>
 </div>
 
-<!-- 新建/编辑覆写脚本弹窗（JS：main(config) 返回新配置；试跑对当前订阅配置执行一次） -->
+<!-- Create/edit override script modal (JS: main(config) returns new config; test-run executes once against current subscription config) -->
 <div class="modal-mask" id="script-modal" style="display:none">
   <div class="modal sub-modal script-modal">
     <div class="sm-head">
       <span class="sm-logo"><i data-ic="scroll-text" data-sz="20"></i></span>
       <div>
         <h3 id="script-modal-title">新建脚本</h3>
-        <div class="hint">订阅配置交给内核前按序执行；main(config) 须返回配置对象</div>
+        <div class="hint" data-i18n="sub.scriptHint">订阅配置交给内核前按序执行；main(config) 须返回配置对象</div>
       </div>
     </div>
     <div class="sm-body">
-      <label>名称</label>
-      <input id="script-name" placeholder="例如：追加自建节点">
-      <label>代码（JS）</label>
+      <label data-i18n="common.name">名称</label>
+      <input id="script-name" placeholder="例如：追加自建节点" data-i18n-ph="sub.scriptNamePh">
+      <label data-i18n="sub.scriptCode">代码（JS）</label>
       <textarea id="script-code" class="mono" rows="12" spellcheck="false"></textarea>
       <div class="hint" id="script-test-result"></div>
       <div class="hint sm-err" id="script-err"></div>
     </div>
     <div class="row" style="justify-content:flex-end">
-      <button id="script-test" class="ghost">试跑</button>
-      <button id="script-cancel" class="ghost">取消</button>
-      <button id="script-ok">保存</button>
+      <button id="script-test" class="ghost" data-i18n="sub.scriptTest">试跑</button>
+      <button id="script-cancel" class="ghost" data-i18n="common.cancel">取消</button>
+      <button id="script-ok" data-i18n="common.save">保存</button>
     </div>
   </div>
 </div>
 
-<!-- TUN 提权弹窗（非管理员开 TUN：说明 + 以管理员身份重启；重启后自动恢复开启） -->
+<!-- TUN elevation modal (non-admin enabling TUN: explanation + restart as admin; auto-restores enabled state after restart) -->
 <div class="modal-mask" id="tun-elevate-modal" style="display:none">
   <div class="modal sub-modal">
     <div class="sm-head">
       <span class="sm-logo"><i data-ic="shield" data-sz="20"></i></span>
       <div>
-        <h3>TUN 模式需要管理员权限</h3>
-        <div class="hint">创建虚拟网卡须以管理员身份运行</div>
+        <h3 data-i18n="tun.elevateTitle">TUN 模式需要管理员权限</h3>
+        <div class="hint" data-i18n="tun.elevateSub">创建虚拟网卡须以管理员身份运行</div>
       </div>
     </div>
     <div class="sm-body">
-      <div class="hint">应用将以管理员身份重启；TUN 开关已记忆，重启后自动恢复开启。取消则保持现状。</div>
+      <div class="hint" data-i18n="tun.elevateBody">应用将以管理员身份重启；TUN 开关已记忆，重启后自动恢复开启。取消则保持现状。</div>
       <div class="hint sm-err" id="tun-elevate-err"></div>
     </div>
     <div class="row" style="justify-content:flex-end">
-      <button id="tun-elevate-cancel" class="ghost">取消</button>
-      <button id="tun-elevate-ok">以管理员身份重启</button>
+      <button id="tun-elevate-cancel" class="ghost" data-i18n="common.cancel">取消</button>
+      <button id="tun-elevate-ok" data-i18n="tun.elevateOk">以管理员身份重启</button>
     </div>
   </div>
 </div>
 
-<!-- 制品手动安装弹窗（用户自行下载官方文件 → 给完整路径 → 钉值校验通过才落盘） -->
+<!-- Artifact manual install modal (user downloads official file → provides full path → written to disk only after pinned hash verification passes) -->
 <div class="modal-mask" id="dl-manual-modal" style="display:none">
   <div class="modal sub-modal">
     <div class="sm-head">
       <span class="sm-logo"><i data-ic="download" data-sz="20"></i></span>
       <div>
         <h3 id="dl-manual-title">手动安装</h3>
-        <div class="hint">从官方渠道下载后提供文件完整路径，校验通过才安装</div>
+        <div class="hint" data-i18n="dl.manualHint">从官方渠道下载后提供文件完整路径，校验通过才安装</div>
       </div>
     </div>
     <div class="sm-body">
       <div class="hint" id="dl-manual-hint"></div>
-      <label>文件完整路径</label>
+      <label data-i18n="dl.pathLabel">文件完整路径</label>
       <input id="dl-manual-path" class="mono" placeholder="D:\dl\mihomo-windows-amd64-compatible-v1.19.29.zip">
       <div class="row" style="margin-top:8px">
-        <button id="dl-manual-open" class="ghost small"><i data-ic="external-link" data-sz="13"></i> 打开官方下载页</button>
+        <button id="dl-manual-open" class="ghost small"><i data-ic="external-link" data-sz="13"></i> <span data-i18n="dl.openOfficial">打开官方下载页</span></button>
       </div>
       <div class="hint sm-err" id="dl-manual-err"></div>
     </div>
     <div class="row" style="justify-content:flex-end">
-      <button id="dl-manual-cancel" class="ghost">取消</button>
-      <button id="dl-manual-ok">校验并安装</button>
+      <button id="dl-manual-cancel" class="ghost" data-i18n="common.cancel">取消</button>
+      <button id="dl-manual-ok" data-i18n="dl.verifyInstall">校验并安装</button>
     </div>
   </div>
 </div>
 
-<!-- 哈希不符确认弹窗（手动安装钉值对不上/无法对钉时；明示风险，用户确认才强装） -->
+<!-- Hash mismatch confirmation modal (manual install when pinned hash doesn't match / can't be pinned; risk stated, force install only after user confirms) -->
 <div class="modal-mask" id="dl-mismatch-modal" style="display:none">
   <div class="modal sub-modal">
     <div class="sm-head">
       <span class="sm-logo" style="background:var(--danger)"><i data-ic="triangle-alert" data-sz="20"></i></span>
       <div>
-        <h3>无法校验文件完整性</h3>
-        <div class="hint">该文件与官方钉死版本不一致</div>
+        <h3 data-i18n="dl.mmTitle">无法校验文件完整性</h3>
+        <div class="hint" data-i18n="dl.mmSub">该文件与官方钉死版本不一致</div>
       </div>
     </div>
     <div class="sm-body">
-      <div class="kv"><span class="k">钉死版本</span><span class="mono" id="dl-mm-version">-</span></div>
-      <div class="kv"><span class="k">实际哈希</span><span class="mono" id="dl-mm-hash">-</span></div>
-      <div class="hint sm-err">无法校验该文件与官方钉死版本一致，可能版本不符或已被篡改；仅在确认文件来自官方渠道时才应继续。</div>
+      <div class="kv"><span class="k" data-i18n="dl.mmVersion">钉死版本</span><span class="mono" id="dl-mm-version">-</span></div>
+      <div class="kv"><span class="k" data-i18n="dl.mmHash">实际哈希</span><span class="mono" id="dl-mm-hash">-</span></div>
+      <div class="hint sm-err" data-i18n="dl.mmWarn">无法校验该文件与官方钉死版本一致，可能版本不符或已被篡改；仅在确认文件来自官方渠道时才应继续。</div>
     </div>
     <div class="row" style="justify-content:flex-end">
-      <button id="dl-mm-cancel" class="ghost">放弃</button>
-      <button id="dl-mm-ok" class="danger">仍然使用</button>
+      <button id="dl-mm-cancel" class="ghost" data-i18n="dl.mmCancel">放弃</button>
+      <button id="dl-mm-ok" class="danger" data-i18n="dl.mmOk">仍然使用</button>
     </div>
   </div>
 </div>
 
-<!-- 新建/编辑扇出弹窗（字段对齐管理端「新建扇出」模态） -->
+<!-- Create/edit fan-out modal (fields aligned with admin console 「新建扇出」 modal) -->
 <div class="modal-mask" id="fo-modal" style="display:none">
   <div class="modal sub-modal fo-modal">
     <div class="sm-head">
       <span class="sm-logo"><i data-ic="git-fork" data-sz="20"></i></span>
       <div>
         <h3 id="fo-modal-title">新建扇出</h3>
-        <div class="hint">Relay Token 加密落库、创建后不回显；保存即热生效</div>
+        <div class="hint" data-i18n="fanout.modalHint">Relay Token 加密落库、创建后不回显；保存即热生效</div>
       </div>
     </div>
     <div class="sm-body">
-      <label>名称（可空，留空 = 取目标地址）</label>
-      <input id="fo-name" placeholder="例如：分公司跳板机">
-      <label>目标地址</label>
+      <label data-i18n="fanout.nameLabel">名称（可空，留空 = 取目标地址）</label>
+      <input id="fo-name" placeholder="例如：分公司跳板机" data-i18n-ph="fanout.namePh">
+      <label data-i18n="fanout.addrLabel">目标地址</label>
       <input id="fo-addr" class="mono" placeholder="root.example.com:54430">
-      <label>Relay Token <span class="hint inline" id="fo-token-hint" style="display:none">留空 = 保留原 Token</span></label>
+      <label>Relay Token <span class="hint inline" id="fo-token-hint" style="display:none" data-i18n="fanout.tokenKeep">留空 = 保留原 Token</span></label>
       <input id="fo-token" type="password" class="mono" placeholder="psk_...">
       <div class="grid2">
-        <div><label>SNI 域名</label><input id="fo-sni" class="mono" placeholder="cdn.cloudflare.com"></div>
-        <div><label>权限组 <span class="hint inline">留空 = 不收敛（放行一切）</span></label><select id="fo-group"><option value="">不收敛（放行一切）</option></select></div>
+        <div><label data-i18n="fanout.sniLabel">SNI 域名</label><input id="fo-sni" class="mono" placeholder="cdn.cloudflare.com"></div>
+        <div><label><span data-i18n="term.group">权限组</span> <span class="hint inline" data-i18n="fanout.noRestrict">留空 = 不收敛（放行一切）</span></label><select id="fo-group"><option value="" data-i18n="fanout.noRestrictOpt">不收敛（放行一切）</option></select></div>
       </div>
-      <label class="chk" style="margin-top:12px"><input type="checkbox" id="fo-insecure"> 跳过 TLS 证书校验（insecure，仅调试用）</label>
-      <label>路由再发布 advertise（每行一条 CIDR/域名，可空）</label>
+      <label class="chk" style="margin-top:12px"><input type="checkbox" id="fo-insecure"> <span data-i18n="fanout.insecure">跳过 TLS 证书校验（insecure，仅调试用）</span></label>
+      <label data-i18n="fanout.advertiseLabel">路由再发布 advertise（每行一条 CIDR/域名，可空）</label>
       <textarea id="fo-advertise" class="mono" rows="3" placeholder="10.12.0.0/16&#10;git.internal"></textarea>
-      <label>备注</label>
-      <input id="fo-remark" placeholder="可空">
+      <label data-i18n="common.remark">备注</label>
+      <input id="fo-remark" placeholder="可空" data-i18n-ph="common.optional">
       <div class="hint sm-err" id="fo-err"></div>
     </div>
     <div class="row" style="justify-content:flex-end">
-      <button id="fo-cancel" class="ghost">取消</button>
-      <button id="fo-ok">创建</button>
+      <button id="fo-cancel" class="ghost" data-i18n="common.cancel">取消</button>
+      <button id="fo-ok" data-i18n="common.create">创建</button>
     </div>
   </div>
 </div>
 
-<!-- 新增放行规则弹窗（命中流量绕过隧道：直连或经订阅，优先级最高） -->
+<!-- Add bypass rule modal (matched traffic bypasses the tunnel: direct or via subscription, highest priority) -->
 <div class="modal-mask" id="bypass-modal" style="display:none">
   <div class="modal sub-modal">
     <div class="sm-head">
       <span class="sm-logo"><i data-ic="shield" data-sz="20"></i></span>
       <div>
-        <h3>新增放行规则</h3>
-        <div class="hint">命中的流量绕过隧道：默认直连，或经订阅出口；优先级高于订阅与端点规则</div>
+        <h3 data-i18n="rules.bypassAdd">新增放行规则</h3>
+        <div class="hint" data-i18n="rules.bypassHint">命中的流量绕过隧道：默认直连，或经订阅出口；优先级高于订阅与端点规则</div>
       </div>
     </div>
     <div class="sm-body">
-      <label>匹配值（域名/IP 通配）</label>
+      <label data-i18n="rules.matchLabel">匹配值（域名/IP 通配）</label>
       <input id="bp-pattern" class="mono" placeholder="*.baidu.com / 127.*">
-      <label>方式</label>
+      <label data-i18n="rules.colVia">方式</label>
       <select id="bp-via">
-        <option value="direct">直连（默认）</option>
-        <option value="sub">经过订阅</option>
+        <option value="direct" data-i18n="rules.viaDirect">直连（默认）</option>
+        <option value="sub" data-i18n="rules.viaSub">经过订阅</option>
       </select>
-      <div class="hint">新建后默认启用，可在列表中随时停用</div>
+      <div class="hint" data-i18n="rules.bypassNote">新建后默认启用，可在列表中随时停用</div>
       <div class="hint sm-err" id="bp-err"></div>
     </div>
     <div class="row" style="justify-content:flex-end">
-      <button id="bp-cancel" class="ghost">取消</button>
-      <button id="bp-ok">添加</button>
+      <button id="bp-cancel" class="ghost" data-i18n="common.cancel">取消</button>
+      <button id="bp-ok" data-i18n="common.add">添加</button>
     </div>
   </div>
 </div>
 
-<!-- 新增 hosts 映射弹窗（主机名 → IP 解析改写，SwitchHosts 语义） -->
+<!-- Add hosts mapping modal (hostname → IP resolution rewrite, SwitchHosts semantics) -->
 <div class="modal-mask" id="host-modal" style="display:none">
   <div class="modal sub-modal">
     <div class="sm-head">
       <span class="sm-logo"><i data-ic="earth" data-sz="20"></i></span>
       <div>
-        <h3>新增 hosts 映射</h3>
-        <div class="hint">主机名 → IP 的本地解析改写，先于一切规则生效</div>
+        <h3 data-i18n="rules.hostAdd">新增 hosts 映射</h3>
+        <div class="hint" data-i18n="rules.hostHint">主机名 → IP 的本地解析改写，先于一切规则生效</div>
       </div>
     </div>
     <div class="sm-body">
-      <label>主机名</label>
+      <label data-i18n="rules.hostName">主机名</label>
       <input id="hm-name" class="mono" placeholder="git.internal">
-      <label>IP 地址</label>
+      <label data-i18n="rules.hostIp">IP 地址</label>
       <input id="hm-ip" class="mono" placeholder="10.0.0.9">
-      <label class="chk" style="margin-top:12px"><input type="checkbox" id="hm-system" checked> 尽量写入系统 hosts（无权限则仅本软件内生效）</label>
+      <label class="chk" style="margin-top:12px"><input type="checkbox" id="hm-system" checked> <span data-i18n="rules.hostSystem">尽量写入系统 hosts（无权限则仅本软件内生效）</span></label>
       <div class="hint sm-err" id="hm-err"></div>
     </div>
     <div class="row" style="justify-content:flex-end">
-      <button id="hm-cancel" class="ghost">取消</button>
-      <button id="hm-ok">添加</button>
+      <button id="hm-cancel" class="ghost" data-i18n="common.cancel">取消</button>
+      <button id="hm-ok" data-i18n="common.add">添加</button>
     </div>
   </div>
 </div>
 
-<!-- 新建组合弹窗（输名称直接建，成员在编辑弹窗勾选） -->
+<!-- Create combo modal (enter name to create directly, members checked in the edit modal) -->
 <div class="modal-mask" id="combo-modal" style="display:none">
   <div class="modal">
-    <h3><i data-ic="layers" data-sz="16"></i> 新建规则组合</h3>
-    <div class="hint" style="margin:6px 0 12px">组合 = 一组规则的命名集合，可整体启停；创建后点「编辑」勾选成员</div>
-    <div><label>组合名称</label><input id="cb-name" placeholder="例如：办公网段"></div>
+    <h3><i data-ic="layers" data-sz="16"></i> <span data-i18n="rules.comboNew">新建规则组合</span></h3>
+    <div class="hint" style="margin:6px 0 12px" data-i18n="rules.comboNewHint">组合 = 一组规则的命名集合，可整体启停；创建后点「编辑」勾选成员</div>
+    <div><label data-i18n="rules.comboName">组合名称</label><input id="cb-name" placeholder="例如：办公网段" data-i18n-ph="rules.comboNamePh"></div>
     <div class="hint sm-err" id="cb-err"></div>
     <div class="row" style="justify-content:flex-end;margin-top:14px">
-      <button id="cb-cancel" class="ghost">取消</button>
-      <button id="cb-ok">创建</button>
+      <button id="cb-cancel" class="ghost" data-i18n="common.cancel">取消</button>
+      <button id="cb-ok" data-i18n="common.create">创建</button>
     </div>
   </div>
 </div>
 
-<!-- 编辑组合弹窗（名称 + 全部规则简洁清单复选；清单内部滚动） -->
+<!-- Edit combo modal (name + compact checkbox list of all rules; list scrolls internally) -->
 <div class="modal-mask" id="combo-edit-modal" style="display:none">
   <div class="modal sub-modal">
     <div class="sm-head">
       <span class="sm-logo"><i data-ic="layers" data-sz="20"></i></span>
       <div>
-        <h3>编辑组合</h3>
-        <div class="hint">勾选成员规则（自定义 + 拉取）；组合启用 = 成员全部生效，停用 = 拉取成员暂停</div>
+        <h3 data-i18n="rules.comboEdit">编辑组合</h3>
+        <div class="hint" data-i18n="rules.comboEditHint">勾选成员规则（自定义 + 拉取）；组合启用 = 成员全部生效，停用 = 拉取成员暂停</div>
       </div>
     </div>
     <div class="sm-body">
-      <label>组合名称</label>
+      <label data-i18n="rules.comboName">组合名称</label>
       <input id="ce-name">
-      <label>成员规则</label>
-      <div class="list-search" style="margin:0 0 8px"><input id="ce-search" placeholder="搜索类型 / 匹配值 / 来源"></div>
+      <label data-i18n="rules.members">成员规则</label>
+      <div class="list-search" style="margin:0 0 8px"><input id="ce-search" placeholder="搜索类型 / 匹配值 / 来源" data-i18n-ph="rules.searchPh"></div>
       <div class="combo-rules" id="ce-list"></div>
       <div class="hint sm-err" id="ce-err"></div>
     </div>
     <div class="row" style="justify-content:flex-end">
-      <button id="ce-cancel" class="ghost">取消</button>
-      <button id="ce-ok">保存</button>
+      <button id="ce-cancel" class="ghost" data-i18n="common.cancel">取消</button>
+      <button id="ce-ok" data-i18n="common.save">保存</button>
     </div>
   </div>
 </div>
 
-<!-- 卸载确认弹窗（多选清理项，确认后调系统卸载程序并退出） -->
+<!-- Uninstall confirmation modal (multi-select cleanup items; on confirm invokes system uninstaller and exits) -->
 <div class="modal-mask" id="uninstall-modal" style="display:none">
   <div class="modal">
-    <h3><i data-ic="trash-2" data-sz="16"></i> 卸载 AgileNet</h3>
-    <div class="hint" style="margin:6px 0 12px">应用退出后由系统卸载程序完成移除。请选择要一并清理的本地数据：</div>
+    <h3><i data-ic="trash-2" data-sz="16"></i> <span data-i18n="settings.uninstallBtn">卸载 AgileNet</span></h3>
+    <div class="hint" style="margin:6px 0 12px" data-i18n="uninstall.hint">应用退出后由系统卸载程序完成移除。请选择要一并清理的本地数据：</div>
     <div class="row col" style="gap:10px">
-      <label class="chk"><input type="checkbox" id="un-creds" checked> 已保存的扇入与凭据</label>
-      <label class="chk"><input type="checkbox" id="un-server" checked> 服务端端点数据与订阅内核（数据库、证书、mihomo）</label>
-      <label class="chk"><input type="checkbox" id="un-prefs" checked> 配置与偏好（角色设置、Web 密码、主题语言）</label>
-      <label class="chk"><input type="checkbox" id="un-audit"> 审计日志</label>
+      <label class="chk"><input type="checkbox" id="un-creds" checked> <span data-i18n="uninstall.creds">已保存的扇入与凭据</span></label>
+      <label class="chk"><input type="checkbox" id="un-server" checked> <span data-i18n="uninstall.server">服务端端点数据与订阅内核（数据库、证书、mihomo）</span></label>
+      <label class="chk"><input type="checkbox" id="un-prefs" checked> <span data-i18n="uninstall.prefs">配置与偏好（角色设置、Web 密码、主题语言）</span></label>
+      <label class="chk"><input type="checkbox" id="un-audit"> <span data-i18n="uninstall.audit">审计日志</span></label>
     </div>
     <div class="row" style="justify-content:flex-end;margin-top:14px">
-      <button id="un-cancel" class="ghost">取消</button>
-      <button id="un-ok" class="danger">卸载</button>
+      <button id="un-cancel" class="ghost" data-i18n="common.cancel">取消</button>
+      <button id="un-ok" class="danger" data-i18n="settings.uninstall">卸载</button>
     </div>
   </div>
 </div>
 
-<!-- 同步恢复确认弹窗（拉取远端 / 导入文件共用；确认后覆盖本机配置，500ms 后应用自动重启） -->
+<!-- Sync restore confirmation modal (shared by remote pull / file import; on confirm overwrites local config, app auto-restarts after 500ms) -->
 <div class="modal-mask" id="sync-restore-modal" style="display:none">
   <div class="modal">
-    <h3><i data-ic="triangle-alert" data-sz="16"></i> 恢复确认</h3>
+    <h3><i data-ic="triangle-alert" data-sz="16"></i> <span data-i18n="sync.restoreTitle">恢复确认</span></h3>
     <div class="hint" style="margin:6px 0 4px" id="sync-restore-src"></div>
-    <div class="kv"><span class="k" id="sync-restore-remote-k">远端存档</span><span class="mono" id="sync-restore-remote"></span></div>
-    <div class="kv"><span class="k">本机当前</span><span class="mono" id="sync-restore-local"></span></div>
-    <div class="net-banner" id="sync-restore-warn" style="display:none;margin:10px 0 0"><i data-ic="triangle-alert" data-sz="14"></i><span>远端比本地旧，确认覆盖？</span></div>
-    <div class="net-banner" style="margin:10px 0 0;border-color:var(--danger-border);background:var(--danger-bg);color:var(--danger-text)"><i data-ic="triangle-alert" data-sz="14"></i><span>将覆盖本机配置并自动重启（现有配置自动备份）</span></div>
-    <div class="hint" id="sync-restore-pin-hint">PIN 取卡上输入框；存档已加密时须与上传时一致</div>
+    <div class="kv"><span class="k" id="sync-restore-remote-k" data-i18n="sync.remoteArchive">远端存档</span><span class="mono" id="sync-restore-remote"></span></div>
+    <div class="kv"><span class="k" data-i18n="sync.localCurrent">本机当前</span><span class="mono" id="sync-restore-local"></span></div>
+    <div class="net-banner" id="sync-restore-warn" style="display:none;margin:10px 0 0"><i data-ic="triangle-alert" data-sz="14"></i><span data-i18n="sync.olderWarn">远端比本地旧，确认覆盖？</span></div>
+    <div class="net-banner" style="margin:10px 0 0;border-color:var(--danger-border);background:var(--danger-bg);color:var(--danger-text)"><i data-ic="triangle-alert" data-sz="14"></i><span data-i18n="sync.overwriteWarn">将覆盖本机配置并自动重启（现有配置自动备份）</span></div>
+    <div class="hint" id="sync-restore-pin-hint" data-i18n="sync.restorePinHint">PIN 取卡上输入框；存档已加密时须与上传时一致</div>
     <div class="hint sm-err" id="sync-restore-err"></div>
     <div class="row" style="justify-content:flex-end;margin-top:14px">
-      <button id="sync-restore-cancel" class="ghost">取消</button>
-      <button id="sync-restore-ok" class="danger">覆盖并重启</button>
+      <button id="sync-restore-cancel" class="ghost" data-i18n="common.cancel">取消</button>
+      <button id="sync-restore-ok" class="danger" data-i18n="sync.overwriteRestart">覆盖并重启</button>
     </div>
   </div>
 </div>
@@ -1084,6 +1088,14 @@
 <script src="icons.js"></script>
 <script src="agutil.js"></script>
 <script src="agchart.js"></script>
+<script src="agi18n.js"></script>
+<script src="aglang.js"></script>
+<script src="lang/desktop-html.js"></script>
+<script src="lang/desktop-views.js"></script>
+<script src="lang/desktop-sub.js"></script>
+<script src="lang/desktop-core.js"></script>
+<script src="lang/desktop-trayfloat.js"></script>
+<script src="lang-switcher.js"></script>
 <script src="app-core.js"></script>
 <script src="app-views.js"></script>
 <script src="app-subscription.js"></script>

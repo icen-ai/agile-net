@@ -1,16 +1,16 @@
 'use strict';
-/* 悬浮球气泡（float-bubble 窗）：后端创建窗口并 emit ag-bubble-text(payload=string)，
-   本页更新文本并重置 4s 计时；到点加淡出 class（opacity/translateX 300ms）后自行 close()。
-   动态文本一律 textContent 写入（等价 esc，杜绝注入）。 */
-/* 主题须首行执行防闪烁（本脚本在 head 同步加载，先于首次绘制） */
+/* Float ball bubble (float-bubble window): backend creates the window and emits ag-bubble-text (payload=string);
+   this page updates the text and resets the 4s timer; on timeout it adds the fade-out class (opacity/translateX 300ms) then close() itself.
+   Dynamic text always written via textContent (equivalent to esc, injection-proof). */
+/* Theme must run on the first line to prevent flash (this script loads synchronously in head, before first paint) */
 document.documentElement.dataset.theme = localStorage.getItem('ag_theme') || 'light';
 
 const TAURI = window.__TAURI__;
 const invoke = TAURI && TAURI.core ? TAURI.core.invoke : null;
 const $ = (id) => document.getElementById(id);
 
-let hideT = 0;   // 4s 到点计时
-let closeT = 0;  // 淡出动画结束后关窗计时
+let hideT = 0;   // 4s timeout timer
+let closeT = 0;  // close-window timer after fade-out ends
 
 function showText(text) {
   const card = $('bb-card');
@@ -24,12 +24,13 @@ function showText(text) {
     card.classList.add('out');
     closeT = setTimeout(() => {
       try { TAURI.window.getCurrentWindow().close(); } catch (e) {}
-    }, 320); // 略大于 300ms 淡出时长
+    }, 320); // slightly over the 300ms fade duration
   }, 4000);
 }
 
-/* ---------------- 启动 ---------------- */
+/* ---------------- Startup ---------------- */
 window.addEventListener('DOMContentLoaded', () => {
+  AgI18n.hydrate(document);
   if (!invoke) {
     $('bb-noenv').hidden = false;
     return;
@@ -38,13 +39,13 @@ window.addEventListener('DOMContentLoaded', () => {
     TAURI.event.listen('ag-theme', e => { document.documentElement.dataset.theme = e.payload; }).catch(() => {});
     TAURI.event.listen('ag-bubble-text', e => {
       const t = String(e.payload ?? '');
-      if (t) showText(t); // 空文本不刷新计时，避免空气泡顶掉在显内容
+      if (t) showText(t); // empty text does not reset the timer, so an empty bubble can't displace visible content
     }).catch(() => {});
   }
-  // 就绪后主动取待读文本（后端不再 emit 首条，杜绝首帧监听未挂丢事件 → 空气泡常驻）
+  // Once ready, proactively take the pending text (backend no longer emits the first one, avoiding a lost event before the listener attaches → stuck empty bubble)
   invoke('float_bubble_take').then(t => {
     if (t) showText(String(t));
-    else { try { TAURI.window.getCurrentWindow().close(); } catch (e) {} } // 无通知：立即自关
+    else { try { TAURI.window.getCurrentWindow().close(); } catch (e) {} } // no notification: close self immediately
   }).catch(() => {
     try { TAURI.window.getCurrentWindow().close(); } catch (e) {}
   });

@@ -1,15 +1,17 @@
-//! 协议级带宽诊断服务（echo / sink / source）
+//! Protocol-level bandwidth diagnostic service (echo / sink / source)
 //!
-//! 保留魔法地址 [`MAGIC_HOST`]：任一侧（RelayListener 的扇入对端会话、
-//! RelayConnector 的扇出隧道）收到目标为该地址的 Open 请求时，在 ACL 检查
-//! **之前** 拦截并本地应答——不走路由转发、不具备任何出网能力，因此对端收敛
-//! （PeerAcl）的节点同样可测，且不构成 ACL 旁路。定位与心跳同级：协议内建的
-//! 诊断面，永不被路由；带宽流属正常诊断流量，不落审计明细。
+//! Reserved magic address [`MAGIC_HOST`]: when either side (a fan-in peer session
+//! on RelayListener, a fan-out tunnel on RelayConnector) receives an Open request
+//! targeting this address, it intercepts **before** the ACL check and answers
+//! locally — no routing, no egress capability, so ACL-restricted (PeerAcl) nodes
+//! are equally testable and it is not an ACL bypass. Same tier as heartbeat: a
+//! protocol built-in diagnostic plane, never routed; bandwidth streams are normal
+//! diagnostic traffic, not recorded in audit details.
 //!
-//! 流首字节定模式：
-//! - `e` echo：原样回显（测 RTT / 双向通路）
-//! - `s` sink：读丢弃，对端半关后回 8 字节 BE 总计数确认（测上行）
-//! - `g` source：随后 8 字节 BE 请求字节数，按数发流（测下行）
+//! First stream byte selects the mode:
+//! - `e` echo: echo back verbatim (RTT / bidirectional path test)
+//! - `s` sink: read and discard; after peer half-close reply an 8-byte BE total count as ack (uplink test)
+//! - `g` source: read an 8-byte BE requested byte count, then stream that many bytes (downlink test)
 
 use crate::error::{Error, Result};
 use crate::proto::frame::{Frame, FrameType};
@@ -22,36 +24,37 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-/// 带宽诊断保留地址（永不被路由；大小写不敏感）。
+/// Reserved bandwidth-diagnostic address (never routed; case-insensitive).
 pub const MAGIC_HOST: &str = "anet.bandwidth";
 
-/// 模式字节：echo（原样回显）。
+/// Mode byte: echo (verbatim echo).
 pub const MODE_ECHO: u8 = b'e';
-/// 模式字节：sink（读丢弃，EOF 后回 8 字节 BE 总计数）。
+/// Mode byte: sink (read and discard; reply an 8-byte BE total count after EOF).
 pub const MODE_SINK: u8 = b's';
-/// 模式字节：source（随后 8 字节 BE 请求字节数，按数发流）。
+/// Mode byte: source (read an 8-byte BE requested byte count, then stream that many bytes).
 pub const MODE_SOURCE: u8 = b'g';
 
-/// source 模式单次请求字节数上限（防异常请求耗尽资源）。
+/// Per-request byte cap for source mode (guards against resource exhaustion).
 pub const MAX_SOURCE_BYTES: u64 = 1 << 30;
 
-/// 模式字节读取超时（防对端开流后挂死服务任务）。
+/// Mode byte read timeout (prevents a peer from hanging the serve task after opening a stream).
 const MODE_READ_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// 默认 RTT 探测次数（每次 64B echo 往返）。
+/// Default RTT probe count (each a 64B echo round trip).
 pub const DEFAULT_RTT_COUNT: u32 = 10;
-/// 默认单方向吞吐测试字节数（8 MiB）。
+/// Default per-direction throughput test bytes (8 MiB).
 pub const DEFAULT_TRANSFER_BYTES: u64 = 8 * 1024 * 1024;
 
-/// 目标地址是否命中带宽诊断保留地址。
+/// Whether the target address hits the bandwidth-diagnostic reserved address.
 pub fn is_magic_target(addr: &str) -> bool {
     addr.eq_ignore_ascii_case(MAGIC_HOST)
 }
 
-/// 拦截入口：目标为保留地址时本地应答并返回 true（调用方不再走 ACL/路由）。
+/// Interception entry: answer locally and return true when the target is the
+/// reserved address (the caller then skips ACL/routing).
 ///
-/// 须在 ACL 检查之前调用（扇入 listener / 扇出 connector 两侧对称）：
-/// echo/sink/source 均无路由能力，收敛节点同样可测，不构成 ACL 旁路。
+/// Must be called before the ACL check (symmetric on fan-in listener / fan-out connector):
+/// echo/sink/source have no routing capability, restricted nodes are equally testable, no ACL bypass.
 pub async fn intercept(mux: &Arc<MuxSession>, req: &OpenRequest, target_addr: &str) -> bool {
     if !is_magic_target(target_addr) {
         return false;
@@ -69,11 +72,11 @@ pub async fn intercept(mux: &Arc<MuxSession>, req: &OpenRequest, target_addr: &s
     true
 }
 
-/// 应答一条带宽诊断流：读模式字节后进入 echo/sink/source，结束关闭通道。
+/// Serve one bandwidth-diagnostic stream: read the mode byte, run echo/sink/source, close the channel when done.
 async fn serve(mux: &Arc<MuxSession>, mut channel: MuxChannel) {
     let mode = match tokio::time::timeout(MODE_READ_TIMEOUT, channel.read_u8()).await {
         Ok(Ok(m)) => m,
-        // 读超时/对端断开：静默关闭
+        // read timeout / peer disconnected: close silently
         _ => {
             mux.close_channel(channel.channel_id);
             return;
@@ -83,13 +86,13 @@ async fn serve(mux: &Arc<MuxSession>, mut channel: MuxChannel) {
         MODE_ECHO => serve_echo(&mut channel).await,
         MODE_SINK => serve_sink(&mut channel).await,
         MODE_SOURCE => serve_source(&mut channel).await,
-        // 未知模式：静默关闭
+        // unknown mode: close silently
         _ => {}
     }
     mux.close_channel(channel.channel_id);
 }
 
-/// echo：原样回显直至对端半关/断开。
+/// echo: echo back verbatim until the peer half-closes/disconnects.
 async fn serve_echo(channel: &mut MuxChannel) {
     let mut buf = vec![0u8; 16 * 1024];
     loop {
@@ -104,7 +107,7 @@ async fn serve_echo(channel: &mut MuxChannel) {
     }
 }
 
-/// sink：读丢弃计数；对端半关（EOF）后回 8 字节 BE 总计数作接收确认。
+/// sink: read, discard and count; after peer half-close (EOF) reply an 8-byte BE total count as receive ack.
 async fn serve_sink(channel: &mut MuxChannel) {
     let mut total: u64 = 0;
     let mut buf = vec![0u8; 64 * 1024];
@@ -117,7 +120,7 @@ async fn serve_sink(channel: &mut MuxChannel) {
     let _ = channel.write_all(&total.to_be_bytes()).await;
 }
 
-/// source：读 8 字节 BE 请求字节数（封顶 MAX_SOURCE_BYTES），按数发流。
+/// source: read an 8-byte BE requested byte count (capped at MAX_SOURCE_BYTES), then stream that many bytes.
 async fn serve_source(channel: &mut MuxChannel) {
     let Ok(count) = channel.read_u64().await else {
         return;
@@ -133,9 +136,9 @@ async fn serve_source(channel: &mut MuxChannel) {
     }
 }
 
-// ==================== 发起侧（经隧道测量对端） ====================
+// ==================== initiator side (measure the peer over the tunnel) ====================
 
-/// RTT 统计（毫秒）。
+/// RTT stats (millis).
 #[derive(Debug, Clone, Serialize)]
 pub struct RttStats {
     pub min_ms: f64,
@@ -143,7 +146,7 @@ pub struct RttStats {
     pub max_ms: f64,
 }
 
-/// 单方向吞吐统计（bytes / ms / Mbps）。
+/// Per-direction throughput stats (bytes / ms / Mbps).
 #[derive(Debug, Clone, Serialize)]
 pub struct TransferStats {
     pub bytes: u64,
@@ -153,14 +156,14 @@ pub struct TransferStats {
 
 impl TransferStats {
     fn new(bytes: u64, elapsed: Duration) -> Self {
-        // 回环极快时 elapsed 可能不足 1ms，保底 1ms 防除零
+        // loopback can be so fast that elapsed is under 1ms; floor at 1ms to avoid division by zero
         let ms = (elapsed.as_millis() as u64).max(1);
         let mbps = round2(bytes as f64 * 8.0 / (ms as f64 / 1000.0) / 1_000_000.0);
         Self { bytes, ms, mbps }
     }
 }
 
-/// 带宽测试汇总（RTT + 上行 + 下行）。
+/// Bandwidth test summary (RTT + uplink + downlink).
 #[derive(Debug, Clone, Serialize)]
 pub struct BandwidthSample {
     pub rtt: RttStats,
@@ -168,7 +171,7 @@ pub struct BandwidthSample {
     pub down: TransferStats,
 }
 
-/// 向对端打开一条带宽诊断流（目标 = 保留地址）。
+/// Open a bandwidth-diagnostic stream to the peer (target = reserved address).
 pub async fn open_stream(mux: &MuxSession) -> Result<MuxChannel> {
     let payload = serde_json::to_vec(&OpenChannel {
         target_addr: MAGIC_HOST.to_string(),
@@ -178,7 +181,7 @@ pub async fn open_stream(mux: &MuxSession) -> Result<MuxChannel> {
     mux.open_channel(Bytes::from(payload)).await
 }
 
-/// 完整带宽测试：RTT（`rtt_count`×64B echo）→ 上行（sink）→ 下行（source）。
+/// Full bandwidth test: RTT (`rtt_count` x 64B echo) -> uplink (sink) -> downlink (source).
 pub async fn measure(
     mux: &MuxSession,
     rtt_count: u32,
@@ -190,7 +193,7 @@ pub async fn measure(
     Ok(BandwidthSample { rtt, up, down })
 }
 
-/// RTT：单通道 `count` 次 64B echo 往返，输出 min/avg/max（毫秒）。
+/// RTT: `count` 64B echo round trips on one channel, outputs min/avg/max (millis).
 pub async fn measure_rtt(mux: &MuxSession, count: u32) -> Result<RttStats> {
     if count == 0 {
         return Err(Error::Protocol("rtt count must be >= 1".into()));
@@ -216,7 +219,7 @@ pub async fn measure_rtt(mux: &MuxSession, count: u32) -> Result<RttStats> {
     })
 }
 
-/// 上行：sink 模式发 `bytes` 字节，半关后等对端计数确认（计时至确认到达）。
+/// Uplink: send `bytes` bytes in sink mode, half-close then wait for the peer's count ack (timed until the ack arrives).
 pub async fn measure_upload(mux: &MuxSession, bytes: u64) -> Result<TransferStats> {
     let mut ch = open_stream(mux).await?;
     ch.write_u8(MODE_SINK).await?;
@@ -228,7 +231,7 @@ pub async fn measure_upload(mux: &MuxSession, bytes: u64) -> Result<TransferStat
         ch.write_all(&chunk[..n]).await?;
         remaining -= n as u64;
     }
-    // DataFin 告知发送完毕，等对端回 8 字节 BE 计数确认全部字节已到达
+    // DataFin signals end of send; wait for the peer's 8-byte BE count ack confirming all bytes arrived
     ch.shutdown().await?;
     let acked = ch.read_u64().await?;
     let elapsed = start.elapsed();
@@ -240,7 +243,7 @@ pub async fn measure_upload(mux: &MuxSession, bytes: u64) -> Result<TransferStat
     Ok(TransferStats::new(acked, elapsed))
 }
 
-/// 下行：source 模式请求 `bytes` 字节，读满为止。
+/// Downlink: request `bytes` bytes in source mode, read until filled.
 pub async fn measure_download(mux: &MuxSession, bytes: u64) -> Result<TransferStats> {
     let mut ch = open_stream(mux).await?;
     ch.write_u8(MODE_SOURCE).await?;
@@ -264,12 +267,12 @@ pub async fn measure_download(mux: &MuxSession, bytes: u64) -> Result<TransferSt
     Ok(TransferStats::new(got, elapsed))
 }
 
-/// 保留 2 位小数（Mbps）。
+/// Round to 2 decimals (Mbps).
 fn round2(v: f64) -> f64 {
     (v * 100.0).round() / 100.0
 }
 
-/// 保留 3 位小数（毫秒）。
+/// Round to 3 decimals (millis).
 fn round3(v: f64) -> f64 {
     (v * 1000.0).round() / 1000.0
 }

@@ -1,4 +1,4 @@
-//! Admin & Client API 集成测试（对应 docs/api/*.md 规格）
+//! Admin & Client API integration tests (per docs/api/*.md spec)
 
 use agile_net_node::api::{ApiState, NodeRuntime, create_app};
 use agile_net_node::auth::jwt::JwtService;
@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::time::Instant;
 use tower::ServiceExt;
 
-/// 构建测试用 App（内存数据库 + 空运行时）。
+/// Build a test App (in-memory DB + empty runtime).
 async fn test_app() -> (Router, Database) {
     let db = Database::in_memory().unwrap();
     let jwt = Arc::new(JwtService::load_or_create(db.clone()).unwrap());
@@ -63,7 +63,7 @@ async fn req(
     (status, json)
 }
 
-/// 初始化 admin 并登录，返回 access_token。
+/// Init admin and log in; returns access_token.
 async fn init_and_login(app: &Router) -> String {
     let (status, _) = req(
         app,
@@ -94,7 +94,7 @@ async fn init_and_login(app: &Router) -> String {
     body["data"]["access_token"].as_str().unwrap().to_string()
 }
 
-// ==================== 认证 ====================
+// ==================== Auth ====================
 
 #[tokio::test]
 async fn auth_init_login_refresh_logout() {
@@ -102,7 +102,7 @@ async fn auth_init_login_refresh_logout() {
     let token = init_and_login(&app).await;
     assert!(!token.is_empty());
 
-    // 重复 init 应被拒绝
+    // Repeat init must be rejected
     let (status, body) = req(
         &app,
         "POST",
@@ -117,7 +117,7 @@ async fn auth_init_login_refresh_logout() {
     assert_eq!(status, StatusCode::FORBIDDEN);
     assert_eq!(body["code"], 40300);
 
-    // 错误密码
+    // Wrong password
     let (status, body) = req(
         &app,
         "POST",
@@ -137,7 +137,7 @@ async fn auth_init_login_refresh_logout() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["role"], "admin");
 
-    // 刷新
+    // Refresh
     let (_, login_body) = req(
         &app,
         "POST",
@@ -166,7 +166,7 @@ async fn auth_init_login_refresh_logout() {
     assert_eq!(status, StatusCode::OK);
     assert!(body["data"]["access_token"].is_string());
 
-    // 旧 refresh_token 已被轮换吊销，再次使用应失败
+    // Old refresh_token was rotated out; reuse must fail
     let (status, _) = req(
         &app,
         "POST",
@@ -179,7 +179,7 @@ async fn auth_init_login_refresh_logout() {
     .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 
-    // 登出吊销
+    // Logout revokes
     let new_refresh = body["data"]["refresh_token"].as_str().unwrap().to_string();
     let new_access = body["data"]["access_token"].as_str().unwrap().to_string();
     let (status, _) = req(
@@ -211,7 +211,7 @@ async fn login_rate_limited() {
     let (app, _db) = test_app().await;
     init_and_login(&app).await;
 
-    // 连续 6 次错误登录（限制 5 次/分钟）
+    // 6 bad logins in a row (limit: 5/min)
     let mut last_status = StatusCode::OK;
     for _ in 0..6 {
         let (status, _) = req(
@@ -233,12 +233,12 @@ async fn login_rate_limited() {
 #[tokio::test]
 async fn unauthenticated_and_role_enforcement() {
     let (app, _db) = test_app().await;
-    // 无 token
+    // No token
     let (status, body) = req(&app, "GET", "/api/v1/admin/rules", None, None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     assert_eq!(body["code"], 40100);
 
-    // client 角色访问 admin API → 403
+    // client role on admin API → 403
     let admin_token = init_and_login(&app).await;
     let account_token = create_account_and_login(&app, &admin_token).await;
     let (status, body) = req(
@@ -253,14 +253,14 @@ async fn unauthenticated_and_role_enforcement() {
     assert_eq!(body["code"], 40301);
 }
 
-// ==================== 规则 ====================
+// ==================== Rules ====================
 
 #[tokio::test]
 async fn rules_crud_flow() {
     let (app, _db) = test_app().await;
     let token = init_and_login(&app).await;
 
-    // 创建
+    // Create
     let (status, body) = req(
         &app,
         "POST",
@@ -276,7 +276,7 @@ async fn rules_crud_flow() {
     assert_eq!(status, StatusCode::CREATED);
     let rule_id = body["data"]["id"].as_str().unwrap().to_string();
 
-    // 重复创建 → 409
+    // Duplicate create → 409
     let (status, body) = req(
         &app,
         "POST",
@@ -291,7 +291,7 @@ async fn rules_crud_flow() {
     assert_eq!(status, StatusCode::CONFLICT);
     assert_eq!(body["code"], 40900);
 
-    // 非法 CIDR → 400
+    // Invalid CIDR → 400
     let (status, _) = req(
         &app,
         "POST",
@@ -305,7 +305,7 @@ async fn rules_crud_flow() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 
-    // 列表 + 分页
+    // List + pagination
     let (status, body) = req(
         &app,
         "GET",
@@ -317,7 +317,7 @@ async fn rules_crud_flow() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["total"], 1);
 
-    // 更新
+    // Update
     let (status, body) = req(
         &app,
         "PUT",
@@ -331,7 +331,7 @@ async fn rules_crud_flow() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["remark"], "扩大到办公全网");
 
-    // 批量导入
+    // Batch import
     let (status, body) = req(
         &app,
         "POST",
@@ -351,7 +351,7 @@ async fn rules_crud_flow() {
     assert_eq!(body["data"]["created"], 2);
     assert_eq!(body["data"]["skipped"], 1);
 
-    // 删除
+    // Delete
     let (status, _) = req(
         &app,
         "DELETE",
@@ -363,14 +363,14 @@ async fn rules_crud_flow() {
     assert_eq!(status, StatusCode::OK);
 }
 
-// ==================== 权限组 ====================
+// ==================== Groups ====================
 
 #[tokio::test]
 async fn groups_flow() {
     let (app, _db) = test_app().await;
     let token = init_and_login(&app).await;
 
-    // 创建规则
+    // Create rule
     let (_, body) = req(
         &app,
         "POST",
@@ -383,7 +383,7 @@ async fn groups_flow() {
     .await;
     let rule_id = body["data"]["id"].as_str().unwrap().to_string();
 
-    // 创建权限组（含 rule_ids）
+    // Create group (with rule_ids)
     let (status, body) = req(
         &app,
         "POST",
@@ -399,7 +399,7 @@ async fn groups_flow() {
     assert_eq!(status, StatusCode::CREATED);
     let group_id = body["data"]["id"].as_str().unwrap().to_string();
 
-    // 详情
+    // Detail
     let (status, body) = req(
         &app,
         "GET",
@@ -411,7 +411,7 @@ async fn groups_flow() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["rules"].as_array().unwrap().len(), 1);
 
-    // 全量设置规则（清空）
+    // Replace rule set (clear)
     let (status, body) = req(
         &app,
         "PUT",
@@ -425,7 +425,7 @@ async fn groups_flow() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["rule_count"], 0);
 
-    // 重新绑定
+    // Rebind
     req(
         &app,
         "PUT",
@@ -437,7 +437,7 @@ async fn groups_flow() {
     )
     .await;
 
-    // 删除被引用的规则 → 409 + groups 列表
+    // Delete referenced rule → 409 + groups list
     let (status, body) = req(
         &app,
         "DELETE",
@@ -454,7 +454,7 @@ async fn groups_flow() {
             .contains(&json!("开发组"))
     );
 
-    // 强制删除
+    // Force delete
     let (status, _) = req(
         &app,
         "DELETE",
@@ -466,9 +466,9 @@ async fn groups_flow() {
     assert_eq!(status, StatusCode::OK);
 }
 
-// ==================== 账号 ====================
+// ==================== Accounts ====================
 
-/// 创建权限组 + 账号，返回 client 登录 token。
+/// Create group + account; returns client login token.
 async fn create_account_and_login(app: &Router, admin_token: &str) -> String {
     let (_, body) = req(
         app,
@@ -531,7 +531,7 @@ async fn accounts_strong_password_and_lifecycle() {
     .await;
     let group_id = body["data"]["id"].as_str().unwrap().to_string();
 
-    // 创建账号：服务端生成强密码
+    // Create account: server generates strong password
     let (status, body) = req(
         &app,
         "POST",
@@ -545,7 +545,7 @@ async fn accounts_strong_password_and_lifecycle() {
     .await;
     assert_eq!(status, StatusCode::CREATED);
     let password = body["data"]["password"].as_str().unwrap();
-    // sk- 前缀 + 48 位 = 51 字符，混合大小写与数字
+    // "sk-" prefix + 48 chars = 51 total, mixed case + digits
     assert!(password.starts_with("sk-"));
     assert_eq!(password.len(), 51);
     assert!(
@@ -556,7 +556,7 @@ async fn accounts_strong_password_and_lifecycle() {
     );
     let account_id = body["data"]["id"].as_str().unwrap().to_string();
 
-    // 弱用户名校验
+    // Weak username rejected
     let (status, _) = req(
         &app,
         "POST",
@@ -570,7 +570,7 @@ async fn accounts_strong_password_and_lifecycle() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 
-    // 重置密码
+    // Reset password
     let (status, body) = req(
         &app,
         "POST",
@@ -584,7 +584,7 @@ async fn accounts_strong_password_and_lifecycle() {
     assert!(new_password.starts_with("sk-"));
     assert_ne!(new_password, password);
 
-    // 旧密码失效，新密码可登录
+    // Old password dead; new one logs in
     let (status, _) = req(
         &app,
         "POST",
@@ -608,7 +608,7 @@ async fn accounts_strong_password_and_lifecycle() {
     .await;
     assert_eq!(status, StatusCode::OK);
 
-    // 禁用 → 登录被拒
+    // Disable → login rejected
     let (status, _) = req(
         &app,
         "PUT",
@@ -632,7 +632,7 @@ async fn accounts_strong_password_and_lifecycle() {
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 
-    // 组下存在账号时删组 → 409
+    // Delete group with accounts → 409
     let (status, _) = req(
         &app,
         "DELETE",
@@ -643,7 +643,7 @@ async fn accounts_strong_password_and_lifecycle() {
     .await;
     assert_eq!(status, StatusCode::CONFLICT);
 
-    // 删除账号
+    // Delete account
     let (status, _) = req(
         &app,
         "DELETE",
@@ -655,14 +655,14 @@ async fn accounts_strong_password_and_lifecycle() {
     assert_eq!(status, StatusCode::OK);
 }
 
-// ==================== 客户端配置 ====================
+// ==================== Client config ====================
 
 #[tokio::test]
 async fn client_config_scoped_by_group() {
     let (app, db) = test_app().await;
     let admin_token = init_and_login(&app).await;
 
-    // 两条规则，仅一条绑定到账号所在组
+    // Two rules; only one bound to the account's group
     let (_, b1) = req(
         &app,
         "POST",
@@ -721,7 +721,7 @@ async fn client_config_scoped_by_group() {
     .await;
     let client_token = body["data"]["access_token"].as_str().unwrap().to_string();
 
-    // 拉取配置：只应看到绑定规则
+    // Fetch config: only bound rules visible
     let (status, body) = req(
         &app,
         "GET",
@@ -737,7 +737,7 @@ async fn client_config_scoped_by_group() {
     assert!(body["data"]["tunnel"]["port"].is_number());
     let version = body["data"]["version"].as_u64().unwrap();
 
-    // 心跳
+    // Heartbeat
     let (status, body) = req(
         &app,
         "POST",
@@ -751,7 +751,7 @@ async fn client_config_scoped_by_group() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["force_disconnect"], false);
 
-    // 变更规则 → 配置版本递增
+    // Rule change bumps config version
     req(
         &app,
         "POST",
@@ -765,7 +765,7 @@ async fn client_config_scoped_by_group() {
     let new_version = db.config_version().unwrap();
     assert!(new_version > version);
 
-    // 心跳流量计入统计
+    // Heartbeat bytes counted in stats
     let (rows, tx, rx) = db.traffic_by_account(1).unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(tx, 100);
@@ -794,7 +794,7 @@ async fn relay_tokens_lifecycle() {
     assert!(full_token.starts_with("psk_"));
     let token_id = body["data"]["id"].as_str().unwrap().to_string();
 
-    // 列表只显示前缀
+    // List shows prefix only
     let (status, body) = req(
         &app,
         "GET",
@@ -820,7 +820,7 @@ async fn relay_tokens_lifecycle() {
     assert_eq!(status, StatusCode::OK);
 }
 
-// ==================== 审计与状态 ====================
+// ==================== Audit & status ====================
 
 #[tokio::test]
 async fn audit_logs_and_node_status() {
@@ -847,7 +847,7 @@ async fn audit_logs_and_node_status() {
     assert_eq!(body["data"]["version"], env!("CARGO_PKG_VERSION"));
     assert!(body["data"]["uptime"].is_number());
 
-    // 更新节点名
+    // Rename node
     let (status, body) = req(
         &app,
         "PUT",
@@ -870,13 +870,13 @@ async fn audit_logs_and_node_status() {
     assert_eq!(body["data"]["node_name"], "办公网跳板");
 }
 
-/// status 流量契约字段：roles.fanout_traffic / roles.transit / traffic_24h
+/// status traffic contract fields: roles.fanout_traffic / roles.transit / traffic_24h
 #[tokio::test]
 async fn node_status_traffic_contract() {
     let (app, db) = test_app().await;
     let token = init_and_login(&app).await;
 
-    // 造一点 24h 序列数据（采样任务不在本测试内运行，直接落库验证聚合输出）
+    // Seed 24h series rows (sampler not run here; insert directly to verify aggregation output)
     db.add_node_traffic("fanin", "n1", "", 100, 200).unwrap();
     db.add_node_traffic("fanout", "up-a", "", 7, 8).unwrap();
     db.add_node_traffic("transit", "n1", "n2", 3, 4).unwrap();
@@ -885,13 +885,13 @@ async fn node_status_traffic_contract() {
     assert_eq!(status, StatusCode::OK);
     let data = &body["data"];
 
-    // roles.fanout_traffic：逐条数组（无 connector 时为空数组）
+    // roles.fanout_traffic: per-connector array (empty when no connectors)
     assert!(data["roles"]["fanout_traffic"].is_array());
-    // roles.transit：汇总 + pairs（实时 meter 快照，本测试无数据面流量 → 全零/空）
+    // roles.transit: totals + pairs (live meter snapshot; no data-plane traffic here → all zero/empty)
     assert_eq!(data["roles"]["transit"]["bytes_up"], 0);
     assert_eq!(data["roles"]["transit"]["bytes_down"], 0);
     assert!(data["roles"]["transit"]["pairs"].is_array());
-    // traffic_24h：三维小时序列（hour 为本地时间 "YYYY-MM-DD HH:00"）
+    // traffic_24h: three hourly series (hour is local time "YYYY-MM-DD HH:00")
     let t24 = &data["traffic_24h"];
     assert_eq!(t24["fanin"][0]["up"], 100);
     assert_eq!(t24["fanin"][0]["down"], 200);
@@ -904,7 +904,7 @@ async fn node_status_traffic_contract() {
     assert_eq!(t24["transit"][0]["down"], 4);
 }
 
-/// 密码哈希使用 Argon2id 且可验证
+/// Password hash uses Argon2id and verifies
 #[test]
 fn password_hash_uses_argon2id() {
     let hash = hash_password("TestPassword123").unwrap();
@@ -912,19 +912,19 @@ fn password_hash_uses_argon2id() {
     assert!(agile_net_node::db::verify_password("TestPassword123", &hash).unwrap());
 }
 
-// ==================== 管理员管理 ====================
+// ==================== Admin management ====================
 
 #[tokio::test]
 async fn admins_management_flow() {
     let (app, _db) = test_app().await;
     let token = init_and_login(&app).await;
 
-    // 列表：初始 1 个
+    // List: 1 initially
     let (status, body) = req(&app, "GET", "/api/v1/admin/admins", Some(&token), None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["items"].as_array().unwrap().len(), 1);
 
-    // 新建
+    // Create
     let (status, body) = req(
         &app,
         "POST",
@@ -938,7 +938,7 @@ async fn admins_management_flow() {
     assert_eq!(status, StatusCode::OK);
     let new_id = body["data"]["id"].as_str().unwrap().to_string();
 
-    // 新管理员可登录
+    // New admin can log in
     let (status, _) = req(
         &app,
         "POST",
@@ -951,7 +951,7 @@ async fn admins_management_flow() {
     .await;
     assert_eq!(status, StatusCode::OK);
 
-    // 弱密码拒绝
+    // Weak password rejected
     let (status, _) = req(
         &app,
         "POST",
@@ -964,7 +964,7 @@ async fn admins_management_flow() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 
-    // 删除自己 → 拒绝
+    // Delete self → rejected
     let me_id = body["data"]["id"].as_str().unwrap();
     let _ = me_id;
     let (_, me) = req(&app, "GET", "/api/v1/auth/me", Some(&token), None).await;
@@ -979,7 +979,7 @@ async fn admins_management_flow() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 
-    // 删除新管理员 → 成功，其会话被吊销
+    // Delete new admin → ok; its sessions revoked
     let (_, login2) = req(
         &app,
         "POST",
@@ -1025,7 +1025,7 @@ async fn change_password_flow() {
     let (app, _db) = test_app().await;
     let token = init_and_login(&app).await;
 
-    // 旧密码错误 → 401
+    // Wrong old password → 401
     let (status, _) = req(
         &app,
         "PUT",
@@ -1038,7 +1038,7 @@ async fn change_password_flow() {
     .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 
-    // 正确修改
+    // Correct change
     let (status, _) = req(
         &app,
         "PUT",
@@ -1051,7 +1051,7 @@ async fn change_password_flow() {
     .await;
     assert_eq!(status, StatusCode::OK);
 
-    // 旧密码失效，新密码可登录
+    // Old password dead; new one logs in
     let (status, _) = req(
         &app,
         "POST",
@@ -1081,7 +1081,7 @@ async fn audit_retention_cleanup() {
     let (_app, db) = test_app().await;
     db.record_audit_log(None, "admin", "recent.action", None, None, None)
         .unwrap();
-    // 刚插入的不是 90 天前，不应被清理
+    // Freshly inserted row is not 90 days old; must not be cleaned
     let n = db.cleanup_audit_log(90).unwrap();
     assert_eq!(n, 0);
     let (_, total) = db.list_audit_logs(1, 20, None).unwrap();

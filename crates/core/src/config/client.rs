@@ -1,30 +1,30 @@
-//! 客户端配置模型
+//! Client config model
 
 use serde::{Deserialize, Serialize};
 
-/// Client 从 Node 拉取的路由配置。
+/// Routing config the client pulls from the node.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClientConfig {
-    /// 配置版本号，用于增量更新
+    /// Config version, for incremental updates
     pub version: u64,
 
-    /// 路由规则列表
+    /// Routing rule list
     pub rules: Vec<RuleEntry>,
 
-    /// 节点名称
+    /// Node name
     pub node_name: String,
 }
 
-/// 单条路由规则。
+/// A single routing rule.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuleEntry {
-    /// 规则类型："ip-cidr" | "host"
+    /// Rule type: "ip-cidr" | "host"
     pub rule_type: String,
 
-    /// 值：CIDR 如 "10.12.0.0/16" 或域名如 "git.internal.com"
+    /// Value: CIDR like "10.12.0.0/16" or a domain like "git.internal.com"
     pub value: String,
 
-    /// 是否解析域名到 IP（仅 host 类型有效）
+    /// Whether to resolve the domain to an IP (host rules only)
     #[serde(default)]
     pub resolve: bool,
 }

@@ -1,14 +1,14 @@
-//! 第 3 节：TUN 支持（wintun.dll SHA-256 钉值校验 / 管理员权限判定）。
+//! Section 3: TUN support (wintun.dll SHA-256 pin verification / admin-privilege detection).
 
 use super::{DoctorContext, DoctorSection, DoctorStatus, item, section};
 
-/// wintun.dll 0.14.1 (amd64) 本体 SHA-256 钉值（全仓唯一来源；
-/// 桌面端经 agile_net_node::tool::doctor::WINTUN_DLL_SHA256 引用，
-/// 升级 = 改这里 + 替换 apps/desktop/wintun/wintun.dll 内嵌文件 + 更新 desktop 侧 WINTUN_VERSION）。
+/// SHA-256 pin of the wintun.dll 0.14.1 (amd64) binary (single source for the whole repo;
+/// the desktop app references it via agile_net_node::tool::doctor::WINTUN_DLL_SHA256;
+/// upgrading = change here + replace the embedded apps/desktop/wintun/wintun.dll + bump WINTUN_VERSION on the desktop side).
 pub const WINTUN_DLL_SHA256: &str =
     "e5da8447dc2c320edc0fc52fa01885c103de8c118481f683643cacc3220dafce";
 
-/// Windows 管理员权限：whoami /groups 含高完整性级 SID（免新依赖，语义对齐提权判定）。
+/// Windows admin privilege: `whoami /groups` contains the high-integrity-level SID (no new dependencies, same semantics as elevation detection).
 #[cfg(windows)]
 fn is_elevated() -> Option<bool> {
     let out = super::util::silent_command("whoami")
@@ -44,7 +44,7 @@ pub(super) fn section_tun(ctx: &DoctorContext) -> DoctorSection {
                     ))
                 }
                 Ok(_) => {
-                    // 损坏/篡改：删除让下次开启 TUN 自动重下
+                    // Corrupt/tampered: delete so the next TUN enable re-downloads automatically
                     let fixed = ctx.fix && std::fs::remove_file(&dll).is_ok();
                     if fixed {
                         items.push(item(

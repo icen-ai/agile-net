@@ -1,6 +1,6 @@
-//! Relay 穿透隧道模块
+//! Relay tunnel module
 //!
-//! 节点间建立 TLS 1.3 加密隧道，多路复用 TCP 连接。
+//! TLS 1.3 encrypted tunnels between endpoints, multiplexing TCP connections.
 
 pub mod acl;
 pub mod bandwidth;

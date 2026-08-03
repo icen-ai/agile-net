@@ -1,4 +1,4 @@
-//! AgileNet Node 库定义
+//! AgileNet node library.
 
 pub mod acme;
 pub mod api;

@@ -1,10 +1,10 @@
-//! AgileNet CLI（`anet-svc` 顶层管理命令）— 企业级命令行管理工具
+//! AgileNet CLI (`anet-svc` top-level admin commands) — enterprise-grade command-line admin tool.
 //!
-//! 特性：
-//! - 会话持久化（~/.anet/session.json，Unix 0600），access_token 过期自动刷新
-//! - 全量管理命令：node / rule / group / account / token / connector / admin / audit
-//! - ID 前缀解析（输入前几位即可，如 `anet-svc rule delete 3f2a`）
-//! - --json 机器可读输出，默认表格输出
+//! Features:
+//! - Session persistence (~/.anet/session.json, Unix 0600), auto-refresh of expired access_token
+//! - Full admin commands: node / rule / group / account / token / connector / admin / audit
+//! - ID prefix resolution (type the first few chars, e.g. `anet-svc rule delete 3f2a`)
+//! - --json machine-readable output, table output by default
 
 mod account;
 mod admin;
@@ -17,7 +17,7 @@ mod node;
 mod rule;
 mod token;
 
-// 对外可见性与原单文件 cli.rs 保持一致（tests/cli_test.rs 等直接引用 *Sub 枚举）
+// Public visibility matches the original single-file cli.rs (tests/cli_test.rs etc. reference the *Sub enums directly).
 pub use account::{AccountAddArgs, AccountArgs, AccountListArgs, AccountSub, AccountUpdateArgs};
 pub use admin::{AdminAddArgs, AdminArgs, AdminSub, PasswdArgs};
 pub use audit::{AuditArgs, AuditListArgs, AuditSub};
@@ -83,17 +83,17 @@ pub enum Commands {
     Tui,
 }
 
-// ==================== 命令执行 ====================
+// ==================== Command execution ====================
 
 pub async fn run_cli(cli: Cli) -> Result<()> {
     dispatch(cli.command, cli.api, cli.json).await
 }
 
-/// 顶层命令分派（`anet-svc <rule|group|...>` 与旧式 `anet-svc cli ...` 共用）。
+/// Top-level command dispatch (shared by `anet-svc <rule|group|...>` and the legacy `anet-svc cli ...`).
 pub async fn dispatch(command: Commands, api: Option<String>, json_out: bool) -> Result<()> {
     match command {
-        // 诊断工具集在会话校验之前分流：本机诊断，不登录、不读库、不记审计
-        // （bandwidth 臂例外：经管理 API 在服务端执行，arm 内自行检查会话）
+        // The diagnostic toolkit is split off before session validation: local diagnostics, no login, no DB reads, no audit
+        // (the bandwidth arm is the exception: it runs server-side via the admin API and checks the session itself)
         Commands::Tool(args) => {
             let code = crate::tool::run(args, json_out, api).await;
             if code != 0 {
@@ -101,7 +101,7 @@ pub async fn dispatch(command: Commands, api: Option<String>, json_out: bool) ->
             }
             Ok(())
         }
-        // 自我诊断同为会话校验前分流：本机操作，不登录、不写审计
+        // Doctor is likewise split off before session validation: local operation, no login, no audit writes
         Commands::Doctor => {
             let report = crate::tool::doctor::run(crate::tool::doctor::DoctorContext::cli()).await;
             if json_out {

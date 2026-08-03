@@ -1,11 +1,13 @@
-//! 第 6 节：配置与数据（数据目录可写 / GUI 数据文件损坏备份重置 / 磁盘剩余空间）。
+//! Section 6: configuration and data (data-dir writability / corrupt GUI data files backed up
+//! and reset / free disk space).
 
 use super::{DoctorContext, DoctorItem, DoctorSection, DoctorStatus, item, section};
 use std::path::Path;
 
-/// GUI 数据文件（文件名, 损坏重置时的默认内容；内容须能被桌面端反序列化为默认值）。
+/// GUI data files (file name, default content when resetting a corrupt file; the content must
+/// deserialize to defaults on the desktop side).
 const GUI_DATA_FILES: &[(&str, &str)] = &[
-    // RoleSettings 必填三字段写全，其余字段 serde default 兜底
+    // RoleSettings' three required fields written in full; the rest fall back to serde defaults
     ("gui-settings.json", r#"{"client":true,"server":false,"web":false}"#),
     ("subscriptions.json", "{}"),
     ("gui-custom-rules.json", "{}"),
@@ -23,7 +25,7 @@ pub(super) fn section_config(ctx: &DoctorContext) -> DoctorSection {
             None,
         ));
     } else {
-        // 目录可写
+        // Directory writability
         let probe = dir.join(".doctor-write-test");
         match std::fs::write(&probe, b"t").and_then(|_| std::fs::remove_file(&probe)) {
             Ok(()) => items.push(item(
@@ -41,7 +43,7 @@ pub(super) fn section_config(ctx: &DoctorContext) -> DoctorSection {
                 Some("检查目录权限与占用（杀毒软件实时防护可能拦截）".into()),
             )),
         }
-        // GUI 数据文件可解析（CLI 上下文只检已存在的文件；GUI 上下文缺失也报告）
+        // GUI data files parse (CLI context only checks existing files; GUI context also reports missing ones)
         for &(name, default_content) in GUI_DATA_FILES {
             let path = dir.join(name);
             if !path.exists() {
@@ -69,7 +71,7 @@ pub(super) fn section_config(ctx: &DoctorContext) -> DoctorSection {
                 ));
                 continue;
             }
-            // 损坏：备份为 .bak-时间戳 并重置默认
+            // Corrupt: back up as .bak-<timestamp> and reset to defaults
             if ctx.fix {
                 let ts = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -106,12 +108,12 @@ pub(super) fn section_config(ctx: &DoctorContext) -> DoctorSection {
         }
     }
 
-    // 磁盘剩余空间（<1GiB err / <5GiB warn）
+    // Free disk space (<1GiB err / <5GiB warn)
     items.push(check_disk_space(dir));
     section("config", "配置与数据", items)
 }
 
-/// 数据目录所在卷的剩余空间检查（sysinfo Disks，最长挂载点前缀匹配）。
+/// Free-space check for the volume holding the data directory (sysinfo Disks, longest mount-point prefix match).
 fn check_disk_space(dir: &Path) -> DoctorItem {
     const GIB: u64 = 1024 * 1024 * 1024;
     let disks = sysinfo::Disks::new_with_refreshed_list();

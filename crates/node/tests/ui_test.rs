@@ -1,6 +1,6 @@
-//! Web Admin UI 单页应用集成测试
+//! Web Admin UI single-page app integration tests
 //!
-//! 文件布局（AGENTS.md §6）：index.html / app.js / style.css + 共享 tokens.css 分路服务。
+//! File layout (AGENTS.md §6): index.html / app.js / style.css + shared tokens.css, served on separate routes.
 
 use agile_net_node::ui::create_ui_router;
 use axum::{
@@ -29,7 +29,7 @@ async fn get(uri: &str) -> (StatusCode, String, axum::http::HeaderMap) {
     )
 }
 
-/// 根路径返回控制台 SPA（逻辑在 /ui/app.js，样式经 tokens.css + style.css 外链）
+/// Root path returns the console SPA (logic in /ui/app.js, styles via tokens.css + style.css links)
 #[tokio::test]
 async fn admin_ui_index_returns_html() {
     let (status, html, _) = get("/").await;
@@ -40,7 +40,7 @@ async fn admin_ui_index_returns_html() {
     assert!(html.contains("/ui/style.css"));
 }
 
-/// 应用逻辑经 /ui/app.js 服务：视图切换与登录均在其中
+/// App logic served via /ui/app.js: view switching and login both live there
 #[tokio::test]
 async fn admin_ui_serves_app_js() {
     let (status, js, headers) = get("/ui/app.js").await;
@@ -51,11 +51,11 @@ async fn admin_ui_serves_app_js() {
     );
     assert!(js.contains("switchView"));
     assert!(js.contains("doLogin"));
-    // 严禁预填默认凭据
+    // never prefill default credentials
     assert!(!js.contains("admin123"));
 }
 
-/// 共享设计 token（桌面端唯一权威文件）经 /ui/tokens.css 服务
+/// Shared design tokens (desktop-authoritative file) served via /ui/tokens.css
 #[tokio::test]
 async fn admin_ui_serves_shared_tokens() {
     let (status, css, _) = get("/ui/tokens.css").await;
@@ -64,7 +64,7 @@ async fn admin_ui_serves_shared_tokens() {
     assert!(css.contains("--ok-text"));
 }
 
-/// /admin 别名同样可用，且登录框不预填任何凭据
+/// /admin alias also works, and the login form prefills no credentials
 #[tokio::test]
 async fn admin_ui_alias_and_no_prefilled_credentials() {
     let (status, html, _) = get("/admin").await;
@@ -73,19 +73,19 @@ async fn admin_ui_alias_and_no_prefilled_credentials() {
     assert!(!html.contains("value=\"admin\""));
 }
 
-/// XSS 安全：渲染函数必须转义动态内容
+/// XSS safety: render functions must escape dynamic content
 #[tokio::test]
 async fn admin_ui_escapes_dynamic_content() {
     let (_, js, _) = get("/ui/app.js").await;
-    // esc() 实现已沉淀到共享层 /ui/agutil.js，app.js 经共享脚本获得
+    // esc() lives in the shared layer /ui/agutil.js; app.js gets it via the shared script
     let (_, util, _) = get("/ui/agutil.js").await;
     assert!(util.contains("function esc(s)") || util.contains("esc ="));
     assert!(util.contains("&amp;"));
-    // 不直接把接口数据 innerHTML（全部经 esc/pager/shortId 包装）
+    // never innerHTML raw API data (everything wrapped by esc/pager/shortId)
     assert!(!js.contains("innerHTML = (d.items||[]).map(a =>\n      '<tr><td><b>' + a.username"));
 }
 
-/// 安全响应头（frame-ancestors 放行桌面壳 iframe 内嵌，外部站点仍被禁）
+/// Security response headers (frame-ancestors allows desktop-shell iframe embedding, external sites still blocked)
 #[tokio::test]
 async fn admin_ui_security_headers() {
     let (_, _, headers) = get("/").await;
@@ -98,7 +98,32 @@ async fn admin_ui_security_headers() {
         .unwrap();
     assert!(csp.contains("frame-ancestors"));
     assert!(csp.contains("tauri.localhost"));
-    // 外链脚本/样式必须被 CSP 放行（拆分后 app.js / style.css 为外部资源）
+    // external scripts/styles must pass CSP (after the split, app.js / style.css are external resources)
     assert!(csp.contains("script-src 'self'"));
     assert!(csp.contains("style-src 'self'"));
+}
+
+/// Bilingual assets: agi18n runtime / shared dictionary / admin dictionary shard all served embedded,
+/// and index.html includes them in dependency order (agi18n → aglang → admin shard → app.js)
+#[tokio::test]
+async fn admin_ui_serves_i18n_assets() {
+    for uri in ["/ui/agi18n.js", "/ui/aglang.js", "/ui/lang/admin.js"] {
+        let (status, js, headers) = get(uri).await;
+        assert_eq!(status, StatusCode::OK, "{uri}");
+        assert_eq!(
+            headers.get("content-type").unwrap(),
+            "text/javascript; charset=utf-8",
+            "{uri}"
+        );
+        assert!(js.contains("AgI18n"), "{uri}");
+    }
+    let (_, html, _) = get("/").await;
+    let i0 = html.find("/ui/agi18n.js").expect("agi18n.js 引用缺失");
+    let i1 = html.find("/ui/aglang.js").expect("aglang.js 引用缺失");
+    let i2 = html.find("/ui/lang/admin.js").expect("lang/admin.js 引用缺失");
+    let i3 = html.find("/ui/app.js").expect("app.js 引用缺失");
+    assert!(i0 < i1 && i1 < i2 && i2 < i3, "i18n 脚本引入顺序错误");
+    // language switcher present without inline events (CSP discipline)
+    assert!(html.contains("id=\"lang-select\""));
+    assert!(!html.contains("onchange="));
 }

@@ -1,8 +1,8 @@
-//! 扇出 Connector 管理器：DB 为唯一事实来源的运行时装配与热操作。
+//! Fan-out connector manager: runtime assembly and hot ops with the DB as the single source of truth.
 //!
-//! 启动时从 DB 装配全部 enabled connector（TOML `[[connectors]]` 已在
-//! NodeServer 启动早期导入为初始数据）；运行期经 `upsert_from_db` / `remove`
-//! 响应管理面变更，先断旧再起新，全程无需重启节点。
+//! At startup, assembles all enabled connectors from the DB (TOML `[[connectors]]` is imported
+//! as seed data early in NodeServer startup); at runtime, `upsert_from_db` / `remove` react to
+//! control-plane changes — old connection torn down before the new one starts, no node restart.
 
 use crate::db::Database;
 use crate::relay_auth::ManageableRegistry;
@@ -16,32 +16,32 @@ use dashmap::DashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-/// 单个 connector 的运行时句柄（connector 实例 + 其全部后台任务）。
+/// Runtime handle of a single connector (connector instance plus all its background tasks).
 struct ConnectorHandle {
     connector: Arc<RelayConnector>,
     tasks: Vec<tokio::task::JoinHandle<()>>,
 }
 
-/// 扇出 Connector 管理器（connector_id → 运行时句柄）。
+/// Fan-out connector manager (connector_id -> runtime handle).
 pub struct ConnectorManager {
     db: Database,
-    /// 本节点名（握手时对上游表明身份）
+    /// This node's name (identifies itself to the upstream during handshake)
     node_id: String,
-    /// 下游路由 Listener（多级串联时 Open 请求继续向下游转发）
+    /// Downstream-routing listener (for multi-hop chains, Open requests keep forwarding downstream)
     listener: Option<Arc<RelayListener>>,
-    /// 路由再发布：客户端引擎合并路由 + 开启器注册表（GUI 内嵌场景注入）
+    /// Route re-publish: client engine merged routes + opener registry (injected when embedded in the GUI)
     client_routes: Option<ClientRoutes>,
-    /// 对端收敛注册表（connector.group_id → 反向流量允许集合）
+    /// Peer ACL registry (connector.group_id -> allowed set for reverse traffic)
     acl: Arc<PeerAclRegistry>,
-    /// 可管理上游注册表（握手 v2 发现同步）
+    /// Manageable upstream registry (handshake v2 discovery sync)
     manageable: ManageableRegistry,
-    /// 中继途径核算（None = 装配的 connector 不打点）
+    /// Transit metering (None = assembled connectors are not metered)
     transit: Option<Arc<TransitMeter>>,
     handles: DashMap<String, ConnectorHandle>,
 }
 
 impl ConnectorManager {
-    /// 最小构造（测试/嵌入场景）；运行时依赖经 with_* 注入。
+    /// Minimal constructor (tests/embedding); runtime deps injected via with_*.
     pub fn new(db: Database) -> Self {
         Self {
             db,
@@ -80,13 +80,13 @@ impl ConnectorManager {
         self
     }
 
-    /// 挂接中继途径核算表（装配的 connector 以自身名作为来源标识入账）。
+    /// Attach the transit meter (assembled connectors account traffic under their own name as source).
     pub fn with_transit_meter(mut self, meter: Arc<TransitMeter>) -> Self {
         self.transit = Some(meter);
         self
     }
 
-    /// 启动装配：从 DB 拉起全部 enabled connector（单条失败只记日志不影响其余）。
+    /// Startup assembly: bring up all enabled connectors from the DB (a single failure is logged only).
     pub async fn start_all(&self) {
         let views = match self.db.list_connectors() {
             Ok(v) => v,
@@ -102,7 +102,7 @@ impl ConnectorManager {
         }
     }
 
-    /// 新建或重建指定 connector（先断旧再起新；记录缺失/禁用则仅移除）。
+    /// Create or rebuild a connector (tear down old before starting new; missing/disabled record just removes).
     pub async fn upsert_from_db(&self, id: &str) -> Result<()> {
         self.remove(id).await;
         if let Some(handle) = self.build(id).await? {
@@ -111,7 +111,7 @@ impl ConnectorManager {
         Ok(())
     }
 
-    /// 断开并移除指定 connector（幂等）。
+    /// Disconnect and remove a connector (idempotent).
     pub async fn remove(&self, id: &str) {
         if let Some((_, handle)) = self.handles.remove(id) {
             handle.connector.disconnect().await;
@@ -121,7 +121,7 @@ impl ConnectorManager {
         }
     }
 
-    /// 全部断开（节点停机用）。
+    /// Disconnect all (node shutdown).
     pub async fn shutdown(&self) {
         let ids: Vec<String> = self.handles.iter().map(|e| e.key().clone()).collect();
         for id in ids {
@@ -129,7 +129,7 @@ impl ConnectorManager {
         }
     }
 
-    /// 各 connector 的（上游地址, 状态）（沿用原 connector_states 语义）。
+    /// (upstream addr, state) of each connector (same semantics as the former connector_states).
     pub fn states(&self) -> Vec<(String, String)> {
         let mut out: Vec<(String, String)> = self
             .handles
@@ -145,13 +145,13 @@ impl ConnectorManager {
         out
     }
 
-    /// 单条 connector 的实时状态（无运行时句柄 = None，调用方按 disconnected 展示）。
+    /// Live state of one connector (no runtime handle = None; callers render it as disconnected).
     pub fn state_of(&self, id: &str) -> Option<&'static str> {
         self.handles.get(id).map(|h| state_str(h.connector.state()))
     }
 
-    /// 各 connector 的当前会话流量（connector name, 出向字节, 入向字节）；
-    /// 断连的 connector 为 (0, 0)（仅当前会话计数，历史累计见 node_traffic_log 采样）。
+    /// Current-session traffic per connector (connector name, bytes out, bytes in);
+    /// disconnected connectors report (0, 0) (session counters only; historical totals are sampled in node_traffic_log).
     pub fn traffic(&self) -> Vec<(String, u64, u64)> {
         let views = self.db.list_connectors().unwrap_or_default();
         let mut out: Vec<(String, u64, u64)> = self
@@ -171,7 +171,7 @@ impl ConnectorManager {
         out
     }
 
-    /// 扇出汇总状态：任一连通则 connected，全无扇出则 disabled。
+    /// Fan-out aggregate status: any connected = connected; no fan-out at all = disabled.
     pub fn aggregate_status(&self) -> &'static str {
         if self.handles.is_empty() {
             return "disabled";
@@ -194,11 +194,11 @@ impl ConnectorManager {
         }
     }
 
-    /// 解析带宽测试的发起对端（`anet tool bandwidth` / tool API 用）：
-    /// - `Some(p)`：按 connector 名称或上游地址匹配，且须处于 connected；
-    /// - `None`：取第一个 connected connector。
+    /// Resolve the peer for a bandwidth test (`anet tool bandwidth` / tool API):
+    /// - `Some(p)`: match by connector name or upstream addr, must be connected;
+    /// - `None`: first connected connector.
     ///
-    /// 返回 (对端显示名, connector 句柄) 或明确错误。
+    /// Returns (peer display name, connector handle) or a precise error.
     pub fn resolve_bandwidth_peer(
         &self,
         peer: Option<&str>,
@@ -240,7 +240,7 @@ impl ConnectorManager {
         }
     }
 
-    /// 按 DB 记录构建并拉起一个 connector（None = 记录缺失或已禁用）。
+    /// Build and bring up one connector from its DB record (None = record missing or disabled).
     async fn build(&self, id: &str) -> Result<Option<ConnectorHandle>> {
         let Some(rec) = self.db.get_connector(id)? else {
             return Ok(None);
@@ -251,7 +251,7 @@ impl ConnectorManager {
 
         let upstream = resolve_upstream(&rec.upstream_addr).await?;
         let mut tls_builder = TlsConfigBuilder::new().sni_hostname(&rec.sni_hostname);
-        // 证书校验优先级与原 TOML 装配一致：pinned > ca > insecure
+        // cert verification priority matches the old TOML assembly: pinned > ca > insecure
         if !rec.pinned_cert_path.is_empty() {
             let certs = load_pem_certs(&rec.pinned_cert_path)?;
             tls_builder = tls_builder.pinned_certs(certs);
@@ -267,7 +267,7 @@ impl ConnectorManager {
             tls_builder = tls_builder.allow_self_signed(true);
         }
 
-        // token 明文仅建连使用（解密自加密库），严禁日志/审计输出
+        // token plaintext is used only for connecting (decrypted from the encrypted store); never log/audit it
         let token = self.db.get_connector_secret(id)?;
         let mut connector = RelayConnector::with_tls_builder(
             upstream,
@@ -278,7 +278,7 @@ impl ConnectorManager {
         .with_advertise(parse_advertise(&rec.advertise))
         .with_acl(self.acl.handle(rec.group_id.as_deref()));
 
-        // 途径核算：上游反向来流按 from=connector 名入账
+        // transit metering: upstream reverse inbound accounted with from=connector name
         if let Some(m) = &self.transit {
             connector = connector.with_transit_meter(m.clone(), rec.name.clone());
         }
@@ -286,7 +286,7 @@ impl ConnectorManager {
         if let Some(l) = &self.listener {
             connector = connector.with_peer_router(l.clone());
         }
-        // 路由再发布：客户端隧道规则转售给下游（GUI 内嵌场景注入）
+        // route re-publish: client tunnel routes resold downstream (injected when embedded in the GUI)
         if let Some((cr, ops)) = &self.client_routes {
             connector = connector.with_client_routes(cr.clone(), ops.clone());
         }
@@ -299,7 +299,7 @@ impl ConnectorManager {
         }));
         tracing::info!(connector = %rec.name, upstream = %upstream, "relay connector running");
 
-        // 握手 v2：同步上游暴露的控制端点到可管理注册表
+        // handshake v2: sync the upstream's exposed control endpoint into the manageable registry
         {
             let c = connector.clone();
             let registry = self.manageable.clone();
@@ -334,7 +334,7 @@ impl ConnectorManager {
             }));
         }
 
-        // 收敛拒绝事件 → 审计（detail 含 connector name 与目标；按 peer+target 每分钟去重）
+        // ACL-denied events -> audit (detail carries connector name and target; deduped per peer+target per minute)
         tasks.push(spawn_acl_audit_task(
             self.db.clone(),
             format!("connector={}", rec.name),
@@ -345,8 +345,8 @@ impl ConnectorManager {
     }
 }
 
-/// 收敛拒绝审计任务：订阅 `PeerEvent::AclDenied`，同一 peer+target 每分钟最多一条（防刷）。
-/// `source` 标注来源（`connector=<name>` / `listener`）；审计只记对端标识与目标，严禁敏感值。
+/// ACL-denied audit task: subscribes to `PeerEvent::AclDenied`, at most one entry per peer+target per minute (anti-flood).
+/// `source` tags the origin (`connector=<name>` / `listener`); audit records only peer label and target — never sensitive values.
 pub(crate) fn spawn_acl_audit_task(
     db: Database,
     source: String,
@@ -358,7 +358,7 @@ pub(crate) fn spawn_acl_audit_task(
             match rx.recv().await {
                 Ok(PeerEvent::AclDenied { peer_label, target }) => {
                     let now = Instant::now();
-                    // 惰性清扫：防去重表无上限增长
+                    // lazy sweep: keep the dedup table from growing unbounded
                     if seen.len() > 4096 {
                         seen.retain(|_, t| now.duration_since(*t) < Duration::from_secs(60));
                     }
@@ -389,7 +389,7 @@ pub(crate) fn spawn_acl_audit_task(
     })
 }
 
-/// DB 中的 advertise 序列化（逗号拼接）还原为条目列表。
+/// Restore the DB-serialized advertise list (comma-joined) into entries.
 fn parse_advertise(advertise: &str) -> Vec<String> {
     advertise
         .split(',')
@@ -399,7 +399,7 @@ fn parse_advertise(advertise: &str) -> Vec<String> {
         .collect()
 }
 
-/// 连接状态字面值（与 API 展示口径一致）。
+/// Connection state literal (matches the API display).
 fn state_str(state: ConnectionState) -> &'static str {
     match state {
         ConnectionState::Connected => "connected",
@@ -409,12 +409,12 @@ fn state_str(state: ConnectionState) -> &'static str {
     }
 }
 
-/// 带宽测试目标对端解析错误（kind 供 API 映射错误码）。
+/// Bandwidth-test peer resolution error (kind maps to API error codes).
 #[derive(Debug)]
 pub enum BandwidthPeerError {
-    /// 指定的名称/上游地址无对应 connector 记录
+    /// No connector record for the given name/upstream addr
     NotFound(String),
-    /// connector 存在但未连接（或未指定时无任何 connected connector）
+    /// Connector exists but is not connected (or none connected when unspecified)
     NotConnected(String),
 }
 

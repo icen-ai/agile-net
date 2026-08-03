@@ -1,7 +1,9 @@
-//! Relay Connector — 下游角色，主动连接上游
+//! Relay Connector — downstream role, actively connects upstream
 //!
-//! 连接上游 Listener，完成 TLS 握手与 Auth 认证，维护心跳（30s ± 5s 随机抖动），
-//! 90s 无响应判定断线，指数退避 + 抖动自动重连，响应 Open 帧建立转发。
+//! Connects to the upstream Listener, completes the TLS handshake and Auth,
+//! maintains heartbeats (30s +/- 5s random jitter), declares the connection dead
+//! after 90s without response, auto-reconnects with exponential backoff + jitter,
+//! and answers Open frames to set up forwarding.
 
 use crate::error::{Error, Result};
 use crate::proto::frame::{Frame, FrameType};
@@ -28,13 +30,13 @@ use tokio::sync::{Notify, broadcast, mpsc};
 use tokio_rustls::TlsConnector;
 use tracing::{debug, info, warn};
 
-/// 心跳基础间隔（实际为 25s + 0~10s 随机，模拟自然 HTTPS 行为）。
-/// 心跳超时：超过该时间未收到对端任何帧则判定断线。
+/// Heartbeat base interval (actually 25s + 0-10s random, mimicking natural HTTPS behavior).
+/// Heartbeat timeout: no frame from the peer for longer than this means the connection is dead.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(90);
-/// 重连退避上限。
+/// Reconnect backoff cap.
 const MAX_BACKOFF: Duration = Duration::from_secs(60);
 
-/// 连接状态。
+/// Connection state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConnectionState {
     Disconnected = 0,
@@ -54,30 +56,30 @@ impl From<u8> for ConnectionState {
     }
 }
 
-/// Relay 连接器。
+/// Relay connector.
 pub struct RelayConnector {
     upstream_addr: SocketAddr,
     node_id: String,
     token: String,
     tls_connector: TlsConnector,
     sni_hostname: String,
-    /// 本节点向**下游**提供路由的 Listener（多级串联时用于链式转发）
+    /// Listener through which this node routes to **downstream** (chained forwarding in multi-hop chains)
     peer_router: Option<Arc<RelayListener>>,
-    /// 向上游通告的可服务网段/域名（静态配置）
+    /// Serviceable CIDRs/domains advertised upstream (static config)
     advertise: Vec<String>,
-    /// 握手 v2：上游暴露控制面时下发的管理端点
+    /// Handshake v2: management endpoint pushed by the upstream when it exposes a control plane
     control: Arc<arc_swap::ArcSwapOption<ControlOffer>>,
-    /// 路由再发布：客户端隧道合并路由（规则转售给下游，via=客户端隧道）
+    /// Route re-advertise: client-tunnel merged routes (rules resold downstream, via=client tunnel)
     client_router: Option<Arc<arc_swap::ArcSwap<ProxyRouter>>>,
-    /// 路由再发布：node_id → 客户端隧道开启器
+    /// Route re-advertise: node_id -> client tunnel opener
     openers: Option<Arc<dashmap::DashMap<String, Arc<dyn ChannelOpener>>>>,
-    /// 扇出收敛：对端反向发起的目标连接允许集合（None = 不收敛，放行一切）
+    /// Fan-out restriction: allowlist for peer-initiated reverse target connections (None = unrestricted, allow all)
     acl: Option<Arc<PeerAcl>>,
-    /// 当前会话 mux 句柄（connected 期间可用；管理面诊断开流用）
+    /// Current session mux handle (available while connected; used by control-plane diagnostics to open streams)
     current_mux: Arc<arc_swap::ArcSwapOption<MuxSession>>,
-    /// 中继途径核算（meter + 来源标识 = connector 名；上游反向来流按 from=该标识入账）
+    /// Relay transit metering (meter + source label = connector name; reverse flows from upstream booked with from=this label)
     transit: Option<(Arc<TransitMeter>, String)>,
-    /// 收敛拒绝等可观测事件（供管理面订阅写审计）
+    /// Observable events such as restriction denials (subscribed by the control plane for audit)
     events: broadcast::Sender<PeerEvent>,
     state: Arc<AtomicU8>,
     shutdown_notify: Arc<Notify>,
@@ -85,9 +87,9 @@ pub struct RelayConnector {
 }
 
 impl RelayConnector {
-    /// 创建新的 RelayConnector（开发模式：不校验证书）。
+    /// Create a new RelayConnector (dev mode: no certificate verification).
     ///
-    /// 生产环境请使用 `with_tls_builder` 配置 CA 或证书固定 (pinning)。
+    /// In production use `with_tls_builder` to configure a CA or certificate pinning.
     pub fn new(
         upstream_addr: SocketAddr,
         node_id: impl Into<String>,
@@ -101,7 +103,7 @@ impl RelayConnector {
         )
     }
 
-    /// 使用自定义 TLS 配置创建。
+    /// Create with a custom TLS config.
     pub fn with_tls_builder(
         upstream_addr: SocketAddr,
         node_id: impl Into<String>,
@@ -133,23 +135,24 @@ impl RelayConnector {
         })
     }
 
-    /// 设置下游路由 Listener（多级串联时 Open 请求可继续向下游转发）。
+    /// Set the downstream routing Listener (Open requests can be forwarded further downstream in multi-hop chains).
     pub fn with_peer_router(mut self, listener: Arc<RelayListener>) -> Self {
         self.peer_router = Some(listener);
         self
     }
 
-    /// 设置向上游通告的网段/域名列表。
+    /// Set the CIDR/domain list advertised upstream.
     pub fn with_advertise(mut self, advertise: Vec<String>) -> Self {
         self.advertise = advertise;
         self
     }
 
-    /// 路由再发布：注入客户端引擎的合并路由与开启器注册表。
+    /// Route re-advertise: inject the client engine's merged routes and opener registry.
     ///
-    /// 效果：握手时把客户端隧道规则并入通告集；Open 请求命中这些规则时
-    /// 经对应客户端隧道转发（规则 via=客户端隧道）；规则集变化时自动重连
-    /// 重新通告（reconnect 即刷新，无需新帧类型，旧上游完全兼容）。
+    /// Effect: client tunnel rules are merged into the advertise set at handshake;
+    /// Open requests hitting these rules are forwarded via the matching client tunnel
+    /// (rule via=client tunnel); rule-set changes trigger an automatic reconnect to
+    /// re-advertise (reconnect is the refresh — no new frame type, fully compatible with old upstreams).
     pub fn with_client_routes(
         mut self,
         router: Arc<arc_swap::ArcSwap<ProxyRouter>>,
@@ -160,17 +163,17 @@ impl RelayConnector {
         self
     }
 
-    /// 握手 v2：上游暴露的控制面端点（未暴露/未连接时为 None）。
+    /// Handshake v2: control-plane endpoint exposed by the upstream (None when not exposed / not connected).
     pub fn control_offer(&self) -> Option<ControlOffer> {
         self.control.load_full().map(|a| (*a).clone())
     }
 
-    /// 当前会话的 mux 句柄（未连接时为 None）。
+    /// Current session's mux handle (None when not connected).
     pub fn current_mux(&self) -> Option<Arc<MuxSession>> {
         self.current_mux.load_full()
     }
 
-    /// 当前会话流量（出向字节, 入向字节）；未连接返回 (0, 0)。
+    /// Current session traffic (egress bytes, ingress bytes); (0, 0) when not connected.
     pub fn traffic(&self) -> (u64, u64) {
         self.current_mux
             .load_full()
@@ -178,13 +181,13 @@ impl RelayConnector {
             .unwrap_or((0, 0))
     }
 
-    /// 挂接中继途径核算表（上游反向来流按 from=`from_label` 入账，取 connector 名）。
+    /// Attach the relay transit meter (reverse flows from upstream booked with from=`from_label`, the connector name).
     pub fn with_transit_meter(mut self, meter: Arc<TransitMeter>, from_label: String) -> Self {
         self.transit = Some((meter, from_label));
         self
     }
 
-    /// 经当前隧道向对端发起一条到指定目标的流（管理面诊断用；未连接返回 NotFound）。
+    /// Open a stream to the given target through the current tunnel (control-plane diagnostics; NotFound when not connected).
     pub async fn open_stream(&self, target_addr: &str, target_port: u16) -> Result<MuxChannel> {
         let mux = self
             .current_mux()
@@ -197,18 +200,18 @@ impl RelayConnector {
         mux.open_channel(Bytes::from(payload)).await
     }
 
-    /// 扇出收敛：设置对端反向发起目标连接的允许集合（None = 不收敛，放行一切）。
+    /// Fan-out restriction: set the allowlist for peer-initiated reverse target connections (None = unrestricted, allow all).
     pub fn with_acl(mut self, acl: Option<Arc<PeerAcl>>) -> Self {
         self.acl = acl;
         self
     }
 
-    /// 订阅收敛拒绝等可观测事件（供管理面写审计）。
+    /// Subscribe to observable events such as restriction denials (control plane writes audit).
     pub fn subscribe_events(&self) -> broadcast::Receiver<PeerEvent> {
         self.events.subscribe()
     }
 
-    /// 当前有效通告集 = 静态配置 + 客户端隧道规则值（路由再发布）。
+    /// Current effective advertise set = static config + client tunnel rule values (route re-advertise).
     fn effective_advertise(&self) -> Vec<String> {
         let mut set: std::collections::BTreeSet<String> = self.advertise.iter().cloned().collect();
         if let Some(r) = &self.client_router {
@@ -229,15 +232,15 @@ impl RelayConnector {
         self.state() == ConnectionState::Connected
     }
 
-    /// 单次连接：TLS 握手 + 认证 + 启动会话维护任务。
+    /// Single connection: TLS handshake + auth + spawn the session maintenance task.
     ///
-    /// 连接建立后立即返回；会话断开后状态自动变为 Disconnected（不自动重连，
-    /// 自动重连请使用 `run`）。
+    /// Returns once connected; the state flips to Disconnected when the session drops
+    /// (no auto-reconnect — use `run` for that).
     pub async fn connect(&self) -> Result<()> {
         self.connect_once().await.map(|_| ())
     }
 
-    /// 建立一次连接并启动后台维护任务，返回会话句柄。
+    /// Establish one connection and spawn the background maintenance task; returns the session handle.
     async fn connect_once(&self) -> Result<Arc<MuxSession>> {
         self.state
             .store(ConnectionState::Connecting as u8, Ordering::Relaxed);
@@ -256,17 +259,17 @@ impl RelayConnector {
             }
         };
 
-        // 发布当前会话句柄（管理面诊断开流用），再置 Connected
+        // publish the current session handle (for control-plane diagnostic streams), then mark Connected
         self.current_mux.store(Some(session.clone()));
         self.state
             .store(ConnectionState::Connected as u8, Ordering::Relaxed);
         Ok(session)
     }
 
-    /// TLS 握手 + Auth 认证 + 启动会话维护任务。
+    /// TLS handshake + Auth + spawn the session maintenance task.
     async fn handshake(&self) -> Result<Arc<MuxSession>> {
         let tcp_stream = TcpStream::connect(self.upstream_addr).await?;
-        // TCP 拟态+体验：浏览器 HTTPS 连接普遍 TCP_NODELAY（tokio 原生 API）
+        // TCP mimicry + latency: browser HTTPS connections commonly set TCP_NODELAY (native tokio API)
         let _ = tcp_stream.set_nodelay(true);
         let server_name = rustls::pki_types::ServerName::try_from(self.sni_hostname.clone())
             .map_err(|e| Error::Tls(e.to_string()))?;
@@ -274,7 +277,7 @@ impl RelayConnector {
         let mut tls_stream = self.tls_connector.connect(server_name, tcp_stream).await?;
         debug!(upstream = %self.upstream_addr, "tls connected to upstream");
 
-        // 发送 Auth 帧（通告集 = 静态 + 客户端隧道规则再发布）
+        // send the Auth frame (advertise set = static + re-advertised client tunnel rules)
         let auth_req = AuthRequest {
             node_id: self.node_id.clone(),
             token: self.token.clone(),
@@ -287,13 +290,13 @@ impl RelayConnector {
             .write_to(&mut tls_stream)
             .await?;
 
-        // 读取 Auth 回复
+        // read the Auth reply
         let res_frame = Frame::read_from(&mut tls_stream).await?;
         let mut server_version = 1u32;
         match res_frame.frame_type {
             FrameType::AuthOk => {
                 info!(upstream = %self.upstream_addr, "authenticated successfully with upstream");
-                // 服务端版本（AuthOk payload {"version":N}，缺省为 1）+ 可选控制面端点
+                // server version (AuthOk payload {"version":N}, defaults to 1) + optional control-plane endpoint
                 if !res_frame.payload.is_empty()
                     && let Ok(v) = serde_json::from_slice::<serde_json::Value>(&res_frame.payload)
                 {
@@ -301,7 +304,7 @@ impl RelayConnector {
                     if let Some(cv) = v.get("control") {
                         match serde_json::from_value::<ControlOffer>(cv.clone()) {
                             Ok(mut offer) => {
-                                // 上游未报名时以 connector 配置的上游地址代替
+                                // fall back to the connector's configured upstream address when the upstream did not enroll one
                                 if offer.api_host.is_none() {
                                     offer.api_host = Some(self.upstream_addr.ip().to_string());
                                 }
@@ -333,7 +336,7 @@ impl RelayConnector {
             }
         }
 
-        // 流控协商：双方都 >= v2 时启用 per-channel 窗口流控
+        // flow control negotiation: enable per-channel window flow control when both sides are >= v2
         let flow_control = server_version >= PROTOCOL_VERSION_FLOW_CONTROL;
         debug!(
             server_version,
@@ -341,10 +344,10 @@ impl RelayConnector {
         );
 
         let (open_tx, mut open_rx) = mpsc::channel::<OpenRequest>(64);
-        // connector 侧不做会话限速（限速由 listener 按身份注入）
+        // no session rate limiting on the connector side (limits are injected by the listener per identity)
         let (mux, reader_handle) = MuxSession::start(tls_stream, 2, Some(open_tx), flow_control, None);
 
-        // 后台维护循环：心跳（带抖动）、空闲超时检测、Open 通道请求
+        // background maintenance loop: heartbeat (with jitter), idle timeout detection, Open channel requests
         let shutdown_notify = self.shutdown_notify.clone();
         let shutdown_flag = self.shutdown_flag.clone();
         let state = self.state.clone();
@@ -372,16 +375,16 @@ impl RelayConnector {
                         break;
                     }
                     _ = ping_timer.tick() => {
-                        // 兜底检查 shutdown 标志（防止 notify 竞态漏唤醒）
+                        // backstop check of the shutdown flag (guards against a missed notify wakeup race)
                         if shutdown_flag.load(Ordering::Relaxed) {
                             break;
                         }
-                        // 空闲超时：90s 未收到对端任何帧 → 判定断线
+                        // idle timeout: no frame from the peer for 90s -> connection considered dead
                         if mux_task.is_idle_beyond(IDLE_TIMEOUT) {
                             warn!("no frame from upstream for 90s, connection considered dead");
                             break;
                         }
-                        // 到点发送心跳并重排下一次随机间隔
+                        // send the heartbeat when due and reschedule the next random interval
                         if last_ping.elapsed() >= ping_timeout {
                             debug!("sending ping to upstream");
                             if let Err(e) = mux_task.send_frame(Frame::empty(FrameType::Ping, 0)).await {
@@ -411,7 +414,7 @@ impl RelayConnector {
             }
 
             reader_handle.abort();
-            // 清空当前会话句柄（仅当仍指向本会话，防误清重连后的新会话）
+            // clear the current session handle (only if it still points to this session, to avoid clobbering a reconnected new session)
             if let Some(cur) = current_mux.load_full()
                 && Arc::ptr_eq(&cur, &mux_task)
             {
@@ -423,7 +426,7 @@ impl RelayConnector {
         Ok(mux)
     }
 
-    /// 永久运行：连接断开后指数退避 + 抖动自动重连，直到收到 shutdown。
+    /// Run forever: auto-reconnect with exponential backoff + jitter after drops, until shutdown.
     pub async fn run(&self) {
         let mut attempt: u32 = 0;
 
@@ -435,8 +438,8 @@ impl RelayConnector {
             match self.connect_once().await {
                 Ok(session) => {
                     attempt = 0;
-                    // 等待会话断开（后台任务结束时把状态置为 Disconnected）；
-                    // 客户端隧道规则集变化时主动重连，向上游重新通告（路由再发布）
+                    // wait for the session to drop (the background task flips state to Disconnected);
+                    // proactively reconnect to re-advertise upstream when client tunnel rules change (route re-advertise)
                     let mut last_router = self.client_router.as_ref().map(|r| r.load_full());
                     while self.state() == ConnectionState::Connected {
                         if self.shutdown_flag.load(Ordering::Relaxed) {
@@ -474,12 +477,12 @@ impl RelayConnector {
             self.state
                 .store(ConnectionState::Reconnecting as u8, Ordering::Relaxed);
 
-            // 指数退避 1s → 2s → 4s → ... → 60s，full jitter（tor 同款策略）：
-            // 在 [0, backoff] 内均匀采样——固定退避+小抖动的重连节奏可被审查方识别建模
+            // exponential backoff 1s -> 2s -> 4s -> ... -> 60s, full jitter (same strategy as tor):
+            // uniform sampling in [0, backoff] — a fixed backoff + small-jitter reconnect cadence can be fingerprinted by a censor
             let backoff = Duration::from_secs(1)
                 .saturating_mul(1u32 << attempt.min(6))
                 .min(MAX_BACKOFF);
-            // [500ms, backoff] 均匀采样
+            // uniform sampling in [500ms, backoff]
             let delay = Duration::from_millis(
                 (rand::random::<u64>() % backoff.as_millis() as u64).max(500),
             );
@@ -496,7 +499,7 @@ impl RelayConnector {
             .store(ConnectionState::Disconnected as u8, Ordering::Relaxed);
     }
 
-    /// 收到 Open 帧后：扇出收敛 → 下游路由（多级串联）→ 客户端隧道路由（再发布）→ 本机直连。
+    /// On an Open frame: fan-out restriction -> downstream routing (multi-hop) -> client tunnel routes (re-advertise) -> local direct connect.
     #[allow(clippy::too_many_arguments)]
     async fn handle_open(
         mux: Arc<MuxSession>,
@@ -515,13 +518,14 @@ impl RelayConnector {
         let target_addr = format!("{}:{}", open_req.target_addr, open_req.target_port);
         debug!(channel_id = req.channel_id, target = %target_addr, "handling open request");
 
-        // 带宽诊断保留地址：收敛检查之前拦截（协议级诊断服务，与心跳同级，
-        // 本地应答、无任何路由能力，收敛节点同样可测，不构成 ACL 旁路）
+        // bandwidth-diagnostic reserved address: intercept before the restriction check
+        // (protocol-level diagnostic service, same tier as heartbeat; answered locally,
+        // no routing capability, restricted nodes equally testable, not an ACL bypass)
         if crate::relay::bandwidth::intercept(&mux, &req, &open_req.target_addr).await {
             return Ok(());
         }
 
-        // 扇出收敛：带收敛表时反向来的目标必须命中允许集合（None = 不收敛，放行一切）
+        // fan-out restriction: with a restriction table, reverse-initiated targets must hit the allowlist (None = unrestricted, allow all)
         if let Some(acl) = &acl
             && !acl.allowed(&target_addr)
         {
@@ -537,7 +541,7 @@ impl RelayConnector {
 
         let channel = mux.accept_channel(req.channel_id);
 
-        // 多级串联：目标属于更下游节点的通告网段 → 继续向下游转发
+        // multi-hop chain: target belongs to a further-downstream node's advertised CIDR -> forward downstream
         if let Some(listener) = &peer_router
             && let Some(next_peer) = listener.resolve_peer(&open_req.target_addr)
         {
@@ -548,7 +552,7 @@ impl RelayConnector {
                 Ok(peer_channel) => {
                     mux.send_frame(Frame::empty(FrameType::OpenOk, req.channel_id))
                         .await?;
-                    // bridge(channel, peer)：up = 上游→下游对端（途径 from=本 connector）
+                    // bridge(channel, peer): up = upstream->downstream peer (transit from=this connector)
                     let (up, down) = bridge(channel, peer_channel).await?;
                     if let Some((m, f)) = &transit {
                         m.record(f, &next_peer, up, down);
@@ -570,7 +574,7 @@ impl RelayConnector {
             }
         }
 
-        // 路由再发布：目标命中客户端隧道合并规则 → 经对应客户端隧道转发
+        // route re-advertise: target hits a client-tunnel merged rule -> forward via the matching client tunnel
         if let (Some(router), Some(openers)) = (&client_router, &openers) {
             let outbound = router.load().route_target(&target_addr).clone();
             if let Outbound::Tunnel { node_id } = outbound {
@@ -584,7 +588,7 @@ impl RelayConnector {
                             Ok(tunnel_channel) => {
                                 mux.send_frame(Frame::empty(FrameType::OpenOk, req.channel_id))
                                     .await?;
-                                // bridge(channel, tunnel)：up = 上游→客户端隧道
+                                // bridge(channel, tunnel): up = upstream->client tunnel
                                 let (up, down) = bridge(channel, tunnel_channel).await?;
                                 if let Some((m, f)) = &transit {
                                     m.record(f, &node_id, up, down);
@@ -613,13 +617,13 @@ impl RelayConnector {
             }
         }
 
-        // 本机直连
+        // local direct connect
         match TcpStream::connect(&target_addr).await {
             Ok(local_stream) => {
                 mux.send_frame(Frame::empty(FrameType::OpenOk, req.channel_id))
                     .await?;
-                // bridge(local, channel)：bytes_ab = 本机→上游，bytes_ba = 上游→本机；
-                // 途径 up = from(上游)→to(本机) 方向，即 bytes_ba
+                // bridge(local, channel): bytes_ab = local->upstream, bytes_ba = upstream->local;
+                // transit up = from(upstream)->to(local) direction, i.e. bytes_ba
                 let (bytes_ab, bytes_ba) = bridge(local_stream, channel).await?;
                 if let Some((m, f)) = &transit {
                     m.record(f, TO_LOCAL, bytes_ba, bytes_ab);
@@ -643,7 +647,7 @@ impl RelayConnector {
         }
     }
 
-    /// 断开连接（置 shutdown 标志，run 循环随之退出）
+    /// Disconnect (set the shutdown flag; the run loop exits accordingly)
     pub async fn disconnect(&self) {
         self.shutdown_flag.store(true, Ordering::Relaxed);
         self.shutdown_notify.notify_waiters();
@@ -652,8 +656,8 @@ impl RelayConnector {
     }
 }
 
-/// 下一次心跳间隔：指数分布（均值 ~30s，钳 5~90s）。
-/// 定间隔+小抖动的规律心跳是流量分析的经典指纹；指数分布更贴近浏览器 keep-alive 的自然形态。
+/// Next heartbeat interval: exponential distribution (mean ~30s, clamped to 5-90s).
+/// A fixed interval + small-jitter heartbeat is a classic traffic-analysis fingerprint; the exponential distribution is closer to the natural shape of browser keep-alives.
 fn next_ping_delay() -> Duration {
     let sample = -30.0 * (1.0 - rand::random::<f64>()).ln();
     Duration::from_secs_f64(sample.clamp(5.0, 90.0))

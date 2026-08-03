@@ -1,8 +1,8 @@
-//! Auth API Handlers（对应 docs/api/auth.md）
+//! Auth API handlers (see docs/api/auth.md)
 //!
-//! 阻塞调用约定：argon2id 校验/哈希（0.5-2s CPU）、JWT 签发轮换（内部含 DB 写）
-//! 与全部 DB 访问一律经 `offload` / `ApiState::db_call` 卸载到阻塞线程池，
-//! 不得在 async handler 里直接同步执行。
+//! Blocking-call convention: argon2id verify/hash (0.5-2s CPU), JWT issue/rotation (with
+//! internal DB writes) and all DB access must be offloaded via `offload` / `ApiState::db_call`
+//! to the blocking thread pool; never run them synchronously inside an async handler.
 
 use crate::api::extractors::{AnyAuth, ClientIp};
 use crate::api::{ApiState, LoginBlockReason, codes, err, ok, offload};
@@ -27,7 +27,7 @@ pub async fn login(
     ClientIp(ip): ClientIp,
     Json(req): Json<LoginRequest>,
 ) -> Response {
-    // 频率限制与锁定
+    // Rate limiting and lockout
     if let Err(reason) = state.login_limiter.check(ip) {
         let msg = match reason {
             LoginBlockReason::RateLimited => "too many login attempts, try again later".to_string(),
@@ -38,7 +38,7 @@ pub async fn login(
         return err(StatusCode::TOO_MANY_REQUESTS, codes::RATE_LIMITED, msg);
     }
 
-    // 输入约束
+    // Input constraints
     if req.username.len() > 64 || req.password.len() > 256 {
         return err(
             StatusCode::BAD_REQUEST,
@@ -47,13 +47,13 @@ pub async fn login(
         );
     }
 
-    // 1. 尝试 admin 登录
+    // 1. Try admin login
     let username = req.username.clone();
     let admin = state
         .db_call(move |db| db.get_admin_by_username(&username))
         .await;
     if let Ok(Some(admin)) = admin {
-        // argon2id 校验为 CPU 密集操作，卸载到阻塞线程池
+        // argon2id verify is CPU-heavy; offload to the blocking pool
         let password = req.password.clone();
         let hash = admin.password_hash.clone();
         let verified = offload(move || verify_password(&password, &hash))
@@ -95,7 +95,7 @@ pub async fn login(
         );
     }
 
-    // 2. 尝试 client 账号登录
+    // 2. Try client account login
     let username = req.username.clone();
     match state
         .db_call(move |db| db.get_account_by_username(&username))
@@ -165,7 +165,7 @@ pub async fn refresh(
     ClientIp(ip): ClientIp,
     Json(req): Json<RefreshRequest>,
 ) -> Response {
-    // refresh 每次执行 DB 写入轮换（吊销+签发+tunnel_token 轮换），必须限速
+    // refresh rotates with a DB write per call (revoke + issue + tunnel_token rotation); must be throttled
     if state.refresh_limiter.check(ip).is_err() {
         return err(
             StatusCode::TOO_MANY_REQUESTS,
@@ -219,7 +219,7 @@ pub struct InitRequest {
     pub password: String,
 }
 
-/// 首次初始化管理员（仅当数据库无任何 admin 时可用）。
+/// First-time admin initialization (only available while the DB has no admin).
 pub async fn init(
     State(state): State<ApiState>,
     ClientIp(ip): ClientIp,
@@ -237,7 +237,7 @@ pub async fn init(
         return err(StatusCode::BAD_REQUEST, codes::VALIDATION_FAILED, msg);
     }
 
-    // argon2id 哈希为 CPU 密集操作，卸载到阻塞线程池
+    // argon2id hash is CPU-heavy; offload to the blocking pool
     let password = req.password.clone();
     let password_hash = match offload(move || hash_password(&password)).await {
         Ok(h) => h,
@@ -291,17 +291,17 @@ pub struct BootstrapRequest {
     pub ticket: String,
 }
 
-/// 管理引导票据换取管理会话（控制台通道零开通）。
+/// Redeem an admin bootstrap ticket for an admin session (zero-touch via the console channel).
 ///
-/// 票据来源：管理版接入链接持有者经 console-ticket 端点签发（kind=account），
-/// 或中继暴露控制面握手下发（kind=relay，P2）。票据一次性（relay 限期多次）、
-/// 短时有效、库中只存哈希；换取即落审计（身份与路径可区分）。
+/// Ticket sources: admin-link holders via the console-ticket endpoint (kind=account), or the
+/// relay exposed-control-plane handshake (kind=relay, P2). Tickets are one-time (relay: limited
+/// uses within a period), short-lived, hash-only in DB; redemption is audited (identity + path).
 pub async fn admin_bootstrap(
     State(state): State<ApiState>,
     ClientIp(ip): ClientIp,
     Json(req): Json<BootstrapRequest>,
 ) -> Response {
-    // 票据兑换限流（与 refresh 同档；防暴力枚举票据）
+    // Ticket redemption rate limit (same tier as refresh; anti brute-force enumeration)
     if state.bootstrap_limiter.check(ip).is_err() {
         return err(
             StatusCode::TOO_MANY_REQUESTS,
@@ -355,7 +355,7 @@ pub async fn admin_bootstrap(
                         );
                     }
                 };
-            // 审计：节点名读取与落库合并为一次阻塞任务
+            // Audit: node-name read and log write merged into one blocking task
             let (uname, scope, ip_s) = (account.username.clone(), t.scope.clone(), ip.to_string());
             let _ = state
                 .db_call(move |db| {
@@ -380,7 +380,7 @@ pub async fn admin_bootstrap(
             .into_response()
         }
         "relay" => {
-            // P2：中继令牌换得管理会话。subject = "psk_前缀@下游节点名"。
+            // P2: relay token redeemed for an admin session. subject = "psk_<prefix>@<downstream node name>".
             let jwt = state.jwt.clone();
             let (sub, scope) = (t.subject.clone(), t.scope.clone());
             let tokens =
@@ -427,7 +427,7 @@ pub async fn admin_bootstrap(
     }
 }
 
-/// 管理员凭据强度校验（用户名规则 + 密码强度）。
+/// Admin credential strength validation (username rules + password strength).
 pub(crate) fn validate_admin_credentials(username: &str, password: &str) -> Result<(), String> {
     if username.is_empty() || username.len() > 32 {
         return Err("username must be 1-32 characters".into());
@@ -441,8 +441,8 @@ pub(crate) fn validate_admin_credentials(username: &str, password: &str) -> Resu
     validate_password_strength(password)
 }
 
-/// 管理面密码强度策略（≥10 位且含大小写字母与数字）。
-/// pub 导出供桌面端 Web 远程面密码设置复用（agile_net_node::api::handlers::auth 路径）。
+/// Control-plane password strength policy (>= 10 chars with lower/upper letters and digits).
+/// Exported for reuse by the desktop Web remote password setup (agile_net_node::api::handlers::auth path).
 pub fn validate_password_strength(password: &str) -> Result<(), String> {
     if password.len() < 10 {
         return Err("password must be at least 10 characters".into());

@@ -1,13 +1,13 @@
-//! 跨节共享小工具：socket 匹配、内核文件名、静默子进程。
+//! Cross-section shared helpers: socket matching, kernel file name, silent child processes.
 
 use crate::tool::netstat::SocketInfo;
 
-/// 从 "addr:port"（含 "[v6]:port"）提取端口。
+/// Extract the port from "addr:port" (including "[v6]:port").
 fn socket_port(s: &SocketInfo) -> Option<u16> {
     s.local.rsplit_once(':')?.1.parse().ok()
 }
 
-/// 指定端口的 LISTEN 监听者（ports/sysproxy/kernel 三节共享）。
+/// LISTEN listeners on the given port (shared by the ports/sysproxy/kernel sections).
 pub(super) fn listeners_on(socks: &[SocketInfo], port: u16) -> Vec<&SocketInfo> {
     socks
         .iter()
@@ -15,12 +15,12 @@ pub(super) fn listeners_on(socks: &[SocketInfo], port: u16) -> Vec<&SocketInfo> 
         .collect()
 }
 
-/// 内核二进制文件名（ports/kernel 两节共用）。
+/// Kernel binary file name (shared by the ports/kernel sections).
 pub(super) fn kernel_bin_name() -> &'static str {
     if cfg!(windows) { "mihomo.exe" } else { "mihomo" }
 }
 
-/// 拉起子进程不弹控制台窗口（GUI 上下文调 reg/networksetup 等控制台程序）。
+/// Spawn a child process without a console window (GUI context calling console programs like reg/networksetup).
 pub(super) fn silent_command(prog: &str) -> std::process::Command {
     #[allow(unused_mut)]
     let mut c = std::process::Command::new(prog);

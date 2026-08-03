@@ -1,4 +1,4 @@
-//! M8 安全加固测试：审计、密码哈希、密钥持久化、令牌生成
+//! M8 security hardening tests: audit, password hashing, secret persistence, token generation
 
 use agile_net_node::auth::jwt::JwtService;
 use agile_net_node::db::{
@@ -7,7 +7,7 @@ use agile_net_node::db::{
 };
 use std::sync::Arc;
 
-/// 审计日志写入与读取（含 detail 字段）
+/// Audit log write and read (with detail field)
 #[tokio::test]
 async fn audit_log_records() {
     let db = Database::in_memory().unwrap();
@@ -30,13 +30,13 @@ async fn audit_log_records() {
     assert_eq!(logs[1].action, "admin.login");
     assert!(logs[0].detail.as_ref().unwrap().contains("10.0.0.0/8"));
 
-    // 按 action 过滤
+    // filter by action
     let (logs, total) = db.list_audit_logs(1, 20, Some("admin.login")).unwrap();
     assert_eq!(total, 1);
     assert_eq!(logs.len(), 1);
 }
 
-/// Argon2id 密码 Hash 与校验
+/// Argon2id password hashing and verification
 #[test]
 fn password_hashing_security() {
     let raw_pass = "MyStrongP@ssw0rd!";
@@ -47,7 +47,7 @@ fn password_hashing_security() {
     assert!(!verify_password("WrongP@ss", &hash).unwrap());
 }
 
-/// 强密码生成：sk- 前缀、51 字符、高熵、每次唯一
+/// Strong password generation: sk- prefix, 51 chars, high entropy, unique per call
 #[test]
 fn strong_password_generation() {
     let p1 = generate_password();
@@ -66,14 +66,14 @@ fn strong_password_generation() {
     assert!(s.chars().all(|c| c.is_ascii_hexdigit()));
 }
 
-/// JWT 密钥从数据库持久化装载（同库同密）
+/// JWT secret loaded from database persistence (same db, same secret)
 #[test]
 fn jwt_secret_persisted() {
     let db = Database::in_memory().unwrap();
     let s1 = Arc::new(JwtService::load_or_create(db.clone()).unwrap());
     let s2 = Arc::new(JwtService::load_or_create(db.clone()).unwrap());
 
-    // 同一数据库装载的服务签发的 token 可以互相验证
+    // tokens issued by services loaded from the same database verify each other
     let tokens = s1.issue("uid-1", "admin", "admin").unwrap();
     let claims = s2.verify(&tokens.access_token).unwrap();
     assert_eq!(claims.sub, "uid-1");
@@ -81,26 +81,26 @@ fn jwt_secret_persisted() {
     assert_eq!(claims.typ, "access");
 }
 
-/// Refresh token 轮换与吊销
+/// Refresh token rotation and revocation
 #[test]
 fn refresh_token_rotation_and_revocation() {
     let db = Database::in_memory().unwrap();
     let jwt = JwtService::load_or_create(db.clone()).unwrap();
 
     let issued = jwt.issue("uid-2", "admin", "admin").unwrap();
-    // client 角色才有 tunnel_token
+    // only the client role gets a tunnel_token
     assert!(issued.tunnel_token.is_none());
 
-    // 刷新成功且旧 refresh 失效
+    // refresh succeeds and the old refresh token is invalidated
     let (_claims, rotated) = jwt.refresh(&issued.refresh_token).unwrap();
     assert!(jwt.refresh(&issued.refresh_token).is_err());
 
-    // 吊销全部 → 无法刷新
+    // revoke all → refresh no longer possible
     jwt.revoke_all("uid-2").unwrap();
     assert!(jwt.refresh(&rotated.refresh_token).is_err());
 }
 
-/// client 角色签发时轮换 tunnel_token 并落库哈希
+/// client-role issue rotates the tunnel_token and stores its hash
 #[test]
 fn client_tunnel_token_issued() {
     let db = Database::in_memory().unwrap();
@@ -114,7 +114,7 @@ fn client_tunnel_token_issued() {
     let tunnel_token = issued.tunnel_token.expect("client should get tunnel token");
     assert!(tunnel_token.starts_with("tun_"));
 
-    // 数据面可按哈希找回账号
+    // the data plane can recover the account by hash
     let found = db
         .find_account_by_tunnel_hash(&sha256_hex(tunnel_token.as_bytes()))
         .unwrap();

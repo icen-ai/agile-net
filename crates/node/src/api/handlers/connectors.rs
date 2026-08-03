@@ -1,10 +1,11 @@
-//! Connector（扇出）API Handlers（对应 docs/todo/peer-acl.md §4/§7）
+//! Connector (fan-out) API handlers (see docs/todo/peer-acl.md §4/§7)
 //!
-//! 扇出 token 为对端签发的连接凭据：加密落库、创建后亦不回显（只允许重置），
-//! 审计严禁记录 token 明文/密文。全部变更同步驱动 ConnectorManager 热操作。
+//! The fan-out token is a connection credential issued by the peer: stored encrypted, never
+//! shown again after creation (reset-only); audit must never record token plaintext/ciphertext.
+//! Every change drives ConnectorManager hot operations.
 //!
-//! advertise 入参约定：字符串数组（如 ["10.0.0.0/8", "git.internal"]），
-//! 入库序列化为逗号拼接字符串（与 core ConnectorConfig.advertise 对齐）。
+//! advertise input convention: a string array (e.g. ["10.0.0.0/8", "git.internal"]),
+//! serialized to a comma-joined string in DB (aligned with core ConnectorConfig.advertise).
 
 use super::audit;
 use crate::api::extractors::{AdminAuth, ClientIp};
@@ -22,7 +23,7 @@ use serde_json::json;
 pub struct CreateConnectorRequest {
     pub name: String,
     pub upstream_addr: String,
-    /// 扇出 token（对端签发；加密落库，响应不回显）
+    /// Fan-out token (issued by the peer; stored encrypted, never echoed in responses)
     pub token: String,
     #[serde(default)]
     pub sni_hostname: String,
@@ -34,7 +35,7 @@ pub struct CreateConnectorRequest {
     pub pinned_cert_path: String,
     #[serde(default)]
     pub advertise: Vec<String>,
-    /// 收敛权限组（缺省/null = 不收敛，放行一切）
+    /// ACL group (absent/null = unrestricted, allow all)
     #[serde(default)]
     pub group_id: Option<String>,
     #[serde(default)]
@@ -62,7 +63,7 @@ fn validate_connector_input(
     Ok(())
 }
 
-/// 校验收敛组存在（Some 时）。
+/// Validate the ACL group exists (when Some).
 async fn validate_group(state: &ApiState, group_id: Option<&str>) -> Option<Response> {
     if let Some(gid) = group_id {
         let gid_owned = gid.to_string();
@@ -82,7 +83,7 @@ async fn validate_group(state: &ApiState, group_id: Option<&str>) -> Option<Resp
     None
 }
 
-/// 视图 JSON：ConnectorView + 实时状态（绝不含 token 明文/密文）。
+/// View JSON: ConnectorView + live state (never contains token plaintext/ciphertext).
 async fn connector_json(state: &ApiState, id: &str) -> Option<serde_json::Value> {
     let v = state
         .db_call(|db| db.list_connectors())
@@ -147,7 +148,7 @@ pub async fn create_connector(
     if let Some(resp) = validate_group(&state, req.group_id.as_deref()).await {
         return resp;
     }
-    // 名称唯一（DB 亦有 UNIQUE 约束，前置校验给出明确 409）
+    // Name uniqueness (DB has a UNIQUE constraint too; the pre-check gives a clear 409)
     let name_owned = name.to_string();
     let name_taken = state
         .db_call(move |db| {
@@ -209,7 +210,7 @@ pub async fn create_connector(
         .await;
     match created {
         Ok(rec) => {
-            // 热装配失败不阻断创建（DB 已落成；状态显示 disconnected，可修正后重试更新）
+            // Hot assembly failure does not block creation (DB row exists; state shows disconnected, fix and retry via update)
             if let Err(e) = state.runtime.connector_manager.upsert_from_db(&rec.id).await {
                 tracing::error!(connector = %name, error = %e, "connector hot-start failed");
             }
@@ -243,7 +244,7 @@ pub async fn create_connector(
 pub struct UpdateConnectorRequest {
     pub name: String,
     pub upstream_addr: String,
-    /// 留空/null = 保留原 token（token 不回显，只允许重置为新值）
+    /// Empty/null = keep the current token (token is never echoed, only resettable to a new value)
     #[serde(default)]
     pub token: Option<String>,
     #[serde(default)]
@@ -256,7 +257,7 @@ pub struct UpdateConnectorRequest {
     pub pinned_cert_path: String,
     #[serde(default)]
     pub advertise: Vec<String>,
-    /// 收敛权限组（PUT 为全量替换语义：缺省/null = 不收敛）
+    /// ACL group (PUT is full-replace semantics: absent/null = unrestricted)
     #[serde(default)]
     pub group_id: Option<String>,
     #[serde(default)]
@@ -319,7 +320,7 @@ pub async fn update_connector(
         );
     }
 
-    // 空串视为未提供（保留原 token）
+    // Empty string counts as not provided (keep the current token)
     let token_reset = req.token.as_deref().filter(|t| !t.is_empty());
     let advertise = req.advertise.join(",");
     let params = (
@@ -371,7 +372,7 @@ pub async fn update_connector(
             e.to_string(),
         );
     }
-    // 重建该条 connector（先断旧再起新）
+    // Rebuild this connector (drop the old link, then bring up the new one)
     if let Err(e) = state.runtime.connector_manager.upsert_from_db(&id).await {
         tracing::error!(connector = %name, error = %e, "connector hot-rebuild failed");
     }
@@ -442,7 +443,7 @@ pub async fn delete_connector(
     }
 }
 
-/// 启用/禁用公共实现：启用 = 装配起连，禁用 = 断开移除（DB 记录保留）。
+/// Shared enable/disable impl: enable = assemble and connect, disable = disconnect and remove (DB row kept).
 async fn set_enabled(
     state: &ApiState,
     claims: &crate::auth::jwt::Claims,

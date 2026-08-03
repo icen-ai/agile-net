@@ -1,11 +1,11 @@
-//! 端点运行状态总览与更名（`anet status` / `anet node status|rename` 共用）。
+//! Endpoint status overview and rename (shared by `anet status` and `anet node status|rename`).
 
 use anyhow::Result;
 use serde_json::json;
 
 use super::common::{AnetClient, print_json};
 
-/// 节点运行状态总览（`anet-svc node status`）。
+/// Node status overview (`anet-svc node status`).
 pub async fn cmd_node_status(api: Option<String>, json_out: bool) -> Result<()> {
     let mut client = AnetClient::from_session(api)?;
     let d = client.api("GET", "/api/v1/admin/node/status", None).await?;
@@ -61,7 +61,7 @@ pub async fn cmd_node_status(api: Option<String>, json_out: bool) -> Result<()> 
     Ok(())
 }
 
-/// 端点更名（`anet-svc node rename <name>`，写入配置立即生效并落审计）。
+/// Endpoint rename (`anet-svc node rename <name>`; written to config, effective immediately, audited).
 pub async fn cmd_node_rename(api: Option<String>, name: String) -> Result<()> {
     let mut client = AnetClient::from_session(api)?;
     client

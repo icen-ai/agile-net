@@ -1,7 +1,7 @@
-//! AgileNet Core — 核心网络库
+//! AgileNet Core — core network library
 //!
-//! 提供穿透隧道 (relay)、本地代理 (proxy)、TLS 连接池 (tunnel)、
-//! 通信协议 (proto) 和配置模型 (config) 五个子模块。
+//! Provides five submodules: relay, local proxy, TLS connection pool (tunnel),
+//! wire protocol (proto) and config model (config).
 
 pub mod config;
 pub mod error;
@@ -11,7 +11,7 @@ pub mod relay;
 pub mod tunnel;
 pub mod util;
 
-/// 初始化 rustls 默认 CryptoProvider (使用 ring)
+/// Install the rustls default CryptoProvider (ring).
 pub fn init_crypto_provider() {
     let _ = rustls::crypto::ring::default_provider().install_default();
 }

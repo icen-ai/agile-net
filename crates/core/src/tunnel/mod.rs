@@ -1,4 +1,4 @@
-//! TLS 隧道连接模块：连接池、TLS 配置与客户端隧道。
+//! TLS tunnel module: connection pool, TLS config and client tunnel.
 
 pub mod client_tunnel;
 pub mod opener;

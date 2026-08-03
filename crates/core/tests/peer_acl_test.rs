@@ -1,8 +1,8 @@
-//! 对端收敛（PeerAcl）集成测试：扇入 / 扇出两个数据面收敛点
+//! Peer ACL integration tests: fan-in / fan-out data-plane restriction points
 //!
-//! - 扇入：listener 侧对端（AuthKind::Node）会话发起的目标连接按 AuthIdentity.acl 收敛
-//! - 扇出：connector 隧道反向来的目标连接按 with_acl 注入的收敛表收敛
-//! - 两侧 `None` 语义均为不收敛（放行一切），拒绝时产生可订阅的 AclDenied 事件
+//! - fan-in: target connections opened by the listener-side peer (AuthKind::Node) session are restricted by AuthIdentity.acl
+//! - fan-out: reverse target connections arriving over the connector tunnel are restricted by the ACL injected via with_acl
+//! - `None` on both sides means no restriction (allow all); denials emit a subscribable AclDenied event
 
 use agile_net_core::proto::frame::{Frame, FrameType};
 use agile_net_core::proto::message::{
@@ -20,7 +20,7 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
-/// 辅助函数：获取空闲端口
+/// Helper: get a free port
 fn get_free_addr() -> SocketAddr {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
@@ -28,7 +28,7 @@ fn get_free_addr() -> SocketAddr {
     addr
 }
 
-/// 启动 TCP echo server
+/// Start a TCP echo server
 async fn start_echo_server(addr: SocketAddr) {
     let echo = TcpListener::bind(addr).await.unwrap();
     tokio::spawn(async move {
@@ -45,14 +45,14 @@ async fn start_echo_server(addr: SocketAddr) {
     });
 }
 
-/// 仅放行 127.0.0.0/8 的收敛表
+/// ACL allowing only 127.0.0.0/8
 fn loopback_acl() -> Arc<PeerAcl> {
     let mut router = ProxyRouter::new();
     router.add_cidr("127.0.0.0/8", Outbound::Direct).unwrap();
     Arc::new(PeerAcl::new(router))
 }
 
-/// 测试用校验器：静态 token + 可选的对端收敛表
+/// Test validator: static token + optional peer ACL
 struct AclValidator {
     token: String,
     acl: Option<Arc<PeerAcl>>,
@@ -76,7 +76,7 @@ impl TokenValidator for AclValidator {
     }
 }
 
-/// 以原始 mux 会话模拟一个扇入对端（Node 认证，之后可主动发起 Open）
+/// Simulate a fan-in peer over a raw mux session (Node auth, may then open channels)
 async fn connect_raw_peer(relay_addr: SocketAddr, node_id: &str, token: &str) -> Arc<MuxSession> {
     let tls_builder = TlsConfigBuilder::new().allow_self_signed(true);
     let server_name =
@@ -110,7 +110,7 @@ async fn connect_raw_peer(relay_addr: SocketAddr, node_id: &str, token: &str) ->
     mux
 }
 
-/// 从事件流中等待第一个 AclDenied（忽略其余事件），超时即 panic
+/// Wait for the first AclDenied from the event stream (ignoring other events); panic on timeout
 async fn expect_acl_denied(events: &mut tokio::sync::broadcast::Receiver<PeerEvent>) -> (String, String) {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     loop {
@@ -122,7 +122,7 @@ async fn expect_acl_denied(events: &mut tokio::sync::broadcast::Receiver<PeerEve
     }
 }
 
-/// 扇入收敛：对端发起的目标连接未命中收敛表 → OpenFail + AclDenied 事件
+/// Fan-in restriction: peer-opened target misses the ACL → OpenFail + AclDenied event
 #[tokio::test]
 async fn fanin_peer_open_denied_by_acl() {
     let relay_addr = get_free_addr();
@@ -159,7 +159,7 @@ async fn fanin_peer_open_denied_by_acl() {
     assert_eq!(target, "8.8.8.8:443");
 }
 
-/// 扇入收敛：目标命中收敛表 → 正常桥接（echo 往返）
+/// Fan-in restriction: target hits the ACL → normal bridging (echo roundtrip)
 #[tokio::test]
 async fn fanin_peer_open_allowed_by_acl() {
     let echo_addr = get_free_addr();
@@ -196,7 +196,7 @@ async fn fanin_peer_open_allowed_by_acl() {
     assert_eq!(&buf[..n], b"fanin-allow");
 }
 
-/// 扇入 None 语义：对端不带收敛表 → 放行一切（echo 往返）
+/// Fan-in None semantics: peer carries no ACL → allow everything (echo roundtrip)
 #[tokio::test]
 async fn fanin_peer_open_none_acl_allows_all() {
     let echo_addr = get_free_addr();
@@ -204,7 +204,7 @@ async fn fanin_peer_open_none_acl_allows_all() {
     let token = "fanin-token";
     start_echo_server(echo_addr).await;
 
-    // StaticTokenValidator 产出 acl=None
+    // StaticTokenValidator yields acl=None
     let listener = Arc::new(RelayListener::new(relay_addr, token).unwrap());
     let l = listener.clone();
     tokio::spawn(async move {
@@ -226,7 +226,7 @@ async fn fanin_peer_open_none_acl_allows_all() {
     assert_eq!(&buf[..n], b"fanin-none");
 }
 
-/// 扇出收敛：对端反向发起的目标连接未命中收敛表 → OpenFail + AclDenied 事件
+/// Fan-out restriction: reverse-opened target misses the ACL → OpenFail + AclDenied event
 #[tokio::test]
 async fn fanout_reverse_open_denied_by_acl() {
     let relay_addr = get_free_addr();
@@ -246,7 +246,7 @@ async fn fanout_reverse_open_denied_by_acl() {
     connector.connect().await.unwrap();
     assert!(connector.is_connected());
 
-    // 上游经隧道反向发起目标连接（未命中收敛表）
+    // upstream reverse-opens a target connection over the tunnel (misses the ACL)
     let res = listener.open_channel("node-b", "8.8.8.8", 443).await;
     assert!(res.is_err(), "denied target must fail to open");
 
@@ -257,7 +257,7 @@ async fn fanout_reverse_open_denied_by_acl() {
     connector.disconnect().await;
 }
 
-/// 扇出收敛：目标命中收敛表 → 正常桥接（echo 往返）
+/// Fan-out restriction: target hits the ACL → normal bridging (echo roundtrip)
 #[tokio::test]
 async fn fanout_reverse_open_allowed_by_acl() {
     let echo_addr = get_free_addr();
@@ -289,7 +289,7 @@ async fn fanout_reverse_open_allowed_by_acl() {
     connector.disconnect().await;
 }
 
-/// 扇出 None 语义：不挂收敛表 → 放行一切（echo 往返）
+/// Fan-out None semantics: no ACL attached → allow everything (echo roundtrip)
 #[tokio::test]
 async fn fanout_reverse_open_none_acl_allows_all() {
     let echo_addr = get_free_addr();

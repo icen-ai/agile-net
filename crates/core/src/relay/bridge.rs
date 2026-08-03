@@ -1,10 +1,10 @@
-//! 双向数据桥接
+//! Bidirectional data bridging
 
 use tokio::io::{AsyncRead, AsyncWrite};
 use tracing::debug;
 
-/// 将两个异步流双向桥接，直到任一方关闭。
-/// 返回 (a→b 传输字节数, b→a 传输字节数)。
+/// Bridge two async streams bidirectionally until either side closes.
+/// Returns (bytes transferred a->b, bytes transferred b->a).
 pub async fn bridge<A, B>(a: A, b: B) -> std::io::Result<(u64, u64)>
 where
     A: AsyncRead + AsyncWrite + Unpin,

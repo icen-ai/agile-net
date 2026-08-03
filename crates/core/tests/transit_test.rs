@@ -1,10 +1,10 @@
-//! 中继途径流量核算集成测试（TransitMeter + RelayConnector::traffic）
+//! Relay transit traffic accounting integration tests (TransitMeter + RelayConnector::traffic)
 //!
-//! 覆盖：
-//! - connector 当前会话流量访问器（断连归零）
-//! - 扇入对端发起：到下游对端 / 到本机终结 的途径对分类
-//! - 扇出 connector 反向来流：链式到下游对端 / 本机直连 的途径对分类
-//! - 本地代理入站：隧道出站 / 直连出站 的途径对分类
+//! Covers:
+//! - connector current-session traffic accessor (zeroes on disconnect)
+//! - fan-in peer originated: transit pair classification to downstream peer / to local termination
+//! - fan-out connector reverse flow: transit pair classification chained to downstream peer / local direct
+//! - local proxy inbound: transit pair classification tunnel egress / direct egress
 
 use agile_net_core::error::Result;
 use agile_net_core::proxy::inbound::ProxyInbound;
@@ -27,7 +27,7 @@ fn get_free_addr() -> SocketAddr {
     addr
 }
 
-/// 在指定 loopback 地址上取空闲端口（127.0.0.2 用于规避 127.0.0.1/32 路由规则）。
+/// Get a free port on the given loopback address (127.0.0.2 avoids the 127.0.0.1/32 route rule).
 fn get_free_addr_on(ip: &str) -> SocketAddr {
     let listener = std::net::TcpListener::bind(format!("{ip}:0")).unwrap();
     let addr = listener.local_addr().unwrap();
@@ -35,7 +35,7 @@ fn get_free_addr_on(ip: &str) -> SocketAddr {
     addr
 }
 
-/// 启动一个 echo TCP 服务（每连接一次回声后即继续服务下一个）。
+/// Start an echo TCP service (echoes once per connection, then serves the next).
 async fn spawn_echo(addr: SocketAddr) {
     let listener = TcpListener::bind(addr).await.unwrap();
     tokio::spawn(async move {
@@ -55,12 +55,12 @@ async fn spawn_echo(addr: SocketAddr) {
     });
 }
 
-/// 在快照里查指定途径对。
+/// Find the given transit pair in a snapshot.
 fn find_pair<'a>(pairs: &'a [TransitPair], from: &str, to: &str) -> Option<&'a TransitPair> {
     pairs.iter().find(|p| p.from == from && p.to == to)
 }
 
-/// 等指定途径对出现（桥接关闭后打点有级联时延），最长 3s。
+/// Wait for the given transit pair to appear (accounting lags behind bridge teardown), up to 3s.
 async fn wait_pair(meter: &TransitMeter, from: &str, to: &str) -> TransitPair {
     for _ in 0..30 {
         let (_, _, pairs) = meter.snapshot();
@@ -72,7 +72,7 @@ async fn wait_pair(meter: &TransitMeter, from: &str, to: &str) -> TransitPair {
     panic!("transit pair {from} -> {to} not recorded in time");
 }
 
-/// 经通道写入并读回 echo，随后 shutdown 触发桥接关闭级联。
+/// Write over the channel and read back the echo, then shutdown to trigger the bridge close cascade.
 async fn roundtrip<C>(ch: &mut C, msg: &[u8])
 where
     C: AsyncReadExt + AsyncWriteExt + Unpin,
@@ -84,7 +84,7 @@ where
     ch.shutdown().await.unwrap();
 }
 
-/// connector 当前会话流量访问器：传输后计数非零，断连后归零。
+/// Connector current-session traffic accessor: non-zero after transfer, zeroed after disconnect.
 #[tokio::test]
 async fn connector_traffic_accessor() -> Result<()> {
     let relay_addr = get_free_addr();
@@ -103,14 +103,14 @@ async fn connector_traffic_accessor() -> Result<()> {
     connector.connect().await?;
     assert_eq!(connector.traffic(), (0, 0));
 
-    // listener → connector 开流（connector 本机直连 echo），双向过数据
+    // listener → connector stream (connector dials echo locally), data in both directions
     let mut ch = listener
         .open_channel("node-b", &echo_addr.ip().to_string(), echo_addr.port())
         .await?;
     roundtrip(&mut ch, b"connector-traffic-probe").await;
     drop(ch);
 
-    // 计数由读写任务异步累加，轮询等待非零
+    // counters accumulate asynchronously in the read/write tasks; poll until non-zero
     let mut traffic = (0u64, 0u64);
     for _ in 0..30 {
         traffic = connector.traffic();
@@ -124,19 +124,19 @@ async fn connector_traffic_accessor() -> Result<()> {
         "connector traffic should count both directions, got {traffic:?}"
     );
 
-    // 断连后当前会话句柄清空 → (0, 0)
+    // current-session handle cleared after disconnect → (0, 0)
     connector.disconnect().await;
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert_eq!(connector.traffic(), (0, 0));
     Ok(())
 }
 
-/// 扇入对端发起的转发：按 from=对端 node_id 分类（到下游对端 / 到本机终结）。
+/// Fan-in peer originated forwarding: classified by from=peer node_id (to downstream peer / to local termination).
 #[tokio::test]
 async fn listener_transit_classification() -> Result<()> {
     let relay_addr = get_free_addr();
-    let echo_local = get_free_addr(); // B 本机终结目标
-    let echo_peer = get_free_addr(); // C 侧服务目标（127.0.0.1 由 C 通告）
+    let echo_local = get_free_addr(); // B local termination target
+    let echo_peer = get_free_addr(); // C-side service target (127.0.0.1 advertised by C)
     let token = "transit_listener_token";
     spawn_echo(echo_local).await;
     spawn_echo(echo_peer).await;
@@ -149,20 +149,20 @@ async fn listener_transit_classification() -> Result<()> {
     });
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    // 下游对端 C：通告 127.0.0.1（/32），其本机有 echo_peer 服务
+    // downstream peer C: advertises 127.0.0.1 (/32), runs echo_peer locally
     let peer_c = RelayConnector::new(relay_addr, "node-c", token)?
         .with_advertise(vec!["127.0.0.1/32".to_string()]);
     peer_c.connect().await?;
-    // 下游对端 A：流量来源
+    // downstream peer A: traffic source
     let peer_a = RelayConnector::new(relay_addr, "node-a", token)?;
     peer_a.connect().await?;
 
-    // A → 127.0.0.1:echo_peer（命中 C 通告路由 → 链式到 C → C 本机 echo）
+    // A → 127.0.0.1:echo_peer (hits C's advertised route → chained to C → C's local echo)
     let mut ch = peer_a.open_stream("127.0.0.1", echo_peer.port()).await?;
     roundtrip(&mut ch, b"via-peer-c").await;
     drop(ch);
 
-    // A → localhost:echo_local（无路由命中 → B 本机直连）
+    // A → localhost:echo_local (no route hit → B dials directly)
     let mut ch2 = peer_a.open_stream("localhost", echo_local.port()).await?;
     roundtrip(&mut ch2, b"to-local-end").await;
     drop(ch2);
@@ -172,32 +172,32 @@ async fn listener_transit_classification() -> Result<()> {
     let p2 = wait_pair(&meter, "node-a", TO_LOCAL).await;
     assert!(p2.bytes_up >= 11 && p2.bytes_down >= 11, "pair node-a->local: {p2:?}");
 
-    // 汇总 = 途径对之和
+    // aggregate = sum of transit pairs
     let (up, down, _) = meter.snapshot();
     assert_eq!(up, p1.bytes_up + p2.bytes_up);
     assert_eq!(down, p1.bytes_down + p2.bytes_down);
     Ok(())
 }
 
-/// 扇出 connector 反向来流：按 from=connector 名分类（链式到下游对端 / 本机直连）。
+/// Fan-out connector reverse flow: classified by from=connector name (chained to downstream peer / local direct).
 #[tokio::test]
 async fn connector_transit_classification() -> Result<()> {
-    let upstream_addr = get_free_addr(); // 上游 U 的 listener
-    let mid_addr = get_free_addr(); // 中间节点 B 的 listener
-    let echo_local = get_free_addr(); // B 本机终结目标
-    let echo_peer = get_free_addr(); // C 侧服务目标
+    let upstream_addr = get_free_addr(); // upstream U's listener
+    let mid_addr = get_free_addr(); // middle node B's listener
+    let echo_local = get_free_addr(); // B local termination target
+    let echo_peer = get_free_addr(); // C-side service target
     let token = "transit_connector_token";
     spawn_echo(echo_local).await;
     spawn_echo(echo_peer).await;
 
-    // 上游 U
+    // upstream U
     let upstream = Arc::new(RelayListener::new(upstream_addr, token)?);
     let u = upstream.clone();
     tokio::spawn(async move {
         let _ = u.start().await;
     });
 
-    // 中间节点 B：listener 接 C + connector 出 U（带途径核算，来源标识 "b-up"）
+    // middle node B: listener serves C + connector out to U (with transit accounting, source label "b-up")
     let meter = TransitMeter::new();
     let mid_listener = Arc::new(RelayListener::new(mid_addr, token)?);
     let m = mid_listener.clone();
@@ -211,20 +211,20 @@ async fn connector_transit_classification() -> Result<()> {
         .with_transit_meter(meter.clone(), "b-up".to_string());
     mid_connector.connect().await?;
 
-    // 下游 C：接入 B 的 listener 并通告 127.0.0.1
+    // downstream C: joins B's listener and advertises 127.0.0.1
     let peer_c = RelayConnector::new(mid_addr, "node-c", token)?
         .with_advertise(vec!["127.0.0.1/32".to_string()]);
     peer_c.connect().await?;
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    // U → B（经 connector）→ 127.0.0.1:echo_peer（B 链式转发给 C → C 本机 echo）
+    // U → B (via connector) → 127.0.0.1:echo_peer (B chains to C → C's local echo)
     let mut ch = upstream
         .open_channel("node-b", "127.0.0.1", echo_peer.port())
         .await?;
     roundtrip(&mut ch, b"chain-to-c").await;
     drop(ch);
 
-    // U → B → localhost:echo_local（B 本机直连）
+    // U → B → localhost:echo_local (B dials directly)
     let mut ch2 = upstream
         .open_channel("node-b", "localhost", echo_local.port())
         .await?;
@@ -238,18 +238,18 @@ async fn connector_transit_classification() -> Result<()> {
     Ok(())
 }
 
-/// 本地代理入站：from="proxy"（隧道出站到下游对端 / 直连本机终结）。
+/// Local proxy inbound: from="proxy" (tunnel egress to downstream peer / direct local termination).
 #[tokio::test]
 async fn proxy_transit_classification() -> Result<()> {
     let relay_addr = get_free_addr();
     let proxy_addr = get_free_addr();
-    let echo_local = get_free_addr_on("127.0.0.2"); // 本机直连目标（规避 127.0.0.1/32 规则）
-    let echo_peer = get_free_addr(); // C 侧服务目标
+    let echo_local = get_free_addr_on("127.0.0.2"); // direct local target (avoids the 127.0.0.1/32 rule)
+    let echo_peer = get_free_addr(); // C-side service target
     let token = "transit_proxy_token";
     spawn_echo(echo_local).await;
     spawn_echo(echo_peer).await;
 
-    // 节点 listener + 下游 C（通告 127.0.0.1）
+    // node listener + downstream C (advertises 127.0.0.1)
     let listener = Arc::new(RelayListener::new(relay_addr, token)?);
     let l = listener.clone();
     tokio::spawn(async move {
@@ -261,7 +261,7 @@ async fn proxy_transit_classification() -> Result<()> {
     peer_c.connect().await?;
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    // 代理路由：127.0.0.1/32 走隧道（自动选路），其余直连；ProxyInbound 挂途径核算
+    // proxy routing: 127.0.0.1/32 goes via tunnel (auto peer pick), rest direct; ProxyInbound carries transit accounting
     let mut router = ProxyRouter::new();
     router.add_cidr("127.0.0.1/32", Outbound::tunnel("")).unwrap();
     let meter = TransitMeter::new();
@@ -273,12 +273,12 @@ async fn proxy_transit_classification() -> Result<()> {
     });
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    // socks5 请求 127.0.0.1:echo_peer → 隧道 → C
+    // socks5 request 127.0.0.1:echo_peer → tunnel → C
     let mut c1 = socks5_connect_ipv4(proxy_addr, echo_peer).await?;
     roundtrip(&mut c1, b"proxy-via-tunnel").await;
     drop(c1);
 
-    // socks5 请求 127.0.0.2:echo_local（无路由命中 → 直连本机）
+    // socks5 request 127.0.0.2:echo_local (no route hit → direct local)
     let mut c2 = socks5_connect_ipv4(proxy_addr, echo_local).await?;
     roundtrip(&mut c2, b"proxy-direct").await;
     drop(c2);
@@ -290,7 +290,7 @@ async fn proxy_transit_classification() -> Result<()> {
     Ok(())
 }
 
-/// SOCKS5 CONNECT（IPv4 形式）到目标并返回就绪流。
+/// SOCKS5 CONNECT (IPv4 form) to the target, returning the ready stream.
 async fn socks5_connect_ipv4(
     proxy_addr: SocketAddr,
     target: SocketAddr,

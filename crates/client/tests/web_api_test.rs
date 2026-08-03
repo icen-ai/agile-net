@@ -1,4 +1,4 @@
-//! 客户端管理面 Web API 测试：鉴权 / 限流 / 信封 / 命令映射 / 二次确认。
+//! Client control-plane Web API tests: auth / rate limiting / envelope / command mapping / second confirmation.
 
 use agile_net_client::api::{ClientWebAuth, SpaAssets, start_client_api};
 use agile_net_client::{AgileNetClient, Credential, CredentialStore};
@@ -68,7 +68,7 @@ async fn auth_init_login_and_envelope() {
     let (base, _auth, server) = boot(false).await;
     let http = reqwest::Client::new();
 
-    // 未设密码时登录 → 400
+    // Login with no password set → 400
     let r = http
         .post(format!("{base}/api/v1/auth/login"))
         .json(&serde_json::json!({"password": PW}))
@@ -77,7 +77,7 @@ async fn auth_init_login_and_envelope() {
         .unwrap();
     assert_eq!(r.status().as_u16(), 400);
 
-    // 初始化（短密码 → 40001）
+    // Init (short password → 40001)
     let r = http
         .post(format!("{base}/api/v1/auth/init"))
         .json(&serde_json::json!({"password": "short"}))
@@ -87,7 +87,7 @@ async fn auth_init_login_and_envelope() {
     let j: serde_json::Value = r.json().await.unwrap();
     assert_eq!(j["code"].as_u64(), Some(40001));
 
-    // 初始化成功 → 重复初始化拒绝
+    // Init succeeds → repeat init rejected
     let r = http
         .post(format!("{base}/api/v1/auth/init"))
         .json(&serde_json::json!({"password": PW}))
@@ -103,7 +103,7 @@ async fn auth_init_login_and_envelope() {
         .unwrap();
     assert_eq!(r.status().as_u16(), 400);
 
-    // 错误密码 → 40100
+    // Wrong password → 40100
     let r = http
         .post(format!("{base}/api/v1/auth/login"))
         .json(&serde_json::json!({"password": "wrong-password"}))
@@ -114,7 +114,7 @@ async fn auth_init_login_and_envelope() {
     let j: serde_json::Value = r.json().await.unwrap();
     assert_eq!(j["code"].as_u64(), Some(40100));
 
-    // 正确密码 → token
+    // Correct password → token
     let r = http
         .post(format!("{base}/api/v1/auth/login"))
         .json(&serde_json::json!({"password": PW}))
@@ -125,7 +125,7 @@ async fn auth_init_login_and_envelope() {
     assert_eq!(j["code"].as_u64(), Some(0));
     let token = j["data"]["access_token"].as_str().unwrap().to_string();
 
-    // 无 token 访问 → 401
+    // Access without token → 401
     let r = http
         .get(format!("{base}/api/v1/proxy/status"))
         .send()
@@ -133,7 +133,7 @@ async fn auth_init_login_and_envelope() {
         .unwrap();
     assert_eq!(r.status().as_u16(), 401);
 
-    // 带 token → {code:0,data}
+    // With token → {code:0,data}
     let r = http
         .get(format!("{base}/api/v1/proxy/status"))
         .bearer_auth(&token)
@@ -205,7 +205,7 @@ async fn export_requires_confirm() {
         .unwrap()
         .to_string();
 
-    // 未二次确认 → 409 + 40001
+    // No second confirmation → 409 + 40001
     let r = http
         .get(format!(
             "{base}/api/v1/credentials/export?key=node@127.0.0.1:59090"
@@ -218,7 +218,7 @@ async fn export_requires_confirm() {
     let j: serde_json::Value = r.json().await.unwrap();
     assert_eq!(j["code"].as_u64(), Some(40001));
 
-    // 确认后导出 → 接入链接 + 审计
+    // Confirmed export → connect URL + audit
     let r = http
         .get(format!(
             "{base}/api/v1/credentials/export?confirm=true&key=node@127.0.0.1:59090"
@@ -262,7 +262,7 @@ async fn paused_rules_and_parse_url() {
         .unwrap()
         .to_string();
 
-    // 暂停/查询规则
+    // Pause/query rules
     let r = http
         .put(format!("{base}/api/v1/nodes/paused-rules"))
         .bearer_auth(&token)
@@ -283,7 +283,7 @@ async fn paused_rules_and_parse_url() {
     let j: serde_json::Value = r.json().await.unwrap();
     assert_eq!(j["data"][0].as_str(), Some("host:example.com"));
 
-    // 解析接入链接
+    // Parse a connect URL
     let r = http
         .post(format!("{base}/api/v1/parse-connect-url"))
         .bearer_auth(&token)

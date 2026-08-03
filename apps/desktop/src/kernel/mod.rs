@@ -1,8 +1,8 @@
-//! 从 subscription.rs 拆分：mihomo sidecar 内核子模块（纯搬运，零逻辑变更）
+//! Split from subscription.rs: mihomo sidecar kernel submodules (pure move, zero logic change)
 //!
-//! 子模块划分：api（REST 控制面）/ ws（WS 采集与聚合）/ config（配置生成与防环）/
-//! store（订阅清单持久化与 CRUD）/ manager（内核进程生命周期）/ wintun（wintun.dll 下发）。
-//! 本层只做归拢 re-export，对外路径仍经 `crate::subscription::` 门面透出。
+//! Submodules: api (REST control plane) / ws (WS collection and aggregation) / config (config generation and loop prevention) /
+//! store (subscription list persistence and CRUD) / manager (kernel process lifecycle) / wintun (wintun.dll provisioning).
+//! This layer only aggregates re-exports; external paths still go through the `crate::subscription::` facade.
 
 pub(crate) mod api;
 pub(crate) mod config;

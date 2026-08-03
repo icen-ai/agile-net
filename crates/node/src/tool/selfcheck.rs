@@ -1,15 +1,15 @@
-//! selfcheck — PATH 巡检（P0，零新增依赖）。
+//! selfcheck — PATH inspection (P0, zero new dependencies).
 //!
-//! 扫描 PATH 常见命令（telnet/nc/curl/ping/traceroute/nslookup/netstat/lsof/
-//! ifconfig/ss）是否存在，输出缺失清单 + 对应 `anet tool` 替代方案；
-//! 兼作整套工具的入口引导。
+//! Scans PATH for common commands (telnet/nc/curl/ping/traceroute/nslookup/netstat/lsof/
+//! ifconfig/ss), reports missing ones plus the corresponding `anet tool` replacement;
+//! also serves as the entry-point guide to the whole toolkit.
 
 use super::ToolOutcome;
 use serde::Serialize;
 use std::ffi::OsStr;
 use std::path::PathBuf;
 
-/// 受检命令清单：(命令名, 用途, anet tool 替代方案)。
+/// Commands under inspection: (command name, purpose, anet tool replacement).
 const CHECKS: &[(&str, &str, &str)] = &[
     ("telnet", "TCP 连通性测试", "anet tool tcping <host> <port>（别名 telnet）"),
     ("nc", "TCP/UDP 探测", "anet tool tcping <host> <port>（别名 nc）/ anet tool scan"),
@@ -23,7 +23,7 @@ const CHECKS: &[(&str, &str, &str)] = &[
     ("ss", "socket 列表", "anet tool listen"),
 ];
 
-/// 单个命令的巡检结果（--json 结构化输出条目）。
+/// Inspection result for a single command (--json structured output entry).
 #[derive(Debug, Clone, Serialize)]
 pub struct CheckItem {
     pub cmd: String,
@@ -33,16 +33,16 @@ pub struct CheckItem {
     pub alt: String,
 }
 
-/// `anet tool selfcheck`：巡检 PATH 并输出缺失清单与替代方案。
+/// `anet tool selfcheck`: inspect PATH and report missing commands with replacements.
 ///
-/// 退出码语义：全部命中 exit 0；任一缺失 exit 1（脚本可据此判断环境是否齐全）。
+/// Exit-code semantics: all present → exit 0; any missing → exit 1 (scripts can test environment readiness).
 pub fn selfcheck() -> ToolOutcome {
     let path = std::env::var_os("PATH").unwrap_or_default();
     let items = inspect(&path, &pathext());
     render(items)
 }
 
-/// 巡检核心（PATH 与扩展名列表可注入，测试用受控环境断言）。
+/// Inspection core (PATH and extension list are injectable, so tests assert against a controlled environment).
 fn inspect(path_env: &OsStr, exts: &[String]) -> Vec<CheckItem> {
     let dirs: Vec<PathBuf> = std::env::split_paths(path_env).collect();
     CHECKS
@@ -60,13 +60,13 @@ fn inspect(path_env: &OsStr, exts: &[String]) -> Vec<CheckItem> {
         .collect()
 }
 
-/// 在目录列表中查找命令的首个可执行文件（Windows 按扩展名尝试，Unix 校验执行位）。
+/// Find the first executable for a command across directories (Windows tries extensions, Unix checks the exec bit).
 fn which(cmd: &str, dirs: &[PathBuf], exts: &[String]) -> Option<PathBuf> {
     for dir in dirs {
         #[cfg(windows)]
         {
-            // 裸名（命令本身可能已带扩展名）优先，再按 PATHEXT 逐一尝试；
-            // Windows 文件系统通常大小写不敏感，扩展名原样拼接即可命中
+            // Bare name first (the command may already carry an extension), then each PATHEXT entry;
+            // the Windows filesystem is usually case-insensitive, so appending the extension as-is hits
             let bare = dir.join(cmd);
             if bare.is_file() {
                 return Some(bare);
@@ -95,8 +95,8 @@ fn which(cmd: &str, dirs: &[PathBuf], exts: &[String]) -> Option<PathBuf> {
     None
 }
 
-/// Windows 下解析 PATHEXT（如 `.COM;.EXE;.BAT`，去点转原样保留大小写）；
-/// 非 Windows 返回空（按执行位判断，无需扩展名）。
+/// Parse PATHEXT on Windows (e.g. `.COM;.EXE;.BAT`; strip the dot, keep the original case);
+/// returns empty elsewhere (exec bit decides, no extensions needed).
 #[cfg(windows)]
 fn pathext() -> Vec<String> {
     std::env::var("PATHEXT")
@@ -108,13 +108,13 @@ fn pathext() -> Vec<String> {
         .collect()
 }
 
-/// 非 Windows 无 PATHEXT 概念。
+/// Non-Windows has no PATHEXT concept.
 #[cfg(not(windows))]
 fn pathext() -> Vec<String> {
     Vec::new()
 }
 
-/// 汇总渲染：缺失 > 0 时 fail（exit 1），全命中 ok（exit 0）。
+/// Render the summary: missing > 0 → fail (exit 1); all present → ok (exit 0).
 fn render(items: Vec<CheckItem>) -> ToolOutcome {
     use std::fmt::Write;
 
@@ -163,7 +163,7 @@ mod tests {
     use std::fs;
     use std::sync::atomic::{AtomicU32, Ordering};
 
-    /// 受控 PATH 临时目录（Drop 自动清理）。
+    /// Controlled PATH temp directory (auto-cleaned on Drop).
     struct TempPathDir(PathBuf);
 
     impl TempPathDir {
@@ -178,7 +178,7 @@ mod tests {
             Self(dir)
         }
 
-        /// 放入一个假命令（Windows 加 .exe 后缀，Unix 加执行位）。
+        /// Drop in a fake command (Windows gets an .exe suffix, Unix gets the exec bit).
         fn add(&self, cmd: &str) {
             #[cfg(windows)]
             let name = format!("{cmd}.exe");
@@ -193,7 +193,7 @@ mod tests {
             }
         }
 
-        /// 作为单条目 PATH 字符串（无分隔符问题）。
+        /// As a single-entry PATH string (no separator issues).
         fn as_path_env(&self) -> OsString {
             self.0.clone().into_os_string()
         }
@@ -205,7 +205,7 @@ mod tests {
         }
     }
 
-    /// 与测试假文件匹配的扩展名列表（Windows 假文件为 .exe）。
+    /// Extension list matching the test fake files (Windows fakes are .exe).
     fn test_exts() -> Vec<String> {
         #[cfg(windows)]
         {
@@ -242,7 +242,7 @@ mod tests {
         assert_eq!(outcome.json["missing_count"], 8);
         assert_eq!(outcome.json["present_count"], 2);
         assert!(outcome.human.contains("缺失  telnet"));
-        // 缺失项须给出 anet tool 替代方案
+        // Missing entries must name the anet tool replacement
         assert!(outcome.human.contains("anet tool tcping <host> <port>"));
         assert!(outcome.human.contains("anet tool dns <domain>"));
         assert!(outcome.human.contains("内置实现替代"));
@@ -265,7 +265,7 @@ mod tests {
 
     #[test]
     fn empty_path_all_missing() {
-        // 不存在的目录作为 PATH：全部缺失，exit 1
+        // A nonexistent directory as PATH: everything missing, exit 1
         let ghost = OsString::from("Z:\\anet-selfcheck-no-such-dir-8f3d2c1b");
         let outcome = render(inspect(&ghost, &test_exts()));
         assert!(!outcome.success);
@@ -275,7 +275,7 @@ mod tests {
 
     #[test]
     fn real_path_smoke() {
-        // 真实 PATH 冒烟：不断言结果（随机器而异），只断言不 panic、结构完整
+        // Real-PATH smoke test: no result assertions (machine-dependent), only no panic and structural integrity
         let outcome = selfcheck();
         assert_eq!(outcome.json["total"], CHECKS.len());
         assert!(outcome.exit_code == 0 || outcome.exit_code == 1);

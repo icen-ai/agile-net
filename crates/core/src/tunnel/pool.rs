@@ -1,10 +1,11 @@
-//! 隧道通道获取 (TunnelPool)
+//! Tunnel channel acquisition (TunnelPool)
 //!
-//! 管理到下游 Relay Node 的通道获取。
+//! Manages channel acquisition to fan-out relay nodes.
 //!
-//! 设计说明：通道 (MuxChannel) 与目标地址一一绑定，复用已建立的通道
-//! 会把流量发往错误目标，因此本实现**每次 acquire 都新建通道**。
-//! 会话级复用由 MuxSession 的多路复用天然提供（单条 TLS 连接承载全部通道）。
+//! Design note: a channel (MuxChannel) is bound 1:1 to a target address; reusing an
+//! established channel would send traffic to the wrong target, so **every acquire opens
+//! a new channel**. Session-level reuse comes for free from MuxSession multiplexing
+//! (a single TLS connection carries all channels).
 
 use crate::error::Result;
 use crate::relay::listener::RelayListener;
@@ -13,7 +14,7 @@ use crate::relay::mux::MuxChannel;
 use std::sync::Arc;
 use std::time::Duration;
 
-/// 隧道连接池配置
+/// Tunnel pool config
 #[derive(Debug, Clone)]
 pub struct TunnelPoolConfig {
     pub pool_size: usize,
@@ -31,14 +32,14 @@ impl Default for TunnelPoolConfig {
     }
 }
 
-/// 隧道通道获取器（薄封装，保留向后兼容 API）。
+/// Tunnel channel acquire handle (thin wrapper, keeps the backwards-compatible API).
 pub struct TunnelPool {
     listener: Arc<RelayListener>,
     node_id: String,
 }
 
 impl TunnelPool {
-    /// 创建新的 TunnelPool
+    /// Create a new TunnelPool
     pub fn new(
         listener: Arc<RelayListener>,
         node_id: impl Into<String>,
@@ -50,23 +51,23 @@ impl TunnelPool {
         }
     }
 
-    /// 当前可用预建通道数（不做通道缓存，恒为 0）
+    /// Pre-built channels currently available (no channel caching, always 0)
     pub async fn available(&self) -> usize {
         0
     }
 
-    /// 向目标打开一条新通道。
+    /// Open a new channel to the target.
     pub async fn acquire(&self, target_host: &str, target_port: u16) -> Result<MuxChannel> {
         self.listener
             .open_channel(&self.node_id, target_host, target_port)
             .await
     }
 
-    /// 归还通道：通道绑定具体目标不可复用，直接丢弃（drop 即关闭）。
+    /// Return a channel: channels are bound to a concrete target and cannot be reused; dropped (drop = close).
     pub async fn release(&self, channel: MuxChannel) {
         drop(channel);
     }
 
-    /// 空闲清理：无缓存，空操作（保留 API 兼容）。
+    /// Idle eviction: no cache, no-op (kept for API compatibility).
     pub async fn evict_expired(&self) {}
 }

@@ -1,14 +1,14 @@
-//! curl — HTTP 请求（P0，reqwest 薄封装）。
+//! curl — HTTP requests (P0, thin reqwest wrapper).
 //!
-//! 实现要点：状态码、响应头、响应体（截断）、耗时；`-k` 跳过证书校验。
+//! Implementation: status code, response headers, response body (truncated), elapsed time; `-k` skips cert verification.
 
 use super::ToolOutcome;
 use std::time::{Duration, Instant};
 
-/// human/json 输出中响应体的最大展示字节数，超出截断并标注总大小。
+/// Maximum response-body bytes shown in human/json output; longer bodies are truncated with the total size noted.
 const BODY_PREVIEW_LIMIT: usize = 4096;
 
-/// `anet tool curl <url>`：发起 HTTP 请求并输出摘要。
+/// `anet tool curl <url>`: perform an HTTP request and print a summary.
 pub async fn curl(
     url: &str,
     method: &str,
@@ -17,7 +17,7 @@ pub async fn curl(
     insecure: bool,
     max_time: Duration,
 ) -> ToolOutcome {
-    // 缺省 scheme 时按 curl 习惯补 http://
+    // Default scheme follows curl convention: prepend http://
     let url = if url.contains("://") {
         url.to_string()
     } else {
@@ -42,7 +42,7 @@ pub async fn curl(
         header_map.append(name, value);
     }
 
-    // 与 curl 默认一致：不跟随重定向
+    // Match curl's default: do not follow redirects
     let client = match reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .timeout(max_time)
@@ -79,7 +79,7 @@ pub async fn curl(
         header_lines.push_str(&format!("< {name}: {value}\n"));
     }
 
-    // 读全量 body 以报告真实大小，展示时截断
+    // Read the full body to report the real size; truncate only for display
     let body_bytes = match resp.bytes().await {
         Ok(b) => b,
         Err(e) => return request_fail(&url, method.as_str(), start.elapsed(), &e, insecure),
@@ -126,11 +126,11 @@ pub async fn curl(
         "body_truncated": truncated,
         "body_preview": preview,
     });
-    // 与 curl 语义一致：拿到 HTTP 响应即成功（4xx/5xx 是目标的服务端回答，不是探测失败）
+    // curl semantics: receiving an HTTP response is success (4xx/5xx is the target's answer, not a probe failure)
     ToolOutcome::ok(human, json)
 }
 
-/// 请求级失败（超时/连接/TLS 等）：探测失败是正常输出（exit 1），不是进程错误。
+/// Request-level failure (timeout/connect/TLS etc.): a failed probe is normal output (exit 1), not a process error.
 fn request_fail(
     url: &str,
     method: &str,
@@ -147,7 +147,7 @@ fn request_fail(
     } else {
         "other"
     };
-    // 完整错误链（curl -v 风格，诊断价值主要在底层原因上）
+    // Full error chain (curl -v style; the diagnostic value is mostly in the underlying cause)
     let mut detail = err.to_string();
     let mut source = std::error::Error::source(&err);
     while let Some(e) = source {
@@ -155,7 +155,7 @@ fn request_fail(
         source = e.source();
     }
     let mut human = format!("请求失败（{kind}，{} ms）: {detail}", elapsed.as_millis());
-    // https 证书问题引导 -k（仅调试）
+    // Point https certificate problems at -k (debug only)
     if !insecure && url.starts_with("https://") && detail.contains("certificate") {
         human.push_str("\n提示: 若为自签名证书可加 -k 跳过校验（仅调试用）");
     }
@@ -173,7 +173,7 @@ fn request_fail(
 mod tests {
     use super::*;
 
-    /// 起临时 axum 服务，返回实际监听端口。
+    /// Start a temporary axum server and return its actual listen port.
     async fn spawn_http(app: axum::Router) -> u16 {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -211,7 +211,7 @@ mod tests {
     async fn scheme_default_http() {
         let app = axum::Router::new().route("/", axum::routing::get(|| async { "ok" }));
         let port = spawn_http(app).await;
-        // 不带 scheme 时按 curl 习惯补 http://
+        // With no scheme, prepend http:// per curl convention
         let out = curl(
             &format!("127.0.0.1:{port}/"),
             "GET",
@@ -303,7 +303,7 @@ mod tests {
             Duration::from_secs(5),
         )
         .await;
-        // 与 curl 默认一致：不跟随重定向，302 本身是服务端回答（exit 0）
+        // Match curl's default: redirects are not followed; the 302 itself is the server's answer (exit 0)
         assert!(out.success);
         assert_eq!(out.json["status"], 302);
         assert_eq!(out.json["headers"]["location"][0], "/hello");
@@ -311,7 +311,7 @@ mod tests {
 
     #[tokio::test]
     async fn connect_refused_is_fail() {
-        // 绑一个临时端口后立刻释放，保证无人监听
+        // Bind a temporary port and release it immediately, guaranteeing nothing listens there
         let port = {
             let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             l.local_addr().unwrap().port()
@@ -327,7 +327,7 @@ mod tests {
         .await;
         assert!(!out.success);
         assert_eq!(out.exit_code, 1);
-        // 多数环境为 connect（拒绝）；部分代理/TUN 环境会丢包表现为 timeout，两者皆为合法探测失败
+        // Most environments yield connect (refused); some proxy/TUN environments drop packets, yielding timeout — both are legitimate probe failures
         let kind = out.json["error_kind"].as_str().unwrap();
         assert!(
             kind == "connect" || kind == "timeout",
@@ -392,7 +392,7 @@ mod tests {
     #[tokio::test]
     async fn https_self_signed_requires_k() {
         let _ = rustls::crypto::ring::default_provider().install_default();
-        // 自签名证书临时 HTTPS 服务
+        // Temporary HTTPS server with a self-signed certificate
         let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
         let tls = axum_server::tls_rustls::RustlsConfig::from_pem(
             cert.cert.pem().into_bytes(),
@@ -411,13 +411,13 @@ mod tests {
         });
         let url = format!("https://127.0.0.1:{port}/");
 
-        // 不跳过校验：自签名证书必须失败（exit 1），human 带 -k 提示
+        // Without skip-verify: the self-signed cert must fail (exit 1) and human must hint at -k
         let out = curl(&url, "GET", &[], None, false, Duration::from_secs(5)).await;
         assert!(!out.success, "human: {}", out.human);
         assert_eq!(out.exit_code, 1);
         assert!(out.human.contains("-k"), "human: {}", out.human);
 
-        // -k 跳过校验：成功
+        // With -k skipping verification: success
         let out = curl(&url, "GET", &[], None, true, Duration::from_secs(5)).await;
         assert!(out.success, "human: {}", out.human);
         assert_eq!(out.json["status"], 200);

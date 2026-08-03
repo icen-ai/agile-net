@@ -1,54 +1,54 @@
 [
   {
-    "group": "开始",
+    "group": { "zh": "开始", "en": "Getting Started" },
     "icon": "rocket",
     "items": [
-      { "title": "AgileNet 简介", "path": "index", "icon": "zap" },
-      { "title": "安装", "path": "getting-started/installation", "icon": "download" },
-      { "title": "快速上手", "path": "getting-started/quickstart", "icon": "rocket" }
+      { "title": { "zh": "AgileNet 简介", "en": "Introduction" }, "path": "index", "icon": "zap" },
+      { "title": { "zh": "安装", "en": "Installation" }, "path": "getting-started/installation", "icon": "download" },
+      { "title": { "zh": "快速上手", "en": "Quick Start" }, "path": "getting-started/quickstart", "icon": "rocket" }
     ]
   },
   {
-    "group": "核心概念",
+    "group": { "zh": "核心概念", "en": "Core Concepts" },
     "icon": "layers",
     "items": [
-      { "title": "架构与双产物", "path": "concepts/architecture", "icon": "network" },
-      { "title": "安全模型", "path": "concepts/security", "icon": "shield" },
-      { "title": "带内管理面", "path": "concepts/management-plane", "icon": "monitor" }
+      { "title": { "zh": "架构与双产物", "en": "Architecture" }, "path": "concepts/architecture", "icon": "network" },
+      { "title": { "zh": "安全模型", "en": "Security Model" }, "path": "concepts/security", "icon": "shield" },
+      { "title": { "zh": "带内管理面", "en": "Management Plane" }, "path": "concepts/management-plane", "icon": "monitor" }
     ]
   },
   {
-    "group": "使用指南",
+    "group": { "zh": "使用指南", "en": "Guides" },
     "icon": "book-open",
     "items": [
-      { "title": "anet-gui 图形客户端", "path": "guides/gui", "icon": "monitor" },
-      { "title": "anet-svc 服务器", "path": "guides/svc", "icon": "server" },
-      { "title": "命令行 anet", "path": "guides/cli", "icon": "terminal" },
-      { "title": "Docker 链路与演示", "path": "guides/docker", "icon": "box" },
-      { "title": "Clash / FlClash 共存", "path": "guides/clash", "icon": "route" },
-      { "title": "自我诊断", "path": "guides/doctor", "icon": "stethoscope" },
-      { "title": "同步与备份", "path": "guides/sync-backup", "icon": "refresh-cw" },
-      { "title": "故障排查与诊断", "path": "guides/troubleshooting", "icon": "wrench" },
-      { "title": "网络工具 anet tool", "path": "guides/tools", "icon": "network" }
+      { "title": { "zh": "anet-gui 图形客户端", "en": "anet-gui Client" }, "path": "guides/gui", "icon": "monitor" },
+      { "title": { "zh": "anet-svc 服务器", "en": "anet-svc Server" }, "path": "guides/svc", "icon": "server" },
+      { "title": { "zh": "命令行 anet", "en": "anet CLI" }, "path": "guides/cli", "icon": "terminal" },
+      { "title": { "zh": "Docker 链路与演示", "en": "Docker Chains & Demos" }, "path": "guides/docker", "icon": "box" },
+      { "title": { "zh": "Clash / FlClash 共存", "en": "Coexisting with Clash / FlClash" }, "path": "guides/clash", "icon": "route" },
+      { "title": { "zh": "自我诊断", "en": "Self-Diagnosis" }, "path": "guides/doctor", "icon": "stethoscope" },
+      { "title": { "zh": "同步与备份", "en": "Sync & Backup" }, "path": "guides/sync-backup", "icon": "refresh-cw" },
+      { "title": { "zh": "故障排查与诊断", "en": "Troubleshooting" }, "path": "guides/troubleshooting", "icon": "wrench" },
+      { "title": { "zh": "网络工具 anet tool", "en": "Network Tools (anet tool)" }, "path": "guides/tools", "icon": "network" }
     ]
   },
   {
-    "group": "参考",
+    "group": { "zh": "参考", "en": "Reference" },
     "icon": "file-text",
     "items": [
-      { "title": "REST API", "path": "reference/api", "icon": "globe" },
-      { "title": "Mux 帧协议", "path": "reference/protocol", "icon": "layers" },
-      { "title": "配置文件", "path": "reference/configuration", "icon": "settings" },
-      { "title": "错误码", "path": "reference/errors", "icon": "triangle-alert" },
-      { "title": "数据库 Schema", "path": "reference/database", "icon": "database" }
+      { "title": { "zh": "REST API", "en": "REST API" }, "path": "reference/api", "icon": "globe" },
+      { "title": { "zh": "Mux 帧协议", "en": "Mux Frame Protocol" }, "path": "reference/protocol", "icon": "layers" },
+      { "title": { "zh": "配置文件", "en": "Configuration" }, "path": "reference/configuration", "icon": "settings" },
+      { "title": { "zh": "错误码", "en": "Error Codes" }, "path": "reference/errors", "icon": "triangle-alert" },
+      { "title": { "zh": "数据库 Schema", "en": "Database Schema" }, "path": "reference/database", "icon": "database" }
     ]
   },
   {
-    "group": "开发",
+    "group": { "zh": "开发", "en": "Development" },
     "icon": "wrench",
     "items": [
-      { "title": "构建、测试与发布", "path": "development/build-release", "icon": "wrench" },
-      { "title": "路线图", "path": "development/roadmap", "icon": "arrow-right" }
+      { "title": { "zh": "构建、测试与发布", "en": "Build, Test & Release" }, "path": "development/build-release", "icon": "wrench" },
+      { "title": { "zh": "路线图", "en": "Roadmap" }, "path": "development/roadmap", "icon": "arrow-right" }
     ]
   }
 ]

@@ -1,4 +1,4 @@
-//! 通信协议定义
+//! Wire protocol definitions
 
 pub mod frame;
 pub mod message;

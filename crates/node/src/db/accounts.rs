@@ -1,4 +1,4 @@
-//! 从 db/mod.rs 拆分：account/relay_token 表（纯搬运，零逻辑变更）
+//! Split from db/mod.rs: account/relay_token tables (pure move, no logic change)
 
 use super::models::*;
 use super::pool::{Database, db_err, now_rfc3339};
@@ -105,7 +105,7 @@ impl Database {
         self.create_account_with_admin(username, password_hash, group_id, remark, false)
     }
 
-    /// 创建账号（可授予「管理此节点」权限，对应管理版接入链接）。
+    /// Create an account (may grant the "manage this node" permission, i.e. an admin connect URL).
     pub fn create_account_with_admin(
         &self,
         username: &str,
@@ -148,7 +148,7 @@ impl Database {
         self.update_account_full(id, group_id, enabled, remark, None)
     }
 
-    /// 更新账号（含「管理此节点」权限变更）。
+    /// Update an account (including the "manage this node" permission).
     pub fn update_account_full(
         &self,
         id: &str,
@@ -210,7 +210,7 @@ impl Database {
         Ok(())
     }
 
-    /// 按 tunnel_token 哈希查找账号（数据面认证）
+    /// Look up an account by tunnel_token hash (data-plane auth)
     pub fn find_account_by_tunnel_hash(&self, token_hash: &str) -> Result<Option<AccountRecord>> {
         let conn = self.conn();
         let mut stmt = conn
@@ -259,8 +259,8 @@ impl Database {
 
     // ==================== Relay Token ====================
 
-    /// 创建 Relay Token（含带宽配额；rate_limit_kbps 单位 KB/s，None = 不限）。
-    /// 非法值防御：`<= 0` 归一为 NULL（API 层已按 400 拒绝，此处兜底防绕过）。
+    /// Create a relay token (with bandwidth quota; rate_limit_kbps in KB/s, None = unlimited).
+    /// Invalid-value defense: `<= 0` normalizes to NULL (API already rejects with 400; this is the backstop).
     #[allow(clippy::too_many_arguments)]
     pub fn create_relay_token_with_quota(
         &self,
@@ -296,7 +296,7 @@ impl Database {
         })
     }
 
-    /// 设置 relay token 的收敛权限组（None = 不收敛，放行一切）。
+    /// Set the ACL group of a relay token (None = no restriction, allow all).
     pub fn set_relay_token_group(&self, id: &str, group_id: Option<&str>) -> Result<()> {
         let conn = self.conn();
         conn.execute(
@@ -307,8 +307,8 @@ impl Database {
         Ok(())
     }
 
-    /// 设置 relay token 带宽配额（KB/s；None = 不限）。
-    /// 非法值防御：`<= 0` 归一为 NULL（同 create 兜底策略）。
+    /// Set the bandwidth quota of a relay token (KB/s; None = unlimited).
+    /// Invalid-value defense: `<= 0` normalizes to NULL (same backstop as create).
     pub fn set_relay_token_rate_limit(&self, id: &str, rate_limit_kbps: Option<i64>) -> Result<()> {
         let rate_limit_kbps = rate_limit_kbps.filter(|v| *v > 0);
         let conn = self.conn();
@@ -320,8 +320,8 @@ impl Database {
         Ok(())
     }
 
-    /// 按哈希查 relay token 带宽配额（KB/s，数据面限速用）。
-    /// None = token 不存在或未设配额（不限）。
+    /// Look up a relay token's bandwidth quota by hash (KB/s; data-plane rate limiting).
+    /// None = token missing or no quota set (unlimited).
     pub fn get_relay_token_rate_limit(&self, token_hash: &str) -> Result<Option<i64>> {
         let conn = self.conn();
         let mut stmt = conn
@@ -334,7 +334,7 @@ impl Database {
         })
     }
 
-    /// 更新暴露控制面开关与授权档位（开关变更走 relay_token.expose_control 审计）。
+    /// Update the control-plane exposure flag and grant scope (flag changes audited as relay_token.expose_control).
     pub fn update_relay_token_control(
         &self,
         id: &str,
@@ -350,7 +350,7 @@ impl Database {
         Ok(())
     }
 
-    /// 按哈希查暴露标记与档位（握手 v2 下发判定）。
+    /// Look up the exposure flag and scope by hash (for handshake v2 decisions).
     pub fn get_relay_token_control(
         &self,
         token_hash: &str,
@@ -384,7 +384,7 @@ impl Database {
         Ok(items)
     }
 
-    /// 按 ID 查 relay token 详情（带出收敛组 ID 与组名）
+    /// Look up relay token detail by ID (with ACL group ID and group name)
     pub fn get_relay_token(&self, id: &str) -> Result<Option<RelayTokenRecord>> {
         let conn = self.conn();
         let mut stmt = conn
@@ -398,8 +398,8 @@ impl Database {
         })
     }
 
-    /// 按哈希查 relay token 的收敛权限组（数据面扇入收敛用）。
-    /// 外层 None = token 不存在；内层 None = 不收敛（放行一切）。
+    /// Look up a relay token's ACL group by hash (data-plane fan-in restriction).
+    /// Outer None = token missing; inner None = no restriction (allow all).
     pub fn get_relay_token_group(&self, token_hash: &str) -> Result<Option<Option<String>>> {
         let conn = self.conn();
         let mut stmt = conn
@@ -412,7 +412,7 @@ impl Database {
         })
     }
 
-    /// 校验 relay token 哈希是否存在；命中时更新 last_used_at
+    /// Check a relay token hash exists; updates last_used_at on hit
     pub fn check_relay_token(&self, token_hash: &str) -> Result<bool> {
         let conn = self.conn();
         let mut stmt = conn
@@ -439,7 +439,7 @@ impl Database {
         Ok(())
     }
 
-    /// 按 ID 取 relay token 哈希（删除联动踢会话用）。
+    /// Get a relay token's hash by ID (to kick sessions on delete).
     pub fn get_relay_token_hash(&self, id: &str) -> Result<Option<String>> {
         let conn = self.conn();
         let mut stmt = conn
@@ -489,7 +489,7 @@ mod tests {
     use super::*;
     use crate::db::sha256_hex;
 
-    /// 建一个权限组，返回 id
+    /// Create a group, return its id
     fn mk_group(db: &Database, name: &str) -> String {
         db.create_group(name, "").expect("create group").id
     }
@@ -500,37 +500,37 @@ mod tests {
         let gid = mk_group(&db, "peers");
         let hash = sha256_hex(b"tok-plain");
 
-        // 带组创建
+        // Create with group
         let rec = db
             .create_relay_token_with_quota(&hash, "psk_abcd", "带组", false, "full", Some(&gid), None)
             .expect("create with group");
         assert_eq!(rec.group_id.as_deref(), Some(gid.as_str()));
 
-        // list / 详情带出组 ID 与组名
+        // list / detail carry group ID and group name
         let list = db.list_relay_tokens().unwrap();
         assert_eq!(list[0].group_id.as_deref(), Some(gid.as_str()));
         assert_eq!(list[0].group_name.as_deref(), Some("peers"));
         let detail = db.get_relay_token(&rec.id).unwrap().unwrap();
         assert_eq!(detail.group_name.as_deref(), Some("peers"));
 
-        // 按哈希查收敛组（数据面）：Some(Some(gid))
+        // ACL group lookup by hash (data plane): Some(Some(gid))
         assert_eq!(
             db.get_relay_token_group(&hash).unwrap().flatten().as_deref(),
             Some(gid.as_str())
         );
 
-        // 改为不收敛：Some(None)
+        // Switch to unrestricted: Some(None)
         db.set_relay_token_group(&rec.id, None).expect("clear group");
         let g = db.get_relay_token_group(&hash).unwrap();
         assert!(matches!(g, Some(None)));
         assert_eq!(db.get_relay_token(&rec.id).unwrap().unwrap().group_id, None);
 
-        // 不带组创建：默认不收敛
+        // Create without group: unrestricted by default
         let rec2 = db
             .create_relay_token_with_quota(&sha256_hex(b"tok2"), "psk_efgh", "", false, "full", None, None)
             .expect("create without group");
         assert_eq!(rec2.group_id, None);
-        // 不存在的哈希：None
+        // Missing hash: None
         assert_eq!(db.get_relay_token_group("no-such-hash").unwrap(), None);
     }
 
@@ -539,13 +539,13 @@ mod tests {
         let db = Database::in_memory().unwrap();
         let hash = sha256_hex(b"tok-rl");
 
-        // 带配额创建（10 MB/s = 10240 KB/s）
+        // Create with quota (10 MB/s = 10240 KB/s)
         let rec = db
             .create_relay_token_with_quota(&hash, "psk_rl", "限速", false, "full", None, Some(10240))
             .expect("create with quota");
         assert_eq!(rec.rate_limit_kbps, Some(10240));
 
-        // list / 详情 / 按哈希三处带出
+        // list / detail / by-hash all carry the quota
         assert_eq!(db.list_relay_tokens().unwrap()[0].rate_limit_kbps, Some(10240));
         assert_eq!(
             db.get_relay_token(&rec.id).unwrap().unwrap().rate_limit_kbps,
@@ -553,13 +553,13 @@ mod tests {
         );
         assert_eq!(db.get_relay_token_rate_limit(&hash).unwrap(), Some(10240));
 
-        // 更新与清除
+        // Update and clear
         db.set_relay_token_rate_limit(&rec.id, Some(1024)).unwrap();
         assert_eq!(db.get_relay_token_rate_limit(&hash).unwrap(), Some(1024));
         db.set_relay_token_rate_limit(&rec.id, None).unwrap();
         assert_eq!(db.get_relay_token_rate_limit(&hash).unwrap(), None);
 
-        // 非法值防御：<=0 归一为 NULL（不限）
+        // Invalid-value defense: <=0 normalizes to NULL (unlimited)
         db.set_relay_token_rate_limit(&rec.id, Some(0)).unwrap();
         assert_eq!(db.get_relay_token_rate_limit(&hash).unwrap(), None);
         let rec2 = db
@@ -580,12 +580,12 @@ mod tests {
             None
         );
 
-        // 不设配额创建：默认不限
+        // Create without quota: unlimited by default
         let rec3 = db
             .create_relay_token_with_quota(&sha256_hex(b"tok3"), "psk_x", "", false, "full", None, None)
             .unwrap();
         assert_eq!(rec3.rate_limit_kbps, None);
-        // 不存在的哈希：None
+        // Missing hash: None
         assert_eq!(db.get_relay_token_rate_limit("no-such").unwrap(), None);
     }
 }

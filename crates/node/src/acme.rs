@@ -1,11 +1,13 @@
-//! ACME 自动证书管理（Let's Encrypt 等，RFC 8555 + TLS-ALPN-01 RFC 8737）
+//! ACME automatic certificate management (Let's Encrypt etc., RFC 8555 + TLS-ALPN-01 RFC 8737).
 //!
-//! 设计要点：
-//! - TLS-ALPN-01 挑战与 Relay 监听**同端口多路复用**：通过自定义
-//!   `ResolvesServerCert`，ALPN 为 `acme-tls/1` 的连接出示挑战证书，
-//!   其余连接出示正式证书——签发/续期全程无需停止数据面。
-//! - 账户凭据持久化于 node_config（`acme.account`），证书落盘 certs/ 并热替换。
-//! - 每 12h 检查一次：距离上次签发超过 (90 - renew_days) 天即自动续期。
+//! Design notes:
+//! - The TLS-ALPN-01 challenge is **multiplexed on the same port** as the relay listener:
+//!   via a custom `ResolvesServerCert`, connections with ALPN `acme-tls/1` get the
+//!   challenge certificate, everything else gets the production certificate —
+//!   issuance/renewal never interrupts the data plane.
+//! - Account credentials persist in node_config (`acme.account`); certificates are
+//!   written to certs/ and hot-swapped.
+//! - Checked every 12h: auto-renew once (90 - renew_days) days have passed since issuance.
 
 use agile_net_core::error::{Error, Result};
 use instant_acme::{
@@ -20,34 +22,34 @@ use tracing::{debug, info, warn};
 
 use crate::db::Database;
 
-/// ACME 配置（对应 agile-net.toml 的 [acme] 段）
+/// ACME configuration (the [acme] section of agile-net.toml).
 #[derive(Debug, Clone)]
 pub struct AcmeConfig {
     pub domain: String,
     pub email: String,
     pub staging: bool,
-    /// 到期前多少天续期（默认 30）
+    /// Renew this many days before expiry (default 30).
     pub renew_days: u32,
-    /// 自定义 CA directory（默认 Let's Encrypt）
+    /// Custom CA directory (default Let's Encrypt).
     pub directory_url: Option<String>,
-    /// 证书/私钥存放路径
+    /// Certificate/private key storage paths.
     pub cert_path: PathBuf,
     pub key_path: PathBuf,
 }
 
-// ==================== ALPN 多路复用证书解析器 ====================
+// ==================== ALPN-multiplexing cert resolver ====================
 
-/// 按 ALPN 协议多路复用证书的解析器。
+/// Certificate resolver that multiplexes by ALPN protocol.
 ///
-/// - ALPN 包含 `acme-tls/1` 且存在挑战证书 → 挑战证书（ACME TLS-ALPN-01 验证）
-/// - 其余 → 当前正式证书（Relay 数据面）
+/// - ALPN contains `acme-tls/1` and a challenge certificate exists → challenge certificate (ACME TLS-ALPN-01 validation)
+/// - otherwise → the current production certificate (relay data plane)
 pub struct AlpnCertResolver {
     current: arc_swap::ArcSwap<CertifiedKey>,
     challenge: arc_swap::ArcSwapOption<CertifiedKey>,
 }
 
 impl AlpnCertResolver {
-    /// 以初始正式证书创建解析器。
+    /// Create a resolver with the initial production certificate.
     pub fn new(
         certs: Vec<CertificateDer<'static>>,
         key: PrivateKeyDer<'static>,
@@ -59,7 +61,7 @@ impl AlpnCertResolver {
         }))
     }
 
-    /// 热替换正式证书（续期后调用）。
+    /// Hot-swap the production certificate (called after renewal).
     pub fn swap_current(
         &self,
         certs: Vec<CertificateDer<'static>>,
@@ -70,7 +72,7 @@ impl AlpnCertResolver {
         Ok(())
     }
 
-    /// 设置/清除 TLS-ALPN-01 挑战证书。
+    /// Set/clear the TLS-ALPN-01 challenge certificate.
     pub fn set_challenge(
         &self,
         value: Option<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)>,
@@ -114,9 +116,9 @@ fn make_certified_key(
     Ok(CertifiedKey::new(certs, signing_key))
 }
 
-// ==================== TLS-ALPN-01 挑战证书 ====================
+// ==================== TLS-ALPN-01 challenge certificate ====================
 
-/// 生成 TLS-ALPN-01 挑战证书（含 acmeIdentifier 关键扩展）。
+/// Generate the TLS-ALPN-01 challenge certificate (with the critical acmeIdentifier extension).
 fn tls_alpn_challenge_cert(
     domain: &str,
     key_authorization: &str,
@@ -126,7 +128,7 @@ fn tls_alpn_challenge_cert(
 
     let mut params = rcgen::CertificateParams::new(vec![domain.to_string()])
         .map_err(|e| Error::Tls(format!("challenge cert params: {e}")))?;
-    // rcgen 内置 ACME TLS-ALPN-01 扩展构造（acmeIdentifier，critical）
+    // rcgen built-in ACME TLS-ALPN-01 extension construction (acmeIdentifier, critical)
     params.custom_extensions = vec![rcgen::CustomExtension::new_acme_identifier(&digest)];
 
     let key_pair = rcgen::KeyPair::generate().map_err(|e| Error::Tls(format!("keygen: {e}")))?;
@@ -138,7 +140,7 @@ fn tls_alpn_challenge_cert(
     Ok((vec![cert_der], key_der))
 }
 
-// ==================== ACME 管理器 ====================
+// ==================== ACME manager ====================
 
 pub struct AcmeManager {
     config: AcmeConfig,
@@ -165,15 +167,15 @@ impl AcmeManager {
         })
     }
 
-    /// 永久运行：启动时尝试签发（如需要），随后周期续期。
+    /// Run forever: attempt issuance at startup (if needed), then renew periodically.
     pub async fn run(self: Arc<Self>) {
-        // 启动时：证书不存在或距上次签发过久 → 立即签发
+        // At startup: certificate missing or last issuance too long ago → issue immediately.
         if self.needs_issuance()
             && let Err(e) = self.issue().await
         {
             warn!(error = %e, "ACME initial issuance failed (继续使用现有证书)");
         }
-        // 周期检查续期
+        // Periodic renewal check.
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(12 * 3600)).await;
             if self.needs_issuance() {
@@ -185,7 +187,7 @@ impl AcmeManager {
         }
     }
 
-    /// 判断是否需要签发/续期：证书文件缺失，或距上次签发超过 (90 - renew_days) 天。
+    /// Whether issuance/renewal is needed: cert files missing, or more than (90 - renew_days) days since issuance.
     fn needs_issuance(&self) -> bool {
         if !self.config.cert_path.exists() || !self.config.key_path.exists() {
             return true;
@@ -202,25 +204,25 @@ impl AcmeManager {
                 let elapsed = chrono::Utc::now() - t;
                 elapsed > chrono::Duration::days((90 - self.config.renew_days.min(60)) as i64)
             }
-            None => false, // 有证书文件但非本系统签发 → 不自动替换
+            None => false, // cert files exist but were not issued by this system → never auto-replace
         }
     }
 
-    /// 执行一次完整的签发流程。
+    /// Run one full issuance flow.
     pub async fn issue(&self) -> Result<()> {
         let domain = self.config.domain.clone();
         info!(domain = %domain, directory = %self.directory_url(), "ACME issuance started");
 
-        // 1. 账户（凭据持久化复用）
+        // 1. Account (credentials persisted and reused)
         let account = self.load_or_create_account().await?;
 
-        // 2. 新订单
+        // 2. New order
         let mut order = account
             .new_order(&NewOrder::new(&[Identifier::Dns(domain.clone())]))
             .await
             .map_err(|e| Error::Other(format!("acme new order: {e}")))?;
 
-        // 3. TLS-ALPN-01 挑战
+        // 3. TLS-ALPN-01 challenge
         let mut authorizations = order.authorizations();
         while let Some(result) = authorizations.next().await {
             let mut auth = result.map_err(|e| Error::Other(format!("acme authorization: {e}")))?;
@@ -237,18 +239,18 @@ impl AcmeManager {
                 .map_err(|e| Error::Other(format!("acme set ready: {e}")))?;
         }
 
-        // 挑战结束清理（无论成败）
+        // Challenge cleanup (success or failure)
         let cleanup = |m: &AcmeManager| {
             let _ = m.resolver.set_challenge(None);
         };
 
-        // 4. 等待订单就绪
+        // 4. Wait for the order to become ready
         if let Err(e) = order.poll_ready(&RetryPolicy::default()).await {
             cleanup(self);
             return Err(Error::Other(format!("acme poll ready: {e}")));
         }
 
-        // 5. 定稿并取回证书链
+        // 5. Finalize and fetch the certificate chain
         let key_pem = order
             .finalize()
             .await
@@ -259,7 +261,7 @@ impl AcmeManager {
             .map_err(|e| Error::Other(format!("acme poll certificate: {e}")))?;
         cleanup(self);
 
-        // 6. 落盘 + 热替换
+        // 6. Persist to disk + hot-swap
         if let Some(parent) = self.config.cert_path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| Error::Other(e.to_string()))?;
         }
@@ -293,7 +295,7 @@ impl AcmeManager {
         Ok(())
     }
 
-    /// 加载或创建 ACME 账户（凭据 JSON 持久化于 node_config）。
+    /// Load or create the ACME account (credentials JSON persisted in node_config).
     async fn load_or_create_account(&self) -> Result<Account> {
         let directory = self.directory_url();
         if let Some(json) = self.db.get_config("acme.account")? {
@@ -350,7 +352,7 @@ mod tests {
     fn challenge_cert_has_acme_identifier() {
         let (certs, _key) = tls_alpn_challenge_cert("example.com", "token.thumbprint").unwrap();
         assert_eq!(certs.len(), 1);
-        // 证书 DER 中应包含 acmeIdentifier OID (1.3.6.1.5.5.7.1.31)
+        // The cert DER should contain the acmeIdentifier OID (1.3.6.1.5.5.7.1.31)
         let oid_bytes = [0x2b, 0x06, 0x01, 0x05, 0x05, 0x07, 0x01, 0x1f];
         let der = certs[0].as_ref();
         assert!(
@@ -364,11 +366,11 @@ mod tests {
         let (certs, key) = generate_self_signed("relay.example.com").unwrap();
         let resolver = AlpnCertResolver::new(certs, key).unwrap();
 
-        // 无挑战证书时返回正式证书
+        // Without a challenge certificate, the production certificate is returned
         assert!(resolver.challenge.load().is_none());
         assert!(resolver.current.load().cert.len() == 1);
 
-        // 设置挑战证书后可设置/清除
+        // Challenge certificate can be set/cleared
         let (ccerts, ckey) = generate_self_signed("acme.example.com").unwrap();
         resolver.set_challenge(Some((ccerts, ckey))).unwrap();
         assert!(resolver.challenge.load().is_some());

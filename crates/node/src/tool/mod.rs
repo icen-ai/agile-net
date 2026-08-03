@@ -1,14 +1,15 @@
-//! `anet tool` 内置网络诊断工具集（设计见 docs/todo/cli-tool.md）。
+//! `anet tool` built-in network diagnostic toolkit (design: docs/todo/cli-tool.md).
 //!
-//! 契约要点（全工具集统一，实现各命令时不得偏离）：
-//! - 每个命令的公开函数返回 [`ToolOutcome`]：human 自渲染文本 + json 结构化数据；
-//!   本模块负责打印（--json 序列化 json 字段）与退出码映射。
-//! - 退出码约定：`0` 成功/可达，`1` 失败/不可达，`2` 用法/环境错误；
-//!   探测失败（超时/拒绝/无权限）是正常输出而非进程错误。
-//! - 除 bandwidth 外全部为本机操作：不走会话校验、不读数据库、不写审计日志；
-//!   bandwidth 经管理 API 在服务端执行（需登录会话），属正常诊断流量不落审计。
-//! - doctor 为独立入口（`anet doctor`，不在 ToolSub 内）：自我诊断引擎，
-//!   与 anet-gui「自我诊断」共用同一实现。
+//! Contract (uniform across the toolkit; implementations must not deviate):
+//! - Every command's public function returns a [`ToolOutcome`]: human self-rendered text + json
+//!   structured data; this module handles printing (--json serializes the json field) and exit-code mapping.
+//! - Exit codes: `0` success/reachable, `1` failure/unreachable, `2` usage/environment error;
+//!   probe failures (timeout/refused/no permission) are normal output, not process errors.
+//! - Everything except bandwidth is a local operation: no session check, no DB reads, no audit writes;
+//!   bandwidth runs server-side via the admin API (login session required) and is normal diagnostic
+//!   traffic that is not audited.
+//! - doctor is a separate entry (`anet doctor`, not part of ToolSub): the self-diagnostics engine,
+//!   sharing one implementation with the anet-gui "self-diagnostics".
 
 pub mod bandwidth;
 pub mod diag;
@@ -28,22 +29,22 @@ use clap::{Args, Subcommand};
 use serde::Serialize;
 use std::time::Duration;
 
-/// 工具集统一结果：命令实现的唯一返回类型。
+/// Unified toolkit result: the only return type of command implementations.
 #[derive(Debug, Clone, Serialize)]
 pub struct ToolOutcome {
-    /// 探测是否成功（对应退出码 0/1）
+    /// Whether the probe succeeded (maps to exit code 0/1).
     pub success: bool,
-    /// 退出码：0 成功/可达，1 失败/不可达，2 用法/环境错误
+    /// Exit code: 0 success/reachable, 1 failure/unreachable, 2 usage/environment error.
     pub exit_code: i32,
-    /// 人类可读输出（各模块自渲染；--json 时不序列化、不打印）
+    /// Human-readable output (self-rendered by each module; not serialized or printed under --json).
     #[serde(skip_serializing)]
     pub human: String,
-    /// 结构化结果（--json 输出载体，与未来 GUI 复用）
+    /// Structured result (--json output carrier, reusable by a future GUI).
     pub json: serde_json::Value,
 }
 
 impl ToolOutcome {
-    /// 探测成功（exit 0）。
+    /// Probe succeeded (exit 0).
     pub fn ok(human: impl Into<String>, json: serde_json::Value) -> Self {
         Self {
             success: true,
@@ -53,7 +54,7 @@ impl ToolOutcome {
         }
     }
 
-    /// 探测失败/目标不可达（exit 1，属正常输出而非进程错误）。
+    /// Probe failed / target unreachable (exit 1; normal output, not a process error).
     pub fn fail(human: impl Into<String>, json: serde_json::Value) -> Self {
         Self {
             success: false,
@@ -63,7 +64,7 @@ impl ToolOutcome {
         }
     }
 
-    /// 用法或环境错误（exit 2）。
+    /// Usage or environment error (exit 2).
     pub fn usage_error(human: impl Into<String>) -> Self {
         let human = human.into();
         Self {
@@ -74,7 +75,7 @@ impl ToolOutcome {
         }
     }
 
-    /// 地基阶段占位：命令已接入分派但尚未实现（exit 2，绝不 panic）。
+    /// Foundation-stage placeholder: command wired into dispatch but not implemented yet (exit 2, never panics).
     pub fn unimplemented(cmd: &str) -> Self {
         Self {
             success: false,
@@ -85,15 +86,15 @@ impl ToolOutcome {
     }
 }
 
-/// 统一入口：分派执行 → 打印（human 或 --json）→ 返回退出码。
-/// `api` 为全局 --api 覆盖项（仅 bandwidth 臂使用，其余命令为本机操作忽略之）。
+/// Unified entry: dispatch → print (human or --json) → return the exit code.
+/// `api` is the global --api override (only consumed by the bandwidth arm; all other commands are local and ignore it).
 pub async fn run(args: ToolArgs, json: bool, api: Option<String>) -> i32 {
     let outcome = dispatch(args, api).await;
     emit(&outcome, json);
     outcome.exit_code
 }
 
-/// 打印结果：--json 序列化 ToolOutcome（human 字段跳过），否则打印 human。
+/// Print the outcome: --json serializes the ToolOutcome (human field skipped), otherwise prints human.
 pub fn emit(outcome: &ToolOutcome, json: bool) {
     if json {
         println!(
@@ -105,8 +106,8 @@ pub fn emit(outcome: &ToolOutcome, json: bool) {
     }
 }
 
-/// 子命令分派（参数整形在此集中完成，实现模块只收整形后的强类型参数）。
-/// `api` 仅 bandwidth 臂消费（其余命令为本机操作）。
+/// Subcommand dispatch (argument normalization is centralized here; implementation modules receive normalized, strongly-typed args).
+/// `api` is consumed only by the bandwidth arm (all other commands are local operations).
 pub async fn dispatch(args: ToolArgs, api: Option<String>) -> ToolOutcome {
     match args.command {
         ToolSub::Tcping(a) => {
@@ -170,7 +171,7 @@ pub async fn dispatch(args: ToolArgs, api: Option<String>) -> ToolOutcome {
     }
 }
 
-// ==================== clap 定义（Wave B 不得改动 cli.rs/app.rs，命令面以此为准） ====================
+// ==================== clap definitions (Wave B must not touch cli.rs/app.rs; the command surface is defined here) ====================
 
 #[derive(Args, Debug)]
 pub struct ToolArgs {
@@ -397,9 +398,9 @@ pub struct BandwidthArgs {
     pub peer: Option<String>,
 }
 
-// ==================== 参数整形（分派专用） ====================
+// ==================== Argument normalization (dispatch only) ====================
 
-/// 解析 `-H "Name: value"` 请求头列表。
+/// Parse the `-H "Name: value"` header list.
 fn parse_headers(raw: &[String]) -> Result<Vec<(String, String)>, String> {
     let mut out = Vec::with_capacity(raw.len());
     for h in raw {
@@ -411,7 +412,7 @@ fn parse_headers(raw: &[String]) -> Result<Vec<(String, String)>, String> {
     Ok(out)
 }
 
-/// DNS 位置参数整形：`dns <domain> [@server] [type]`，第二位不带 @ 时视为记录类型。
+/// DNS positional-arg normalization: `dns <domain> [@server] [type]`; a second arg without @ is treated as the record type.
 fn normalize_dns_args(
     server: Option<String>,
     rtype: Option<String>,
@@ -430,7 +431,7 @@ fn normalize_dns_args(
     }
 }
 
-/// 端口范围解析：`1-1024` 或单端口 `80`。
+/// Port range parsing: `1-1024` or a single port `80`.
 fn parse_port_range(s: &str) -> Result<(u16, u16), String> {
     let invalid = || format!("无效端口范围（形如 1-1024 或 80）: {s}");
     if let Some((a, b)) = s.split_once('-') {
@@ -449,7 +450,7 @@ fn parse_port_range(s: &str) -> Result<(u16, u16), String> {
     }
 }
 
-/// lsof 兼容解析：仅支持 `-i:<port>` 形式。
+/// lsof compatibility parsing: only the `-i:<port>` form is supported.
 fn parse_lsof_args(args: &[String]) -> Result<u16, String> {
     for a in args {
         if let Some(rest) = a.strip_prefix("-i:") {

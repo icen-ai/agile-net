@@ -1,11 +1,11 @@
-//! 从 db/mod.rs 拆分：版本化迁移（纯搬运，零逻辑变更）
+//! Split from db/mod.rs: versioned migrations (pure move, no logic change)
 
 use super::pool::{Database, db_err};
 use agile_net_core::error::Result;
 use rusqlite::params;
 use tracing::info;
 
-/// 当前 Schema 版本（递增，新迁移追加到 MIGRATIONS 尾部）。
+/// Current schema version (monotonic; append new migrations to the end of MIGRATIONS).
 const MIGRATIONS: &[(u32, &str, &str)] = &[
     (
         1,
@@ -114,11 +114,12 @@ const MIGRATIONS: &[(u32, &str, &str)] = &[
         2,
         "admin_console_and_tickets",
         r#"
-    -- 管理版接入链接：账号可被授予「管理此节点」权限
+    -- Admin connect URL: an account may be granted the "manage this node" permission
     ALTER TABLE account ADD COLUMN admin_console INTEGER NOT NULL DEFAULT 0;
 
-    -- 管理引导票据：控制台通道/中继暴露场景换取管理会话的一次性（或限期）凭据。
-    -- 仅存 SHA-256 哈希，明文随签发返回一次。
+    -- Admin bootstrap ticket: one-time (or time-limited) credential exchanged for an admin
+    -- session via the console channel / relay exposure. Only the SHA-256 hash is stored;
+    -- the plaintext is returned once at issuance.
     CREATE TABLE admin_ticket (
         id          TEXT PRIMARY KEY,
         ticket_hash TEXT NOT NULL UNIQUE,
@@ -137,9 +138,9 @@ const MIGRATIONS: &[(u32, &str, &str)] = &[
         3,
         "relay_token_expose_control",
         r#"
-    -- Relay 链接的「暴露控制面」开关：允许该下游中继管理本节点（默认关）
+    -- "Expose control plane" switch for relay links: allow this fan-in relay to manage this node (default off)
     ALTER TABLE relay_token ADD COLUMN expose_control INTEGER NOT NULL DEFAULT 0;
-    -- 管理授权档位：ro（只读）/ rules（只读+规则写）/ full（全权）
+    -- Admin grant scope: ro (read-only) / rules (read-only + rule write) / full (full access)
     ALTER TABLE relay_token ADD COLUMN control_scope TEXT NOT NULL DEFAULT 'full';
     "#,
     ),
@@ -147,10 +148,10 @@ const MIGRATIONS: &[(u32, &str, &str)] = &[
         4,
         "peer_acl_connector",
         r#"
-    -- 扇入对端的收敛挂载点（NULL = 不收敛，放行一切）
+    -- ACL mount point for fan-in peers (NULL = no restriction, allow all)
     ALTER TABLE relay_token ADD COLUMN group_id TEXT REFERENCES "group"(id);
 
-    -- 扇出 connector 入库（一等资源；token_enc 加密存储，见 docs/todo/peer-acl.md §4/§5）
+    -- Fan-out connectors in DB (first-class resource; token_enc stored encrypted, see docs/todo/peer-acl.md §4/§5)
     CREATE TABLE connector (
         id           TEXT PRIMARY KEY,
         name         TEXT NOT NULL UNIQUE,
@@ -172,8 +173,8 @@ const MIGRATIONS: &[(u32, &str, &str)] = &[
         5,
         "connector_cert_paths",
         r#"
-    -- 扇出 connector 证书固定能力对齐 core ConnectorConfig（设计文档 §4 遗漏补列；
-    -- 空串 = 不使用，优先级 pinned > ca > insecure 与 TOML 装配逻辑一致）
+    -- Align fan-out connector cert-pinning capability with core ConnectorConfig (columns missed in design doc §4;
+    -- empty string = unused; precedence pinned > ca > insecure matches the TOML assembly logic)
     ALTER TABLE connector ADD COLUMN ca_cert_path TEXT NOT NULL DEFAULT '';
     ALTER TABLE connector ADD COLUMN pinned_cert_path TEXT NOT NULL DEFAULT '';
     "#,
@@ -182,10 +183,10 @@ const MIGRATIONS: &[(u32, &str, &str)] = &[
         6,
         "node_traffic_log",
         r#"
-    -- 节点级流量小时序列（扇入对端/扇出/中继途径三维；按账号流量仍在 traffic_log，互不影响）
-    -- dim: fanin=扇入对端(src=对端 node_id) / fanout=扇出(src=connector name)
-    --      / transit=中继途径(src=起始端, dst=结束端)
-    -- hour 为本地时间桶 'YYYY-MM-DD HH:00'（status traffic_24h 契约格式）
+    -- Node-level hourly traffic series (3 dims: fan-in peer / fan-out / relay transit; per-account traffic stays in traffic_log, unaffected)
+    -- dim: fanin=fan-in peer (src=peer node_id) / fanout=fan-out (src=connector name)
+    --      / transit=relay transit (src=origin, dst=terminus)
+    -- hour is a local-time bucket 'YYYY-MM-DD HH:00' (status traffic_24h contract format)
     CREATE TABLE node_traffic_log (
         id         TEXT PRIMARY KEY,
         dim        TEXT NOT NULL CHECK(dim IN ('fanin','fanout','transit')),
@@ -203,14 +204,14 @@ const MIGRATIONS: &[(u32, &str, &str)] = &[
         7,
         "relay_token_rate_limit",
         r#"
-    -- Relay Token 带宽配额（KB/s；NULL = 不限）。扇入会话限速由 core TokenBucket 执行。
+    -- Relay token bandwidth quota (KB/s; NULL = unlimited). Fan-in session rate limiting enforced by core TokenBucket.
     ALTER TABLE relay_token ADD COLUMN rate_limit_kbps INTEGER;
     "#,
     ),
 ];
 
 impl Database {
-    /// 执行版本化迁移
+    /// Run versioned migrations
     pub fn migrate(&self) -> Result<()> {
         let conn = self.conn();
         conn.execute_batch(
@@ -250,14 +251,14 @@ impl Database {
 mod tests {
     use super::*;
 
-    /// 建一个权限组，返回 id
+    /// Create a group, return its id
     fn mk_group(db: &Database, name: &str) -> String {
         db.create_group(name, "").expect("create group").id
     }
 
     #[test]
     fn migration_v4_upgrades_old_db() {
-        // 构造一个只应用过 v1~v3 的旧库文件
+        // Build a legacy DB file with only v1~v3 applied
         let path = std::env::temp_dir().join(format!("anet-db-mig-test-{}.db", uuid::Uuid::new_v4()));
         {
             let conn = rusqlite::Connection::open(&path).expect("open raw conn");
@@ -277,7 +278,7 @@ mod tests {
                 )
                 .unwrap();
             }
-            // 旧 schema 下插入一条 relay_token（无 group_id 列）
+            // Insert a relay_token under the old schema (no group_id column)
             conn.execute(
                 "INSERT INTO relay_token (id, token_hash, token_prefix, remark, expose_control, control_scope, created_at)
                  VALUES ('tok-old', 'hash-old', 'psk_abcd', 'legacy', 0, 'full', '2026-01-01T00:00:00Z')",
@@ -286,7 +287,7 @@ mod tests {
             .unwrap();
         }
 
-        // 打开即触发 v4 迁移：旧行保留、新列为 NULL（不收敛）、connector 表可用
+        // Opening triggers v4 migration: old rows kept, new columns NULL (unrestricted), connector table usable
         {
             let db = Database::open(&path).expect("open migrated db");
             let tok = db
@@ -298,7 +299,7 @@ mod tests {
             assert_eq!(tok.group_name, None);
             assert!(db.list_connectors().expect("connector table").is_empty());
 
-            // 迁移后旧行可直接挂组
+            // After migration, old rows can be attached to a group directly
             let gid = mk_group(&db, "g1");
             db.set_relay_token_group("tok-old", Some(&gid)).expect("set group");
             let tok = db.get_relay_token("tok-old").expect("get2").unwrap();
@@ -313,7 +314,7 @@ mod tests {
 
     #[test]
     fn migration_v5_upgrades_old_db() {
-        // 构造一个只应用过 v1~v4 的旧库文件（connector 表无证书路径列）
+        // Build a legacy DB file with only v1~v4 applied (connector table without cert path columns)
         let path = std::env::temp_dir().join(format!("anet-db-mig5-test-{}.db", uuid::Uuid::new_v4()));
         {
             let conn = rusqlite::Connection::open(&path).expect("open raw conn");
@@ -333,7 +334,7 @@ mod tests {
                 )
                 .unwrap();
             }
-            // 旧 schema 下插入一条 connector（无 ca_cert_path / pinned_cert_path 列）
+            // Insert a connector under the old schema (no ca_cert_path / pinned_cert_path columns)
             conn.execute(
                 "INSERT INTO connector (id, name, upstream_addr, token_enc, sni_hostname, insecure, advertise, group_id, enabled, remark, created_at, updated_at)
                  VALUES ('conn-old', 'site-old', '1.2.3.4:54430', 'v1:AAAA:BBBB', '', 1, '', NULL, 1, 'legacy', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
@@ -342,7 +343,7 @@ mod tests {
             .unwrap();
         }
 
-        // 打开即触发 v5 迁移：旧行保留、新列默认为空串
+        // Opening triggers v5 migration: old rows kept, new columns default to empty string
         {
             let db = Database::open(&path).expect("open migrated db");
             let rec = db
@@ -353,7 +354,7 @@ mod tests {
             assert_eq!(rec.ca_cert_path, "");
             assert_eq!(rec.pinned_cert_path, "");
 
-            // 迁移后可直接写入证书路径
+            // After migration, cert paths can be written directly
             db.update_connector(
                 "conn-old",
                 "site-old",
@@ -370,7 +371,7 @@ mod tests {
             .expect("update cert path");
             let rec = db.get_connector("conn-old").unwrap().unwrap();
             assert_eq!(rec.ca_cert_path, "/etc/anet/ca.pem");
-            // list 视图同样带出新列
+            // The list view also carries the new columns
             let views = db.list_connectors().unwrap();
             assert_eq!(views.len(), 1);
             assert_eq!(views[0].ca_cert_path, "/etc/anet/ca.pem");
@@ -383,7 +384,7 @@ mod tests {
 
     #[test]
     fn migration_v7_upgrades_old_db() {
-        // 构造一个只应用过 v1~v6 的旧库文件（relay_token 无 rate_limit_kbps 列）
+        // Build a legacy DB file with only v1~v6 applied (relay_token without rate_limit_kbps column)
         let path = std::env::temp_dir().join(format!("anet-db-mig7-test-{}.db", uuid::Uuid::new_v4()));
         {
             let conn = rusqlite::Connection::open(&path).expect("open raw conn");
@@ -403,7 +404,7 @@ mod tests {
                 )
                 .unwrap();
             }
-            // 旧 schema 下插入一条 relay_token（无 rate_limit_kbps 列）
+            // Insert a relay_token under the old schema (no rate_limit_kbps column)
             conn.execute(
                 "INSERT INTO relay_token (id, token_hash, token_prefix, remark, expose_control, control_scope, created_at)
                  VALUES ('tok-old', 'hash-old', 'psk_abcd', 'legacy', 0, 'full', '2026-01-01T00:00:00Z')",
@@ -412,7 +413,7 @@ mod tests {
             .unwrap();
         }
 
-        // 打开即触发 v7 迁移：旧行保留、新列为 NULL（不限速）
+        // Opening triggers v7 migration: old rows kept, new column NULL (unlimited)
         {
             let db = Database::open(&path).expect("open migrated db");
             let tok = db
@@ -423,7 +424,7 @@ mod tests {
             assert_eq!(tok.rate_limit_kbps, None);
             assert_eq!(db.get_relay_token_rate_limit("hash-old").unwrap(), None);
 
-            // 迁移后旧行可直接设置/清除配额
+            // After migration, quota can be set/cleared on old rows directly
             db.set_relay_token_rate_limit("tok-old", Some(10240))
                 .expect("set rate limit");
             let tok = db.get_relay_token("tok-old").unwrap().unwrap();

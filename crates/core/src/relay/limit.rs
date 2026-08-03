@@ -1,47 +1,56 @@
-//! 会话级带宽限速（令牌桶）
+//! Session-level bandwidth limiting (token bucket)
 //!
-//! ## 设计
+//! ## Design
 //!
-//! - **读写共用一桶**：产品语义是「这条会话的带宽上限」，不区分上下行——付费配额
-//!   按链路总量计费。`MuxSession` 的写任务（egress）与读任务（ingress）共享同一个
-//!   `Arc<TokenBucket>`，双方向合并限额。
-//! - **ingress 也 acquire = 背压**：读任务在把 Data/DataFin 分发给通道前取令牌，
-//!   令牌不足时读任务挂起、不再从 socket 读取，TCP 接收窗口耗尽后对端发送方自然
-//!   降速。无需任何协议字段，旧端完全兼容。
-//! - **与 flow_control credit 正交**：per-channel 窗口流控（credit/WindowUpdate）
-//!   管「对端应用缓冲不被撑爆」（端到端、按通道）；令牌桶管「本端给这条会话的
-//!   付费配额」（按会话、双方向合并）。两者可同时生效，互不感知。
-//! - **等待封顶放行**：单次 acquire 的 sleep 封顶 [`MAX_ACQUIRE_WAIT`]。限速是配额
-//!   机制而非正确性机制：畸形配置（rate 极低、单帧需等数分钟）下宁可放行一帧，
-//!   也不能让读任务永久挂起挡住 Ping/Pong 心跳、拖垮会话关闭。封顶只截断 sleep，
-//!   时间债仍全额入账（见下），后续帧依旧排队，超发被限制在每 5s 一帧以内。
+//! - **One bucket shared by reads and writes**: the product semantic is "this session's
+//!   bandwidth cap", direction-agnostic — paid quota is billed on total link volume.
+//!   The `MuxSession` write task (egress) and read task (ingress) share a single
+//!   `Arc<TokenBucket>`; both directions draw from the same allowance.
+//! - **ingress also acquires = backpressure**: the read task takes tokens before
+//!   dispatching Data/DataFin to channels; when tokens run out it suspends and stops
+//!   reading from the socket, so once the TCP receive window drains the peer sender
+//!   naturally slows down. No protocol fields needed; old peers fully compatible.
+//! - **Orthogonal to flow_control credit**: per-channel window flow control
+//!   (credit/WindowUpdate) keeps "the peer's app buffer from overflowing" (end-to-end,
+//!   per channel); the token bucket enforces "this session's paid quota on this end"
+//!   (per session, both directions merged). Both can be active at once, mutually unaware.
+//! - **Capped wait, then pass**: a single acquire sleeps at most [`MAX_ACQUIRE_WAIT`].
+//!   Rate limiting is a quota mechanism, not a correctness one: under a pathological
+//!   config (rate so low one frame would wait minutes) it is better to pass one frame
+//!   than to park the read task forever, blocking Ping/Pong heartbeats and stalling
+//!   session teardown. The cap only truncates the sleep; the time debt is still booked
+//!   in full (see below), later frames keep queueing, and over-issuance stays bounded
+//!   to one frame per 5s.
 //!
-//! ## 防惊群（时间债预订）
+//! ## Anti-thundering-herd (time-debt reservation)
 //!
-//! 令牌不足时不按「先睡醒先抢」，而是把缺口折算成等待时长**预订**入账：推进
-//! `last` 到未来，本笔睡到 `last` 所指向的时刻。随后并发的 acquire 基于推进后的
-//! `last` 计算缺口与终点，自动排在前一笔之后，N 个并发者分别睡 1×、2×、3×… 的
-//! 单位时长，总发放速率恒不超 `rate`。等待一律在锁外 sleep，`Mutex` 只保护
-//! `{tokens, last}` 的瞬时读写，持锁期间不 await 其他future。
+//! When tokens run short there is no "first woken, first served": the deficit is
+//! converted into a wait duration and **reserved** on the books — `last` is advanced
+//! into the future and this acquire sleeps until the instant `last` points to.
+//! Concurrent acquires afterwards compute their deficit and deadline from the advanced
+//! `last`, so they queue behind the previous one automatically: N contenders sleep 1x,
+//! 2x, 3x... of the unit duration, and the aggregate issue rate never exceeds `rate`.
+//! All waiting sleeps happen outside the lock; the `Mutex` only guards instantaneous
+//! reads/writes of `{tokens, last}` and no other future is awaited while held.
 
 use std::time::Duration;
 use tokio::sync::Mutex;
 use tokio::time::Instant;
 
-/// 单次 acquire 的最长等待，超时放行（见模块头「等待封顶放行」）。
+/// Max wait for a single acquire; passing anyway on timeout (see "capped wait" in the module docs).
 const MAX_ACQUIRE_WAIT: Duration = Duration::from_secs(5);
 
-/// 桶内状态（仅持锁瞬时读写）。
+/// In-bucket state (touched only briefly under the lock).
 struct BucketState {
-    /// 当前可用令牌（字节），上限 burst
+    /// Currently available tokens (bytes), capped at burst
     tokens: f64,
-    /// 上次补充令牌的时刻；存在未清偿时间债时被预订推进到未来
+    /// Last refill instant; advanced into the future while time debt is reserved
     last: Instant,
 }
 
-/// 令牌桶限速器：恒定速率 `rate_bps`（字节/秒）补充令牌，突发上限 `burst`（字节）。
+/// Token bucket rate limiter: refills tokens at a constant `rate_bps` (bytes/sec), burst cap `burst` (bytes).
 ///
-/// 克隆语义：本身不实现 Clone，多任务共享用 `Arc<TokenBucket>`。
+/// Clone semantics: not Clone itself; share across tasks via `Arc<TokenBucket>`.
 pub struct TokenBucket {
     rate: f64,
     burst: f64,
@@ -49,9 +58,9 @@ pub struct TokenBucket {
 }
 
 impl TokenBucket {
-    /// 新建满令牌桶（初始即可用完全部 burst）。
+    /// Create a full bucket (the whole burst is available immediately).
     ///
-    /// `rate_bps` 为 0 时按 1 字节/秒兜底（防除零；属于配置错误，等效近全停）。
+    /// `rate_bps` of 0 falls back to 1 byte/sec (avoids division by zero; a config error, effectively a near-full stop).
     pub fn new(rate_bps: u64, burst: u64) -> Self {
         Self {
             rate: rate_bps.max(1) as f64,
@@ -63,10 +72,10 @@ impl TokenBucket {
         }
     }
 
-    /// 扣除 `n` 字节额度；额度不足时按 缺口/速率 挂起等待（锁外 sleep）。
+    /// Deduct `n` bytes of allowance; on shortfall, suspend for deficit/rate (sleeps outside the lock).
     ///
-    /// `n` 可大于 burst（超大帧按全额缺口等待对应时长）。单次等待封顶
-    /// [`MAX_ACQUIRE_WAIT`]，超时放行但时间债仍全额入账。
+    /// `n` may exceed burst (an oversized frame waits the full deficit's worth of time).
+    /// Each wait is capped at [`MAX_ACQUIRE_WAIT`]; on timeout the frame passes but the time debt is still booked in full.
     pub async fn acquire(&self, n: u64) {
         if n == 0 {
             return;
@@ -74,7 +83,7 @@ impl TokenBucket {
         let wait = {
             let mut g = self.state.lock().await;
             let now = Instant::now();
-            // last 可能因前序预订而指向未来：仅当 now 越过 last 时才补充令牌
+            // last may point into the future due to prior reservations: refill only once now passes last
             if let Some(elapsed) = now.checked_duration_since(g.last) {
                 g.tokens = (g.tokens + elapsed.as_secs_f64() * self.rate).min(self.burst);
                 g.last = now;
@@ -85,8 +94,9 @@ impl TokenBucket {
             }
             let deficit = n as f64 - g.tokens;
             g.tokens = 0.0;
-            // 时间债预订：缺口折时长推进 last，本笔睡到 last 指向的终点；
-            // 后续并发 acquire 在债务之后继续排队，自然串行、不超发
+            // time-debt reservation: convert the deficit to a duration and advance last;
+            // this acquire sleeps until the instant last points to. Later concurrent
+            // acquires queue behind the debt — naturally serialized, no over-issue
             g.last += Duration::from_secs_f64(deficit / self.rate);
             g.last.saturating_duration_since(now)
         };
@@ -99,7 +109,7 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
-    /// 高速率 + 充足突发：立即通过，虚拟时钟不前进
+    /// High rate + ample burst: passes immediately, virtual clock does not advance
     #[tokio::test(start_paused = true)]
     async fn high_rate_immediate() {
         let b = TokenBucket::new(10_000_000, 1_000_000);
@@ -108,13 +118,13 @@ mod tests {
         assert_eq!(t0.elapsed(), Duration::ZERO);
     }
 
-    /// 低速率：突发耗尽后按 缺口/速率 节流
+    /// Low rate: once the burst is drained, throttle at deficit/rate
     #[tokio::test(start_paused = true)]
     async fn low_rate_throttled() {
         let b = TokenBucket::new(100_000, 10_000);
-        b.acquire(10_000).await; // 吃光突发，不等待
+        b.acquire(10_000).await; // drain the burst, no wait
         let t0 = Instant::now();
-        b.acquire(20_000).await; // 缺口 20_000 → 等 200ms
+        b.acquire(20_000).await; // deficit 20_000 -> wait 200ms
         let elapsed = t0.elapsed();
         assert!(
             elapsed >= Duration::from_millis(200),
@@ -126,7 +136,7 @@ mod tests {
         );
     }
 
-    /// 突发额度一次性可用（哪怕速率很低）
+    /// The burst allowance is available all at once (even at a very low rate)
     #[tokio::test(start_paused = true)]
     async fn burst_available_at_once() {
         let b = TokenBucket::new(1_000, 64 * 1024);
@@ -135,7 +145,7 @@ mod tests {
         assert_eq!(t0.elapsed(), Duration::ZERO);
     }
 
-    /// 并发 acquire：时间债预订使并发者串行排队，总发放不超速率
+    /// Concurrent acquires: time-debt reservation serializes contenders; aggregate issue rate stays within limit
     #[tokio::test(start_paused = true)]
     async fn concurrent_acquires_serialize_no_overissue() {
         let b = Arc::new(TokenBucket::new(10_000, 10_000));
@@ -153,7 +163,7 @@ mod tests {
             times.push(h.await.unwrap());
         }
         times.sort();
-        // 第 1 笔吃突发立即返回；第 k 笔（k>=2）完成时刻 >= (k-1) × 10_000B / 10_000Bps
+        // the 1st acquire eats the burst and returns at once; the k-th (k>=2) finishes at >= (k-1) x 10_000B / 10_000Bps
         assert_eq!(times[0], Duration::ZERO, "首笔应即时: {times:?}");
         for (i, t) in times.iter().enumerate().skip(1) {
             assert!(
@@ -165,10 +175,10 @@ mod tests {
         assert_eq!(times.len(), 5);
     }
 
-    /// 等待封顶：极低速率下单笔等待截断到 MAX_ACQUIRE_WAIT 后放行
+    /// Capped wait: at an extremely low rate a single wait is truncated to MAX_ACQUIRE_WAIT, then passes
     #[tokio::test(start_paused = true)]
     async fn wait_capped_then_pass() {
-        // 缺口 1_000_000B / 1Bps ≈ 11.6 天 → 应截断为 5s 放行
+        // deficit 1_000_000B / 1Bps ≈ 11.6 days -> truncated to 5s and passed
         let b = TokenBucket::new(1, 0);
         let t0 = Instant::now();
         b.acquire(1_000_000).await;

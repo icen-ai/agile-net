@@ -1,4 +1,4 @@
-//! 多节点引擎：连接生命周期、合并路由、后台任务与本地代理入站。
+//! Multi-node engine: connection lifecycle, route merging, background tasks, and local proxy inbound.
 
 use agile_net_core::proxy::inbound::ProxyInbound;
 use agile_net_core::proxy::router::{Outbound, ProxyRouter};
@@ -28,20 +28,20 @@ pub enum NodeStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConnectParams {
-    /// 节点 API 地址（host:port 或 http(s)://...）
+    /// Node API address (host:port or http(s)://...)
     pub addr: String,
     pub username: String,
     pub password: String,
-    /// 跳过 TLS 证书校验（仅开发调试）
+    /// Skip TLS certificate verification (dev/debug only)
     #[serde(default)]
     pub insecure: bool,
-    /// 证书固定：节点证书 PEM 路径（生产推荐）
+    /// Certificate pinning: node certificate PEM path (recommended in production)
     #[serde(default)]
     pub pinned_cert_path: Option<String>,
-    /// 证书指纹固定：节点证书 SHA-256（connect_url 一键分发，抗 MITM）
+    /// Fingerprint pinning: node certificate SHA-256 (one-click distribution via connect_url, MITM-resistant)
     #[serde(default)]
     pub pinned_fingerprint: Option<String>,
-    /// 是否自动维护系统 hosts（resolve 规则）
+    /// Whether to auto-maintain system hosts (resolve rules)
     #[serde(default)]
     pub manage_hosts: bool,
 }
@@ -62,36 +62,36 @@ pub struct NodeState {
     pub node_id: String,
     pub addr: String,
     pub node_name: String,
-    /// 登录账号（端点列表展示「端点名称 · 用户名」）
+    /// Login account (the endpoint list shows "endpoint name · username")
     #[serde(default)]
     pub username: String,
     pub status: NodeStatus,
     pub rules: Vec<ClientRule>,
     pub config_version: u64,
-    /// 该账号被授予「管理此节点」权限（管理版接入链接）
+    /// This account was granted "manage this node" permission (admin connect URL)
     #[serde(default)]
     pub admin_console: bool,
-    /// 可管理上游（握手 v2 自动发现；仅管理版账号下发）
+    /// Manageable upstreams (handshake v2 auto-discovery; only issued to admin accounts)
     #[serde(default)]
     pub manageable: Vec<ManageableNode>,
-    /// 隧道流量：上行字节（发往节点；当前会话计数，重连归零，未连接为 0）
+    /// Tunnel traffic: upstream bytes (to the node; per-session counter, reset on reconnect, 0 when not connected)
     #[serde(default)]
     pub bytes_up: u64,
-    /// 隧道流量：下行字节（来自节点；当前会话计数，重连归零，未连接为 0）
+    /// Tunnel traffic: downstream bytes (from the node; per-session counter, reset on reconnect, 0 when not connected)
     #[serde(default)]
     pub bytes_down: u64,
 }
 
-/// 可管理节点（本机/已连节点/上游链自动发现）。
+/// Manageable node (local machine / connected node / upstream chain auto-discovery).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ManageableNode {
     pub node_name: String,
-    /// 管理 API 端点（host:port，经隧道可达）
+    /// Admin API endpoint (host:port, reachable via tunnel)
     pub api: String,
-    /// 管理授权档位：ro / rules / full
+    /// Management scope tier: ro / rules / full
     #[serde(default = "default_manageable_scope")]
     pub scope: String,
-    /// 发现路径：relay（上游链）
+    /// Discovery path: relay (upstream chain)
     #[serde(default)]
     pub via: String,
 }
@@ -100,22 +100,22 @@ fn default_manageable_scope() -> String {
     "full".into()
 }
 
-/// 单个节点连接的运行时句柄。
+/// Runtime handle of a single node connection.
 struct NodeHandle {
     state: NodeState,
     tunnel: Arc<ClientTunnel>,
     tasks: Vec<tokio::task::JoinHandle<()>>,
     manage_hosts: bool,
-    /// 原始连接参数（断网降级后重试登录用）
+    /// Original connect params (for login retry after offline degradation)
     params: ConnectParams,
-    /// 当前 access token（配置长轮询刷新后同步；控制台票据签发用）
+    /// Current access token (synced after config long-poll refresh; used for console ticket issuance)
     access_token: Arc<ArcSwap<String>>,
 }
 
-/// 共享内部状态（后台任务通过 Arc 安全访问）。
+/// Shared inner state (background tasks access it safely via Arc).
 struct ClientInner {
     nodes: DashMap<String, NodeHandle>,
-    /// 节点连接顺序（路由冲突按先连优先）
+    /// Node connection order (route conflicts resolve first-connected-wins)
     node_order: std::sync::Mutex<Vec<String>>,
     shared_router: Arc<ArcSwap<ProxyRouter>>,
     proxy_port: ArcSwap<u16>,
@@ -123,23 +123,23 @@ struct ClientInner {
     inbound_shutdown_tx: tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
     openers: Arc<DashMap<String, Arc<dyn ChannelOpener>>>,
     hosts_manager: HostsManager,
-    /// 代理入站统计（代理启动后可用）
+    /// Proxy inbound stats (available after the proxy starts)
     proxy_stats: Arc<arc_swap::ArcSwapOption<agile_net_core::proxy::inbound::ProxyStats>>,
-    /// 节点配置离线缓存
+    /// Offline node config cache
     cache: Arc<ConfigCache>,
-    /// 用户暂停的规则（node_id → "type:value" 小写集合），重建合并路由时跳过
+    /// User-paused rules (node_id → lowercase "type:value" set), skipped when rebuilding merged routes
     paused_rules: DashMap<String, std::collections::HashSet<String>>,
-    /// 代理回落上游（订阅内核 mixed 入站；None = 未命中规则直连）
+    /// Proxy fallback upstream (subscription kernel mixed inbound; None = direct for unmatched rules)
     proxy_fallback: arc_swap::ArcSwapOption<SocketAddr>,
-    /// 自定义规则（GUI 放行/hosts 映射；ArcSwap 热更，rebuild 时烘焙进路由自定义层）
+    /// Custom rules (GUI bypass / hosts mapping; ArcSwap hot reload, baked into the router custom layer on rebuild)
     custom_rules: ArcSwap<CustomRules>,
 }
 
 impl ClientInner {
-    /// 合并全部已连接节点的路由规则。
+    /// Merge route rules from all connected nodes.
     ///
-    /// 冲突语义（确定性）：按节点连接顺序，**先连优先**——
-    /// 相同 CIDR/域名模式以先连接的节点为准（标准最长前缀匹配仍优先于顺序）。
+    /// Conflict semantics (deterministic): by connection order, **first-connected-wins** —
+    /// identical CIDR/host patterns resolve to the first-connected node (standard longest-prefix match still wins over order).
     fn rebuild_merged_router(&self) {
         let mut new_router = ProxyRouter::new();
         let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -161,10 +161,10 @@ impl ClientInner {
             for rule in &state.rules {
                 let key = format!("{}:{}", rule.rule_type, rule.value.to_lowercase());
                 if paused.as_ref().is_some_and(|s| s.contains(&key)) {
-                    continue; // 用户已暂停：不占用冲突位次，允许其他节点同名规则接管
+                    continue; // Paused by user: does not occupy a conflict slot; another node's same-named rule may take over
                 }
                 if !seen.insert(key) {
-                    continue; // 冲突：后连节点让位于先连节点
+                    continue; // Conflict: later-connected node yields to the first-connected one
                 }
                 let outbound = Outbound::tunnel(state.node_id.clone());
                 match rule.rule_type.as_str() {
@@ -181,8 +181,8 @@ impl ClientInner {
                     _ => {}
                 }
             }
-            // 管理面隐式路由：可管理上游 API 端点经该节点隧道可达
-            // （ACL 统一：收回权限即失去管理通路；冲突位次与显式规则一致，先连优先）
+            // Control-plane implicit routes: manageable upstream API endpoints reachable via this node's tunnel
+            // (Unified ACL: revoked permission loses the management path; conflict slots follow explicit rules, first-connected-wins)
             if state.admin_console {
                 add_manageable_routes(
                     &mut new_router,
@@ -192,11 +192,11 @@ impl ClientInner {
                 );
             }
         }
-        // 回落上游（订阅内核）：未命中任何规则的流量转发至 loopback 上游代理
+        // Fallback upstream (subscription kernel): traffic matching no rule is forwarded to the loopback upstream proxy
         if let Some(addr) = self.proxy_fallback.load().as_ref() {
             new_router.set_default(Outbound::forward(**addr));
         }
-        // 自定义规则层（放行/hosts 映射）：本地代理入站评估时优先于合并路由与回落
+        // Custom rules layer (bypass / hosts mapping): evaluated before merged routes and fallback at local proxy inbound
         let custom = self.custom_rules.load();
         apply_custom_rules(
             &mut new_router,
@@ -207,7 +207,7 @@ impl ClientInner {
         self.apply_hosts();
     }
 
-    /// 维护系统 hosts（连接参数中 manage_hosts=true 的节点的 resolve 规则）。
+    /// Maintain system hosts (resolve rules of nodes connected with manage_hosts=true).
     fn apply_hosts(&self) {
         let mut hosts = Vec::new();
         let mut any_managed = false;
@@ -269,24 +269,24 @@ impl AgileNetClient {
         self.inner.shared_router.load_full()
     }
 
-    /// 合并路由表共享句柄（路由再发布：注入内嵌节点 connector）。
+    /// Shared handle of the merged router (route re-publishing: injects the embedded node connector).
     pub fn shared_router_handle(&self) -> Arc<ArcSwap<ProxyRouter>> {
         self.inner.shared_router.clone()
     }
 
-    /// 设置代理回落上游（订阅内核 mixed 入站；None 恢复未命中直连）。
+    /// Set the proxy fallback upstream (subscription kernel mixed inbound; None restores direct for unmatched traffic).
     pub fn set_proxy_fallback(&self, addr: Option<SocketAddr>) {
         self.inner.proxy_fallback.store(addr.map(Arc::new));
         self.inner.rebuild_merged_router();
     }
 
-    /// 热更自定义规则（GUI 放行/hosts 映射；立即重建合并路由，无需重启代理）。
+    /// Hot-reload custom rules (GUI bypass / hosts mapping; rebuilds merged routes immediately, no proxy restart needed).
     pub fn set_custom_rules(&self, rules: CustomRules) {
         self.inner.custom_rules.store(Arc::new(rules));
         self.inner.rebuild_merged_router();
     }
 
-    /// 通道开启器注册表共享句柄（路由再发布：注入内嵌节点 connector）。
+    /// Shared handle of the channel opener registry (route re-publishing: injects the embedded node connector).
     pub fn openers_handle(&self) -> Arc<DashMap<String, Arc<dyn ChannelOpener>>> {
         self.inner.openers.clone()
     }
@@ -299,11 +299,11 @@ impl AgileNetClient {
         self.inner.nodes.len()
     }
 
-    /// 连接节点：登录 → 拉取配置 → 建立隧道 → 合并路由 → 后台维护任务。
+    /// Connect to a node: login → pull config → establish tunnel → merge routes → background maintenance tasks.
     pub async fn connect(&self, params: ConnectParams) -> Result<NodeState> {
         let base_url = api_base_url(&params.addr);
 
-        // 1. 登录（网络不可达时尝试离线缓存降级）
+        // 1. Login (fall back to the offline cache when the network is unreachable)
         let resp = match self
             .inner
             .http_client
@@ -317,7 +317,7 @@ impl AgileNetClient {
         {
             Ok(r) => r,
             Err(e) => {
-                // 网络错误 → 离线缓存降级（断网沿用旧规则 + 后台重试）
+                // Network error → offline cache degradation (keep stale rules while offline + background login retry)
                 return self.connect_offline(params, e).await;
             }
         };
@@ -339,7 +339,7 @@ impl AgileNetClient {
             .ok_or_else(|| anyhow!("missing tunnel_token (not a client account?)"))?
             .to_string();
 
-        // 2. 拉取配置
+        // 2. Pull config
         let config = pull_config(&self.inner.http_client, &base_url, &access_token, 0).await?;
         let node_name = config["node_name"].as_str().unwrap_or("node").to_string();
         let tunnel_server = config["tunnel"]["server"]
@@ -352,7 +352,7 @@ impl AgileNetClient {
         let manageable = parse_manageable(&config);
         let rules = parse_rules(&config);
 
-        // 3. 建立数据面隧道
+        // 3. Establish the data plane tunnel
         let tunnel_addr: SocketAddr = resolve_addr(&tunnel_server, tunnel_port).await?;
         let tls_builder = build_tls(&params)?;
         let account_id = claims_sub(&access_token).unwrap_or_else(|| params.username.clone());
@@ -364,10 +364,10 @@ impl AgileNetClient {
         )?);
         tunnel.connect().await?;
 
-        // 节点唯一键：node_name@addr
+        // Unique node key: node_name@addr
         let node_id = format!("{node_name}@{}", params.addr);
 
-        // 注册通道开启器
+        // Register the channel opener
         self.inner
             .openers
             .insert(node_id.clone(), tunnel.clone() as Arc<dyn ChannelOpener>);
@@ -386,7 +386,7 @@ impl AgileNetClient {
             bytes_down: 0,
         };
 
-        // 4. 后台任务：隧道自动重连 + 心跳 + 配置长轮询
+        // 4. Background tasks: tunnel auto-reconnect + heartbeat + config long-poll
         let access_shared = Arc::new(ArcSwap::from_pointee(access_token.clone()));
         let mut tasks = Vec::new();
         {
@@ -411,7 +411,7 @@ impl AgileNetClient {
             version,
         ));
 
-        // 5. 写入离线缓存（断网时沿用）
+        // 5. Write the offline cache (used while offline)
         self.inner.cache.save(&CachedNodeConfig {
             addr: params.addr.clone(),
             username: params.username.clone(),
@@ -447,7 +447,7 @@ impl AgileNetClient {
         Ok(state)
     }
 
-    /// 离线降级：网络不可达时沿用缓存规则组网，后台周期重试登录。
+    /// Offline degradation: when the network is unreachable, build the mesh from cached rules and retry login periodically in the background.
     async fn connect_offline(
         &self,
         params: ConnectParams,
@@ -477,7 +477,7 @@ impl AgileNetClient {
             cached.tunnel_token.clone(),
             tls_builder,
         )?);
-        // 隧道重连任务（token 可能已过期，但服务端未轮换前仍可用）
+        // Tunnel reconnect task (the token may have expired, but stays usable until the server rotates it)
         tunnel.connect().await.ok();
 
         self.inner
@@ -505,7 +505,7 @@ impl AgileNetClient {
                 t.run().await;
             }));
         }
-        // 后台登录重试：恢复在线后无缝升级
+        // Background login retry: seamless upgrade once back online
         tasks.push(spawn_offline_retry(
             self.inner.clone(),
             node_id.clone(),
@@ -531,7 +531,7 @@ impl AgileNetClient {
         Ok(state)
     }
 
-    /// 断开节点：停止任务、断开隧道、移除路由与 hosts。
+    /// Disconnect a node: stop tasks, tear down the tunnel, remove routes and hosts.
     pub async fn disconnect(&self, node_id: &str) {
         if let Some((_, handle)) = self.inner.nodes.remove(node_id) {
             for t in &handle.tasks {
@@ -562,12 +562,12 @@ impl AgileNetClient {
     }
 
     pub async fn list_nodes(&self) -> Vec<NodeState> {
-        // 先同步修正状态并取出隧道句柄，再异步读流量（避免持 dashmap 守卫跨 await）
+        // Fix status and take tunnel handles synchronously first, then read traffic async (avoid holding dashmap guards across await)
         let mut states = Vec::with_capacity(self.inner.nodes.len());
         let mut tunnels = Vec::with_capacity(self.inner.nodes.len());
         for mut r in self.inner.nodes.iter_mut() {
-            // 以隧道实时状态为准修正缓存状态：
-            // 对端关闭/断网时缓存的 Connected 不会自动回写（管理面按钮据此显隐）
+            // Correct the cached status from the tunnel's live state:
+            // on remote close / network loss the cached Connected is never rewritten (control-plane buttons toggle on it)
             let live = if r.tunnel.is_connected() {
                 NodeStatus::Connected
             } else {
@@ -621,12 +621,12 @@ impl AgileNetClient {
         }
     }
 
-    /// 重建合并路由表（供外部/测试调用）。
+    /// Rebuild the merged router (for external/test callers).
     pub fn rebuild_merged_router(&self) {
         self.inner.rebuild_merged_router();
     }
 
-    /// 暂停/恢复某节点的一条规则（rule_key 格式 "type:value"，立即重建合并路由）。
+    /// Pause/resume one rule of a node (rule_key format "type:value"; rebuilds merged routes immediately).
     pub fn set_rule_paused(&self, node_id: &str, rule_key: &str, paused: bool) {
         if paused {
             self.inner
@@ -640,7 +640,7 @@ impl AgileNetClient {
         self.inner.rebuild_merged_router();
     }
 
-    /// 某节点当前被暂停的规则 key 列表。
+    /// List of currently paused rule keys of a node.
     pub fn get_paused_rules(&self, node_id: &str) -> Vec<String> {
         self.inner
             .paused_rules
@@ -649,7 +649,7 @@ impl AgileNetClient {
             .unwrap_or_default()
     }
 
-    /// 整体恢复某节点的暂停集合（前端启动时从本地持久化恢复）。
+    /// Restore the whole paused set of a node (frontend restores from local persistence on startup).
     pub fn set_paused_rules(&self, node_id: &str, keys: Vec<String>) {
         if keys.is_empty() {
             self.inner.paused_rules.remove(node_id);
@@ -661,26 +661,26 @@ impl AgileNetClient {
         self.inner.rebuild_merged_router();
     }
 
-    /// 启动本地代理入站（127.0.0.1）。
+    /// Start the local proxy inbound (127.0.0.1).
     pub async fn start_proxy(&self, port: u16) -> Result<()> {
         self.start_proxy_with_auth(port, None).await
     }
 
-    /// 启动本地代理入站（可选认证）。
+    /// Start the local proxy inbound (optional auth).
     pub async fn start_proxy_with_auth(
         &self,
         port: u16,
         auth: Option<(String, String)>,
     ) -> Result<()> {
         let listen_addr: SocketAddr = format!("127.0.0.1:{port}").parse()?;
-        // 入站与引擎共用同一张开启器注册表（节点上下线即时生效）
+        // The inbound shares the engine's opener registry (node up/down takes effect immediately)
         let mut inbound = ProxyInbound::new(listen_addr, self.inner.shared_router.clone())
             .with_openers_map(self.inner.openers.clone());
         if let Some((u, p)) = auth {
             inbound = inbound.with_auth(u, p);
         }
 
-        // 先绑定拿到实际端口（支持 port=0），再交给 inbound（消除启动竞态）
+        // Bind first to get the actual port (supports port=0), then hand it to inbound (eliminates startup race)
         let bound = tokio::net::TcpListener::bind(listen_addr).await?;
         let actual_port = bound.local_addr()?.port();
         self.inner.proxy_port.store(Arc::new(actual_port));
@@ -708,14 +708,14 @@ impl AgileNetClient {
         self.inner.proxy_port.store(Arc::new(0));
     }
 
-    /// 节点的数据面通道开启器（控制台 loopback 转发器用）。
+    /// Data plane channel opener of a node (for the console loopback forwarder).
     pub fn opener(&self, node_id: &str) -> Option<Arc<dyn ChannelOpener>> {
         self.inner.openers.get(node_id).map(|r| r.value().clone())
     }
 
-    /// 申请可管理上游的控制台票据（中继令牌换取，scoped；握手 v2 发现的当前票据）。
+    /// Request a console ticket for a manageable upstream (exchanged with the relay token, scoped; current ticket from handshake v2 discovery).
     ///
-    /// 返回 (ticket, api_host, api_port, scope)：控制台经本节点隧道访问上游管理面。
+    /// Returns (ticket, api_host, api_port, scope): the console reaches the upstream control plane via this node's tunnel.
     pub async fn upstream_console_ticket(
         &self,
         node_id: &str,
@@ -768,10 +768,10 @@ impl AgileNetClient {
         Ok((ticket, host, port, scope))
     }
 
-    /// 申请控制台引导票据（仅被授予「管理此节点」权限的账号可用）。
+    /// Request a console bootstrap ticket (only for accounts granted "manage this node").
     ///
-    /// 返回 (ticket, api_port)：控制台窗口经 loopback 转发器加载节点管理 SPA，
-    /// 以 #boot=ticket 换取管理会话；api_port 即节点 API 端口（隧道对端 loopback 目标）。
+    /// Returns (ticket, api_port): the console window loads the node admin SPA via the loopback forwarder
+    /// and exchanges #boot=ticket for an admin session; api_port is the node API port (tunnel peer loopback target).
     pub async fn console_ticket(&self, node_id: &str) -> Result<(String, u16)> {
         let handle = self
             .inner
@@ -805,7 +805,7 @@ impl AgileNetClient {
     }
 }
 
-/// 从连接地址提取 API 端口（host:port 或 http(s)://host[:port]，缺省 59090）。
+/// Extract the API port from a connect address (host:port or http(s)://host[:port], default 59090).
 fn api_port_of(addr: &str) -> u16 {
     let stripped = addr
         .trim_start_matches("http://")
@@ -823,7 +823,7 @@ impl Default for AgileNetClient {
     }
 }
 
-// ==================== 后台任务 ====================
+// ==================== background tasks ====================
 
 async fn pull_config(
     http: &reqwest::Client,
@@ -844,7 +844,7 @@ async fn pull_config(
     Ok(json["data"].clone())
 }
 
-/// 离线降级后的登录重试：恢复在线后无缝升级为完整连接。
+/// Login retry after offline degradation: seamless upgrade to a full connection once back online.
 fn spawn_offline_retry(
     inner: Arc<ClientInner>,
     node_id: String,
@@ -875,7 +875,7 @@ fn spawn_offline_retry(
     })
 }
 
-/// 离线状态下的一次完整重登：成功则更新令牌/规则/缓存/状态。
+/// One full re-login while offline: on success, update tokens/rules/cache/status.
 async fn offline_relogin_once(
     inner: &Arc<ClientInner>,
     node_id: &str,
@@ -914,7 +914,7 @@ async fn offline_relogin_once(
     let version = config["version"].as_u64().unwrap_or(0);
     let rules = parse_rules(&config);
 
-    // 更新句柄：令牌轮换 + 规则 + 状态 + 缓存
+    // Update the handle: token rotation + rules + status + cache
     let Some(mut handle) = inner.nodes.get_mut(node_id) else {
         return Err(anyhow!("node gone"));
     };
@@ -968,7 +968,7 @@ fn spawn_heartbeat(
         loop {
             interval.tick().await;
 
-            // 真实流量统计（增量：自上次上报以来）
+            // Real traffic stats (delta since the last report)
             let (delta_tx, delta_rx, active) = match stats_slot.load().as_ref() {
                 Some(stats) => {
                     let tx = stats.bytes_up.load(std::sync::atomic::Ordering::Relaxed);
@@ -1029,7 +1029,7 @@ fn spawn_config_watcher(
         let mut access = access_shared.load().as_ref().clone();
         let mut refresh = refresh_token;
         loop {
-            // 长轮询等待新版本
+            // Long-poll for a new version
             let url = format!("{base_url}/api/v1/client/config?wait=true&version={version}");
             let resp = http.get(&url).bearer_auth(&access).send().await;
 
@@ -1045,7 +1045,7 @@ fn spawn_config_watcher(
                 continue;
             }
             if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
-                // 刷新 token
+                // Refresh the token
                 let refresh_resp = http
                     .post(format!("{base_url}/api/v1/auth/refresh"))
                     .json(&serde_json::json!({ "refresh_token": refresh }))
@@ -1063,13 +1063,13 @@ fn spawn_config_watcher(
                                 .as_str()
                                 .unwrap_or(refresh.as_str())
                                 .to_string();
-                            // 服务端轮换了 tunnel_token → 同步给隧道供下次重连
+                            // Server rotated tunnel_token → sync it to the tunnel for the next reconnect
                             if let Some(new_tun) = json["data"]["tunnel_token"].as_str()
                                 && let Some(h) = inner.nodes.get(&node_id)
                             {
                                 h.tunnel.update_token(new_tun.to_string());
                             }
-                            // 刷新缓存中的 refresh_token
+                            // Refresh the refresh_token in the cache
                             if let Some(h) = inner.nodes.get(&node_id) {
                                 let p = &h.params;
                                 if let Some(mut cached) = inner.cache.load(&p.addr, &p.username) {
@@ -1110,7 +1110,7 @@ fn spawn_config_watcher(
     })
 }
 
-// ==================== 辅助函数 ====================
+// ==================== helpers ====================
 
 fn chrono_now() -> String {
     let now = std::time::SystemTime::now()
@@ -1124,8 +1124,8 @@ fn api_base_url(addr: &str) -> String {
     if addr.starts_with("http://") || addr.starts_with("https://") {
         addr.trim_end_matches('/').to_string()
     } else {
-        // 默认 HTTP 是节点 API 的出厂形态（内置 HTTPS 需在节点侧配置证书）；
-        // 非 loopback 明文场景给出显式告警，生产应配置 HTTPS 或证书固定
+        // Plain HTTP is the node API's factory default (built-in HTTPS requires node-side cert config);
+        // warn explicitly on non-loopback plaintext; production should use HTTPS or cert pinning
         let host = addr.trim_end_matches('/');
         let is_loopback = host
             .split(':')
@@ -1157,10 +1157,10 @@ fn parse_rules(config: &serde_json::Value) -> Vec<ClientRule> {
         .unwrap_or_default()
 }
 
-/// 把可管理上游的 API 端点并入路由表（隐式隧道路由）。
+/// Merge manageable upstream API endpoints into the router (implicit tunnel routes).
 ///
-/// 仅处理上游链（via=relay）端点；本机管理走 loopback 转发器不占路由位。
-/// IP 给 /32 CIDR，域名给精确主机；占用冲突位次（先连优先）。
+/// Only handles upstream-chain (via=relay) endpoints; local management goes through the loopback forwarder and takes no route slot.
+/// IPs get /32 CIDRs, hostnames get exact hosts; slots follow conflict order (first-connected-wins).
 fn add_manageable_routes(
     router: &mut ProxyRouter,
     node_id: &str,
@@ -1209,7 +1209,7 @@ fn parse_manageable(config: &serde_json::Value) -> Vec<ManageableNode> {
 fn build_tls(params: &ConnectParams) -> Result<TlsConfigBuilder> {
     let builder = TlsConfigBuilder::new();
     if let Some(fp) = &params.pinned_fingerprint {
-        // 指纹固定最优先（connect_url 一键分发，抗 MITM）
+        // Fingerprint pinning takes top priority (one-click distribution via connect_url, MITM-resistant)
         Ok(builder.pinned_fingerprint(fp.clone()))
     } else if let Some(pinned_path) = &params.pinned_cert_path {
         let data = std::fs::read(pinned_path)?;
@@ -1233,7 +1233,7 @@ async fn resolve_addr(host: &str, port: u16) -> Result<SocketAddr> {
         return Ok(a);
     }
     let resolved: Vec<SocketAddr> = tokio::net::lookup_host(&direct).await?.collect();
-    // IPv4 优先（规避双栈环境中 IPv6 不可达的连接失败）
+    // IPv4 preferred (avoids connect failures on dual-stack hosts where IPv6 is unreachable)
     resolved
         .iter()
         .find(|a| a.is_ipv4())
@@ -1242,7 +1242,7 @@ async fn resolve_addr(host: &str, port: u16) -> Result<SocketAddr> {
         .ok_or_else(|| anyhow!("cannot resolve tunnel server: {direct}"))
 }
 
-/// 从 JWT 中提取 sub（不验签，仅用于本地标识）。
+/// Extract sub from a JWT (no signature verification; local identification only).
 fn claims_sub(token: &str) -> Option<String> {
     let payload = token.split('.').nth(1)?;
     let decoded = base64_url_decode(payload)?;
@@ -1280,7 +1280,7 @@ fn base64_url_decode(input: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
-// ==================== 单元测试 ====================
+// ==================== unit tests ====================
 
 #[cfg(test)]
 mod tests {
@@ -1306,22 +1306,22 @@ mod tests {
         ];
         add_manageable_routes(&mut router, "n1@x:1", &list, &mut seen);
 
-        // IP 端点 → /32 CIDR 命中
+        // IP endpoint → /32 CIDR hit
         assert!(matches!(
             router.route_target("172.28.0.10:59090"),
             Outbound::Tunnel { node_id } if node_id == "n1@x:1"
         ));
-        // 域名端点 → 精确主机命中
+        // Hostname endpoint → exact host hit
         assert!(matches!(
             router.route_target("ops.internal:59090"),
             Outbound::Tunnel { node_id } if node_id == "n1@x:1"
         ));
-        // 同主机其他端口也命中（按主机路由）
+        // Other ports of the same host also hit (host-based routing)
         assert!(matches!(
             router.route_target("ops.internal:443"),
             Outbound::Tunnel { .. }
         ));
-        // 无关目标不受影响（默认直连）
+        // Unrelated targets unaffected (default direct)
         assert!(matches!(
             router.route_target("other.net:80"),
             Outbound::Direct
@@ -1332,20 +1332,20 @@ mod tests {
     fn manageable_routes_respect_first_wins() {
         let mut router = ProxyRouter::new();
         let mut seen = std::collections::HashSet::new();
-        // 先占位的显式规则（host:ops.internal 属于另一个节点）
+        // Explicit rule occupying the slot first (host:ops.internal belongs to another node)
         seen.insert("host:ops.internal".to_string());
         router.add_host_exact("ops.internal", Outbound::tunnel("n0@a:1"));
 
         let list = vec![m("ops", "ops.internal:59090")];
         add_manageable_routes(&mut router, "n1@x:1", &list, &mut seen);
-        // 隐式路由不抢占已占用位次
+        // Implicit routes must not preempt an occupied slot
         assert!(matches!(
             router.route_target("ops.internal:59090"),
             Outbound::Tunnel { node_id } if node_id == "n0@a:1"
         ));
     }
 
-    // ==================== 自定义规则引擎热更 ====================
+    // ==================== custom rules engine hot reload ====================
 
     fn bypass(pattern: &str, via_subscription: bool) -> CustomBypassRule {
         CustomBypassRule {
@@ -1372,7 +1372,7 @@ mod tests {
             router.map_host("git.corp.internal"),
             Some("10.9.9.9".parse().unwrap())
         );
-        // 清空即恢复（热更语义）
+        // Clearing restores the defaults (hot-reload semantics)
         client.set_custom_rules(CustomRules::default());
         let router = client.proxy_router();
         assert!(router.custom_bypass_match("app.corp.internal").is_none());
@@ -1381,8 +1381,8 @@ mod tests {
 
     #[test]
     fn custom_rules_do_not_alter_merged_routes() {
-        // 自定义层不进 route_target / route_count / rule_values：
-        // 扇入 connector 与路由再发布维持既有口径
+        // The custom layer stays out of route_target / route_count / rule_values:
+        // fan-in connectors and route re-publishing keep the existing behavior
         let client = AgileNetClient::new();
         client.set_custom_rules(CustomRules {
             bypass: vec![bypass("*.corp.internal", false)],

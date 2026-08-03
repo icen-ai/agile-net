@@ -1,21 +1,21 @@
-//! 自定义规则（放行 / hosts 映射 / 组合）：模型、持久化、系统 hosts 托管、生效并集。
+//! Custom rules (bypass / hosts mapping / combos): model, persistence, system hosts management, effective union.
 //!
-//! - 数据落 `~/.agile-net/gui-custom-rules.json`（serde JSON，临时文件 + rename 原子写）
-//! - 放行：通配 pattern（语义见 `agile_net_client::wildcard_match`），命中默认直连
-//!   （连订阅也不过，优先于订阅回落与端点规则）；可选「经过订阅」走 mihomo 回落
-//! - hosts 映射：hostname→IP（SwitchHosts 语义）；系统 hosts 可写则落系统
-//!   （`# AgileNet begin/end` 托管块幂等写入），失败回落进程内映射（引擎 hosts_map）
-//! - 组合：命名集合（成员 = 规则 key：自定义=其 id，拉取规则=`type:value` 小写）；
-//!   生效规则 = 单条启停 ∪ 启用组合的成员（组合中的拉取规则 key 由前端经既有
-//!   暂停接口另行处理，引擎侧仅消费自定义规则 id）
+//! - Persisted to `~/.agile-net/gui-custom-rules.json` (serde JSON, temp file + rename atomic write)
+//! - Bypass: wildcard pattern (semantics see `agile_net_client::wildcard_match`); hits go direct by default
+//!   (not even via the subscription, taking precedence over subscription fallback and endpoint rules); optional "via subscription" uses the mihomo fallback
+//! - hosts mapping: hostname→IP (SwitchHosts semantics); written to the system hosts when writable
+//!   (`# AgileNet begin/end` managed block written idempotently), falling back to in-process mapping (engine hosts_map) on failure
+//! - Combos: named sets (members = rule keys: custom = its id, pulled rules = `type:value` lowercase);
+//!   effective rules = individual toggles ∪ members of enabled combos (pulled-rule keys in combos are handled
+//!   separately by the frontend via the existing pause API; the engine only consumes custom rule ids)
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::{OnceLock, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
-// ==================== 模型 ====================
+// ==================== Model ====================
 
-/// 放行规则（通配 IP/域名过滤）。
+/// Bypass rule (wildcard IP/domain filter).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BypassRule {
     pub id: String,
@@ -26,7 +26,7 @@ pub struct BypassRule {
     pub enabled: bool,
 }
 
-/// hosts 映射（用户自建；系统既有非托管映射不入库，读取时合并展示 source=system）。
+/// hosts mapping (user-created; pre-existing unmanaged system mappings are not stored, merged in at read time with source=system).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HostRule {
     pub id: String,
@@ -34,12 +34,12 @@ pub struct HostRule {
     pub ip: String,
     #[serde(default = "default_true")]
     pub enabled: bool,
-    /// 用户意图：写入系统 hosts（实际成败看每次托管块写入结果，失败即进程内映射）
+    /// User intent: write to system hosts (actual success depends on each managed-block write; failure means in-process mapping)
     #[serde(default)]
     pub to_system: bool,
 }
 
-/// 规则组合（命名集合；rule_keys 混合自定义规则 id 与拉取规则 key）。
+/// Rule combo (named set; rule_keys mixes custom rule ids and pulled-rule keys).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuleCombo {
     pub id: String,
@@ -54,7 +54,7 @@ fn default_true() -> bool {
     true
 }
 
-/// 持久化数据（GUI 数据目录 JSON）。
+/// Persisted data (JSON in the GUI data directory).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct StoreData {
     #[serde(default)]
@@ -65,9 +65,9 @@ pub struct StoreData {
     pub combos: Vec<RuleCombo>,
 }
 
-/// 生效规则并集：单条 enabled ∪ 启用组合的成员（交叉组网）。
-/// 返回引擎可直接消费的快照（组合中未命中任何自定义规则的 key 忽略——
-/// 那是拉取规则 key，前端经暂停接口另行处理）。
+/// Effective rule union: individually enabled ∪ members of enabled combos (cross-grouping).
+/// Returns a snapshot the engine can consume directly (combo keys matching no custom rule are ignored —
+/// those are pulled-rule keys, handled separately by the frontend via the pause API).
 pub fn effective_rules(data: &StoreData) -> agile_net_client::CustomRules {
     let combo_keys: std::collections::HashSet<&str> = data
         .combos
@@ -95,13 +95,13 @@ pub fn effective_rules(data: &StoreData) -> agile_net_client::CustomRules {
     }
 }
 
-// ==================== 存储（原子写） ====================
+// ==================== Storage (atomic write) ====================
 
 fn store_path() -> PathBuf {
     crate::roles::data_dir().join("gui-custom-rules.json")
 }
 
-/// 原子写：临时文件 + rename（避免半截 JSON 被下次启动读到）。
+/// Atomic write: temp file + rename (avoids a half-written JSON being read on next startup).
 fn atomic_write(path: &Path, data: &str) -> Result<(), String> {
     let tmp = path.with_file_name(format!(
         "{}.tmp",
@@ -151,12 +151,12 @@ fn write_store() -> RwLockWriteGuard<'static, Store> {
     global().write().unwrap_or_else(|e| e.into_inner())
 }
 
-/// 当前数据快照（只读；命令层列表视图用）。
+/// Current data snapshot (read-only; for the command layer's list views).
 pub fn snapshot() -> StoreData {
     read_store().data.clone()
 }
 
-/// 变更落盘 + 引擎热更（全部写路径共用）。
+/// Persist changes + hot-update the engine (shared by all write paths).
 fn commit(
     guard: &mut RwLockWriteGuard<'static, Store>,
     client: &agile_net_client::AgileNetClient,
@@ -166,14 +166,14 @@ fn commit(
     Ok(())
 }
 
-// ==================== 规则操作 ====================
+// ==================== Rule operations ====================
 
 fn new_id(prefix: &str) -> String {
     format!("{}-{}", prefix, &uuid::Uuid::new_v4().simple().to_string()[..8])
 }
 
-/// 规范化主机输入（一键加规则用）：去 scheme/路径/query/端口/末尾点，小写化，
-/// 校验结果为域名或 IP 字面量；非法输入返回中文错误。
+/// Normalize host input (for one-click rule creation): strip scheme/path/query/port/trailing dots, lowercase,
+/// and validate the result as a domain or IP literal; invalid input returns a Chinese error message.
 pub fn normalize_host(input: &str) -> Result<String, String> {
     let mut h = input.trim().to_lowercase();
     if let Some(i) = h.find("://") {
@@ -182,7 +182,7 @@ pub fn normalize_host(input: &str) -> Result<String, String> {
     if let Some(i) = h.find(['/', '?', '#']) {
         h.truncate(i);
     }
-    // 去端口（仅当冒号后全为数字且前面无冒号——排除 IPv6 字面量）
+    // Strip port (only when everything after the colon is digits and no earlier colon exists — excludes IPv6 literals)
     if let Some(i) = h.rfind(':') {
         if !h[..i].contains(':') && !h[i + 1..].is_empty() && h[i + 1..].chars().all(|c| c.is_ascii_digit()) {
             h.truncate(i);
@@ -195,12 +195,12 @@ pub fn normalize_host(input: &str) -> Result<String, String> {
     if h.is_empty() || h.chars().any(|c| c.is_whitespace()) {
         return Err(BAD.into());
     }
-    // IPv6 字面量（去掉方括号后直收）
+    // IPv6 literal (accepted as-is after stripping brackets)
     let bare = h.trim_start_matches('[').trim_end_matches(']');
     if bare.parse::<std::net::IpAddr>().is_ok() {
         return Ok(bare.to_string());
     }
-    // 域名校验：label 仅字母/数字/连字符，不为空、不超长、连字符不在首尾
+    // Domain validation: labels only letters/digits/hyphens, non-empty, within length limits, no leading/trailing hyphen
     if !h.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-') {
         return Err(BAD.into());
     }
@@ -212,7 +212,7 @@ pub fn normalize_host(input: &str) -> Result<String, String> {
     Ok(h)
 }
 
-/// 新增放行规则（同 pattern 去重；默认启用），返回 id。
+/// Add a bypass rule (dedup by pattern; enabled by default), returns id.
 pub fn add_bypass(
     client: &agile_net_client::AgileNetClient,
     pattern: &str,
@@ -246,8 +246,8 @@ pub fn add_bypass(
     Ok(id)
 }
 
-/// 新增 hosts 映射（hostname 去重；默认启用）。
-/// to_system=true 时尝试落系统 hosts 托管块，失败回落进程内（返回 persisted 标注）。
+/// Add a hosts mapping (dedup by hostname; enabled by default).
+/// With to_system=true, tries writing the system hosts managed block, falling back to in-process on failure (returns persisted marker).
 pub fn add_host(
     client: &agile_net_client::AgileNetClient,
     hostname: &str,
@@ -293,7 +293,7 @@ pub fn add_host(
     Ok((id, persisted))
 }
 
-/// 单条启停（bypass / hosts 通用 id 查找；系统既有映射只读）。
+/// Toggle a single rule (shared id lookup for bypass / hosts; pre-existing system mappings are read-only).
 pub fn set_enabled(
     client: &agile_net_client::AgileNetClient,
     id: &str,
@@ -319,7 +319,7 @@ pub fn set_enabled(
     Ok(())
 }
 
-/// 删除规则（bypass / hosts 通用；级联清理组合成员中的失效 key）。
+/// Delete a rule (shared for bypass / hosts; cascades removal of dead keys from combo members).
 pub fn remove(client: &agile_net_client::AgileNetClient, id: &str) -> Result<(), String> {
     if id.starts_with("sys-") {
         return Err("系统 hosts 既有映射为只读（非本软件托管）".into());
@@ -335,7 +335,7 @@ pub fn remove(client: &agile_net_client::AgileNetClient, id: &str) -> Result<(),
             return Err("规则不存在".into());
         }
     }
-    // 级联清理组合中的失效成员 key
+    // Cascade-remove dead member keys from combos
     for c in &mut guard.data.combos {
         c.rule_keys.retain(|k| k != id);
     }
@@ -347,7 +347,7 @@ pub fn remove(client: &agile_net_client::AgileNetClient, id: &str) -> Result<(),
     Ok(())
 }
 
-// ==================== 组合操作 ====================
+// ==================== Combo operations ====================
 
 pub fn add_combo(client: &agile_net_client::AgileNetClient, name: &str) -> Result<String, String> {
     let name = name.trim();
@@ -422,15 +422,15 @@ pub fn set_combo_enabled(
     Ok(())
 }
 
-/// 启动恢复：把已持久化的生效规则热更进引擎（GUI setup 调用一次）。
+/// Startup restore: hot-update persisted effective rules into the engine (called once by GUI setup).
 pub fn restore(client: &agile_net_client::AgileNetClient) {
     let data = snapshot();
     client.set_custom_rules(effective_rules(&data));
 }
 
-// ==================== 系统 hosts ====================
+// ==================== System hosts ====================
 
-/// 本软件 GUI 托管块标记（与客户端引擎 resolve 规则的 `# BEGIN/END AGILE-NET` 块相互独立）。
+/// GUI managed-block markers of this app (independent of the client engine resolve-rule `# BEGIN/END AGILE-NET` block).
 pub const GUI_BLOCK_BEGIN: &str = "# AgileNet begin";
 pub const GUI_BLOCK_END: &str = "# AgileNet end";
 const ENGINE_BLOCK_BEGIN: &str = "# BEGIN AGILE-NET";
@@ -460,14 +460,14 @@ impl SystemHosts {
         }
     }
 
-    /// 指定路径（仅测试注入用，随测试构建编译）。
+    /// Custom path (for test injection only, compiled with test builds).
     #[cfg(test)]
     pub fn with_path(path: PathBuf) -> Self {
         Self { path }
     }
 
-    /// 读取非托管条目（跳过注释/空行/本软件两个托管块；hostname 小写去重，先现优先）。
-    /// 返回 (hostname, ip 字面量)。
+    /// Read unmanaged entries (skipping comments/blank lines/this app's two managed blocks; hostname lowercased and deduped, first occurrence wins).
+    /// Returns (hostname, ip literal).
     pub fn read_entries(&self) -> Vec<(String, String)> {
         let Ok(content) = std::fs::read_to_string(&self.path) else {
             return Vec::new();
@@ -475,7 +475,7 @@ impl SystemHosts {
         parse_hosts_entries(&content)
     }
 
-    /// 幂等写入托管块（entries 为空 = 移除块；内容无变化不写盘）。权限不足等失败返回 Err。
+    /// Idempotently write the managed block (empty entries = remove block; no write when content unchanged). Returns Err on failures such as insufficient permissions.
     pub fn write_managed(&self, entries: &[(String, String)]) -> Result<(), String> {
         let content = std::fs::read_to_string(&self.path).unwrap_or_default();
         let cleaned = strip_block(&content, GUI_BLOCK_BEGIN, GUI_BLOCK_END);
@@ -499,7 +499,7 @@ impl SystemHosts {
     }
 }
 
-/// 解析 hosts 文本：非注释、非空、非托管块条目 → (hostname 小写, ip 字面量)；hostname 去重。
+/// Parse hosts text: non-comment, non-blank, non-managed-block entries → (hostname lowercased, ip literal); hostname deduped.
 fn parse_hosts_entries(content: &str) -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = Vec::new();
     let mut in_gui = false;
@@ -518,13 +518,13 @@ fn parse_hosts_entries(content: &str) -> Vec<(String, String)> {
         }
         let mut tokens = trimmed.split_whitespace().peekable();
         let Some(ip) = tokens.next() else { continue };
-        // 非 IP 行（如缺省对齐的注释残留）跳过
+        // Skip non-IP lines (e.g. leftover comment fragments from misaligned lines)
         if ip.parse::<std::net::IpAddr>().is_err() {
             continue;
         }
         for host in tokens {
             if host.starts_with('#') {
-                break; // 行内注释
+                break; // inline comment
             }
             let host = host.to_lowercase();
             if !out.iter().any(|(h, _)| *h == host) {
@@ -535,7 +535,7 @@ fn parse_hosts_entries(content: &str) -> Vec<(String, String)> {
     out
 }
 
-/// 剔除指定标记块（语义对齐客户端引擎 strip_managed_block）。
+/// Strip the given marker block (semantics aligned with the client engine's strip_managed_block).
 fn strip_block(content: &str, begin: &str, end: &str) -> String {
     let mut out = Vec::new();
     let mut in_block = false;
@@ -560,8 +560,8 @@ fn strip_block(content: &str, begin: &str, end: &str) -> String {
     s
 }
 
-/// 以当前库内容重写系统 hosts 托管块（启用且 to_system 的映射）；返回是否写入成功。
-/// 失败（无权限等）不视为错误——对应规则回落进程内映射，引擎照常生效。
+/// Rewrite the system hosts managed block from the current store (enabled mappings with to_system); returns whether the write succeeded.
+/// Failure (e.g. no permission) is not an error — affected rules fall back to in-process mapping and still take effect in the engine.
 fn rewrite_system_hosts(guard: &mut RwLockWriteGuard<'static, Store>) -> bool {
     let entries: Vec<(String, String)> = guard
         .data
@@ -573,7 +573,7 @@ fn rewrite_system_hosts(guard: &mut RwLockWriteGuard<'static, Store>) -> bool {
     SystemHosts::new().write_managed(&entries).is_ok()
 }
 
-// ==================== 单元测试 ====================
+// ==================== Unit tests ====================
 
 #[cfg(test)]
 mod tests {
@@ -617,20 +617,20 @@ mod tests {
         }
     }
 
-    // ---------- 主机输入规范化 ----------
+    // ---------- Host input normalization ----------
 
     #[test]
     fn normalize_host_strips_noise_and_validates() {
-        // 去 scheme / 端口 / 路径 / query / 末尾点，小写化
+        // Strip scheme / port / path / query / trailing dots, lowercase
         assert_eq!(normalize_host("https://Example.COM:8443/a/b?x=1#f").unwrap(), "example.com");
         assert_eq!(normalize_host("api.example.com.").unwrap(), "api.example.com");
         assert_eq!(normalize_host("  baidu.com  ").unwrap(), "baidu.com");
-        // IP 直收（IPv6 方括号去掉）
+        // IPs accepted as-is (IPv6 brackets stripped)
         assert_eq!(normalize_host("1.2.3.4").unwrap(), "1.2.3.4");
         assert_eq!(normalize_host("[::1]").unwrap(), "::1");
-        // IPv6 字面量不被端口剥离误伤
+        // IPv6 literals unaffected by port stripping
         assert_eq!(normalize_host("2001:db8::1").unwrap(), "2001:db8::1");
-        // 非法输入
+        // Invalid input
         assert!(normalize_host("").is_err());
         assert!(normalize_host("exa mple.com").is_err());
         assert!(normalize_host("-bad.com").is_err());
@@ -640,7 +640,7 @@ mod tests {
         assert!(normalize_host("http://").is_err());
     }
 
-    // ---------- 存储读写 ----------
+    // ---------- Storage read/write ----------
 
     #[test]
     fn store_roundtrip_and_corrupt_fallback() {
@@ -656,19 +656,19 @@ mod tests {
         assert_eq!(loaded.bypass.len(), 1);
         assert_eq!(loaded.bypass[0].pattern, "*.baidu.com");
         assert!(loaded.bypass[0].via_subscription);
-        assert!(!loaded.bypass[0].enabled); // enabled=false 须持久化
+        assert!(!loaded.bypass[0].enabled); // enabled=false must persist
         assert_eq!(loaded.hosts[0].hostname, "git.internal");
         assert_eq!(loaded.combos[0].rule_keys.len(), 2);
-        // 缺失字段向后兼容：最简 JSON 也能读
+        // Backward compatibility with missing fields: minimal JSON still loads
         std::fs::write(&path, r#"{"bypass":[{"id":"x","pattern":"a.com"}]}"#).unwrap();
         let loaded = load_from(&path);
-        assert!(loaded.bypass[0].enabled); // 缺省 true
+        assert!(loaded.bypass[0].enabled); // defaults to true
         assert!(!loaded.bypass[0].via_subscription);
-        // 损坏文件 → 空库兜底
+        // Corrupt file → fall back to empty store
         std::fs::write(&path, "not json{{{").unwrap();
         let loaded = load_from(&path);
         assert!(loaded.bypass.is_empty() && loaded.hosts.is_empty() && loaded.combos.is_empty());
-        // 不存在 → 空库
+        // Missing file → empty store
         let loaded = load_from(&dir.join("nope.json"));
         assert!(loaded.bypass.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
@@ -681,41 +681,41 @@ mod tests {
         atomic_write(&path, "first").unwrap();
         atomic_write(&path, "second").unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "second");
-        // 临时文件不残留
+        // No temp file left behind
         assert!(!dir.join("rules.json.tmp").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    // ---------- 生效并集 ----------
+    // ---------- Effective union ----------
 
     #[test]
     fn effective_union_single_and_combo() {
         let data = StoreData {
             bypass: vec![
-                br("b1", "a.com", false, true),   // 单条启用
-                br("b2", "b.com", false, false),  // 停用，但在启用组合中
-                br("b3", "c.com", false, false),  // 停用，组合未含
-                br("b4", "d.com", false, false),  // 停用，组合含但组合停用
+                br("b1", "a.com", false, true),   // individually enabled
+                br("b2", "b.com", false, false),  // disabled, but in an enabled combo
+                br("b3", "c.com", false, false),  // disabled, in no combo
+                br("b4", "d.com", false, false),  // disabled, in a combo that is disabled
             ],
             hosts: vec![
-                hr("h1", "x.internal", "10.0.0.1", false), // 停用，但在启用组合中
+                hr("h1", "x.internal", "10.0.0.1", false), // disabled, but in an enabled combo
                 hr("h2", "y.internal", "10.0.0.2", true),
             ],
             combos: vec![
-                combo("c1", &["b2", "h1", "host:pull.com"], true), // 启用（含拉取规则 key）
-                combo("c2", &["b4"], false),                       // 停用
+                combo("c1", &["b2", "h1", "host:pull.com"], true), // enabled (contains pulled-rule key)
+                combo("c2", &["b4"], false),                       // disabled
             ],
         };
         let eff = effective_rules(&data);
         let pats: Vec<&str> = eff.bypass.iter().map(|b| b.pattern.as_str()).collect();
-        assert_eq!(pats, vec!["a.com", "b.com"]); // b1 单条 ∪ b2 组合；b3/b4 不生效
+        assert_eq!(pats, vec!["a.com", "b.com"]); // b1 individual ∪ b2 combo; b3/b4 not effective
         let hosts: Vec<&str> = eff.hosts.iter().map(|(h, _)| h.as_str()).collect();
         assert_eq!(hosts, vec!["x.internal", "y.internal"]);
     }
 
     #[test]
     fn effective_combo_toggle_cross_group() {
-        // 交叉组网：同一条规则可被多个组合引用；任一启用组合含之即生效
+        // Cross-grouping: one rule can be referenced by multiple combos; any enabled combo containing it makes it effective
         let mut data = StoreData {
             bypass: vec![br("b1", "a.com", true, false)],
             hosts: vec![],
@@ -730,7 +730,7 @@ mod tests {
         assert!(eff.bypass[0].via_subscription);
     }
 
-    // ---------- 系统 hosts 解析 ----------
+    // ---------- System hosts parsing ----------
 
     #[test]
     fn parse_hosts_skips_comments_and_managed_blocks() {
@@ -750,7 +750,7 @@ bad-line-here
 10.0.0.1 git.internal
 "#;
         let entries = parse_hosts_entries(content);
-        // 托管块（两个标记体系）与注释/垃圾行被跳过；hostname 小写去重（先现优先）
+        // Managed blocks (both marker schemes) and comment/garbage lines are skipped; hostname lowercased and deduped (first occurrence wins)
         assert_eq!(
             entries,
             vec![
@@ -769,7 +769,7 @@ bad-line-here
         assert!(sh.read_entries().is_empty());
     }
 
-    // ---------- 系统 hosts 托管块幂等 ----------
+    // ---------- System hosts managed block idempotency ----------
 
     #[test]
     fn managed_block_write_idempotent_and_preserves_others() {
@@ -787,21 +787,21 @@ bad-line-here
         assert!(first.contains("127.0.0.1 localhost"));
         assert!(first.contains("10.1.1.1 keep.me"));
         assert!(first.contains("# AgileNet begin\n10.0.0.9 git.internal\n10.0.0.10 ops.internal\n# AgileNet end\n"));
-        // 二次写入内容不变（幂等）
+        // Second write leaves content unchanged (idempotent)
         sh.write_managed(&entries).unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), first);
-        // 变更条目：旧块被整体替换而非叠加
+        // Changed entries: old block is replaced wholesale, not appended
         let entries2 = vec![("git.internal".to_string(), "10.0.0.11".to_string())];
         sh.write_managed(&entries2).unwrap();
         let third = std::fs::read_to_string(&path).unwrap();
         assert!(!third.contains("ops.internal"));
         assert!(third.contains("10.0.0.11 git.internal"));
-        // 空条目 = 移除块，其余行原样
+        // Empty entries = remove block, other lines untouched
         sh.write_managed(&[]).unwrap();
         let cleared = std::fs::read_to_string(&path).unwrap();
         assert!(!cleared.contains("AgileNet"));
         assert_eq!(cleared, "127.0.0.1 localhost\n10.1.1.1 keep.me\n");
-        // 非托管条目仍可被读取出（source=system 展示口径）
+        // Unmanaged entries still readable (source=system display semantics)
         assert_eq!(
             sh.read_entries(),
             vec![
@@ -816,7 +816,7 @@ bad-line-here
     fn managed_block_replaces_stale_block_without_trailing_newline() {
         let dir = tmp_dir("hosts2");
         let path = dir.join("hosts");
-        // 无结尾换行的既有文件 + 旧托管块
+        // Existing file without trailing newline + stale managed block
         std::fs::write(
             &path,
             "127.0.0.1 localhost\n# AgileNet begin\n9.9.9.9 stale.internal\n# AgileNet end",

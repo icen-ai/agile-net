@@ -1,8 +1,8 @@
-//! Tauri 命令模块：从 lib.rs 拆分（纯搬运，零逻辑变更）。
+//! Tauri command modules: split from lib.rs (pure move, zero logic change).
 //!
-//! 子模块按 lib.rs 原分区注释切分；此处全量 `pub(crate) use` re-export，
-//! 配合 lib.rs 的 `pub(crate) use cmd::*;`，使 generate_handler![...] 列表与
-//! crate:: 路径引用（如 floatball.rs 的 crate::show_main_window）完全不变。
+//! Submodules follow lib.rs's original section layout; full `pub(crate) use` re-exports here,
+//! together with lib.rs's `pub(crate) use cmd::*;`, keep the generate_handler![...] list and
+//! crate:: path references (e.g. floatball.rs's crate::show_main_window) completely unchanged.
 
 mod client;
 mod doctor;

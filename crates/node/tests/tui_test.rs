@@ -1,4 +1,4 @@
-//! Node TUI 终端界面集成测试（数据源抽象后：DB 直连为只读兜底模式）
+//! Node TUI terminal UI integration tests (after the data-source abstraction: direct DB is the readonly fallback mode)
 
 use agile_net_node::db::Database;
 use agile_net_node::tui::source::{ConnectOutcome, Source};
@@ -12,7 +12,7 @@ fn db_app(db: Database) -> TuiApp {
     })
 }
 
-/// TUI 运行状态初始化与干净退出验证
+/// TUI runtime state initialization and clean quit
 #[tokio::test]
 async fn tui_app_state_initialization() {
     let app = db_app(Database::in_memory().unwrap());
@@ -22,12 +22,12 @@ async fn tui_app_state_initialization() {
     assert!(app.source.readonly());
 }
 
-/// 按键事件与 Tab 循环切换
+/// Key events and Tab cycling
 #[tokio::test]
 async fn tui_key_event_handling() {
     let mut app = db_app(Database::in_memory().unwrap());
 
-    // Tab 键依次切换 7 个页签后回到起点
+    // Tab cycles through 7 tabs and back to the start
     app.handle_key(KeyCode::Tab);
     assert_eq!(app.current_tab, Tab::Rules);
     app.handle_key(KeyCode::Tab);
@@ -43,21 +43,21 @@ async fn tui_key_event_handling() {
     app.handle_key(KeyCode::Tab);
     assert_eq!(app.current_tab, Tab::Dashboard);
 
-    // 反向切换
+    // reverse cycling
     app.handle_key(KeyCode::BackTab);
     assert_eq!(app.current_tab, Tab::Audit);
 
-    // 退出
+    // quit
     app.handle_key(KeyCode::Char('q'));
     assert!(app.should_quit);
 }
 
-/// DB 只读模式：生成令牌被拒绝并提示（写操作需 API 管理模式）
+/// DB readonly mode: token creation refused with a hint (writes require API management mode)
 #[tokio::test]
 async fn tui_create_token_readonly_rejected() {
     let mut app = db_app(Database::in_memory().unwrap());
 
-    // 切到 Tokens 页签
+    // switch to the Tokens tab
     app.handle_key(KeyCode::Tab); // Rules
     app.handle_key(KeyCode::Tab); // Groups
     app.handle_key(KeyCode::Tab); // Accounts
@@ -66,12 +66,12 @@ async fn tui_create_token_readonly_rejected() {
 
     assert_eq!(app.tokens.len(), 0);
     app.handle_key(KeyCode::Char('n'));
-    // 只读模式：不产生令牌，状态栏提示需 API 模式
+    // readonly mode: no token produced, status bar hints API mode is needed
     assert_eq!(app.tokens.len(), 0);
     assert!(app.status_msg.contains("只读"));
 }
 
-/// DB 只读模式：账号启停被拒绝且状态不变
+/// DB readonly mode: account enable/disable refused, state unchanged
 #[tokio::test]
 async fn tui_toggle_account_readonly_rejected() {
     let db = Database::in_memory().unwrap();
@@ -80,7 +80,7 @@ async fn tui_toggle_account_readonly_rejected() {
     db.create_account("user1", &hash, &gid, "").unwrap();
 
     let mut app = db_app(db);
-    // 切到 Accounts 页签
+    // switch to the Accounts tab
     app.handle_key(KeyCode::Tab);
     app.handle_key(KeyCode::Tab);
     app.handle_key(KeyCode::Tab);
@@ -89,7 +89,7 @@ async fn tui_toggle_account_readonly_rejected() {
     assert!(app.accounts[0].enabled);
 
     app.handle_key(KeyCode::Char('e'));
-    // 只读模式：状态不变并提示
+    // readonly mode: state unchanged with a hint
     assert!(app.accounts[0].enabled);
     assert!(app.status_msg.contains("只读"));
 }

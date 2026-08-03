@@ -1,11 +1,11 @@
-//! 客户端管理面 Web API（anet-gui 开关C「Web 远程面」的服务端）。
+//! Client control-plane Web API (the server side of anet-gui switch C "Web remote panel").
 //!
-//! 把桌面端 ~15 个管理命令映射为 REST 端点，统一 `{code,data}` / `{code,message}`
-//! 信封与错误码段；管理鉴权与服务端同强度：
-//! - 管理密码 argon2id 哈希（由宿主经 [`ClientWebAuth`] 注入校验）
-//! - 登录颁发 HS256 JWT（12h），认证失败按 IP 限流（5 次/分钟，连续失败锁 15 分钟）
-//! - 登录成败与凭据导出经审计回调落盘，严禁记录密码/Token 明文
-//! - 凭据导出属敏感操作，必须 `confirm=true` 二次确认（错误码 40001 提示）
+//! Maps the ~15 desktop management commands to REST endpoints, with unified `{code,data}` / `{code,message}`
+//! envelopes and error-code ranges; admin auth matches server-side strength:
+//! - Admin password stored as argon2id hash (verification injected by the host via [`ClientWebAuth`])
+//! - Login issues an HS256 JWT (12h); auth failures are rate-limited per IP (5/min, locked 15 min after consecutive failures)
+//! - Login outcomes and credential exports are persisted via the audit callback; never log password/token plaintext
+//! - Credential export is sensitive and requires a `confirm=true` second confirmation (error code 40001 otherwise)
 
 use crate::{AgileNetClient, ConnectParams, Credential, CredentialStore, NodeState};
 
@@ -24,33 +24,33 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
-/// 宿主注入的 Web 管理鉴权（密码哈希存储、JWT 密钥、审计落盘由宿主实现）。
+/// Host-injected Web admin auth (password hash storage, JWT secret, and audit persistence are host-implemented).
 pub trait ClientWebAuth: Send + Sync {
-    /// 是否已设置管理密码
+    /// Whether an admin password has been set
     fn has_password(&self) -> bool;
-    /// 设置管理密码（宿主负责 argon2id 哈希与持久化）
+    /// Set the admin password (the host handles argon2id hashing and persistence)
     fn set_password(&self, password: &str) -> std::result::Result<(), String>;
-    /// 校验管理密码（argon2id 验算）
+    /// Verify the admin password (argon2id)
     fn verify_password(&self, password: &str) -> bool;
-    /// JWT 签名密钥（稳定持久化；重启后会话仍有效）
+    /// JWT signing secret (stably persisted; sessions survive restarts)
     fn jwt_secret(&self) -> String;
-    /// 审计回调（action / detail；严禁含密码、Token 明文）
+    /// Audit callback (action / detail; must never contain password/token plaintext)
     fn audit(&self, action: &str, detail: serde_json::Value);
 }
 
-/// SPA 静态资产（路径 → 内容），由宿主 include_str! 注入。
+/// SPA static assets (path → content), injected by the host via include_str!.
 pub struct SpaAssets {
     pub index: &'static str,
     pub app_js: &'static str,
     pub icons_js: &'static str,
     pub style_css: &'static str,
-    /// 共享设计 token（AGENTS.md §6；桌面 index.html 引用，缺失则全站变量失效）
+    /// Shared design tokens (AGENTS.md §6; referenced by desktop index.html — without it all site variables break)
     pub tokens_css: &'static str,
-    /// 共享组件样式（ag-select/ag-tabs/agchart；缺失则下拉双 UI、图表浮层无样式）
+    /// Shared component styles (ag-select/ag-tabs/agchart; without them: duplicate select UIs, unstyled chart popovers)
     pub components_css: &'static str,
-    /// 共享图表组件 JS（桌面 index.html 引用，缺失则 AgChart 未定义）
+    /// Shared chart component JS (referenced by desktop index.html — without it AgChart is undefined)
     pub agchart_js: &'static str,
-    /// app.js 域拆分六文件（桌面 index.html 按依赖顺序引用，缺失则 Web 远程面脚本 404 白屏）
+    /// app.js domain-split six files (desktop index.html references them in dependency order; missing files = 404 blank panel)
     pub app_core_js: &'static str,
     pub app_views_js: &'static str,
     pub app_subscription_js: &'static str,
@@ -67,7 +67,7 @@ struct ApiState {
     limiter: LoginRateLimiter,
 }
 
-/// 运行中的 Web API 句柄（`stop` 幂等）。
+/// Handle of a running Web API (`stop` is idempotent).
 pub struct ClientApiHandle {
     addr: SocketAddr,
     shutdown: Option<tokio::sync::oneshot::Sender<()>>,
@@ -75,7 +75,7 @@ pub struct ClientApiHandle {
 }
 
 impl ClientApiHandle {
-    /// 实际监听地址（端口 0 动态分配时为回读值）。
+    /// Actual listen address (read-back value when port 0 was dynamically allocated).
     pub fn addr(&self) -> SocketAddr {
         self.addr
     }
@@ -90,7 +90,7 @@ impl ClientApiHandle {
     }
 }
 
-/// 启动客户端管理面 Web API。
+/// Start the client control-plane Web API.
 pub async fn start_client_api(
     client: AgileNetClient,
     creds: Option<Arc<CredentialStore>>,
@@ -246,7 +246,7 @@ fn spa_router(spa: SpaAssets) -> Router {
         )
 }
 
-// ==================== 统一响应体 ====================
+// ==================== unified response body ====================
 
 fn ok<T: Serialize>(data: T) -> Response {
     Json(serde_json::json!({ "code": 0, "data": data })).into_response()
@@ -270,7 +270,7 @@ mod codes {
     pub const INTERNAL: u32 = 50000;
 }
 
-// ==================== 鉴权 ====================
+// ==================== auth ====================
 
 #[derive(Debug, Serialize, Deserialize)]
 struct Claims {
@@ -302,7 +302,7 @@ fn verify_token(secret: &str, token: &str) -> bool {
     .is_ok()
 }
 
-/// 来源 IP 提取器（经 ConnectInfo 扩展注入）。
+/// Source-IP extractor (injected via the ConnectInfo extension).
 struct ClientIp(IpAddr);
 
 impl axum::extract::FromRequestParts<ApiState> for ClientIp {
@@ -327,7 +327,7 @@ async fn auth_middleware(
     next: Next,
 ) -> Response {
     let path = req.uri().path().to_string();
-    // 登录/初始化端点自身公开（登录内部有限流）
+    // Login/init endpoints are public themselves (login has internal rate limiting)
     if path.starts_with("/api/v1/auth/") {
         return next.run(req).await;
     }
@@ -388,7 +388,7 @@ async fn login(
         state
             .auth
             .audit("web.login_fail", serde_json::json!({"ip": ip.to_string()}));
-        // 随机延迟惩罚，拖慢在线爆破
+        // Random delay penalty to slow down online brute force
         tokio::time::sleep(Duration::from_millis(150 + rand_u64() % 250)).await;
         return err(
             StatusCode::UNAUTHORIZED,
@@ -412,7 +412,7 @@ async fn login(
     }
 }
 
-/// 首开初始化管理密码（仅在未设置时可用）。
+/// First-run admin password initialization (available only when unset).
 async fn init_password(
     State(state): State<ApiState>,
     ClientIp(ip): ClientIp,
@@ -432,7 +432,7 @@ async fn init_password(
             "管理密码至少 10 位",
         );
     }
-    // 与服务端一致的复杂度要求：含大小写字母与数字
+    // Same complexity requirement as the server side: upper + lower case letters and digits
     let has_lower = req.password.chars().any(|c| c.is_ascii_lowercase());
     let has_upper = req.password.chars().any(|c| c.is_ascii_uppercase());
     let has_digit = req.password.chars().any(|c| c.is_ascii_digit());
@@ -463,7 +463,7 @@ fn rand_u64() -> u64 {
         ^ (std::process::id() as u64) << 32
 }
 
-// ==================== 命令映射（与桌面 IPC 同语义） ====================
+// ==================== command mapping (same semantics as desktop IPC) ====================
 
 #[derive(Debug, Deserialize)]
 struct ConnectInput {
@@ -607,7 +607,7 @@ struct ExportQuery {
     confirm: bool,
 }
 
-/// 导出接入链接（含明文密码）——经 Web 暴露必须 `confirm=true` 二次确认。
+/// Export a connect URL (contains plaintext password) — Web exposure requires a `confirm=true` second confirmation.
 async fn export_credential(
     State(state): State<ApiState>,
     ClientIp(ip): ClientIp,

@@ -1,8 +1,8 @@
-//! AgileNet 桌面客户端 Tauri 后端
+//! AgileNet desktop client Tauri backend
 //!
-//! 通过 IPC 向前端暴露节点管理、代理控制与凭据存储能力，
-//! 全部网络逻辑复用 agile-net-client 引擎（与 CLI/daemon 同一数据面）。
-//! 服务端角色内嵌完整 agile-net-node（与 anet-svc 同一装配根 NodeServer）。
+//! Exposes node management, proxy control and credential storage to the frontend over IPC;
+//! all network logic reuses the agile-net-client engine (same data plane as CLI/daemon).
+//! The server role embeds the full agile-net-node (same assembly root NodeServer as anet-svc).
 
 use agile_net_client::{AgileNetClient, CredentialStore, ParsedConnect};
 use agile_net_node::service::NodeServer;
@@ -24,11 +24,11 @@ mod sysproxy;
 mod tun;
 use roles::RoleSettings;
 
-// Tauri 命令与窗口/托盘/悬浮球管理已拆分至 cmd/（纯搬运，零逻辑变更）；
-// 全量 re-export 使下方 generate_handler![...] 列表与 crate:: 路径引用（floatball.rs 等）保持不变。
+// Tauri commands and window/tray/float-ball management were split into cmd/ (pure move, zero logic change);
+// full re-exports keep the generate_handler![...] list below and crate:: path references (floatball.rs etc.) unchanged.
 pub(crate) use cmd::*;
 
-/// 前端传入的连接参数（与 Web REST 共用 agile-net-client::ParsedConnect）
+/// Connect parameters from the frontend (shares agile-net-client::ParsedConnect with Web REST)
 pub type ConnectInput = ParsedConnect;
 
 pub struct AppState {
@@ -37,21 +37,21 @@ pub struct AppState {
     pub(crate) web_api: Arc<tokio::sync::Mutex<Option<agile_net_client::api::ClientApiHandle>>>,
     pub(crate) roles: Arc<tokio::sync::Mutex<RoleSettings>>,
     pub(crate) server: Arc<tokio::sync::Mutex<Option<NodeServer>>>,
-    /// 控制台 loopback 转发器：node_id → 本地环回端口
+    /// Console loopback forwarders: node_id → local loopback port
     pub(crate) consoles: Arc<tokio::sync::Mutex<std::collections::HashMap<String, u16>>>,
-    /// 订阅内核（mihomo sidecar）
+    /// Subscription kernel (mihomo sidecar)
     pub(crate) kernel: Arc<subscription::KernelManager>,
-    /// 制品下载管理器（mihomo 内核 / wintun.dll；进度状态机 + 手动安装）
+    /// Artifact download manager (mihomo kernel / wintun.dll; progress state machine + manual install)
     pub(crate) dl: download::DownloadManager,
-    /// 客户端代理真实状态槽（传给内嵌节点；管理端「本地代理」卡数据源）
+    /// Real client proxy state slot (passed to the embedded node; data source of the admin UI "local proxy" card)
     pub(crate) client_proxy_slot: agile_net_node::service::ClientProxySlot,
-    /// TUN 最近一次外部上游拨测结果（None = 未拨测；前端状态行/灵动岛告警数据源）
+    /// Latest TUN external upstream probe result (None = not probed; data source for the frontend status line / dynamic-island warning)
     pub(crate) tun_upstream_ok: Arc<tokio::sync::Mutex<Option<bool>>>,
-    /// TUN 放弃开启的一次性提示（权限不足/启动失败回退普通模式；前端读取后清除）
+    /// One-shot notice for aborted TUN enabling (insufficient privileges / startup failure, fell back to normal mode; cleared after frontend reads)
     pub(crate) tun_notice: Arc<tokio::sync::Mutex<Option<String>>>,
-    /// 最近一次应用的回落上游（变化时审计 gui.fallback_change，记地址不记凭据）
+    /// Last applied fallback upstream (changes audited as gui.fallback_change; address logged, never credentials)
     pub(crate) last_fallback: Arc<tokio::sync::Mutex<Option<std::net::SocketAddr>>>,
-    /// 悬浮球气泡通知开关的廉价缓存（float_notify 同步门控用；与 roles.notify_float_ball 同步）
+    /// Cheap cache of the float ball bubble notification toggle (for sync gating in float_notify; kept in sync with roles.notify_float_ball)
     pub(crate) notify_float_ball: Arc<AtomicBool>,
 }
 
@@ -59,7 +59,7 @@ impl AppState {
     fn new() -> Self {
         let roles = RoleSettings::load();
         let notify_float_ball = roles.notify_float_ball;
-        // 开机初值：代理未启动 + 已保存的代理模式偏好（开机恢复态）
+        // Boot initial values: proxy not started + saved proxy mode preference (boot restore state)
         let client_proxy_slot = agile_net_node::service::new_client_proxy_slot();
         client_proxy_slot.store(Arc::new(Some(agile_net_node::service::ClientProxyInfo {
             enabled: false,
@@ -217,16 +217,16 @@ pub fn run() {
         .setup(|app| {
             setup_tray(app)?;
 
-            // 恢复上次开启的服务端角色（内嵌节点）与订阅内核；启动系统代理巡检
+            // Restore previously enabled server role (embedded node) and subscription kernel; start the system proxy patrol
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 restore_server_role(&handle).await;
                 restore_web_role(&handle).await;
                 restore_subscription_role(&handle).await;
-                // 恢复自定义规则（放行/hosts 映射/组合的生效并集 → 引擎热更）
+                // Restore custom rules (effective union of bypass/hosts mapping/combo → engine hot reload)
                 custom_rules::restore(&handle.state::<AppState>().client);
             });
-            // 启动清理：上次异常退出（进程被杀）可能遗留系统代理指向已死端口，按快照还原
+            // Startup cleanup: a previous abnormal exit (killed process) may leave the system proxy pointing at a dead port; restore from snapshot
             tauri::async_runtime::spawn(async move {
                 let _ = tokio::task::spawn_blocking(sysproxy::cleanup_if_pending).await;
             });
@@ -234,25 +234,25 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 sysproxy_watch(handle).await;
             });
-            // 托盘 tooltip 实时网速（1s）
+            // Tray tooltip live speed (1s)
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 tray_speed_watch(handle).await;
             });
-            // 恢复悬浮球（上次退出时处于开启状态；仅桌面，移动端 create 返回不支持）
+            // Restore float ball (was enabled at last exit; desktop only, mobile create returns unsupported)
             if roles::RoleSettings::load().float_ball {
                 let _ = create_float_ball(app.handle());
             }
 
-            // 窗口尺寸与定位：主屏逻辑宽 1/2、4:3、屏幕居中（与控制台统一规格）；
-            // 创建即隐藏（conf visible:false），定位完成后再显示，杜绝左上角闪帧
+            // Window size and position: half the primary monitor's logical width, 4:3, screen-centered (same spec as the console);
+            // created hidden (conf visible:false) and shown after positioning, eliminating top-left flicker
             if let Some(window) = app.get_webview_window("main") {
                 normalize_window_geometry(&window);
                 let _ = window.show();
                 let _ = window.set_focus();
             }
 
-            // 关闭窗口时最小化到托盘（不退出进程）；系统主题变化时刷新托盘图标黑白
+            // Minimize to tray instead of exiting on window close; refresh tray icon black/white on system theme change
             if let Some(window) = app.get_webview_window("main") {
                 let w = window.clone();
                 let handle = app.handle().clone();
@@ -270,8 +270,8 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building AgileNet desktop");
     app.run(|app_handle: &tauri::AppHandle, event: tauri::RunEvent| {
-        // §2.6 退出 GUI（TUN 模式）：停内核（mihomo 退出自动清理 TUN 适配器与路由）
-        // + 还原系统代理快照；事件回调在主线程，block_on 安全
+        // §2.6 Exit GUI (TUN mode): stop the kernel (mihomo exit auto-cleans the TUN adapter and routes)
+        // + restore the system proxy snapshot; the event callback runs on the main thread, block_on is safe
         if let tauri::RunEvent::ExitRequested { .. } = event {
             let state = app_handle.state::<AppState>();
             let tun_on =

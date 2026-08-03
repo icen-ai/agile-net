@@ -1,4 +1,4 @@
-//! 从 db/mod.rs 拆分：connector/node_config 表与扇出 token 加密存储（纯搬运，零逻辑变更）
+//! Split from db/mod.rs: connector/node_config tables and encrypted fan-out token storage (pure move, no logic change)
 
 use super::generate_secret_hex;
 use super::models::*;
@@ -7,9 +7,9 @@ use agile_net_core::error::{Error, Result};
 use rusqlite::params;
 
 impl Database {
-    // ==================== Connector（扇出，一等资源） ====================
+    // ==================== Connector (fan-out, first-class resource) ====================
 
-    /// 创建扇出 connector（token 加密落库，创建后亦不回显，只允许重置）。
+    /// Create a fan-out connector (token stored encrypted; never shown again, only resettable).
     #[allow(clippy::too_many_arguments)]
     pub fn create_connector(
         &self,
@@ -52,9 +52,9 @@ impl Database {
         })
     }
 
-    /// 列出全部扇出 connector（展示视图，绝不含 token 明文/密文）。
+    /// List all fan-out connectors (display view; never contains token plaintext/ciphertext).
     pub fn list_connectors(&self) -> Result<Vec<ConnectorView>> {
-        // 先取出全部行并归还连接（内存库连接池为 1，解密需再次取连接）
+        // Fetch all rows and release the connection first (memory pool size is 1; decryption needs another conn)
         let recs = {
             let conn = self.conn();
             let mut stmt = conn
@@ -90,7 +90,7 @@ impl Database {
         };
         let mut items = Vec::new();
         for (rec, group_name) in recs {
-            // 前缀展示位：解密取前 8 字符仅用于辨认；解密失败（密钥轮换等）留空
+            // Prefix display: decrypt and take the first 8 chars for identification only; leave empty on decrypt failure (key rotation etc.)
             let token_prefix = self
                 .decrypt_secret(&rec.token_enc)
                 .map(|t| token_prefix_of(&t))
@@ -116,7 +116,7 @@ impl Database {
         Ok(items)
     }
 
-    /// 按 ID 取 connector 记录（含密文，仅供内部使用，严禁日志/审计输出）。
+    /// Get a connector record by ID (includes ciphertext; internal use only, never log/audit it).
     pub fn get_connector(&self, id: &str) -> Result<Option<ConnectorRecord>> {
         let conn = self.conn();
         let mut stmt = conn
@@ -147,7 +147,7 @@ impl Database {
         })
     }
 
-    /// 按 ID 取 connector 的扇出 token 明文（解密，仅供运行时连接用；严禁日志/审计输出）。
+    /// Get a connector's fan-out token plaintext by ID (decrypted, runtime connect only; never log/audit it).
     pub fn get_connector_secret(&self, id: &str) -> Result<String> {
         let rec = self
             .get_connector(id)?
@@ -155,7 +155,7 @@ impl Database {
         self.decrypt_secret(&rec.token_enc)
     }
 
-    /// 更新 connector（token_plain 为 None = 保留原 token）。
+    /// Update a connector (token_plain = None keeps the existing token).
     #[allow(clippy::too_many_arguments)]
     pub fn update_connector(
         &self,
@@ -207,7 +207,7 @@ impl Database {
         Ok(())
     }
 
-    /// TOML `[[connectors]]` 初始导入：同名已存在则跳过（运行时以 DB 为准）。
+    /// Initial import of TOML `[[connectors]]`: skip names that already exist (DB is the source of truth at runtime).
     #[allow(clippy::too_many_arguments)]
     pub fn import_connector_if_absent(
         &self,
@@ -249,10 +249,10 @@ impl Database {
         Ok(true)
     }
 
-    // ==================== 扇出 token 加密存储（全库唯一可逆例外，§5） ====================
+    // ==================== Fan-out token encrypted storage (the only reversible exception, §5) ====================
 
-    /// AES-256-GCM 加密敏感凭据，落库格式 `v1:nonce_b64:ct_b64`。
-    /// 机器密钥首用生成（32 随机字节 hex），存 node_config.connector_token_key。
+    /// AES-256-GCM encrypt a sensitive credential; storage format `v1:nonce_b64:ct_b64`.
+    /// Machine key generated on first use (32 random bytes, hex), stored in node_config.connector_token_key.
     pub fn encrypt_secret(&self, plain: &str) -> Result<String> {
         let key = self.connector_token_key()?;
         let nonce_bytes: [u8; 12] = rand::random();
@@ -270,7 +270,7 @@ impl Database {
         ))
     }
 
-    /// 解密 `v1:` 格式密文（版本不符/密钥错误均报错；错误信息不含明文/密文）。
+    /// Decrypt `v1:` ciphertext (version mismatch / wrong key both error; errors never contain plaintext/ciphertext).
     pub fn decrypt_secret(&self, enc: &str) -> Result<String> {
         let mut parts = enc.splitn(3, ':');
         let (ver, nonce_b64, ct_b64) = match (parts.next(), parts.next(), parts.next()) {
@@ -296,7 +296,7 @@ impl Database {
         String::from_utf8(plain.to_vec()).map_err(|e| Error::Other(e.to_string()))
     }
 
-    /// 装载或生成扇出 token 机器密钥（与 jwt_secret 同机制）。
+    /// Load or generate the fan-out token machine key (same mechanism as jwt_secret).
     fn connector_token_key(&self) -> Result<ring::aead::LessSafeKey> {
         let hex_key = match self.get_config("connector_token_key")? {
             Some(k) if !k.is_empty() => k,
@@ -336,7 +336,7 @@ impl Database {
         Ok(())
     }
 
-    /// 配置版本号递增（规则/权限组/账号组变更时调用）
+    /// Bump the config version (called on rule/group/account-group changes)
     pub fn bump_config_version(&self) -> Result<u64> {
         let current = self.get_config("config_version")?;
         let next = current.and_then(|v| v.parse::<u64>().ok()).unwrap_or(0) + 1;
@@ -352,7 +352,7 @@ impl Database {
     }
 }
 
-/// hex 解码（connector 机器密钥用）
+/// hex decode (for the connector machine key)
 fn hex_decode(s: &str) -> Result<Vec<u8>> {
     if !s.len().is_multiple_of(2) {
         return Err(Error::Other("hex length invalid".into()));
@@ -376,7 +376,7 @@ fn b64_decode(s: &str) -> Result<Vec<u8>> {
         .map_err(|e| Error::Other(e.to_string()))
 }
 
-/// token 前缀展示位（前 8 字符，仅用于列表辨认）
+/// Token prefix for display (first 8 chars, list identification only)
 fn token_prefix_of(plain: &str) -> String {
     plain.chars().take(8).collect()
 }
@@ -385,7 +385,7 @@ fn token_prefix_of(plain: &str) -> String {
 mod tests {
     use super::*;
 
-    /// 建一个权限组，返回 id
+    /// Create a group, return its id
     fn mk_group(db: &Database, name: &str) -> String {
         db.create_group(name, "").expect("create group").id
     }
@@ -396,22 +396,22 @@ mod tests {
         let plain = "psk_0123456789abcdef0123456789abcdef0123456789abcdef";
         let enc1 = db.encrypt_secret(plain).unwrap();
         let enc2 = db.encrypt_secret(plain).unwrap();
-        // 随机 nonce：同明文两次密文不同，且带版本前缀
+        // Random nonce: same plaintext encrypts differently each time, with version prefix
         assert_ne!(enc1, enc2);
         assert!(enc1.starts_with("v1:"));
         assert_eq!(db.decrypt_secret(&enc1).unwrap(), plain);
         assert_eq!(db.decrypt_secret(&enc2).unwrap(), plain);
-        // 机器密钥已持久化到 node_config
+        // Machine key persisted to node_config
         assert!(
             db.get_config("connector_token_key")
                 .unwrap()
                 .is_some_and(|k| k.len() == 64)
         );
-        // 非法格式/版本/密文均报错
+        // Bad format / version / ciphertext all error
         assert!(db.decrypt_secret("garbage").is_err());
         assert!(db.decrypt_secret("v2:AAAA:BBBB").is_err());
         assert!(db.decrypt_secret("v1:AAAA:BBBB").is_err());
-        // 密钥不同则无法解密（另一库实例）
+        // A different key cannot decrypt (another DB instance)
         let db2 = Database::in_memory().unwrap();
         assert!(db2.decrypt_secret(&enc1).is_err());
     }
@@ -441,16 +441,16 @@ mod tests {
         assert_eq!(rec.group_id.as_deref(), Some(gid.as_str()));
         assert_eq!(rec.ca_cert_path, "/etc/anet/ca.pem");
         assert_eq!(rec.pinned_cert_path, "");
-        // 密文落库：不是明文、带版本前缀
+        // Stored as ciphertext: not plaintext, with version prefix
         assert!(rec.token_enc.starts_with("v1:"));
         assert!(!rec.token_enc.contains(token));
 
-        // get / get_connector_secret（解密回明文）
+        // get / get_connector_secret (decrypts back to plaintext)
         let got = db.get_connector(&rec.id).unwrap().expect("get connector");
         assert_eq!(got.name, "site-a");
         assert_eq!(db.get_connector_secret(&rec.id).unwrap(), token);
 
-        // list（视图带组名与前缀展示位，不含明文/密文）
+        // list (view carries group name and prefix display, no plaintext/ciphertext)
         let views = db.list_connectors().unwrap();
         assert_eq!(views.len(), 1);
         let v = &views[0];
@@ -460,7 +460,7 @@ mod tests {
         assert!(!json.contains(token));
         assert!(!json.contains("token_enc"));
 
-        // update：token None = 保留原 token，其余字段全改
+        // update: token None = keep existing token; all other fields change
         db.update_connector(
             &rec.id,
             "site-a2",
@@ -483,7 +483,7 @@ mod tests {
         assert_eq!(got.group_id, None);
         assert_eq!(db.get_connector_secret(&rec.id).unwrap(), token);
 
-        // update：显式重置 token
+        // update: explicit token reset
         let token2 = "psk_rotated-token-abcdef0123456789";
         db.update_connector(
             &rec.id,
@@ -527,7 +527,7 @@ mod tests {
             )
             .expect("first import");
         assert!(first);
-        // 同名存在则跳过，且原记录不被覆盖
+        // Existing name skipped; the original record is not overwritten
         let second = db
             .import_connector_if_absent(
                 "site-a",

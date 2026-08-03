@@ -1,17 +1,17 @@
-//! 分页列表查询公共 helper：归一 accounts/rules/logs 三处逐字复制的
-//! 「where_clauses 构建 + bind_refs + COUNT + LIMIT/OFFSET」骨架。
-//! 行为与原实现完全一致：绑定顺序 = where 绑定在前、末尾追加 (limit, offset)；
-//! 无过滤条件时不加 WHERE；SQL 语义不变、查询结果不变。
+//! Shared helper for paged list queries: unifies the verbatim-duplicated
+//! "where_clauses build + bind_refs + COUNT + LIMIT/OFFSET" skeleton in accounts/rules/logs.
+//! Behavior identical to the original: bind order = where binds first, then (limit, offset);
+//! no WHERE when there are no filters; SQL semantics and results unchanged.
 
 use super::pool::db_err;
 use agile_net_core::error::Result;
 
-/// 分页查询：返回 (当前页条目, 符合条件的总数)。
+/// Paged query: returns (page items, total count matching filters).
 ///
-/// - `select`：SELECT 列清单；`from`：FROM 片段（含表别名与 JOIN）；
-/// - `where_clauses` 以 AND 拼接，为空时不加 WHERE；
-/// - `bind` 与 where_clauses 中的 `?` 占位按序一一对应；
-/// - `order_by`：排序片段（不含 `ORDER BY` 关键字）。
+/// - `select`: SELECT column list; `from`: FROM fragment (with table alias and JOIN);
+/// - `where_clauses` joined with AND; no WHERE when empty;
+/// - `bind` maps 1:1 in order to the `?` placeholders in where_clauses;
+/// - `order_by`: sort fragment (without the `ORDER BY` keyword).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn paged_query<T>(
     conn: &rusqlite::Connection,

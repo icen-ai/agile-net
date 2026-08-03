@@ -1,24 +1,24 @@
-//! 从 subscription.rs 拆分：配置生成与防环（纯搬运，零逻辑变更）
+//! Split out of subscription.rs: config generation and loop prevention (pure move, zero logic changes)
 
 use crate::roles;
 
 use super::store::{SubStore, Subscription};
 
-/// mixed 入站（避让 Clash 7890 系、本地代理 57890 与常见占用 57891）
+/// mixed inbound (avoids the Clash 7890 family, local proxy 57890, and the commonly taken 57891)
 pub const MIHOMO_MIXED_PORT: u16 = 57892;
-/// TUN 模式：mihomo socks 入站（anet 未命中流量的回落点，经 IN-TYPE 规则直达订阅出口）
+/// TUN mode: mihomo socks inbound (fallback for traffic anet misses, direct to the subscription egress via the IN-TYPE rule)
 pub const MIHOMO_SOCKS_PORT: u16 = 57893;
-/// external-controller（避让 9090）
+/// external-controller (avoids 9090)
 pub const MIHOMO_CTRL_PORT: u16 = 59292;
 
-// ==================== 配置生成（全量重写，严禁手改） ====================
+// ==================== Config generation (full rewrite, never hand-edit) ====================
 
 fn yaml_escape(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
-/// 由订阅清单生成 mihomo config.yaml（仅加载当前激活订阅，单 provider 恒名 main）。
-/// mode 为出站模式（rule|global|direct，非法值回落 rule）；tun=true 走 TUN 骨架（§2.3）。
+/// Render mihomo config.yaml from the subscription list (loads only the active subscription; single provider always named main).
+/// mode is the outbound mode (rule|global|direct; invalid values fall back to rule); tun=true uses the TUN skeleton (§2.3).
 pub fn render_config(store: &SubStore, mode: &str, tun: bool) -> String {
     if tun {
         return render_config_tun(store);
@@ -54,8 +54,8 @@ pub fn render_config(store: &SubStore, mode: &str, tun: bool) -> String {
     s
 }
 
-/// proxy-providers 段（两种模式共用；保留：代理页测速/切换仍走控制面，与数据面解耦）。
-/// 本地导入订阅（url 为 file:// 前缀）走 type: file 引用落盘 YAML，不经 URL 拉取。
+/// proxy-providers section (shared by both modes; kept because proxy-page latency tests/switching still go through the control plane, decoupled from the data plane).
+/// Locally imported subscriptions (url with a file:// prefix) use type: file referencing the on-disk YAML, not fetched over URL.
 fn push_provider_section(s: &mut String, active: Option<&Subscription>) {
     if let Some(sub) = active {
         s.push_str("proxy-providers:\n");
@@ -76,23 +76,23 @@ fn push_provider_section(s: &mut String, active: Option<&Subscription>) {
     }
 }
 
-/// TUN 模式配置骨架（tun.md §2.3，全量重写原则不变）：
-/// 无 mixed-port（关闭 57892，防环关键）；TUN 捕获全部流量，fake-ip 保域名，
-/// 全部 TCP 经 ANET-IN（socks5 127.0.0.1:57890）转交 anet 路由器分流。
-/// 既定决策：TUN 配置不经过覆写脚本链——脚本作用于订阅代理配置语义，
-/// 本骨架的防环约束（无 mixed-port / ANET-IN 出站 / MATCH 指向）必须完整保留。
+/// TUN mode config skeleton (tun.md §2.3; the full-rewrite principle still applies):
+/// no mixed-port (57892 disabled — the key to loop prevention); TUN captures all traffic, fake-ip preserves domain names,
+/// and all TCP is handed to the anet router via ANET-IN (socks5 127.0.0.1:57890) for routing.
+/// Standing decision: TUN config does not go through the override script chain — scripts act on subscription proxy config semantics,
+/// so this skeleton's loop-prevention constraints (no mixed-port / ANET-IN outbound / MATCH target) must stay intact.
 fn render_config_tun(store: &SubStore) -> String {
     let active = store.subscriptions.iter().find(|s| s.active);
     let mut s = String::new();
     s.push_str("# 本文件由 AgileNet 自动生成，手动修改将在下次启动时被覆盖（TUN 模式）\n");
-    // 防环关键：严禁 mixed-port（57892 关闭），否则 57890→57892→MATCH→57890 死环（§2.5）
+    // Loop-prevention key: no mixed-port (57892 disabled), otherwise a 57890→57892→MATCH→57890 dead loop (§2.5)
     s.push_str(&format!(
         "external-controller: 127.0.0.1:{MIHOMO_CTRL_PORT}\n"
     ));
     s.push_str(&format!("secret: \"{}\"\n", yaml_escape(&store.secret)));
     s.push_str("log-level: warning\n");
-    // 订阅出口（P1.5）：socks 入站给 anet 回落用，经下方 IN-TYPE 规则直达 AGILE-SUB；
-    // 无 FlClash 时 TUN 下未命中流量也能经订阅节点出网（mihomo 自身出站不被 TUN 捕获）
+    // Subscription egress (P1.5): socks inbound serves as anet's fallback, direct to AGILE-SUB via the IN-TYPE rule below;
+    // without FlClash, traffic missed under TUN can still exit via subscription nodes (mihomo's own outbound is not captured by TUN)
     s.push_str(&format!("socks-port: {MIHOMO_SOCKS_PORT}\n"));
     s.push_str("tun:\n");
     s.push_str("  enable: true\n");
@@ -102,7 +102,7 @@ fn render_config_tun(store: &SubStore) -> String {
     s.push_str("  dns-hijack:\n");
     s.push_str("    - any:53\n");
     s.push_str("dns:\n");
-    // fake-ip 保域名：SOCKS5 CONNECT 以域名形式到达 57890，AgileNet 域名规则方可匹配
+    // fake-ip preserves domain names: SOCKS5 CONNECT reaches 57890 with the domain intact, so AgileNet domain rules can match
     s.push_str("  enable: true\n");
     s.push_str("  enhanced-mode: fake-ip\n");
     s.push_str("  fake-ip-range: 198.18.0.1/16\n");
@@ -131,11 +131,11 @@ fn render_config_tun(store: &SubStore) -> String {
     s
 }
 
-/// 防环静态检查（§2.5 硬约束）：配置生成后、落盘前执行，违规即拒绝启动内核。
-/// TUN 配置：不得含 mixed-port；57892 严禁出现；57890 仅以 proxies 出站形式出现一次；
-/// rules 必须 MATCH→ANET-IN（严禁回指 57892）。
-/// 非 TUN 配置：维持原断言（严禁引用本地代理 57890；mixed-port 57892 是内核自身入站，合法）。
-/// secret 行为随机十六进制，可能巧合命中端口数字串，不参与检查。
+/// Loop-prevention static check (§2.5 hard constraints): runs after config generation and before writing to disk; any violation refuses to start the kernel.
+/// TUN config: must not contain mixed-port; 57892 is forbidden; 57890 may appear exactly once, as a proxies outbound;
+/// rules must end with MATCH→ANET-IN (never point back to 57892).
+/// Non-TUN config: keeps the original assertion (referencing local proxy 57890 is forbidden; mixed-port 57892 is the kernel's own inbound, which is legal).
+/// The secret line is random hex and may coincidentally hit a port-number string, so it is excluded from the check.
 pub(crate) fn check_no_loop(cfg: &str, tun: bool) -> Result<(), String> {
     let body: Vec<&str> = cfg
         .lines()
@@ -156,7 +156,7 @@ pub(crate) fn check_no_loop(cfg: &str, tun: bool) -> Result<(), String> {
         if hit("  - MATCH,ANET-IN") != 1 {
             return Err("TUN 配置 rules 必须以 MATCH,ANET-IN 收尾".into());
         }
-        // P1.5 订阅出口：socks 入站与 IN-TYPE 规则必须各出现且仅出现一次
+        // P1.5 subscription egress: the socks inbound and the IN-TYPE rule must each appear exactly once
         if hit("57893") != 1 || !body.iter().any(|l| l.starts_with("socks-port: 57893")) {
             return Err("TUN 配置须含且仅含 socks-port: 57893（订阅出口入站）".into());
         }
@@ -201,7 +201,7 @@ mod tests {
         assert!(cfg.contains("mixed-port: 57892"));
         assert!(cfg.contains("external-controller: 127.0.0.1:59292"));
         assert!(cfg.contains("secret: \"s3cret\""));
-        // 仅加载激活订阅（单 provider 恒名 main）
+        // Only the active subscription is loaded (single provider always named main)
         assert!(cfg.contains("  main:\n"));
         assert!(cfg.contains("url: \"https://example.com/sub?token=abc\""));
         assert!(!cfg.contains("b.example.com"));
@@ -235,7 +235,7 @@ mod tests {
 
     #[test]
     fn config_render_local_file_provider() {
-        // 本地导入订阅（file:// 前缀）渲染为 type: file + path，不经 URL 拉取
+        // Locally imported subscription (file:// prefix) renders as type: file + path, not fetched over URL
         let mut store = SubStore {
             secret: "s".into(),
             ..Default::default()
@@ -258,7 +258,7 @@ mod tests {
         assert!(!cfg.contains("type: http"));
         assert!(!cfg.contains("interval: 86400"));
         assert!(check_no_loop(&cfg, false).is_ok());
-        // TUN 骨架同样支持
+        // The TUN skeleton supports this too
         let cfg = render_config(&store, "rule", true);
         assert!(cfg.contains("    type: file\n"));
         assert!(check_no_loop(&cfg, true).is_ok());
@@ -274,11 +274,11 @@ mod tests {
         ] {
             assert!(render_config(&store, mode, false).contains(expect), "mode={mode}");
         }
-        // 非法值回落 rule
+        // Invalid values fall back to rule
         assert!(render_config(&store, "bogus", false).contains("mode: rule\n"));
     }
 
-    /// TUN 模式配置快照（tun.md §2.3 骨架逐字段）+ 防环检查通过
+    /// TUN mode config snapshot (tun.md §2.3 skeleton, field by field) + loop-prevention check passes
     #[test]
     fn config_render_tun_snapshot() {
         let mut store = SubStore {
@@ -298,31 +298,31 @@ mod tests {
             expire: None,
         });
         let cfg = render_config(&store, "rule", true);
-        // 骨架头部：无 mixed-port（防环关键），控制面保留
+        // Skeleton header: no mixed-port (loop-prevention key), control plane kept
         assert!(!cfg.contains("mixed-port"));
         assert!(cfg.contains("external-controller: 127.0.0.1:59292"));
         assert!(cfg.contains("secret: \"s3cret\""));
-        // tun 段：enable / stack mixed / auto-route / auto-detect-interface / dns-hijack
+        // tun section: enable / stack mixed / auto-route / auto-detect-interface / dns-hijack
         assert!(cfg.contains("tun:\n  enable: true\n"));
         assert!(cfg.contains("  stack: mixed"));
         assert!(cfg.contains("  auto-route: true\n"));
         assert!(cfg.contains("  auto-detect-interface: true\n"));
         assert!(cfg.contains("    - any:53\n"));
-        // dns 段：fake-ip 保域名
+        // dns section: fake-ip preserves domain names
         assert!(cfg.contains("  enhanced-mode: fake-ip\n"));
         assert!(cfg.contains("  fake-ip-range: 198.18.0.1/16\n"));
         assert!(cfg.contains("    - 223.5.5.5\n"));
-        // ANET-IN socks5 → 57890（全量 TCP 转交 anet 路由器）
+        // ANET-IN socks5 → 57890 (all TCP handed to the anet router)
         assert!(cfg.contains("  - name: ANET-IN\n    type: socks5\n    server: 127.0.0.1\n"));
         assert!(cfg.contains("    port: 57890"));
-        // P1.5 订阅出口：socks 入站 57893 + IN-TYPE 规则直达 AGILE-SUB
+        // P1.5 subscription egress: socks inbound 57893 + IN-TYPE rule direct to AGILE-SUB
         assert!(cfg.contains("socks-port: 57893\n"));
         assert!(cfg.contains("  - IN-TYPE,socks,AGILE-SUB"));
-        // proxy-providers 保留（代理页测速/切换仍走控制面）
+        // proxy-providers kept (proxy-page latency tests/switching still go through the control plane)
         assert!(cfg.contains("proxy-providers:\n  main:\n"));
         assert!(cfg.contains("url: \"https://example.com/sub?token=abc\""));
         assert!(cfg.contains("  - name: AGILE-SUB\n    type: select\n    use:\n      - main\n"));
-        // rules：QUIC 压制 + UDP DIRECT + 回环直连 + MATCH→ANET-IN
+        // rules: QUIC suppression + UDP DIRECT + loopback direct + MATCH→ANET-IN
         assert!(cfg.contains("  - AND,((NETWORK,UDP),(DST-PORT,443)),REJECT"));
         assert!(cfg.contains("  - NETWORK,UDP,DIRECT"));
         assert!(cfg.contains("  - IP-CIDR,127.0.0.0/8,DIRECT,no-resolve\n"));
@@ -330,7 +330,7 @@ mod tests {
         assert!(check_no_loop(&cfg, true).is_ok(), "TUN 骨架须过防环检查");
     }
 
-    /// 防环静态检查全覆盖（tun.md §2.5 各条）
+    /// Full coverage of the loop-prevention static check (each tun.md §2.5 clause)
     #[test]
     fn check_no_loop_covers_all_clauses() {
         let store = SubStore {
@@ -342,30 +342,30 @@ mod tests {
         assert!(check_no_loop(&tun_cfg, true).is_ok());
         assert!(check_no_loop(&base_cfg, false).is_ok());
 
-        // TUN：含 mixed-port → 拒绝
+        // TUN: contains mixed-port → reject
         let bad = tun_cfg.replace("tun:\n", "mixed-port: 57892\ntun:\n");
         assert!(check_no_loop(&bad, true).is_err());
-        // TUN：57892 出现（rules 回指）→ 拒绝
+        // TUN: 57892 appears (rules point back to it) → reject
         let bad = tun_cfg.replace("  - MATCH,ANET-IN", "  - MATCH,ANET-IN\n  - DST-PORT,57892,DIRECT");
         assert!(check_no_loop(&bad, true).is_err());
-        // TUN：57890 重复出现（rules 回指本地代理）→ 拒绝
+        // TUN: 57890 appears twice (rules point back to the local proxy) → reject
         let bad = tun_cfg.replace(
             "  - MATCH,ANET-IN",
             "  - IP-CIDR,127.0.0.1/32,DIRECT # 57890\n  - MATCH,ANET-IN",
         );
         assert!(check_no_loop(&bad, true).is_err());
-        // TUN：57890 不在 proxies 出站行（被挪到注释里）→ 拒绝
+        // TUN: 57890 not on the proxies outbound line (moved into a comment) → reject
         let bad = tun_cfg.replace("    port: 57890", "    port: 15789 # 57890");
         assert!(check_no_loop(&bad, true).is_err());
-        // TUN：缺 MATCH,ANET-IN → 拒绝
+        // TUN: missing MATCH,ANET-IN → reject
         let bad = tun_cfg.replace("  - MATCH,ANET-IN", "  - MATCH,AGILE-SUB");
         assert!(check_no_loop(&bad, true).is_err());
-        // 非 TUN：引用 57890 → 拒绝；mixed-port 57892 是内核自身入站（合法，维持原断言）
+        // Non-TUN: referencing 57890 → reject; mixed-port 57892 is the kernel's own inbound (legal, keep the original assertion)
         let bad = base_cfg.replace("  - MATCH,AGILE-SUB", "  - MATCH,AGILE-SUB # 57890");
         assert!(check_no_loop(&bad, false).is_err());
         assert!(base_cfg.contains("mixed-port: 57892"));
         assert!(check_no_loop(&base_cfg, false).is_ok());
-        // secret 行随机十六进制巧合命中端口串不误伤
+        // A secret line whose random hex coincidentally hits a port string must not be flagged
         let store = SubStore {
             secret: "57890abcdef".into(),
             ..Default::default()

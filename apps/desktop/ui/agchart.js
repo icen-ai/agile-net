@@ -1,27 +1,30 @@
-/* AgileNet 共享图表组件（agchart）—— 零依赖原生 SVG/JS，首个共享 JS 组件（AGENTS.md §6）
-   桌面端 <script src="agchart.js"> 引入；管理端经 crates/node/src/ui/mod.rs 内嵌服务于 /ui/agchart.js。
-   颜色一律吃 tokens.css 的 var(--*)，严禁硬编码色值、主题无蓝。
-   序列色（var(--*) 字符串）经 getComputedStyle 解析为实色再写 SVG 呈现属性（呈现属性内
-   var() 引擎兼容性不一；网格/文字色走 components.css 的 CSS 类），主题切换后下一次绘制自然生效。
+/* AgileNet shared chart component (agchart) — zero-dependency native SVG/JS, first shared JS component (AGENTS.md §6).
+   Desktop loads via <script src="agchart.js">; admin UI serves it embedded via crates/node/src/ui/mod.rs at /ui/agchart.js.
+   Colors always come from tokens.css var(--*); hardcoded color values forbidden, theme has no blue.
+   Series colors (var(--*) strings) are resolved via getComputedStyle into real colors before being written to
+   SVG presentation attributes (var() support inside presentation attributes is inconsistent across engines;
+   grid/text colors go through CSS classes in components.css); theme switches take effect on the next draw.
 
-   两版本（API 留扩展位）：
-   - AgChart.sparkline(el, series, opts)  省略版：仅趋势折线 + 渐变面积，无轴无字
-   - AgChart.line(el, cfg)                完整版：XY 轴刻度网格 / 多序列 / hover 十字 + 每点浮层
-     cfg = { x: [标签], series: [{name?, color?, values}], fmtX?, fmtY?, legend?, empty? }
-     series 也允许直接传数值数组 [v,...]（单序列匿名）
+   Two variants (API leaves room for extension):
+   - AgChart.sparkline(el, series, opts)  minimal: trend line + gradient area only, no axes no labels
+   - AgChart.line(el, cfg)                full: XY axis tick grid / multi-series / hover crosshair + per-point tooltip
+     cfg = { x: [labels], series: [{name?, color?, values}], fmtX?, fmtY?, legend?, empty? }
+     series may also be a plain value array [v,...] (single anonymous series)
 
-   行为约定：
-   - 重复调用同元素 = 幂等更新；数据签名（x + 序列名/色/值）不变不重绘
-   - 数据更新 rAF 数值插值过渡（~400ms ease-out；等长点列直接插值，不等长按索引对齐截断、
-     新增点自基线生长）；prefers-reduced-motion 时跳过动画
-   - hover 十字/浮层跟随只动 transform，不重排
-   - ResizeObserver 跟随容器尺寸（重排直接落目标值，不重演数据动画）
-   返回实例 { update, destroy }；元素被移除后一切活动自动停止。 */
+   Behavior contract:
+   - Repeated calls on the same element = idempotent update; no redraw while the data signature
+     (x + series name/color/values) is unchanged
+   - Data updates transition via rAF value interpolation (~400ms ease-out; equal-length point lists interpolate
+     directly, unequal lists align by index with truncation, new points grow from the baseline);
+     skipped under prefers-reduced-motion
+   - Hover crosshair/tooltip follow by writing transform only, no reflow
+   - ResizeObserver tracks container size (reflow lands on target values directly, data animation not replayed)
+   Returns an instance { update, destroy }; all activity stops automatically once the element is removed. */
 (function () {
 'use strict';
 
 var SVG_NS = 'http://www.w3.org/2000/svg';
-/* 默认序列色板：主序列 --accent（近黑），次序列 --dim2（灰），其后语义色（主题无蓝） */
+/* Default series palette: primary --accent (near-black), secondary --dim2 (gray), then semantic colors (theme has no blue) */
 var PALETTE = ['var(--accent)', 'var(--dim2)', 'var(--ok)', 'var(--warn)', 'var(--danger)'];
 var DURATION = 400;
 var uidSeq = 0;
@@ -33,7 +36,7 @@ function mk(tag, attrs, parent) {
   return n;
 }
 
-/* series 规格化：允许 [v,...] 或 [{values, name?, color?},...] */
+/* series normalization: accepts [v,...] or [{values, name?, color?},...] */
 function normSeries(series) {
   if (!Array.isArray(series)) return [];
   if (!series.length) return [];
@@ -55,7 +58,7 @@ function sigOf(x, series) {
 
 function easeOutCubic(t) { return 1 - Math.pow(1 - t, 3); }
 
-/* Y 轴上限取整（1/2/2.5/5×10^n 步长，约 count 级刻度） */
+/* Y-axis ceiling rounding (1/2/2.5/5×10^n steps, ~count tick levels) */
 function niceMax(max, count) {
   if (!(max > 0)) return 1;
   var rough = max / count;
@@ -76,7 +79,7 @@ function defaultFmt(v) {
 
 function num(v) { return Math.round(v * 100) / 100; }
 
-/* var(--*) 解析为实色（写 SVG 呈现属性用；主题切换后下一次绘制自然生效） */
+/* Resolve var(--*) to a real color (for SVG presentation attributes; theme switches take effect on the next draw) */
 function resolveColor(c) {
   var m = /^var\(\s*(--[\w-]+)\s*(?:,[^)]*)?\)$/.exec(c);
   if (m && typeof getComputedStyle === 'function') {
@@ -86,7 +89,7 @@ function resolveColor(c) {
   return c;
 }
 
-/* Catmull-Rom 平滑转三次贝塞尔；控制点钳制在值域内，避免 0 基线以下/上限以上过冲 */
+/* Catmull-Rom smoothing to cubic bezier; control points clamped to the value range to avoid overshoot below the 0 baseline / above the ceiling */
 function smoothPath(pts, yLo, yHi) {
   if (pts.length === 1) return 'M ' + num(pts[0][0]) + ' ' + num(pts[0][1]);
   var d = 'M ' + num(pts[0][0]) + ' ' + num(pts[0][1]);
@@ -104,8 +107,8 @@ function Chart(el, kind) {
   this.el = el;
   this.kind = kind;
   this.id = ++uidSeq;
-  this.cur = [];          // 当前展示序列（动画中间态）
-  this.data = null;       // 目标数据
+  this.cur = [];          // currently displayed series (animation intermediate state)
+  this.data = null;       // target data
   this.sig = '';
   this.raf = 0;
   this.hover = -1;
@@ -113,7 +116,7 @@ function Chart(el, kind) {
   this.n = 0; this.ymax = 1;
   this.dots = [];
   this.gradColors = [];
-  this.rcolors = [];      // 解析后的序列实色（_resolveColors 维护）
+  this.rcolors = [];      // resolved series colors (maintained by _resolveColors)
   this.tipKey = '';
   this._build();
   var self = this;
@@ -157,7 +160,7 @@ Chart.prototype._build = function () {
   }
 };
 
-/* ================= 布局 ================= */
+/* ================= Layout ================= */
 Chart.prototype._layout = function () {
   var w = this.plot.clientWidth, h = this.plot.clientHeight;
   if (w < 10 || h < 10 || !this.data) return false;
@@ -173,7 +176,7 @@ Chart.prototype._layout = function () {
     s.values.forEach(function (v) { if (v > maxV) maxV = v; });
   });
   this.n = n;
-  /* 完整版取漂亮刻度；sparkline 顶部留 15% 余量不贴边 */
+  /* full variant uses nice ticks; sparkline leaves 15% headroom at the top */
   this.ymax = this.kind === 'line' ? niceMax(maxV, 4) : (maxV > 0 ? maxV * 1.15 : 1);
   return true;
 };
@@ -186,7 +189,7 @@ Chart.prototype._y = function (v) {
   return this.padT + ih - (Math.max(0, v) / this.ymax) * ih;
 };
 
-/* ================= 数据入口（签名变更检测） ================= */
+/* ================= Data entry (signature change detection) ================= */
 Chart.prototype._setData = function (cfg) {
   var series = normSeries(cfg.series);
   var sig = sigOf(cfg.x, series);
@@ -201,7 +204,7 @@ Chart.prototype._setData = function (cfg) {
     legend: cfg.legend !== false,
   };
   this._resolveColors();
-  /* 对齐：旧值按索引截断，新增点自基线 0 生长 */
+  /* Alignment: old values truncated by index, new points grow from baseline 0 */
   var cur = this.cur;
   var from = series.map(function (s, i) {
     var old = cur[i] ? cur[i].values : [];
@@ -220,7 +223,7 @@ Chart.prototype._curVals = function () {
   return this.cur.map(function (s) { return s.values; });
 };
 
-/* ================= 动画（rAF 数值插值） ================= */
+/* ================= Animation (rAF value interpolation) ================= */
 Chart.prototype._animate = function (from) {
   var self = this;
   cancelAnimationFrame(this.raf);
@@ -253,8 +256,8 @@ Chart.prototype._animate = function (from) {
   this.raf = requestAnimationFrame(frame);
 };
 
-/* ================= 绘制 ================= */
-/* 序列实色解析：var(--*) → getComputedStyle 实色（_setData/_onResize 时刷新，签名机制不变） */
+/* ================= Drawing ================= */
+/* Series color resolution: var(--*) → getComputedStyle real color (refreshed on _setData/_onResize; signature mechanism unchanged) */
 Chart.prototype._resolveColors = function () {
   this.rcolors = this.data.series.map(function (s, i) {
     return resolveColor(s.color || PALETTE[i % PALETTE.length]);
@@ -333,7 +336,7 @@ Chart.prototype._drawSeries = function (values2d) {
     }
     var d = smoothPath(pts, yBase, yTop);
     if (this.kind !== 'line') {
-      /* 渐变面积：序列色 22% → 全透明（stop-opacity 不依赖 color-mix） */
+      /* gradient area: series color 22% → fully transparent (stop-opacity avoids color-mix) */
       var gid = 'agc-grad-' + this.id + '-' + i;
       if (this.gradColors[i] !== color) {
         this.gradColors[i] = color;
@@ -354,7 +357,7 @@ Chart.prototype._drawSeries = function (values2d) {
   }
 };
 
-/* ================= hover（十字 + 浮层，transform 跟随不重排） ================= */
+/* ================= hover (crosshair + tooltip, transform-follow without reflow) ================= */
 Chart.prototype._onPointer = function (e) {
   if (!this.n) return;
   var rect = this.plot.getBoundingClientRect();
@@ -379,7 +382,7 @@ Chart.prototype._drawHover = function () {
   this.gCross.setAttribute('transform', 'translate(' + num(x) + ' 0)');
   this.crossLine.setAttribute('y1', this.padT);
   this.crossLine.setAttribute('y2', this.h - this.padB);
-  /* 每序列一个取值点（随动画值落位） */
+  /* one value dot per series (positioned at animated values) */
   var cur = this._curVals();
   while (this.dots.length < this.data.series.length) {
     this.dots.push(mk('circle', { 'class': 'agc-dot', r: 3.5 }, this.gCross));
@@ -392,7 +395,7 @@ Chart.prototype._drawHover = function () {
     dot.setAttribute('cy', this._y(cur[s][i]));
     dot.setAttribute('stroke', this._seriesColor(s));
   }
-  /* 浮层内容仅悬停点或数据变化时重建，跟随只改 transform */
+  /* tooltip content rebuilt only when the hovered point or data changes; following only updates transform */
   var key = this.sig + '|' + i;
   if (this.tipKey !== key) {
     this.tipKey = key;
@@ -430,7 +433,7 @@ Chart.prototype._drawHover = function () {
   this.tip.style.transform = 'translate(' + num(tx) + 'px,' + num(ty) + 'px)' + (flip ? ' translateX(-100%)' : '');
 };
 
-/* ================= 尺寸跟随 ================= */
+/* ================= Size tracking ================= */
 Chart.prototype._onResize = function () {
   if (!this.data || !this.el.isConnected) return;
   if (!this._layout()) return;

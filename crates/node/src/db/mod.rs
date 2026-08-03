@@ -1,12 +1,12 @@
-//! SQLite 数据库模块（对应 docs/database/schema.md）
+//! SQLite database module (see docs/database/schema.md)
 //!
-//! 基于 rusqlite，启动时执行版本化迁移；全部敏感字段（密码、Token）
-//! 以 Argon2id / SHA-256 哈希存储，严禁明文落库。
+//! Built on rusqlite; versioned migrations run at startup. All sensitive fields
+//! (passwords, tokens) are stored as Argon2id / SHA-256 hashes; plaintext is forbidden.
 //!
-//! 按域拆分子模块（纯搬运，零逻辑变更）：pool（连接池与共享基础）/
-//! migrations（版本化迁移）/ paginate（分页查询公共 helper）/
-//! admin / rules / accounts / connectors / logs；
-//! 对外路径 `db::xxx` 全部不变。
+//! Submodules split by domain (pure move, no logic change): pool (connection pool and
+//! shared helpers) / migrations (versioned migrations) / paginate (shared paged-query helper) /
+//! admin / rules / accounts / connectors / logs.
+//! Public paths `db::xxx` are unchanged.
 
 pub mod models;
 
@@ -27,9 +27,9 @@ use argon2::{
     password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
 };
 
-// ==================== 密码与令牌 ====================
+// ==================== Passwords & Tokens ====================
 
-/// Argon2id 密码哈希（OWASP 推荐参数：64MB / t=3 / p=4）
+/// Argon2id password hash (OWASP-recommended params: 64MB / t=3 / p=4)
 pub fn hash_password(password: &str) -> Result<String> {
     let random_bytes: [u8; 16] = rand::random();
     let salt = SaltString::encode_b64(&random_bytes).map_err(|e| Error::Other(e.to_string()))?;
@@ -42,7 +42,7 @@ pub fn hash_password(password: &str) -> Result<String> {
     Ok(hash)
 }
 
-/// 验证密码（Argon2id）
+/// Verify password (Argon2id)
 pub fn verify_password(password: &str, password_hash: &str) -> Result<bool> {
     let parsed = PasswordHash::new(password_hash).map_err(|e| Error::Other(e.to_string()))?;
     Ok(Argon2::default()
@@ -50,28 +50,28 @@ pub fn verify_password(password: &str, password_hash: &str) -> Result<bool> {
         .is_ok())
 }
 
-/// 生成强密码（sk 风格：`sk-` + 48 位混合字符，约 286 bits 熵）
+/// Generate a strong password (sk style: `sk-` + 48 mixed chars, ~286 bits entropy)
 pub fn generate_password() -> String {
     format!("sk-{}", random_alnum(48))
 }
 
-/// 生成 Relay PSK Token（`psk_` + 48 位）
+/// Generate a Relay PSK token (`psk_` + 48 chars)
 pub fn generate_relay_token() -> String {
     format!("psk_{}", random_alnum(48))
 }
 
-/// 生成 Tunnel Token（`tun_` + 48 位）
+/// Generate a Tunnel token (`tun_` + 48 chars)
 pub fn generate_tunnel_token() -> String {
     format!("tun_{}", random_alnum(48))
 }
 
-/// 生成随机密钥（hex 64 字符，用于 JWT secret 等）
+/// Generate a random secret (hex, 64 chars; for JWT secret etc.)
 pub fn generate_secret_hex() -> String {
     let bytes: [u8; 32] = rand::random();
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// SHA-256 hex（Token 落库哈希）：统一使用 core 的共享实现（再导出，保持 `db::sha256_hex` 路径不变）
+/// SHA-256 hex (token storage hash): re-export of the shared core impl (keeps the `db::sha256_hex` path)
 pub use agile_net_core::util::sha256_hex;
 
 pub(crate) fn random_alnum(len: usize) -> String {

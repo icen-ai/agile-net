@@ -1,6 +1,6 @@
-//! Peer ACL（对端收敛）集成测试：
-//! ConnectorManager 的 DB→运行时状态流转、connector 管理 API（含审计脱敏）、
-//! relay token 挂组 API、组详情三类身份清单。
+//! Peer ACL (peer scoping) integration tests:
+//! ConnectorManager DB→runtime state flow, connector admin API (with audit redaction),
+//! relay token group-mount API, and group detail listing all three identity kinds.
 
 use agile_net_node::api::{ApiState, NodeRuntime, create_app};
 use agile_net_node::auth::jwt::JwtService;
@@ -17,14 +17,14 @@ use std::sync::Arc;
 use std::time::Instant;
 use tower::ServiceExt;
 
-// ==================== ConnectorManager（DB → 运行时行为，无需真实隧道） ====================
+// ==================== ConnectorManager (DB → runtime behavior, no real tunnel) ====================
 
 #[tokio::test]
 async fn connector_manager_upsert_remove_lifecycle() {
     let db = Database::in_memory().unwrap();
     let manager = ConnectorManager::new(db.clone()).with_node_id("test-node".into());
 
-    // DB 建一条 enabled connector（不可达地址，连接失败走重连退避即可）
+    // Insert an enabled connector in DB (unreachable addr; failed dial just enters reconnect backoff)
     let rec = db
         .create_connector(
             "site-a",
@@ -40,7 +40,7 @@ async fn connector_manager_upsert_remove_lifecycle() {
         )
         .expect("create connector");
 
-    // upsert → 句柄出现，states 带地址与实时状态
+    // upsert → handle appears, states carry addr and live status
     manager.upsert_from_db(&rec.id).await.expect("upsert");
     let states = manager.states();
     assert_eq!(states.len(), 1);
@@ -52,19 +52,19 @@ async fn connector_manager_upsert_remove_lifecycle() {
     assert!(manager.state_of(&rec.id).is_some());
     assert_ne!(manager.aggregate_status(), "disabled");
 
-    // 禁用后 upsert → 句柄移除（聚合回到 disabled）
+    // upsert after disable → handle removed (aggregate back to disabled)
     db.set_connector_enabled(&rec.id, false).unwrap();
     manager.upsert_from_db(&rec.id).await.expect("upsert off");
     assert!(manager.states().is_empty());
     assert_eq!(manager.state_of(&rec.id), None);
     assert_eq!(manager.aggregate_status(), "disabled");
 
-    // 重新启用 → 句柄恢复
+    // re-enable → handle restored
     db.set_connector_enabled(&rec.id, true).unwrap();
     manager.upsert_from_db(&rec.id).await.expect("upsert on");
     assert_eq!(manager.states().len(), 1);
 
-    // remove → 断开移除
+    // remove → disconnect and drop
     manager.remove(&rec.id).await;
     assert!(manager.states().is_empty());
     assert_eq!(manager.aggregate_status(), "disabled");
@@ -93,9 +93,9 @@ async fn connector_manager_start_all_skips_disabled() {
     assert!(manager.states().is_empty());
 }
 
-// ==================== 管理 API ====================
+// ==================== Admin API ====================
 
-/// 构建测试用 App（内存数据库 + 空运行时）。
+/// Build a test App (in-memory DB + empty runtime).
 async fn test_app() -> (Router, Database) {
     let db = Database::in_memory().unwrap();
     let jwt = Arc::new(JwtService::load_or_create(db.clone()).unwrap());
@@ -143,7 +143,7 @@ async fn req(
     (status, json)
 }
 
-/// 初始化 admin 并登录，返回 access_token。
+/// Init admin and log in; returns access_token.
 async fn init_and_login(app: &Router) -> String {
     let (status, _) = req(
         app,
@@ -173,7 +173,7 @@ async fn init_and_login(app: &Router) -> String {
     body["data"]["access_token"].as_str().unwrap().to_string()
 }
 
-/// 建组，返回组 id。
+/// Create a group; returns group id.
 async fn mk_group(app: &Router, token: &str, name: &str) -> String {
     let (status, body) = req(
         app,
@@ -194,7 +194,7 @@ async fn connector_api_crud_and_audit_sanitized() {
     let gid = mk_group(&app, &token, "peers").await;
     let secret = "psk_secret-connector-token-0123456789";
 
-    // 创建（挂组 + advertise 数组）
+    // Create (group mount + advertise array)
     let (status, body) = req(
         &app,
         "POST",
@@ -224,7 +224,7 @@ async fn connector_api_crud_and_audit_sanitized() {
     ));
     let cid = body["data"]["id"].as_str().unwrap().to_string();
 
-    // 重名 → 409
+    // duplicate name → 409
     let (status, _) = req(
         &app,
         "POST",
@@ -235,7 +235,7 @@ async fn connector_api_crud_and_audit_sanitized() {
     .await;
     assert_eq!(status, StatusCode::CONFLICT);
 
-    // 不存在的组 → 404
+    // nonexistent group → 404
     let (status, _) = req(
         &app,
         "POST",
@@ -251,7 +251,7 @@ async fn connector_api_crud_and_audit_sanitized() {
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 
-    // 更新：token 留空 = 保留原值；改地址并摘组
+    // Update: empty token = keep old value; change addr and unmount group
     let (status, body) = req(
         &app,
         "PUT",
@@ -273,7 +273,7 @@ async fn connector_api_crud_and_audit_sanitized() {
         "token 留空应保留原值"
     );
 
-    // 禁用 → DB 记录保留、运行时句柄移除（状态回落 disconnected）
+    // Disable → DB row kept, runtime handle removed (state falls back to disconnected)
     let (status, body) = req(
         &app,
         "POST",
@@ -286,7 +286,7 @@ async fn connector_api_crud_and_audit_sanitized() {
     assert_eq!(body["data"]["enabled"], false);
     assert_eq!(body["data"]["state"], "disconnected");
 
-    // 启用 → 重新装配
+    // Enable → reassemble
     let (status, body) = req(
         &app,
         "POST",
@@ -298,7 +298,7 @@ async fn connector_api_crud_and_audit_sanitized() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["enabled"], true);
 
-    // 列表携带视图与状态
+    // List carries view and state
     let (status, body) = req(&app, "GET", "/api/v1/admin/connectors", Some(&token), None).await;
     assert_eq!(status, StatusCode::OK);
     let items = body["data"]["items"].as_array().unwrap();
@@ -306,7 +306,7 @@ async fn connector_api_crud_and_audit_sanitized() {
     assert!(items[0]["state"].is_string());
     assert!(!body.to_string().contains(secret), "列表不得含 token");
 
-    // 审计脱敏：全部 connector 审计记录不含 token 明文/密文
+    // Audit redaction: no connector audit entry holds token plaintext/ciphertext
     let token_enc = db.get_connector(&cid).unwrap().unwrap().token_enc;
     let (status, body) = req(
         &app,
@@ -325,7 +325,7 @@ async fn connector_api_crud_and_audit_sanitized() {
     assert!(!audit_dump.contains(secret), "审计不得含 token 明文");
     assert!(!audit_dump.contains(&token_enc), "审计不得含 token 密文");
 
-    // 删除 → 运行时移除，再次操作 404
+    // Delete → runtime removal; further ops 404
     let (status, _) = req(
         &app,
         "DELETE",
@@ -352,7 +352,7 @@ async fn relay_token_group_mount_via_api() {
     let token = init_and_login(&app).await;
     let gid = mk_group(&app, &token, "peers").await;
 
-    // 创建带组令牌
+    // Create grouped token
     let (status, body) = req(
         &app,
         "POST",
@@ -365,7 +365,7 @@ async fn relay_token_group_mount_via_api() {
     assert_eq!(body["data"]["group_id"], gid);
     let tid = body["data"]["id"].as_str().unwrap().to_string();
 
-    // 列表带出组信息
+    // List carries group info
     let (_, body) = req(
         &app,
         "GET",
@@ -378,7 +378,7 @@ async fn relay_token_group_mount_via_api() {
     assert_eq!(items[0]["group_id"], gid);
     assert_eq!(items[0]["group_name"], "peers");
 
-    // PUT 不带 group_id 字段 → 组挂载不变
+    // PUT without group_id field → mount unchanged
     let (status, body) = req(
         &app,
         "PUT",
@@ -390,7 +390,7 @@ async fn relay_token_group_mount_via_api() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["group_id"], gid);
 
-    // PUT group_id=null → 不收敛
+    // PUT group_id=null → unmount
     let (status, body) = req(
         &app,
         "PUT",
@@ -402,7 +402,7 @@ async fn relay_token_group_mount_via_api() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["group_id"], Value::Null);
 
-    // PUT 挂到不存在的组 → 404
+    // PUT mount to nonexistent group → 404
     let (status, _) = req(
         &app,
         "PUT",
@@ -413,7 +413,7 @@ async fn relay_token_group_mount_via_api() {
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 
-    // 审计含 set_group 事件
+    // Audit contains set_group event
     let (_, body) = req(
         &app,
         "GET",
@@ -431,7 +431,7 @@ async fn group_detail_lists_three_identity_kinds() {
     let token = init_and_login(&app).await;
     let gid = mk_group(&app, &token, "peers").await;
 
-    // 挂三类身份：账号 / 扇入令牌 / 扇出对端
+    // Mount three identity kinds: account / fan-in token / fan-out peer
     let (status, _) = req(
         &app,
         "POST",
@@ -484,7 +484,7 @@ async fn group_detail_lists_three_identity_kinds() {
     assert_eq!(connectors.len(), 1);
     assert_eq!(connectors[0]["name"], "site-a");
 
-    // 不存在的组 → 404
+    // nonexistent group → 404
     let (status, _) = req(
         &app,
         "GET",

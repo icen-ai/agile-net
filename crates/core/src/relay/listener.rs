@@ -1,11 +1,11 @@
-//! Relay Listener — 上游角色，接受下游节点与客户端连入
+//! Relay Listener — upstream role, accepts downstream nodes and clients
 //!
-//! 安全设计：
-//! - TLS 握手与认证全程 10s 超时（防 Slowloris 半开连接耗尽）
-//! - Token 常数时间比较（防时序侧信道）
-//! - 认证失败随机延迟 + 按来源 IP 频率限制（防在线爆破）
-//! - 并发连接数与待认证连接数上限（防连接洪泛）
-//! - 客户端会话按权限组规则做目标 ACL 校验
+//! Security design:
+//! - 10s timeout for the whole TLS handshake + auth (anti-Slowloris half-open exhaustion)
+//! - constant-time token comparison (anti timing side channel)
+//! - random delay on auth failure + per-source-IP rate limiting (anti online brute force)
+//! - caps on concurrent connections and pending-auth connections (anti connection flood)
+//! - per-group target ACL checks on client sessions
 
 use crate::error::{Error, Result};
 use crate::proto::frame::{Frame, FrameType};
@@ -34,46 +34,47 @@ use tokio::sync::{Semaphore, broadcast};
 use tokio_rustls::TlsAcceptor;
 use tracing::{debug, info, warn};
 
-/// TLS 握手 + 认证必须在该时间内完成。
+/// TLS handshake + auth must complete within this time.
 pub const AUTH_TIMEOUT: Duration = Duration::from_secs(10);
-/// 默认最大并发连接数（含未认证）。
+/// Default max concurrent connections (including unauthenticated).
 pub const DEFAULT_MAX_CONNECTIONS: usize = 1024;
-/// 默认最大待认证连接数。
+/// Default max pending-auth connections.
 pub const DEFAULT_MAX_PENDING_AUTH: usize = 256;
-/// 默认同一 IP 在 60s 窗口内允许的最大认证失败次数。
+/// Default max auth failures per IP within a 60s window.
 pub const DEFAULT_MAX_AUTH_FAILURES_PER_MINUTE: u32 = 20;
-/// 单会话并发处理中的对端 Open 上限（防 Open 洪泛耗尽任务/连接资源；
-/// 本端 open_channel 方向已有 MAX_CHANNELS_PER_SESSION 保护，本上限补齐对端方向）。
+/// Max concurrently handled peer Opens per session (anti Open-flood task/connection
+/// exhaustion; the local open_channel direction is already guarded by
+/// MAX_CHANNELS_PER_SESSION — this cap covers the peer-initiated direction).
 pub const MAX_INBOUND_OPENS_PER_SESSION: usize = 256;
 
-/// 认证通过后的主体身份。
+/// Principal identity after successful auth.
 #[derive(Debug, Clone)]
 pub enum AuthIdentity {
-    /// 下游节点
+    /// Downstream node
     Node {
         node_id: String,
-        /// 通告的可服务网段/域名
+        /// Advertised serviceable CIDRs/domains
         advertise: Vec<String>,
-        /// 握手 v2：暴露控制面时向该下游下发的管理端点（AuthOk 携带）
+        /// Handshake v2: management endpoint pushed to this downstream when exposing a control plane (carried in AuthOk)
         control: Option<crate::proto::message::ControlOffer>,
-        /// 扇入收敛：该对端发起的目标连接允许集合（None = 不收敛，放行一切）
+        /// Fan-in restriction: allowlist for target connections initiated by this peer (None = unrestricted, allow all)
         acl: Option<Arc<PeerAcl>>,
     },
-    /// 客户端账号，附带目标访问控制规则
+    /// Client account, with target access control rules
     Client {
         account_id: String,
-        /// ACL 规则（CIDR / 精确域名 / *.后缀域名）
+        /// ACL rules (CIDR / exact domain / *.suffix domain)
         acl: Vec<String>,
     },
 }
 
-/// Token 校验器：由上层（node crate 的数据库或静态配置）实现。
+/// Token validator: implemented by the upper layer (node crate's database or static config).
 pub trait TokenValidator: Send + Sync {
-    /// 校验成功返回主体身份，失败返回 None。
+    /// Returns the principal identity on success, None on failure.
     fn validate(&self, auth: &AuthRequest) -> Option<AuthIdentity>;
 }
 
-/// 静态单 Token 校验器（向后兼容 / 测试用），常数时间比较。
+/// Static single-token validator (backwards compatible / for tests), constant-time comparison.
 pub struct StaticTokenValidator {
     token: String,
 }
@@ -104,7 +105,7 @@ impl TokenValidator for StaticTokenValidator {
     }
 }
 
-/// 常数时间字节比较，避免时序侧信道。
+/// Constant-time byte comparison, avoiding timing side channels.
 pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
@@ -116,27 +117,27 @@ pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     diff == 0
 }
 
-/// 节点/客户端上下线事件（供管理面更新状态）。
+/// Node/client online-offline events (for control-plane status updates).
 #[derive(Debug, Clone)]
 pub enum PeerEvent {
     NodeConnected { node_id: String },
     NodeDisconnected { node_id: String },
     ClientConnected { account_id: String },
     ClientDisconnected { account_id: String },
-    /// 收敛拒绝：对端发起的目标连接被 PeerAcl 拦截（供管理面写审计）。
-    /// `peer_label` 为对端标识（扇入=node_id，扇出=upstream_addr）。
+    /// Restriction denial: a peer-initiated target connection was intercepted by PeerAcl (for control-plane audit).
+    /// `peer_label` is the peer identifier (fan-in=node_id, fan-out=upstream_addr).
     AclDenied { peer_label: String, target: String },
 }
 
-/// 已连入的节点会话
+/// Connected node session
 pub struct PeerSession {
     pub node_id: String,
     pub mux: Arc<MuxSession>,
-    /// 认证所用 token 的 SHA-256（吊销 token 时按哈希踢除会话）
+    /// SHA-256 of the token used for auth (sessions are kicked by hash when the token is revoked)
     pub token_hash: String,
 }
 
-/// 下游节点通告的路由表（target → peer node_id）。
+/// Route table advertised by downstream nodes (target -> peer node_id).
 #[derive(Default)]
 struct AdvertisedRoutes {
     cidrs: IpNetworkTable<String>,
@@ -144,20 +145,20 @@ struct AdvertisedRoutes {
     suffixes: Vec<(String, String)>,
 }
 
-/// 会话带宽限速提供者：按认证身份返回字节/秒上限（None = 该会话不限速）。
+/// Session bandwidth limit provider: returns the bytes/sec cap per authenticated identity (None = unlimited).
 type RateLimitProvider = Arc<dyn Fn(&AuthIdentity, &str) -> Option<u64> + Send + Sync>;
 
-/// Relay 监听器。
+/// Relay listener.
 pub struct RelayListener {
     listen_addr: SocketAddr,
     validator: Arc<dyn TokenValidator>,
     tls_acceptor: TlsAcceptor,
     peers: Arc<DashMap<String, PeerSession>>,
-    /// 每个下游节点通告的原始路由条目
+    /// Raw route entries advertised by each downstream node
     peer_advertise: Arc<DashMap<String, Vec<String>>>,
-    /// 汇总后的可查询路由表（RCU 热更新）
+    /// Aggregated queryable route table (RCU hot update)
     routes: Arc<arc_swap::ArcSwap<AdvertisedRoutes>>,
-    /// 在线客户端会话（account_id → 会话句柄列表，用于在线判定与强制断开）
+    /// Online client sessions (account_id -> session handle list, for online checks and forced disconnect)
     clients: Arc<DashMap<String, Vec<Arc<MuxSession>>>>,
     events: broadcast::Sender<PeerEvent>,
     active_connections: Arc<AtomicUsize>,
@@ -166,14 +167,14 @@ pub struct RelayListener {
     max_connections: usize,
     max_pending_auth: usize,
     max_auth_failures_per_minute: u32,
-    /// 中继途径核算（None = 不打点；扇入对端发起的转发按 from=node_id 入账）
+    /// Relay transit metering (None = no metering; fan-in peer-initiated forwards booked with from=node_id)
     transit: Option<Arc<TransitMeter>>,
-    /// 会话带宽限速提供者：按认证身份返回字节/秒上限（None = 该会话不限速）
+    /// Session bandwidth limit provider: returns the bytes/sec cap per authenticated identity (None = unlimited)
     rate_limit_provider: Option<RateLimitProvider>,
 }
 
 impl RelayListener {
-    /// 创建新的 RelayListener（静态 Token 校验，自动生成自签证书）。
+    /// Create a new RelayListener (static token validation, auto-generated self-signed cert).
     pub fn new(listen_addr: SocketAddr, expected_token: impl Into<String>) -> Result<Self> {
         let (server_config, _) = TlsConfigBuilder::new().build_server()?;
         let tls_acceptor = TlsAcceptor::from(server_config);
@@ -184,7 +185,7 @@ impl RelayListener {
         ))
     }
 
-    /// 使用自定义 TlsAcceptor + 静态 Token 创建（向后兼容）。
+    /// Create with a custom TlsAcceptor + static token (backwards compatible).
     pub fn with_tls_acceptor(
         listen_addr: SocketAddr,
         expected_token: impl Into<String>,
@@ -197,7 +198,7 @@ impl RelayListener {
         )
     }
 
-    /// 使用自定义 Token 校验器与 TlsAcceptor 创建。
+    /// Create with a custom token validator and TlsAcceptor.
     pub fn with_validator(
         listen_addr: SocketAddr,
         validator: Arc<dyn TokenValidator>,
@@ -224,15 +225,16 @@ impl RelayListener {
         }
     }
 
-    /// 挂接中继途径核算表（扇入对端发起的转发按 from=node_id 入账）。
+    /// Attach the relay transit meter (fan-in peer-initiated forwards booked with from=node_id).
     pub fn with_transit_meter(mut self, meter: Arc<TransitMeter>) -> Self {
         self.transit = Some(meter);
         self
     }
 
-    /// 挂接会话带宽限速提供者：认证成功后按（身份, token 哈希）返回该会话的字节/秒上限，
-    /// 返回 None（或未挂接 provider）表示不限速。限速在 mux 数据面生效，
-    /// 读写双方向合并限额，burst 取 `rate.max(64*1024)`（见 session_limiter）。
+    /// Attach a session bandwidth limit provider: after auth, returns the session's
+    /// bytes/sec cap by (identity, token hash); None (or no provider) means unlimited.
+    /// The limit applies in the mux data plane, merging both directions; burst is
+    /// `rate.max(64*1024)` (see session_limiter).
     pub fn with_session_rate_limit<F>(mut self, f: F) -> Self
     where
         F: Fn(&AuthIdentity, &str) -> Option<u64> + Send + Sync + 'static,
@@ -241,15 +243,16 @@ impl RelayListener {
         self
     }
 
-    /// 按认证身份构造会话限速桶（None = 不限速）。
+    /// Build the session token bucket per authenticated identity (None = unlimited).
     fn session_limiter(&self, identity: &AuthIdentity, token_hash: &str) -> Option<Arc<TokenBucket>> {
         let rate = self.rate_limit_provider.as_ref()?(identity, token_hash)?;
-        // burst 至少 64 KiB（>= 一个满 Data 分片 16 KiB）：速率极低时也要让单帧
-        // 一次性拿到令牌，否则每帧都按缺口长时间排队，小速率会话会被卡到不可用
+        // burst at least 64 KiB (>= one full 16 KiB Data chunk): even at very low rates
+        // a single frame must get its tokens at once, otherwise every frame queues on the
+        // deficit for a long time and low-rate sessions degrade to unusable
         Some(Arc::new(TokenBucket::new(rate, rate.max(64 * 1024))))
     }
 
-    /// 覆盖默认限流参数（对应 agile-net.toml [limits]）。
+    /// Override default rate-limit parameters (maps to agile-net.toml [limits]).
     pub fn with_limits(
         mut self,
         max_connections: usize,
@@ -266,18 +269,18 @@ impl RelayListener {
         self.listen_addr
     }
 
-    /// 当前连入且认证成功的下游节点数。
+    /// Number of connected and authenticated downstream nodes.
     pub fn peer_count(&self) -> usize {
         self.peers.len()
     }
 
-    /// 列出在线下游节点 ID。
+    /// List online downstream node IDs.
     pub fn list_peers(&self) -> Vec<String> {
         self.peers.iter().map(|p| p.key().clone()).collect()
     }
 
-    /// 强制断开指定下游节点（管理面 kick / 吊销令牌后立即生效）。
-    /// 返回是否存在该节点会话。
+    /// Force-disconnect a downstream node (control-plane kick / effective immediately after token revocation).
+    /// Returns whether such a node session existed.
     pub fn disconnect_peer(&self, node_id: &str) -> bool {
         if let Some((_, peer)) = self.peers.remove(node_id) {
             peer.mux.shutdown();
@@ -291,12 +294,12 @@ impl RelayListener {
         }
     }
 
-    /// 在线客户端账号数。
+    /// Number of online client accounts.
     pub fn online_client_count(&self) -> usize {
         self.clients.len()
     }
 
-    /// 指定客户端是否在线。
+    /// Whether the given client is online.
     pub fn is_client_online(&self, account_id: &str) -> bool {
         self.clients
             .get(account_id)
@@ -304,8 +307,8 @@ impl RelayListener {
             .unwrap_or(false)
     }
 
-    /// 强制断开指定客户端账号的全部会话（禁用/删除/重置密码时调用）。
-    /// 返回断开的会话数。
+    /// Force-disconnect all sessions of a client account (called on disable/delete/password reset).
+    /// Returns the number of disconnected sessions.
     pub fn disconnect_client(&self, account_id: &str) -> usize {
         let Some((_, sessions)) = self.clients.remove(account_id) else {
             return 0;
@@ -320,7 +323,7 @@ impl RelayListener {
         count
     }
 
-    /// 各下游节点的数据面流量统计（node_id, 出向字节, 入向字节）。
+    /// Per-downstream-node data-plane traffic stats (node_id, egress bytes, ingress bytes).
     pub fn peer_traffic(&self) -> Vec<(String, u64, u64)> {
         self.peers
             .iter()
@@ -331,8 +334,8 @@ impl RelayListener {
             .collect()
     }
 
-    /// 按 token 哈希强制断开下游节点会话（吊销 relay token 时调用）。
-    /// 返回被断开的节点 ID（若在线）。
+    /// Force-disconnect a downstream node session by token hash (called when a relay token is revoked).
+    /// Returns the disconnected node ID (if online).
     pub fn disconnect_by_token_hash(&self, token_hash: &str) -> Option<String> {
         let node_id = self
             .peers
@@ -346,12 +349,12 @@ impl RelayListener {
         }
     }
 
-    /// 订阅上下线事件。
+    /// Subscribe to online/offline events.
     pub fn subscribe_events(&self) -> broadcast::Receiver<PeerEvent> {
         self.events.subscribe()
     }
 
-    /// 解析目标地址对应的下游节点（基于通告路由表）。
+    /// Resolve the downstream node for a target address (based on the advertised route table).
     pub fn resolve_peer(&self, host_or_ip: &str) -> Option<String> {
         let routes = self.routes.load();
         if let Ok(ip) = host_or_ip.parse::<IpAddr>() {
@@ -369,17 +372,17 @@ impl RelayListener {
         None
     }
 
-    /// 启动监听服务
+    /// Start the listen service
     pub async fn start(self: &Arc<Self>) -> Result<()> {
         let listener = TcpListener::bind(self.listen_addr).await?;
         info!(addr = %self.listen_addr, "relay listener started");
 
         loop {
             let (stream, peer_addr) = listener.accept().await?;
-            // TCP 拟态+体验：浏览器 HTTPS 连接普遍 TCP_NODELAY（tokio 原生 API，无需 socket2）
+            // TCP mimicry + latency: browser HTTPS connections commonly set TCP_NODELAY (native tokio API, no socket2 needed)
             let _ = stream.set_nodelay(true);
 
-            // 并发连接上限：超限直接丢弃
+            // concurrent connection cap: drop immediately when exceeded
             let current = self.active_connections.fetch_add(1, Ordering::Relaxed) + 1;
             if current > self.max_connections {
                 self.active_connections.fetch_sub(1, Ordering::Relaxed);
@@ -388,7 +391,7 @@ impl RelayListener {
                 continue;
             }
 
-            // 认证失败频率限制：窗口内失败次数超限直接丢弃（不影响正常节点重连）
+            // auth failure rate limit: drop when failures within the window exceed the cap (does not affect normal node reconnects)
             if self.is_auth_failure_limited(&peer_addr.ip()) {
                 self.active_connections.fetch_sub(1, Ordering::Relaxed);
                 warn!(peer = %peer_addr, "auth failure rate limit exceeded, dropping");
@@ -398,7 +401,7 @@ impl RelayListener {
 
             let this = self.clone();
             tokio::spawn(async move {
-                // 连接结束自动扣减计数
+                // auto-decrement the counter when the connection ends
                 let _guard = ConnGuard(this.active_connections.clone());
                 if let Err(err) = this.handle_connection(stream, peer_addr).await {
                     debug!(peer = %peer_addr, error = %err, "relay connection closed with error");
@@ -407,7 +410,7 @@ impl RelayListener {
         }
     }
 
-    /// 该 IP 是否因认证失败超限被限流。
+    /// Whether this IP is rate-limited for excessive auth failures.
     fn is_auth_failure_limited(&self, ip: &IpAddr) -> bool {
         let Some(entry) = self.auth_attempts.get(ip) else {
             return false;
@@ -417,7 +420,7 @@ impl RelayListener {
             && count > self.max_auth_failures_per_minute
     }
 
-    /// 记录一次认证失败。
+    /// Record one auth failure.
     fn record_auth_failure(&self, ip: &IpAddr) {
         let mut entry = self.auth_attempts.entry(*ip).or_insert((0, Instant::now()));
         let (count, window_start) = entry.value_mut();
@@ -428,18 +431,18 @@ impl RelayListener {
         *count += 1;
     }
 
-    /// 认证成功：清零该 IP 的失败计数。
+    /// Auth success: reset this IP's failure count.
     fn clear_auth_failures(&self, ip: &IpAddr) {
         self.auth_attempts.remove(ip);
     }
 
-    /// 处理单个 TCP 连接（TLS 握手 + 认证 + 控制循环）
+    /// Handle a single TCP connection (TLS handshake + auth + control loop)
     async fn handle_connection(
         self: &Arc<Self>,
         stream: TcpStream,
         peer_addr: SocketAddr,
     ) -> Result<()> {
-        // 待认证连接上限
+        // pending-auth connection cap
         let pending = self.pending_auth.fetch_add(1, Ordering::Relaxed) + 1;
         if pending > self.max_pending_auth {
             self.pending_auth.fetch_sub(1, Ordering::Relaxed);
@@ -447,7 +450,7 @@ impl RelayListener {
         }
         let _pending_guard = ConnGuard(self.pending_auth.clone());
 
-        // TLS 握手 + 首帧认证全程限时，防 Slowloris
+        // time-box the whole TLS handshake + first-frame auth, anti-Slowloris
         let authed =
             tokio::time::timeout(AUTH_TIMEOUT, self.tls_handshake_and_auth(stream, peer_addr))
                 .await
@@ -460,7 +463,7 @@ impl RelayListener {
         drop(_pending_guard);
 
         let flow_control = peer_version >= PROTOCOL_VERSION_FLOW_CONTROL;
-        // 会话级带宽限速：认证身份确定后构造令牌桶（None = 不限速），随会话注入 mux
+        // session-level bandwidth limit: build the token bucket once the identity is known (None = unlimited), injected into the mux with the session
         let limiter = self.session_limiter(&identity, &token_hash);
         match identity {
             AuthIdentity::Node {
@@ -495,7 +498,7 @@ impl RelayListener {
         }
     }
 
-    /// TLS 握手并校验 Auth 帧。失败时已发送 AuthFail 并做了延迟惩罚。
+    /// TLS handshake and Auth frame validation. On failure, AuthFail has been sent and a delay penalty applied.
     async fn tls_handshake_and_auth(
         &self,
         stream: TcpStream,
@@ -511,8 +514,9 @@ impl RelayListener {
         let mut tls_stream = self.tls_acceptor.accept(stream).await?;
         debug!(peer = %peer_addr, "tls handshake completed");
 
-        // 主动探测拟态：首帧读取失败/非 Auth/载荷非法，一律按 nginx 行为回 400 后关闭，
-        // 不发 AuthFail 私有帧自报家门；合法客户端的错误路径不受影响（AuthOk/AuthFail 帧照走）
+        // active-probing mimicry: on first-frame read failure / non-Auth / malformed payload,
+        // always reply 400 like nginx and close — never send the private AuthFail frame and
+        // give ourselves away; legitimate clients' error path is unaffected (AuthOk/AuthFail frames flow as usual)
         let frame = match Frame::read_from(&mut tls_stream).await {
             Ok(f) => f,
             Err(e) => {
@@ -533,7 +537,7 @@ impl RelayListener {
             }
         };
 
-        // 节点 ID 长度约束，防止异常数据
+        // node ID length constraint, guards against malformed data
         if auth_req.node_id.is_empty() || auth_req.node_id.len() > 128 {
             write_fake_http_400(&mut tls_stream).await;
             return Err(Error::Protocol("invalid node_id".into()));
@@ -544,7 +548,7 @@ impl RelayListener {
                 self.clear_auth_failures(&peer_addr.ip());
                 let token_hash = sha256_hex(auth_req.token.as_bytes());
                 let peer_version = auth_req.version;
-                // 握手 v2：下游令牌带暴露标记时下发控制面端点（旧下游忽略未知字段）
+                // handshake v2: push the control-plane endpoint when the downstream token carries the expose flag (old downstreams ignore unknown fields)
                 let auth_ok = match &identity {
                     AuthIdentity::Node {
                         control: Some(offer),
@@ -566,7 +570,7 @@ impl RelayListener {
             None => {
                 warn!(peer = %peer_addr, node_id = %auth_req.node_id, "auth failed: bad token");
                 self.record_auth_failure(&peer_addr.ip());
-                // 随机延迟 150~400ms，拖慢在线爆破
+                // random 150-400ms delay to slow down online brute force
                 let delay_ms = 150 + rand::random::<u64>() % 250;
                 tokio::time::sleep(Duration::from_millis(delay_ms)).await;
                 let _ = Frame::empty(FrameType::AuthFail, 0)
@@ -577,7 +581,7 @@ impl RelayListener {
         }
     }
 
-    /// 节点会话：注册 peer、装载通告路由，处理对端发起的 Open 请求直到断开。
+    /// Node session: register the peer, load advertised routes, handle peer-initiated Open requests until disconnect.
     #[allow(clippy::too_many_arguments)]
     async fn serve_node_session(
         self: &Arc<Self>,
@@ -609,10 +613,10 @@ impl RelayListener {
             node_id: node_id.clone(),
         });
 
-        // 处理该对端发起的 Open 请求直到连接断开
-        // （reader 任务结束时 open_tx 被释放，recv 返回 None）
-        // 并发上限：对端 Open 洪泛时每个请求都会 spawn 任务并外连目标，
-        // 超限即回 OpenFail 拒绝，防任务/连接资源耗尽
+        // handle this peer's Open requests until the connection drops
+        // (open_tx is released when the reader task ends and recv returns None)
+        // concurrency cap: on a peer Open flood every request would spawn a task and dial
+        // out; beyond the cap reply OpenFail, guarding task/connection resources
         let open_permits = Arc::new(Semaphore::new(MAX_INBOUND_OPENS_PER_SESSION));
         while let Some(req) = open_rx.recv().await {
             let Ok(permit) = open_permits.clone().try_acquire_owned() else {
@@ -627,7 +631,7 @@ impl RelayListener {
             let node_id = node_id.clone();
             let acl = acl.clone();
             tokio::spawn(async move {
-                let _permit = permit; // 许可随任务持有至桥接结束
+                let _permit = permit; // permit held by the task until the bridge ends
                 this.handle_node_open(mux, req, node_id, acl).await;
             });
         }
@@ -643,7 +647,7 @@ impl RelayListener {
         Ok(())
     }
 
-    /// 客户端会话：处理入站 Open 请求（ACL + 下游路由 + 直连）。
+    /// Client session: handle inbound Open requests (ACL + downstream routing + direct connect).
     async fn serve_client_session(
         self: &Arc<Self>,
         tls_stream: tokio_rustls::server::TlsStream<TcpStream>,
@@ -668,9 +672,9 @@ impl RelayListener {
             account_id: account_id.clone(),
         });
 
-        // 处理该客户端的 Open 请求直到连接断开
-        // （reader 任务结束时 open_tx 被释放，recv 返回 None）
-        // 并发上限：与节点会话同口径，防对端 Open 洪泛耗尽任务/连接资源
+        // handle this client's Open requests until the connection drops
+        // (open_tx is released when the reader task ends and recv returns None)
+        // concurrency cap: same as node sessions, guards against peer Open floods exhausting task/connection resources
         let open_permits = Arc::new(Semaphore::new(MAX_INBOUND_OPENS_PER_SESSION));
         while let Some(req) = open_rx.recv().await {
             let Ok(permit) = open_permits.clone().try_acquire_owned() else {
@@ -684,13 +688,13 @@ impl RelayListener {
             let mux = mux.clone();
             let acl_router = acl_router.clone();
             tokio::spawn(async move {
-                let _permit = permit; // 许可随任务持有至桥接结束
+                let _permit = permit; // permit held by the task until the bridge ends
                 this.handle_client_open(mux, req, acl_router).await;
             });
         }
 
         let _ = reader_handle.await;
-        // 从会话表移除本会话（可能已被 disconnect_client 提前清空）
+        // remove this session from the session table (may already have been cleared by disconnect_client)
         if let Some(mut sessions) = self.clients.get_mut(&account_id) {
             sessions.retain(|m| !Arc::ptr_eq(m, &mux));
             let empty = sessions.is_empty();
@@ -706,7 +710,7 @@ impl RelayListener {
         Ok(())
     }
 
-    /// 处理客户端 Open：ACL 校验 → 下游路由 → 直连，随后桥接。
+    /// Handle a client Open: ACL check -> downstream routing -> direct connect, then bridge.
     async fn handle_client_open(
         self: &Arc<Self>,
         mux: Arc<MuxSession>,
@@ -726,7 +730,7 @@ impl RelayListener {
 
         let target = format!("{}:{}", open_req.target_addr, open_req.target_port);
 
-        // ACL：目标必须命中该账号权限组的规则
+        // ACL: the target must hit a rule of this account's group
         if !acl_router.matches_target(&target) {
             warn!(target = %target, "client open denied by ACL");
             let _ = mux
@@ -735,11 +739,11 @@ impl RelayListener {
             return;
         }
 
-        // 客户端账号流量已有按账号核算（traffic_log），途径对不再重复打点（from 传 None）
+        // client account traffic is already metered per account (traffic_log); transit pairs skip duplicate metering (from = None)
         self.route_open(mux, req, open_req, target, None).await;
     }
 
-    /// 处理扇入对端 Open：PeerAcl 收敛 → 下游路由 → 直连，随后桥接。
+    /// Handle a fan-in peer Open: PeerAcl restriction -> downstream routing -> direct connect, then bridge.
     async fn handle_node_open(
         self: &Arc<Self>,
         mux: Arc<MuxSession>,
@@ -760,13 +764,14 @@ impl RelayListener {
 
         let target = format!("{}:{}", open_req.target_addr, open_req.target_port);
 
-        // 带宽诊断保留地址：PeerAcl 收敛检查之前拦截（协议级诊断服务，与心跳同级，
-        // 本地应答、无任何路由能力，收敛节点同样可测，不构成 ACL 旁路）
+        // bandwidth-diagnostic reserved address: intercept before the PeerAcl restriction check
+        // (protocol-level diagnostic service, same tier as heartbeat; answered locally,
+        // no routing capability, restricted nodes equally testable, not an ACL bypass)
         if crate::relay::bandwidth::intercept(&mux, &req, &open_req.target_addr).await {
             return;
         }
 
-        // 扇入收敛：对端带收敛表时目标必须命中允许集合（None = 不收敛，放行一切）
+        // fan-in restriction: with a restriction table, targets must hit the allowlist (None = unrestricted, allow all)
         if let Some(acl) = &acl
             && !acl.allowed(&target)
         {
@@ -781,13 +786,13 @@ impl RelayListener {
             return;
         }
 
-        // 途径核算：扇入对端发起的转发按 from=node_id 入账
+        // transit metering: fan-in peer-initiated forwards booked with from=node_id
         self.route_open(mux, req, open_req, target, Some(&node_id))
             .await;
     }
 
-    /// Open 路由与桥接：优先走下游节点通告路由，否则本机直连。
-    /// `from` 为途径核算的来源标识（扇入对端 node_id；None = 不打点）。
+    /// Open routing and bridging: prefer downstream-node advertised routes, else local direct connect.
+    /// `from` is the transit-metering source label (fan-in peer node_id; None = no metering).
     async fn route_open(
         self: &Arc<Self>,
         mux: Arc<MuxSession>,
@@ -799,7 +804,7 @@ impl RelayListener {
         let channel = mux.accept_channel(req.channel_id);
         let meter_from = self.transit.clone().zip(from.map(str::to_string));
 
-        // 优先走下游节点通告路由，否则本机直连
+        // prefer downstream-node advertised routes, else local direct connect
         let bridged = if let Some(peer_id) = self.resolve_peer(&open_req.target_addr) {
             match self
                 .open_channel(&peer_id, &open_req.target_addr, open_req.target_port)
@@ -813,7 +818,7 @@ impl RelayListener {
                     {
                         return;
                     }
-                    // bridge(channel, peer)：up = 来源→去向（下游对端）
+                    // bridge(channel, peer): up = source->destination (downstream peer)
                     if let Ok((up, down)) = crate::relay::bridge::bridge(channel, peer_channel).await
                         && let Some((m, f)) = &meter_from
                     {
@@ -836,7 +841,7 @@ impl RelayListener {
                     {
                         return;
                     }
-                    // bridge(channel, local)：up = 来源→去向（本机终结）
+                    // bridge(channel, local): up = source->destination (locally terminated)
                     if let Ok((up, down)) = crate::relay::bridge::bridge(channel, local).await
                         && let Some((m, f)) = &meter_from
                     {
@@ -859,7 +864,7 @@ impl RelayListener {
         mux.close_channel(req.channel_id);
     }
 
-    /// 更新某下游节点的通告路由并重建汇总表。
+    /// Update a downstream node's advertised routes and rebuild the aggregate table.
     fn set_peer_routes(&self, node_id: &str, entries: Vec<String>) {
         if entries.is_empty() {
             self.peer_advertise.remove(node_id);
@@ -890,12 +895,12 @@ impl RelayListener {
                 }
             }
         }
-        // 最长后缀优先
+        // longest suffix first
         table.suffixes.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
         self.routes.store(Arc::new(table));
     }
 
-    /// 向指定节点发起新连接请求（Open Channel）
+    /// Initiate a new connection request to the given node (Open Channel)
     pub async fn open_channel(
         &self,
         node_id: &str,
@@ -917,7 +922,7 @@ impl RelayListener {
     }
 }
 
-/// 连接计数守卫：drop 时自动扣减。
+/// Connection count guard: auto-decrements on drop.
 struct ConnGuard(Arc<AtomicUsize>);
 
 impl Drop for ConnGuard {
@@ -926,7 +931,7 @@ impl Drop for ConnGuard {
     }
 }
 
-/// 把 ACL 规则字符串编译为 ProxyRouter（命中即允许）。
+/// Compile ACL rule strings into a ProxyRouter (a hit means allowed).
 pub fn build_acl_router(rules: &[String]) -> Arc<ProxyRouter> {
     let mut router = ProxyRouter::new();
     for rule in rules {
@@ -945,8 +950,9 @@ pub fn build_acl_router(rules: &[String]) -> Arc<ProxyRouter> {
     Arc::new(router)
 }
 
-/// 主动探测拟态响应：仿真 nginx `400 Bad Request`（在 TLS 内，与真实 HTTPS 服务行为一致），
-/// 替代暴露私有协议的 AuthFail 帧。调用方负责关闭/丢弃连接；认证失败的限频与延迟惩罚不受影响。
+/// Active-probing mimicry response: emulates nginx `400 Bad Request` (inside TLS, matching a
+/// real HTTPS server's behavior) instead of the private-protocol AuthFail frame. The caller
+/// closes/drops the connection; auth-failure rate limiting and delay penalties are unaffected.
 async fn write_fake_http_400<S>(stream: &mut S)
 where
     S: tokio::io::AsyncWrite + Unpin,

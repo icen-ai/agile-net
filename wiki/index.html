@@ -10,18 +10,21 @@
 </head>
 <body>
 <header class="topbar">
-  <button class="tb-icon-btn" id="btn-menu" aria-label="目录"><i data-ic="menu" data-sz="18"></i></button>
+  <button class="tb-icon-btn" id="btn-menu" data-i18n-title="ui.menu" aria-label="目录"><i data-ic="menu" data-sz="18"></i></button>
   <a class="brand" href="#/">
     <span class="brand-logo"><i data-ic="zap" data-sz="16"></i></span>
     <span class="brand-name">AgileNet</span>
-    <span class="brand-tag">文档</span>
+    <span class="brand-tag" data-i18n="ui.brandTag">文档</span>
   </a>
   <div class="tb-spacer"></div>
   <button class="search-btn" id="btn-search">
-    <i data-ic="search" data-sz="14"></i><span>搜索文档</span><kbd>Ctrl K</kbd>
+    <i data-ic="search" data-sz="14"></i><span data-i18n="ui.searchBtn">搜索文档</span><kbd>Ctrl K</kbd>
+  </button>
+  <button class="lang-btn" id="btn-lang" data-i18n-title="ui.lang" aria-label="切换语言">
+    <i data-ic="globe" data-sz="15"></i><span id="btn-lang-label">English</span>
   </button>
   <a class="tb-icon-btn" href="https://github.com/icen-ai/agile-net" target="_blank" rel="noopener" aria-label="GitHub"><i data-ic="github" data-sz="17"></i></a>
-  <button class="tb-icon-btn" id="btn-theme" aria-label="切换主题"></button>
+  <button class="tb-icon-btn" id="btn-theme" data-i18n-title="ui.theme" aria-label="切换主题"></button>
 </header>
 
 <div class="layout">
@@ -29,7 +32,7 @@
     <nav id="nav"></nav>
     <div class="sidebar-foot">
       <a href="https://github.com/icen-ai/agile-net" target="_blank" rel="noopener"><i data-ic="github" data-sz="13"></i> icen-ai/agile-net</a>
-      <a href="https://github.com/icen-ai/agile-net/releases" target="_blank" rel="noopener"><i data-ic="download" data-sz="13"></i> 下载发布版</a>
+      <a href="https://github.com/icen-ai/agile-net/releases" target="_blank" rel="noopener"><i data-ic="download" data-sz="13"></i> <span data-i18n="ui.releases">下载发布版</span></a>
     </div>
   </aside>
   <div class="sidebar-mask" id="sidebar-mask"></div>
@@ -37,8 +40,8 @@
   <main class="main">
     <article class="content" id="content"></article>
     <footer class="footer">
-      <span>AgileNet — 双产物网络穿透与代理链路由系统</span>
-      <span>文档与软件同源，托管于 <a href="https://github.com/icen-ai/agile-net" target="_blank" rel="noopener">GitHub</a></span>
+      <span data-i18n="ui.footerTag">AgileNet — 双产物网络穿透与代理链路由系统</span>
+      <span><span data-i18n="ui.footerHosted">文档与软件同源，托管于</span> <a href="https://github.com/icen-ai/agile-net" target="_blank" rel="noopener">GitHub</a></span>
     </footer>
   </main>
 
@@ -50,7 +53,7 @@
   <div class="search-panel">
     <div class="search-input-row">
       <i data-ic="search" data-sz="15"></i>
-      <input id="search-input" placeholder="搜索文档内容…" autocomplete="off">
+      <input id="search-input" data-i18n-ph="ui.searchPh" placeholder="搜索文档内容…" autocomplete="off">
       <kbd>ESC</kbd>
     </div>
     <div class="search-results" id="search-results"></div>
@@ -58,6 +61,8 @@
 </div>
 
 <script src="assets/icons.js"></script>
+<script src="assets/agi18n.js"></script>
+<script src="assets/wikilang.js"></script>
 <script src="assets/marked.min.js"></script>
 <script src="assets/app.js"></script>
 </body>

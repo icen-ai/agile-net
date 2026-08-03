@@ -1,9 +1,9 @@
-//! 节点装配根：`NodeServer::start/stop`。
+//! Node assembly root: `NodeServer::start/stop`.
 //!
-//! 把原本散落在 `main.rs` 的装配逻辑（数据库 / JWT / Relay listener /
-//! connector / 本地代理 / API & Web 后台 / 后台任务）收敛为可嵌入的
-//! 服务对象：`anet-svc` 的 `serve` 子命令与 `anet-gui` 的内嵌节点
-//! 共用同一套装配代码。
+//! Consolidates the assembly logic previously scattered in `main.rs` (database / JWT /
+//! Relay listener / connector / local proxy / API & Web dashboard / background tasks)
+//! into an embeddable service object: the `anet-svc` `serve` subcommand and the
+//! `anet-gui` embedded node share the same assembly code.
 
 pub mod acl;
 pub mod connectors;
@@ -32,55 +32,55 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Instant;
 
-/// 启动覆盖项（嵌入场景用；全部缺省时行为与原 main 一致）。
+/// Startup overrides (for embedding; all-default behaves like the old main).
 #[derive(Clone, Default)]
 pub struct NodeServerOptions {
-    /// 覆盖数据库路径（优先级高于 DATABASE_PATH 环境变量与 config.db_path）
+    /// Override the database path (takes precedence over DATABASE_PATH env and config.db_path)
     pub db_path: Option<String>,
-    /// 覆盖 API 监听地址（优先级高于 API_LISTEN 环境变量与 config.api.addr；支持端口 0 动态分配）
+    /// Override the API listen address (over API_LISTEN env and config.api.addr; port 0 = dynamic)
     pub api_listen: Option<String>,
-    /// 覆盖对外接入地址（优先级高于 AGILE_PUBLIC_HOST 环境变量与 config.public_host）
+    /// Override the public endpoint address (over AGILE_PUBLIC_HOST env and config.public_host)
     pub public_host: Option<String>,
-    /// 跳过环境变量预置（AGILE_ADMIN_PASSWORD / AGILE_RELAY_TOKENS），嵌入场景避免宿主进程环境污染
+    /// Skip env seeding (AGILE_ADMIN_PASSWORD / AGILE_RELAY_TOKENS); avoids host-process env pollution when embedded
     pub skip_env_seed: bool,
-    /// 复用调用方的内存日志缓冲（缺省新建）
+    /// Reuse the caller's in-memory log buffer (a new one otherwise)
     pub log_buffer: Option<LogBuffer>,
-    /// 路由再发布：客户端引擎合并路由 + 开启器注册表（GUI 内嵌场景；
-    /// 客户端隧道规则转售给下游，Open 命中时经对应隧道转发）
+    /// Route re-publish: client engine merged router + opener registry (GUI embedding;
+    /// client tunnel routes resold downstream; an Open hit forwards via the matching tunnel)
     pub client_routes: Option<ClientRoutes>,
-    /// 客户端角色代理状态槽（GUI 内嵌场景宿主写入；缺省为空槽 = 未上报，
-    /// status API 的 proxy 段回落 proxy_listen 旧行为）
+    /// Client-role proxy state slot (written by the GUI host; default empty slot = unreported,
+    /// status API's proxy section falls back to the legacy proxy_listen behavior)
     pub client_proxy_slot: ClientProxySlot,
 }
 
-/// 路由再发布注入件：客户端引擎的合并路由表 + 通道开启器注册表。
+/// Route re-publish injection: client engine's merged router + channel opener registry.
 pub type ClientRoutes = (
     Arc<ArcSwap<ProxyRouter>>,
     Arc<dashmap::DashMap<String, Arc<dyn ChannelOpener>>>,
 );
 
-/// 客户端角色代理状态（GUI 宿主进程写入：反映客户端引擎代理真实状态，
-/// 与节点角色 proxy_listen 是两个东西）。
+/// Client-role proxy state (written by the GUI host process: reflects the client engine's
+/// real proxy state — distinct from the node-role proxy_listen).
 #[derive(Debug, Clone)]
 pub struct ClientProxyInfo {
-    /// 客户端代理是否在监听
+    /// Whether the client proxy is listening
     pub enabled: bool,
-    /// 代理模式："system" = 接管系统代理 / "local" = 仅监听端口
+    /// Proxy mode: "system" = takes over the system proxy / "local" = listen-only
     pub mode: String,
-    /// 监听地址（127.0.0.1:port；未启用时为空串）
+    /// Listen address (127.0.0.1:port; empty when disabled)
     pub listen: String,
 }
 
-/// 客户端代理状态槽（宿主与内嵌节点共享，ArcSwap 无锁热更；
-/// 槽值 None = 未上报，status 的 proxy 段维持节点 proxy_listen 行为）。
+/// Client proxy state slot (shared by host and embedded node; lock-free hot update via ArcSwap;
+/// None = unreported, status proxy section keeps the node proxy_listen behavior).
 pub type ClientProxySlot = Arc<ArcSwap<Option<ClientProxyInfo>>>;
 
-/// 新建客户端代理状态槽（初值 None = 未上报）。
+/// Create a client proxy state slot (initial None = unreported).
 pub fn new_client_proxy_slot() -> ClientProxySlot {
     Arc::new(ArcSwap::from_pointee(None))
 }
 
-/// 运行中的节点实例（`stop` 幂等）。
+/// Running node instance (`stop` is idempotent).
 pub struct NodeServer {
     db: Database,
     jwt: Arc<JwtService>,
@@ -94,20 +94,20 @@ pub struct NodeServer {
 }
 
 impl NodeServer {
-    /// 以默认覆盖项启动（等价于原 `agile-net-node` 主流程）。
+    /// Start with default overrides (equivalent to the old `agile-net-node` main flow).
     pub async fn start(config: NodeConfig) -> Result<Self> {
         Self::start_with(config, NodeServerOptions::default()).await
     }
 
-    /// 装配并启动全部角色（listener/connector/proxy/api），返回运行句柄。
+    /// Assemble and start all roles (listener/connector/proxy/api); returns the running handle.
     pub async fn start_with(config: NodeConfig, opts: NodeServerOptions) -> Result<Self> {
-        // rustls 过程级 CryptoProvider（ring）——任何 ServerConfig/ClientConfig 构建前必须安装
+        // rustls process-level CryptoProvider (ring) — must be installed before any ServerConfig/ClientConfig is built
         agile_net_core::init_crypto_provider();
 
         let mut tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
         let log_buffer = opts.log_buffer.unwrap_or_default();
 
-        // 1. 数据库
+        // 1. Database
         let db_path = opts
             .db_path
             .clone()
@@ -131,22 +131,22 @@ impl NodeServer {
             seed_relay_tokens_from_env(&db)?;
         }
 
-        // 2. JWT 服务（密钥从数据库装载或生成）
+        // 2. JWT service (secret loaded from the database or generated)
         let jwt = Arc::new(JwtService::load_or_create(db.clone())?);
 
-        // 3. 路由表（节点本地代理由全部规则驱动，命中 → 自动选路隧道，未命中 → 直连）
+        // 3. Router (the node's local proxy is driven by all rules: hit -> auto-pick tunnel, miss -> direct)
         let shared_router = Arc::new(ArcSwap::from_pointee(build_router(&db)));
 
-        // 握手 v2：控制端点槽（API 装配后回填）与可管理上游注册表（connector 同步）
+        // handshake v2: control endpoint slot (backfilled after API assembly) and manageable upstream registry (connector sync)
         let control_api_slot: Arc<arc_swap::ArcSwapOption<(String, u16)>> =
             Arc::new(arc_swap::ArcSwapOption::from_pointee(None));
         let manageable_registry = crate::relay_auth::ManageableRegistry::default();
 
-        // 对端收敛注册表：组规则 → PeerAcl（扇入/扇出共享；热重载循环随 config_version 重建）
+        // peer ACL registry: group rules -> PeerAcl (shared by fan-in/fan-out; hot-reload loop rebuilds on config_version change)
         let acl_registry = Arc::new(PeerAclRegistry::new());
         acl_registry.rebuild(&db);
 
-        // 中继途径核算表（listener/connector/proxy 三处共享打点；status transit 段数据源）
+        // transit meter (shared instrumentation across listener/connector/proxy; data source of the status transit section)
         let transit_meter = TransitMeter::new();
 
         // 4. Relay Listener
@@ -162,7 +162,7 @@ impl NodeServer {
             );
 
             let tls_acceptor = if let Some(acme_cfg) = &config.acme {
-                // ACME 模式：ALPN 多路复用解析器（签发/续期免停机热替换）
+                // ACME mode: ALPN multiplexing resolver (zero-downtime hot swap on issue/renewal)
                 let cert_path = std::path::PathBuf::from(&acme_cfg.cert_path);
                 let key_path = std::path::PathBuf::from(&acme_cfg.key_path);
                 let (certs, key) = if cert_path.exists() && key_path.exists() {
@@ -197,7 +197,7 @@ impl NodeServer {
                 tracing::info!(domain = %acme_cfg.domain, "ACME manager running");
                 tokio_rustls::TlsAcceptor::from(Arc::new(server_config))
             } else {
-                // 静态/自签证书模式
+                // static/self-signed cert mode
                 let (certs, key) = load_or_generate_self_signed(
                     std::path::Path::new(&listener_cfg.cert_path),
                     std::path::Path::new(&listener_cfg.key_path),
@@ -217,7 +217,7 @@ impl NodeServer {
             };
 
             let listener = {
-                // 会话带宽限速接线：relay_token.rate_limit_kbps → core TokenBucket（B/s）
+                // session rate-limit wiring: relay_token.rate_limit_kbps -> core TokenBucket (B/s)
                 let db_rl = db.clone();
                 let l = RelayListener::with_validator(addr, validator, tls_acceptor)
                     .with_transit_meter(transit_meter.clone())
@@ -240,7 +240,7 @@ impl NodeServer {
                 }
             }));
             tracing::info!(addr = %addr, "relay listener started");
-            // 扇入收敛拒绝事件 → 审计（对端身份 = node_id；按 peer+target 每分钟去重）
+            // fan-in ACL-denied events -> audit (peer identity = node_id; deduped per peer+target per minute)
             tasks.push(connectors::spawn_acl_audit_task(
                 db.clone(),
                 "listener".to_string(),
@@ -249,9 +249,10 @@ impl NodeServer {
             relay_listener = Some(listener);
         }
 
-        // 5. Relay Connector（扇出角色，多目标扇出/容灾；DB 为唯一事实来源，热操作经 ConnectorManager）
-        // TOML `[[connectors]]` 降级为初始导入：同名已存在则跳过（TOML 无 name 字段，以地址为名；
-        // 无组概念 → 不收敛），运行时以 DB 为准
+        // 5. Relay Connector (fan-out role: multi-target fan-out/failover; DB is the single source of truth, hot ops via ConnectorManager)
+        // TOML `[[connectors]]` is degraded to seed import: skipped when a same-named record exists
+        // (TOML has no name field, the address acts as the name; no group concept -> unrestricted);
+        // at runtime the DB wins
         for connector_cfg in &config.connectors {
             let advertise = connector_cfg.advertise.join(",");
             match db.import_connector_if_absent(
@@ -286,7 +287,7 @@ impl NodeServer {
         );
         connector_manager.start_all().await;
 
-        // 6. 本地代理入站（可选）
+        // 6. Local proxy inbound (optional)
         let mut proxy_stats = None;
         let mut proxy_listen = None;
         if let Some(proxy_cfg) = &config.proxy {
@@ -325,7 +326,7 @@ impl NodeServer {
             transit_meter: transit_meter.clone(),
         });
 
-        // 路由热更新监视：config_version 变化即重建节点本地代理路由表与对端收敛组路由。
+        // Route hot-reload watcher: rebuild the local proxy router and peer ACL group routers on config_version change.
         {
             let db = db.clone();
             let shared_router = shared_router.clone();
@@ -353,9 +354,11 @@ impl NodeServer {
             }));
         }
 
-        // 节点级流量采样：分钟级把实时计数差分入 node_traffic_log（扇入对端/扇出/中继三维）。
-        // 各源计数均为累计值：fanin/fanout 随会话重连归零（回退视为重置，按当前值入账）；
-        // transit meter 进程内只增不减；三维互为独立视角（同一字节可在多个维度各计一次）。
+        // Node-level traffic sampling: every minute, diff live counters into node_traffic_log
+        // (three dimensions: fan-in peer / fan-out / transit). All source counters are cumulative:
+        // fanin/fanout reset on session reconnect (a rollback counts as a reset, booked at the current
+        // value); the transit meter only grows within the process; the three dimensions are
+        // independent views (the same byte may count once in each).
         {
             let db = db.clone();
             let listener = relay_listener.clone();
@@ -373,7 +376,7 @@ impl NodeServer {
                 loop {
                     interval.tick().await;
 
-                    // 扇入对端（last 表随当前在线对端收敛，防无界增长）
+                    // fan-in peers (last map pruned to currently online peers, avoiding unbounded growth)
                     if let Some(l) = &listener {
                         let cur: Vec<(String, u64, u64)> = l.peer_traffic();
                         last_fanin.retain(|k, _| cur.iter().any(|(id, _, _)| id == k));
@@ -383,7 +386,7 @@ impl NodeServer {
                         }
                     }
 
-                    // 扇出 connector（同上按当前句柄收敛）
+                    // fan-out connectors (same pruning by current handles)
                     let cur = connector_manager.traffic();
                     last_fanout.retain(|k, _| cur.iter().any(|(name, _, _)| name == k));
                     for (name, up, down) in cur {
@@ -391,7 +394,7 @@ impl NodeServer {
                         let _ = db.add_node_traffic("fanout", &name, "", du, dd);
                     }
 
-                    // 中继途径对
+                    // transit route pairs
                     let (_, _, pairs) = meter.snapshot();
                     for p in pairs {
                         let key = (p.from, p.to);
@@ -403,7 +406,7 @@ impl NodeServer {
             }));
         }
 
-        // 数据留存清理任务：审计日志 90 天 + 节点级流量 30 天 + 过期 refresh token，每 24h 执行
+        // Data retention cleanup: audit log 90d + node traffic 30d + expired refresh tokens, every 24h
         {
             let db = db.clone();
             tasks.push(tokio::spawn(async move {
@@ -444,7 +447,7 @@ impl NodeServer {
             .or_else(|| std::env::var("API_LISTEN").ok())
             .unwrap_or_else(|| config.api.addr.clone());
         let api_socket_addr: SocketAddr = api_listen_addr.parse()?;
-        // connect_url / tunnel 端点使用声明端口；端口 0（动态分配）时回读实际端口
+        // connect_url / tunnel endpoint uses the declared port; with port 0 (dynamic), read back the actual port
         let api_port = api_socket_addr.port();
 
         let state = {
@@ -478,7 +481,7 @@ impl NodeServer {
         let mut api_stop_tx = None;
         let bound_api_addr: SocketAddr = match (api_tls_cert, api_tls_key) {
             (Some(cert), Some(key)) => {
-                // HTTPS 模式（内置 TLS，可复用 ACME/静态证书；生产推荐）
+                // HTTPS mode (built-in TLS, can reuse ACME/static certs; recommended for production)
                 let tls_config = axum_server::tls_rustls::RustlsConfig::from_pem_file(&cert, &key)
                     .await
                     .map_err(|e| anyhow::anyhow!("api tls config: {e}"))?;
@@ -498,7 +501,7 @@ impl NodeServer {
                         "API 以明文 HTTP 监听 {api_socket_addr} — 生产环境请配置 [api] tls_cert_path/tls_key_path 或前置 HTTPS 反代"
                     );
                 }
-                // 先绑定再服务：支持端口 0 动态分配（嵌入/测试），并消除启动竞态
+                // bind before serving: supports port 0 dynamic allocation (embedding/tests) and removes the startup race
                 let api_listener = tokio::net::TcpListener::bind(api_socket_addr).await?;
                 let actual = api_listener.local_addr()?;
                 tracing::info!(addr = %actual, "Web Dashboard & API Server started (http://{actual})");
@@ -518,7 +521,7 @@ impl NodeServer {
             }
         };
 
-        // 动态端口（0）时回填实际端口，保证 connect_url / config.tunnel 指向真实端点
+        // with a dynamic port (0), backfill the actual port so connect_url / config.tunnel point at the real endpoint
         let state = if state.api_port() != bound_api_addr.port() {
             let mut st = state;
             st.set_api_port(bound_api_addr.port());
@@ -527,7 +530,7 @@ impl NodeServer {
             state
         };
 
-        // 握手 v2：回填本节点管理 API 端点（relay_token 暴露控制面下发内容）
+        // handshake v2: backfill this node's admin API endpoint (sent to relay_tokens flagged to expose the control plane)
         control_api_slot.store(Some(Arc::new((public_host.clone(), bound_api_addr.port()))));
 
         Ok(Self {
@@ -543,17 +546,17 @@ impl NodeServer {
         })
     }
 
-    /// API 实际监听地址（端口 0 动态分配时为回读值）。
+    /// Actual API listen address (read-back value when port 0 was dynamically allocated).
     pub fn api_addr(&self) -> SocketAddr {
         self.api_addr
     }
 
-    /// 各上游 connector 的（地址, 状态）（GUI 上游列表展示用）。
+    /// (addr, state) of each upstream connector (for the GUI upstream list).
     pub fn connector_states(&self) -> Vec<(String, String)> {
         self.connector_manager.states()
     }
 
-    /// 扇出 Connector 管理器（GUI 进程内热操作 / 管理 API 共用）。
+    /// Fan-out connector manager (shared by GUI in-process hot ops and the admin API).
     pub fn connector_manager(&self) -> Arc<ConnectorManager> {
         self.connector_manager.clone()
     }
@@ -570,12 +573,12 @@ impl NodeServer {
         self.runtime.clone()
     }
 
-    /// API 共享状态（含限流器与 connect_url 缓存）。
+    /// API shared state (includes rate limiters and the connect_url cache).
     pub fn api_state(&self) -> ApiState {
         self.state.clone()
     }
 
-    /// 停止节点：API 优雅停机 → 全部 connector 断开 → 中止全部后台任务。幂等。
+    /// Stop the node: graceful API shutdown -> disconnect all connectors -> abort all background tasks. Idempotent.
     pub async fn stop(mut self) {
         if let Some(tx) = self.api_stop_tx.take() {
             let _ = tx.send(());
@@ -587,7 +590,7 @@ impl NodeServer {
         for t in &self.tasks {
             t.abort();
         }
-        // 等待任务真正退出（listener/proxy 的 TcpListener 随任务析构释放端口）
+        // wait for tasks to actually exit (listener/proxy TcpListeners release their ports on task drop)
         for t in self.tasks.drain(..) {
             let _ = t.await;
         }
@@ -595,7 +598,7 @@ impl NodeServer {
     }
 }
 
-/// 累计计数差分：回退视为会话重置（按当前值入账），返回 (up, down) 增量。
+/// Cumulative counter delta: a rollback counts as a session reset (booked at the current value); returns (up, down) deltas.
 fn counter_delta<K: Eq + std::hash::Hash>(
     map: &mut std::collections::HashMap<K, (u64, u64)>,
     key: K,
@@ -608,7 +611,7 @@ fn counter_delta<K: Eq + std::hash::Hash>(
     (du as i64, dd as i64)
 }
 
-/// 从配置文件路径加载节点配置（文件缺失时回落默认配置）。
+/// Load node config from a file path (falls back to defaults when the file is missing).
 pub fn load_config(path: &str) -> Result<NodeConfig> {
     match std::fs::read_to_string(path) {
         Ok(content) => Ok(toml::from_str(&content)?),
@@ -620,7 +623,7 @@ pub fn load_config(path: &str) -> Result<NodeConfig> {
     }
 }
 
-/// 环境变量预置管理员：AGILE_ADMIN_USERNAME / AGILE_ADMIN_PASSWORD。
+/// Seed the admin from env: AGILE_ADMIN_USERNAME / AGILE_ADMIN_PASSWORD.
 fn seed_admin_from_env(db: &Database) -> Result<()> {
     if db.has_admin()? {
         return Ok(());
@@ -637,11 +640,12 @@ fn seed_admin_from_env(db: &Database) -> Result<()> {
     Ok(())
 }
 
-/// 环境变量预置 Relay Tokens：AGILE_RELAY_TOKENS="psk_aaa,psk_bbb"（逗号分隔）。
+/// Seed relay tokens from env: AGILE_RELAY_TOKENS="psk_aaa,psk_bbb" (comma-separated).
 ///
-/// 容器编排场景下，下游节点的 connector token 需要预先存在于上游数据库。
-/// 已存在（按哈希判重）的 token 会跳过，保证幂等。
-/// 语法扩展：`psk_xxx|expose:rules` 或 `psk_xxx|expose`（暴露控制面，档位缺省 full）。
+/// In container orchestration, a downstream node's connector token must pre-exist in the
+/// upstream database. Tokens already present (deduped by hash) are skipped, keeping it
+/// idempotent. Syntax extension: `psk_xxx|expose:rules` or `psk_xxx|expose` (expose the
+/// control plane; scope tier defaults to full).
 fn seed_relay_tokens_from_env(db: &Database) -> Result<()> {
     let Ok(tokens) = std::env::var("AGILE_RELAY_TOKENS") else {
         return Ok(());
@@ -677,12 +681,12 @@ fn seed_relay_tokens_from_env(db: &Database) -> Result<()> {
     Ok(())
 }
 
-/// 从数据库全部规则构建本地代理路由表（命中 → 自动选路隧道）。
+/// Build the local proxy router from all DB rules (hit -> auto-pick tunnel).
 fn build_router(db: &Database) -> ProxyRouter {
     let mut router = ProxyRouter::new();
     if let Ok((rules, _)) = db.list_rules(1, 1000, None, None) {
         for r in rules {
-            // 节点本地代理：命中规则的流量经 PeerAutoOpener 自动选择下游节点
+            // node-local proxy: rule-hit traffic picks a downstream node automatically via PeerAutoOpener
             let outbound = Outbound::tunnel("");
             match r.rule_type.as_str() {
                 "ip-cidr" => {
@@ -702,7 +706,7 @@ fn build_router(db: &Database) -> ProxyRouter {
     router
 }
 
-/// 加载 PEM 证书链。
+/// Load a PEM certificate chain.
 fn load_pem_certs(path: &str) -> Result<Vec<rustls::pki_types::CertificateDer<'static>>> {
     let data = std::fs::read(path)?;
     let certs: Vec<_> = rustls_pemfile::certs(&mut data.as_slice())
@@ -714,7 +718,7 @@ fn load_pem_certs(path: &str) -> Result<Vec<rustls::pki_types::CertificateDer<'s
     Ok(certs)
 }
 
-/// 加载 PEM 证书链与私钥。
+/// Load a PEM certificate chain and private key.
 fn load_pem_certs_and_key(
     cert_path: &std::path::Path,
     key_path: &std::path::Path,
@@ -736,7 +740,7 @@ fn load_pem_certs_and_key(
     Ok((certs, key))
 }
 
-/// 解析上游地址（支持域名；IPv4 优先，规避双栈网络中 IPv6 不可达问题）。
+/// Resolve an upstream address (domains supported; IPv4 preferred to avoid unreachable IPv6 on dual-stack networks).
 async fn resolve_upstream(addr: &str) -> Result<SocketAddr> {
     if let Ok(a) = addr.parse::<SocketAddr>() {
         return Ok(a);
@@ -755,20 +759,20 @@ mod tests {
     use super::counter_delta;
     use std::collections::HashMap;
 
-    /// 采样差分：常规递增 / 会话重置（计数回退按当前值入账）/ 双零
+    /// Sampling deltas: normal growth / session reset (rollback booked at current value) / double zero
     #[test]
     fn counter_delta_handles_growth_reset_and_zero() {
         let mut map: HashMap<String, (u64, u64)> = HashMap::new();
 
-        // 首次：全额为增量
+        // first sample: full value is the delta
         assert_eq!(counter_delta(&mut map, "a".into(), 100, 200), (100, 200));
-        // 递增：差额入账
+        // growth: difference booked
         assert_eq!(counter_delta(&mut map, "a".into(), 130, 260), (30, 60));
-        // 回退（会话重连计数归零）：按当前值入账
+        // rollback (session reconnect zeroed the counter): booked at current value
         assert_eq!(counter_delta(&mut map, "a".into(), 10, 5), (10, 5));
-        // 双零：无增量
+        // double zero: no delta
         assert_eq!(counter_delta(&mut map, "a".into(), 10, 5), (0, 0));
-        // 多 key 互不影响
+        // keys are independent
         assert_eq!(counter_delta(&mut map, "b".into(), 7, 8), (7, 8));
         assert_eq!(counter_delta(&mut map, "a".into(), 12, 9), (2, 4));
     }

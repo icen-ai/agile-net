@@ -1,21 +1,23 @@
-//! ifconfig / route / mtu — 网卡与路由（P1，default-net）。
+//! ifconfig / route / mtu — interfaces and routing (P1, default-net).
 //!
-//! default-net 提供网卡清单（IP/MAC/类型/速率/默认网关）；MTU 与完整路由表
-//! default-net 0.22 未覆盖，按平台补齐。解析函数与数据源分离（注入文本），
-//! 单测不依赖具体机器环境：
-//! - Linux/Android：`/sys/class/net/*/mtu`、`/proc/net/route`（procfs/sysfs 必有，
-//!   国产化裁剪环境亦无私有依赖）；
-//! - Windows：`netsh interface ipv4/ipv6 show interfaces`、`route print -4`
-//!   （输出为 OEM 码页，有损解码后仅按数字/IPv4 列解析，与界面语言无关）；
-//! - macOS/BSD：`ifconfig`、`netstat -rn -f inet`。
+//! default-net provides the interface list (IP/MAC/type/speed/default gateway); MTU and the full
+//! routing table are not covered by default-net 0.22 and are filled in per platform. Parsers are
+//! separated from data sources (text injection), so unit tests do not depend on the host environment:
+//! - Linux/Android: `/sys/class/net/*/mtu`, `/proc/net/route` (procfs/sysfs always exist,
+//!   no private dependencies even on trimmed domestic OS images);
+//! - Windows: `netsh interface ipv4/ipv6 show interfaces`, `route print -4`
+//!   (output is in the OEM code page; after lossy decoding only numeric/IPv4 columns are parsed,
+//!   independent of the display language);
+//! - macOS/BSD: `ifconfig`, `netstat -rn -f inet`.
 //!
-//! 路由表仅覆盖 IPv4（运维诊断主场景）；默认网关（含 IPv6）由 default-net 给出。
+//! The routing table covers IPv4 only (the main ops-diagnostic scenario); the default gateway
+//! (including IPv6) comes from default-net.
 
 use super::ToolOutcome;
 use serde::Serialize;
 use std::collections::HashMap;
 
-/// 网卡结构化信息（ifconfig / mtu 的 json 单元）。
+/// Structured interface info (the json unit of ifconfig / mtu).
 #[derive(Debug, Clone, Serialize)]
 struct IfaceInfo {
     index: u32,
@@ -36,19 +38,19 @@ struct IfaceInfo {
     transmit_bps: Option<u64>,
 }
 
-/// 单条 IPv4 路由（route 的 json 单元）。
+/// A single IPv4 route (the json unit of route).
 #[derive(Debug, Clone, Serialize)]
 struct RouteEntry {
-    /// 目的网段（如 0.0.0.0/0；macOS/BSD 可能为 default 或主机地址）
+    /// Destination network (e.g. 0.0.0.0/0; may be "default" or a host address on macOS/BSD)
     destination: String,
-    /// 下一跳网关；None 表示直连（on-link）
+    /// Next-hop gateway; None means directly connected (on-link)
     gateway: Option<String>,
-    /// 出接口（Windows route print 只有接口 IP，原样呈现）
+    /// Outgoing interface (Windows route print only has the interface IP, presented verbatim)
     iface: String,
     metric: Option<u32>,
 }
 
-/// MTU 查询表：Linux/macOS/BSD 按网卡名，Windows 按网卡 index（netsh Idx 即 IfIndex）。
+/// MTU lookup table: by interface name on Linux/macOS/BSD, by interface index on Windows (netsh Idx is the IfIndex).
 #[derive(Default)]
 struct MtuTable {
     by_name: HashMap<String, u32>,
@@ -64,14 +66,15 @@ impl MtuTable {
     }
 }
 
-/// 汇总当前平台 MTU 数据源；读取失败仅导致 MTU 列缺失（显示「-」），不阻塞主输出。
+/// Aggregate the current platform's MTU data source; read failure only drops the MTU column
+/// (displayed as "-"), never blocks the main output.
 fn mtu_table() -> MtuTable {
     let mut t = MtuTable::default();
     load_mtu_table(&mut t);
     t
 }
 
-/// Linux/Android：sysfs 逐网卡读 mtu 文件。
+/// Linux/Android: read the mtu file per interface from sysfs.
 #[cfg(any(target_os = "linux", target_os = "android"))]
 fn load_mtu_table(t: &mut MtuTable) {
     if let Ok(rd) = std::fs::read_dir("/sys/class/net") {
@@ -86,7 +89,7 @@ fn load_mtu_table(t: &mut MtuTable) {
     }
 }
 
-/// Windows：netsh show interfaces（IPv4/IPv6 各查一次，先得的优先）。
+/// Windows: netsh show interfaces (queried once each for IPv4/IPv6; first hit wins).
 #[cfg(target_os = "windows")]
 fn load_mtu_table(t: &mut MtuTable) {
     for family in ["ipv4", "ipv6"] {
@@ -98,7 +101,7 @@ fn load_mtu_table(t: &mut MtuTable) {
     }
 }
 
-/// macOS/BSD：解析 ifconfig 各网卡块首行的 mtu 字段。
+/// macOS/BSD: parse the mtu field from the first line of each interface block in ifconfig.
 #[cfg(any(
     target_os = "macos",
     target_os = "freebsd",
@@ -113,7 +116,7 @@ fn load_mtu_table(t: &mut MtuTable) {
     }
 }
 
-/// 其它平台：暂无 MTU 数据源（列显示「-」）。
+/// Other platforms: no MTU data source yet (column shows "-").
 #[cfg(not(any(
     target_os = "linux",
     target_os = "android",
@@ -125,7 +128,7 @@ fn load_mtu_table(t: &mut MtuTable) {
 )))]
 fn load_mtu_table(_t: &mut MtuTable) {}
 
-/// 执行系统命令并取 stdout（按本地码页有损解码；解析只依赖数字/ASCII 列）。
+/// Run a system command and take stdout (lossy-decoded in the local code page; parsing only relies on numeric/ASCII columns).
 #[cfg(any(
     target_os = "windows",
     target_os = "macos",
@@ -140,8 +143,8 @@ fn shell_out(program: &str, args: &[&str]) -> Option<String> {
         .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-/// 解析 netsh show interfaces：数据行前三列均为数字（Idx/Met/MTU），
-/// 表头/分隔行自然跳过（与界面语言无关）；返回 (IfIndex, MTU)。
+/// Parse netsh show interfaces: the first three columns of data rows are all numeric (Idx/Met/MTU);
+/// header/separator rows are skipped naturally (language-independent); returns (IfIndex, MTU).
 #[cfg(any(test, target_os = "windows"))]
 fn parse_netsh_show_interfaces(text: &str) -> Vec<(u32, u32)> {
     let mut out = Vec::new();
@@ -161,7 +164,7 @@ fn parse_netsh_show_interfaces(text: &str) -> Vec<(u32, u32)> {
     out
 }
 
-/// 解析 ifconfig 输出：网卡块首行形如 "en0: flags=... mtu 1500"，取 (名称, MTU)。
+/// Parse ifconfig output: an interface block's first line looks like "en0: flags=... mtu 1500"; extract (name, MTU).
 #[cfg(any(
     test,
     target_os = "macos",
@@ -172,7 +175,7 @@ fn parse_netsh_show_interfaces(text: &str) -> Vec<(u32, u32)> {
 fn parse_ifconfig_mtu(text: &str) -> Vec<(String, u32)> {
     let mut out = Vec::new();
     for line in text.lines() {
-        // 续行以空白开头，块首行含 "名称: ... mtu N"
+        // Continuation lines start with whitespace; block headers contain "name: ... mtu N"
         if line.starts_with(char::is_whitespace) {
             continue;
         }
@@ -192,7 +195,7 @@ fn parse_ifconfig_mtu(text: &str) -> Vec<(String, u32)> {
     out
 }
 
-/// 解析 /proc/net/route：目的/网关/掩码为小端 hex；网关全零表示直连。
+/// Parse /proc/net/route: destination/gateway/mask are little-endian hex; an all-zero gateway means directly connected.
 #[cfg(any(test, target_os = "linux", target_os = "android"))]
 fn parse_proc_net_route(text: &str) -> Vec<RouteEntry> {
     let mut out = Vec::new();
@@ -216,16 +219,18 @@ fn parse_proc_net_route(text: &str) -> Vec<RouteEntry> {
     out
 }
 
-/// /proc 小端 hex → IPv4（"0102A8C0" → 192.168.2.1）。
+/// /proc little-endian hex → IPv4 ("0102A8C0" → 192.168.2.1).
 #[cfg(any(test, target_os = "linux", target_os = "android"))]
 fn hex_le_ipv4(s: &str) -> Option<std::net::Ipv4Addr> {
     let v = u32::from_str_radix(s, 16).ok()?;
     Some(std::net::Ipv4Addr::from(v.to_le_bytes()))
 }
 
-/// 解析 route print -4：数据行为「目的 掩码 网关 接口 跃点」五列，前两列须为 IPv4
-/// （表头/分隔/本地化行自然跳过）；网关列非 IPv4（如 On-link/在链路上）记为直连。
-/// Persistent Routes 段为四列（无接口列），被五列规则排除，避免与活动路由重复。
+/// Parse route print -4: data rows are five columns "destination mask gateway interface metric",
+/// the first two must be IPv4 (header/separator/localized rows skip naturally); a non-IPv4 gateway
+/// column (e.g. On-link) is recorded as directly connected.
+/// The Persistent Routes section is four columns (no interface column) and is excluded by the
+/// five-column rule, avoiding duplicates with active routes.
 #[cfg(any(test, target_os = "windows"))]
 fn parse_route_print_ipv4(text: &str) -> Vec<RouteEntry> {
     let mut out = Vec::new();
@@ -253,8 +258,9 @@ fn parse_route_print_ipv4(text: &str) -> Vec<RouteEntry> {
     out
 }
 
-/// 解析 netstat -rn -f inet：Destination Gateway Flags Netif [Expire]；
-/// 目的列可能是 default/CIDR/主机地址/BSD 简写（如 127）；网关非 IP（link#x 等）记为直连。
+/// Parse netstat -rn -f inet: Destination Gateway Flags Netif [Expire];
+/// the destination column may be default/CIDR/host address/BSD shorthand (e.g. 127); a non-IP
+/// gateway (link#x etc.) is recorded as directly connected.
 #[cfg(any(
     test,
     target_os = "macos",
@@ -269,7 +275,7 @@ fn parse_netstat_rn_inet(text: &str) -> Vec<RouteEntry> {
         if f.len() < 4 {
             continue;
         }
-        // 目的列形如 default / 127 / 127.0.0.1 / 192.168.1.0/24，表头行自然跳过
+        // Destination column looks like default / 127 / 127.0.0.1 / 192.168.1.0/24; header rows skip naturally
         let dest = f[0];
         let looks_like_dest = dest == "default"
             || (dest.chars().any(|c| c.is_ascii_digit())
@@ -287,7 +293,7 @@ fn parse_netstat_rn_inet(text: &str) -> Vec<RouteEntry> {
     out
 }
 
-/// 读取本机 IPv4 路由表（按平台选择数据源）。
+/// Read the local IPv4 routing table (data source chosen per platform).
 #[cfg(any(target_os = "linux", target_os = "android"))]
 fn read_ipv4_routes() -> Result<Vec<RouteEntry>, String> {
     let text = std::fs::read_to_string("/proc/net/route")
@@ -295,14 +301,14 @@ fn read_ipv4_routes() -> Result<Vec<RouteEntry>, String> {
     Ok(parse_proc_net_route(&text))
 }
 
-/// 读取本机 IPv4 路由表（按平台选择数据源）。
+/// Read the local IPv4 routing table (data source chosen per platform).
 #[cfg(target_os = "windows")]
 fn read_ipv4_routes() -> Result<Vec<RouteEntry>, String> {
     let out = shell_out("route", &["print", "-4"]).ok_or("route 命令不可用")?;
     Ok(parse_route_print_ipv4(&out))
 }
 
-/// 读取本机 IPv4 路由表（按平台选择数据源）。
+/// Read the local IPv4 routing table (data source chosen per platform).
 #[cfg(any(
     target_os = "macos",
     target_os = "freebsd",
@@ -314,7 +320,7 @@ fn read_ipv4_routes() -> Result<Vec<RouteEntry>, String> {
     Ok(parse_netstat_rn_inet(&out))
 }
 
-/// 读取本机 IPv4 路由表（按平台选择数据源）。
+/// Read the local IPv4 routing table (data source chosen per platform).
 #[cfg(not(any(
     target_os = "linux",
     target_os = "android",
@@ -328,10 +334,11 @@ fn read_ipv4_routes() -> Result<Vec<RouteEntry>, String> {
     Err("当前平台暂不支持读取路由表".to_string())
 }
 
-/// 汇总网卡信息（附带 MTU 与默认网卡标记；两者失败仅缺字段，不阻塞主输出）。
+/// Collect interface info (with MTU and the default-interface marker; failure of either only
+/// drops fields, never blocks the main output).
 fn collect_ifaces() -> Vec<IfaceInfo> {
     let mtus = mtu_table();
-    // 内部为 UDP connect 选路，无实际报文；无默认路由时失败 → 不标记默认网卡
+    // Internally a UDP connect for route selection, no real packets; fails without a default route → no default marker
     let default_gw = default_net::get_default_gateway().ok();
     default_net::get_interfaces()
         .iter()
@@ -358,7 +365,7 @@ fn collect_ifaces() -> Vec<IfaceInfo> {
                 ipv6: i.ipv6.iter().map(|n| n.to_string()).collect(),
                 gateway: i.gateway.as_ref().map(|g| g.ip_addr.to_string()),
                 gateway_mac,
-                // Windows 未知速率报 u64::MAX（-1 哨兵），视为缺失
+                // Windows reports unknown speed as u64::MAX (-1 sentinel); treat as missing
                 receive_bps: i.receive_speed.filter(|&v| v != u64::MAX),
                 transmit_bps: i.transmit_speed.filter(|&v| v != u64::MAX),
             }
@@ -366,12 +373,12 @@ fn collect_ifaces() -> Vec<IfaceInfo> {
         .collect()
 }
 
-/// 展示名：优先 friendly_name（Windows 网卡名为 GUID，不具可读性）。
+/// Display name: prefer friendly_name (Windows interface names are GUIDs, not readable).
 fn display_name(i: &IfaceInfo) -> &str {
     i.friendly_name.as_deref().unwrap_or(&i.name)
 }
 
-/// 速率人性化（default-net 给出 bps）。
+/// Human-friendly speed (default-net gives bps).
 fn fmt_bps(bps: u64) -> String {
     if bps >= 1_000_000_000 {
         format!("{:.2} Gbps", bps as f64 / 1e9)
@@ -384,7 +391,7 @@ fn fmt_bps(bps: u64) -> String {
     }
 }
 
-/// `anet tool ifconfig`（等同 ifconfig / ip a）：网卡列表、IP、MAC、网关、MTU。
+/// `anet tool ifconfig` (equivalent to ifconfig / ip a): interface list, IP, MAC, gateway, MTU.
 pub fn ifconfig() -> ToolOutcome {
     let ifaces = collect_ifaces();
     if ifaces.is_empty() {
@@ -402,7 +409,7 @@ pub fn ifconfig() -> ToolOutcome {
             display_name(i),
             if i.is_default { "（默认）" } else { "" }
         ));
-        // Windows 网卡名为 GUID，单独给一行真实名称（mtu 过滤时可用）
+        // Windows interface names are GUIDs; print the real name on its own line (usable for mtu filtering)
         if i.friendly_name.as_deref().is_some_and(|f| f != i.name) {
             human.push_str(&format!("\n    名称: {}", i.name));
         }
@@ -445,10 +452,10 @@ pub fn ifconfig() -> ToolOutcome {
     )
 }
 
-/// `anet tool route`（等同 route print / ip route）：默认网关 + 路由表。
+/// `anet tool route` (equivalent to route print / ip route): default gateway + routing table.
 pub fn route() -> ToolOutcome {
     let ifaces = collect_ifaces();
-    // 默认网卡优先；取不到（无默认路由）时回退到任一持网关的在用网卡
+    // Default interface first; when unavailable (no default route), fall back to any up interface holding a gateway
     let default = ifaces
         .iter()
         .find(|i| i.is_default)
@@ -508,7 +515,7 @@ pub fn route() -> ToolOutcome {
         "routes": routes_json,
         "routes_error": routes_error,
     });
-    // 网关与路由表至少取得其一即视为查询成功
+    // Getting at least one of gateway / routing table counts as a successful query
     if default.is_some() || routes.is_ok() {
         ToolOutcome::ok(human, json)
     } else {
@@ -516,12 +523,12 @@ pub fn route() -> ToolOutcome {
     }
 }
 
-/// `anet tool mtu [iface]`：网卡 MTU（缺省列出全部网卡）。
+/// `anet tool mtu [iface]`: interface MTU (lists all interfaces by default).
 pub fn mtu(iface: Option<&str>) -> ToolOutcome {
     let ifaces = collect_ifaces();
     match iface {
         Some(name) => {
-            // 同时按真实名与 friendly_name 匹配（Windows 用户更熟悉后者）
+            // Match both the real name and friendly_name (Windows users are more familiar with the latter)
             let hit = ifaces
                 .iter()
                 .find(|i| i.name == name || i.friendly_name.as_deref() == Some(name));
@@ -593,7 +600,7 @@ pub fn mtu(iface: Option<&str>) -> ToolOutcome {
 mod tests {
     use super::*;
 
-    // ==================== 真实环境（本机查询，无外网依赖） ====================
+    // ==================== Real environment (local queries, no external network) ====================
 
     #[test]
     fn ifconfig_lists_at_least_loopback() {
@@ -658,7 +665,7 @@ mod tests {
     #[test]
     fn mtu_available_on_supported_platforms() {
         let ifaces = collect_ifaces();
-        // Linux(sysfs)/Windows(netsh)/macOS/BSD(ifconfig) 均应至少取到一块网卡的 MTU
+        // Linux(sysfs)/Windows(netsh)/macOS/BSD(ifconfig) should all yield the MTU of at least one interface
         #[cfg(any(
             target_os = "linux",
             target_os = "android",
@@ -684,7 +691,7 @@ mod tests {
         let _ = ifaces;
     }
 
-    // ==================== 解析器（注入文本，与机器无关） ====================
+    // ==================== Parsers (text injection, machine-independent) ====================
 
     #[test]
     fn parses_proc_net_route() {
@@ -698,13 +705,13 @@ mod tests {
         assert_eq!(rs[0].gateway.as_deref(), Some("192.168.2.1"));
         assert_eq!(rs[0].metric, Some(100));
         assert_eq!(rs[1].destination, "192.168.2.0/24");
-        assert_eq!(rs[1].gateway, None); // 网关全零 → 直连
+        assert_eq!(rs[1].gateway, None); // all-zero gateway → directly connected
         assert_eq!(rs[1].iface, "eth0");
     }
 
     #[test]
     fn parses_route_print_ipv4_locale_independent() {
-        // 中文 Windows 输出片段：表头/「在链路上」本地化，数据列不变
+        // Chinese Windows output fragment: header and on-link text are localized, data columns unchanged
         let text = "===========================================================================\n\
                     IPv4 Route Table\n\
                     ===========================================================================\n\
@@ -717,19 +724,19 @@ mod tests {
                       Network Address          Netmask  Gateway Address  Metric\n\
                             0.0.0.0          0.0.0.0      192.168.1.1     Default\n";
         let rs = parse_route_print_ipv4(text);
-        // 四列的持久路由行被排除，只保留活动路由
+        // Four-column persistent-route rows are excluded; only active routes remain
         assert_eq!(rs.len(), 2);
         assert_eq!(rs[0].destination, "0.0.0.0/0");
         assert_eq!(rs[0].gateway.as_deref(), Some("192.168.1.1"));
         assert_eq!(rs[0].iface, "192.168.1.10");
         assert_eq!(rs[0].metric, Some(25));
         assert_eq!(rs[1].destination, "127.0.0.0/8");
-        assert_eq!(rs[1].gateway, None); // 在链路上 → 直连
+        assert_eq!(rs[1].gateway, None); // on-link → directly connected
     }
 
     #[test]
     fn parses_netsh_interfaces_numeric_columns() {
-        // 中文表头；名称含空格；Loopback MTU 为 u32 最大值
+        // Chinese header; names contain spaces; Loopback MTU is u32::MAX
         let text = "Idx     Met         MTU          状态                名称\n\
                     ---  ----------  ----------  ------------  ---------------------------\n\
                       1          75  4294967295  connected     Loopback Pseudo-Interface 1\n\
@@ -766,9 +773,9 @@ mod tests {
         assert_eq!(rs[0].gateway.as_deref(), Some("192.168.1.1"));
         assert_eq!(rs[0].iface, "en0");
         assert_eq!(rs[0].metric, None);
-        // BSD 简写目的原样保留
+        // BSD shorthand destinations kept verbatim
         assert_eq!(rs[1].destination, "127");
-        // link# 网关 → 直连
+        // link# gateway → directly connected
         assert_eq!(rs[2].gateway, None);
         assert_eq!(rs[3].destination, "192.168.1.0/24");
     }

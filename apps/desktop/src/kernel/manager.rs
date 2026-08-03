@@ -1,4 +1,4 @@
-//! 从 subscription.rs 拆分：内核进程生命周期（纯搬运，零逻辑变更）
+//! Split out of subscription.rs: kernel process lifecycle (pure move, zero logic changes)
 
 use serde::Serialize;
 use std::path::PathBuf;
@@ -15,13 +15,13 @@ use super::ws::{
     collect_ws_loop, traffic_ws_loop,
 };
 
-/// 钉死的内核版本与资产（升级内核 = 改这里 + 更新哈希）
+/// Pinned kernel version and asset (kernel upgrade = change here + update the hash)
 pub const MIHOMO_VERSION: &str = "1.19.29";
-/// 制品缺失时的错误前缀：前端据此转下载流程（展示下载进度卡，不当作失败 toast）
+/// Error prefix when the artifact is missing: the frontend switches to the download flow (shows a download progress card, not a failure toast)
 pub const NEED_DOWNLOAD_PREFIX: &str = "NEED_DOWNLOAD:";
 
-/// 当前平台的 (资产文件名, SHA-256, 包内二进制名)。
-/// 哈希来源：官方 Release 文件经两个独立镜像交叉下载验证一致。
+/// (asset filename, SHA-256, in-archive binary name) for the current platform.
+/// Hash provenance: the official Release file was cross-downloaded via two independent mirrors and verified identical.
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 pub(crate) fn kernel_asset() -> Option<(&'static str, &'static str, &'static str)> {
     Some((
@@ -55,7 +55,7 @@ pub(crate) fn kernel_asset() -> Option<(&'static str, &'static str, &'static str
     None
 }
 
-/// 官方 Release URL + 镜像回退（镜像仅为 CDN，完整性由 SHA-256 钉死保证）
+/// Official Release URL + mirror fallback (mirrors are CDN only; integrity is guaranteed by the pinned SHA-256)
 pub(crate) fn download_urls(asset: &str) -> Vec<String> {
     let path = format!("MetaCubeX/mihomo/releases/download/v{MIHOMO_VERSION}/{asset}");
     vec![
@@ -88,10 +88,10 @@ mod job_tests {
     }
 }
 
-// ==================== 内核下载（钉版本 + SHA-256 校验 + 原子落盘） ====================
+// ==================== Kernel download (pinned version + SHA-256 check + atomic write) ====================
 
-/// JOBOBJECT_EXTENDED_LIMIT_INFORMATION（windows-sys 0.59 未收录，按 SDK 布局自绘；
-/// KILL_ON_JOB_CLOSE 实测必须用 Extended 类，Basic 类报 ERROR_INVALID_PARAMETER）
+/// JOBOBJECT_EXTENDED_LIMIT_INFORMATION (not covered by windows-sys 0.59; hand-rolled per SDK layout;
+/// KILL_ON_JOB_CLOSE empirically requires the Extended class — Basic fails with ERROR_INVALID_PARAMETER)
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct IoCounters {
@@ -113,9 +113,9 @@ struct JobObjectExtendedLimitInformation {
     peak_job_memory_used: usize,
 }
 
-/// Windows：把内核子进程挂进带 KILL_ON_JOB_CLOSE 的 Job——GUI 以任何方式退出
-/// （崩溃、强杀、提权重启 app.exit）系统都会连带终止内核，杜绝孤儿 mihomo。
-/// Job 句柄有意保持打开直至本进程退出（句柄泄漏即生命周期锚点）。
+/// Windows: bind the kernel child process to a Job with KILL_ON_JOB_CLOSE — however the GUI exits
+/// (crash, force-kill, elevated restart via app.exit), the OS kills the kernel too; no orphan mihomo.
+/// The Job handle is intentionally kept open until this process exits (the handle leak is the lifetime anchor).
 #[cfg(windows)]
 fn bind_kill_on_close(child: &tokio::process::Child) {
     use windows_sys::Win32::System::JobObjects::*;
@@ -147,8 +147,8 @@ fn bind_kill_on_close(child: &tokio::process::Child) {
     }
 }
 
-/// 启动前清扫遗留内核进程（只杀 exe 路径=本应用内核目录者，用户自建的 mihomo/Clash 不动；
-/// 提权实例遗留的无权限进程跳过——Job 绑定普及后此类遗留只会越来越少）。
+/// Sweep leftover kernel processes before start (kills only those whose exe path is this app's kernel dir;
+/// user-installed mihomo/Clash untouched; unkillable elevated leftovers are skipped — Job binding makes these rarer).
 #[cfg(windows)]
 pub fn sweep_orphan_kernels() {
     let exe = kernel_bin_path();
@@ -163,10 +163,10 @@ pub fn sweep_orphan_kernels() {
         .output();
 }
 
-// ==================== 内核下载（钉版本 + SHA-256 校验 + 原子落盘） ====================
+// ==================== Kernel download (pinned version + SHA-256 check + atomic write) ====================
 
-/// 确保内核二进制存在；缺失时**不再当场下载**——返回 NEED_DOWNLOAD 错误，
-/// 由下载管理器（download.rs）后台流式下载 + 进度展示，完成后前端重试原动作。
+/// Ensure the kernel binary exists; if missing, **no longer downloads in place** — returns a NEED_DOWNLOAD error;
+/// the download manager (download.rs) streams it in the background with progress, then the frontend retries the original action.
 pub async fn ensure_kernel() -> Result<PathBuf, String> {
     let bin = kernel_bin_path();
     if bin.exists() {
@@ -178,7 +178,7 @@ pub async fn ensure_kernel() -> Result<PathBuf, String> {
     Err(format!("{NEED_DOWNLOAD_PREFIX}订阅内核未安装"))
 }
 
-// ==================== 内核生命周期 ====================
+// ==================== Kernel lifecycle ====================
 
 #[derive(Debug, Clone, Serialize)]
 pub struct KernelStatus {
@@ -188,34 +188,34 @@ pub struct KernelStatus {
     pub version: String,
     pub restart_count: u32,
     pub last_error: String,
-    /// 最近一次生成配置时被跳过的覆写脚本（脚本名, 错误摘要；空 = 全部成功）
+    /// Override scripts skipped during the last config render (script name, error summary; empty = all succeeded)
     pub script_errors: Vec<(String, String)>,
 }
 
-/// 内核托管可变状态（单锁聚合，消除槽位样板；锁均为语句级持有，严禁跨 await）。
+/// Mutable kernel-manager state (single-lock aggregate, no per-slot boilerplate; locks are statement-scoped, never held across await).
 #[derive(Default)]
 struct KernelState {
-    /// supervisor 停止信号（槽位作存活标记，由 supervisor 收尾清除）
+    /// supervisor stop signal (the slot doubles as a liveness marker, cleared by the supervisor on exit)
     stop_tx: Option<tokio::sync::mpsc::Sender<()>>,
     last_error: String,
-    /// /traffic WS 采集停止信号
+    /// /traffic WS collector stop signal
     traffic_stop: Option<tokio::sync::mpsc::Sender<()>>,
-    /// /connections 采集停止信号
+    /// /connections collector stop signal
     conns_stop: Option<tokio::sync::mpsc::Sender<()>>,
-    /// /logs 采集停止信号
+    /// /logs collector stop signal
     logs_stop: Option<tokio::sync::mpsc::Sender<()>>,
-    /// 最近一次启动时覆写脚本失败摘要（供前端灵动岛告警展示）
+    /// Override-script failure summary from the last start (for the frontend dynamic-island alert)
     script_errors: Vec<(String, String)>,
 }
 
-/// 内核进程托管：启动/停止/崩溃退避重启（上限 5 次后放弃并审计）。
-/// 子进程由 supervisor 任务独占持有，停止经 mpsc 信号（杜绝跨 await 持锁死锁）。
+/// Kernel process management: start/stop/crash-backoff restart (gives up and audits after 5 restarts).
+/// The child process is owned exclusively by the supervisor task; stop goes through an mpsc signal (no lock held across await).
 pub struct KernelManager {
     state: Arc<std::sync::Mutex<KernelState>>,
     restart_count: Arc<AtomicU32>,
-    /// /traffic WS 累计器（内核启动时挂任务，停止即清零）
+    /// /traffic WS accumulator (task attached on kernel start, reset on stop)
     traffic: Arc<TrafficStats>,
-    /// /connections 连接跟踪（活跃 map + 已关闭环 + 命中聚合）
+    /// /connections tracking (active map + closed ring + hit aggregation)
     tracker: Arc<ConnTracker>,
 }
 
@@ -231,7 +231,7 @@ impl Default for KernelManager {
 }
 
 impl KernelManager {
-    /// 启动内核（重写配置 → spawn → supervisor 监控）。
+    /// Start the kernel (rewrite config → spawn → supervisor watch).
     pub async fn start(&self) -> Result<(), String> {
         if self.state.lock().unwrap().stop_tx.is_some() {
             return Ok(());
@@ -245,10 +245,10 @@ impl KernelManager {
         ensure_secret(&mut store);
         save_store(&store)?;
         ensure_kernel().await?;
-        // 配置生成管线：基础 render（含出站模式与 TUN 分模式）→ 覆写脚本链（失败脚本跳过并审计）→
-        // 防环静态检查（§2.5 硬约束，违规拒绝启动）→ 落盘。
-        // TUN 模式既定决策：TUN 骨架不经过脚本链——脚本作用于订阅代理配置语义，
-        // TUN 骨架防环约束（无 mixed-port / ANET-IN 出站 / MATCH 指向）必须完整保留。
+        // Config pipeline: base render (with outbound mode and TUN sub-mode) → override script chain (failing scripts
+        // skipped and audited) → no-loop static check (§2.5 hard constraint; violations refuse to start) → write to disk.
+        // Settled TUN-mode decision: the TUN skeleton bypasses the script chain — scripts operate on subscription
+        // proxy config semantics; the TUN skeleton's no-loop constraints (no mixed-port / ANET-IN outbound / MATCH target) must stay intact.
         let settings = roles::RoleSettings::load();
         let effective = if settings.tun_mode {
             self.state.lock().unwrap().script_errors = Vec::new();
@@ -268,7 +268,7 @@ impl KernelManager {
         self.restart_count.store(0, Ordering::SeqCst);
         self.supervise(rx);
 
-        // 就绪检查：控制面 10s 内未起来（端口被占用等）即视为启动失败并回收
+        // Readiness check: if the control plane is not up within 10s (e.g. port taken), treat as start failure and roll back
         let mut ready = false;
         for _ in 0..20 {
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -289,7 +289,7 @@ impl KernelManager {
         Ok(())
     }
 
-    /// 挂 /traffic WS 流量累计任务（幂等；内核停止时经信号终止并清零）。
+    /// Attach the /traffic WS accumulation task (idempotent; terminated via signal and reset when the kernel stops).
     fn start_traffic(&self) {
         if self.state.lock().unwrap().traffic_stop.is_some() {
             return;
@@ -309,15 +309,15 @@ impl KernelManager {
         });
     }
 
-    /// 挂 /connections 与 /logs WS 采集任务（幂等；内核停止时经信号终止并清零，
-    /// 与 start_traffic 同一生命周期模式——仅在内核就绪后挂载，未运行不空转）。
+    /// Attach the /connections and /logs WS collectors (idempotent; terminated via signal and reset on kernel stop;
+    /// same lifecycle pattern as start_traffic — attached only after the kernel is ready, no idle spinning when not running).
     fn start_collectors(&self) {
         let store = load_store();
         if store.secret.is_empty() {
             return;
         }
         self.tracker.reset();
-        // /connections：全量快照 → 活跃 map + 已关闭环 + 命中聚合
+        // /connections: full snapshot → active map + closed ring + hit aggregation
         if self.state.lock().unwrap().conns_stop.is_none() {
             let (tx, rx) = tokio::sync::mpsc::channel::<()>(1);
             self.state.lock().unwrap().conns_stop = Some(tx);
@@ -334,7 +334,7 @@ impl KernelManager {
                 state.lock().unwrap().conns_stop = None;
             });
         }
-        // /logs?level=info：内核日志 ring buffer
+        // /logs?level=info: kernel log ring buffer
         if self.state.lock().unwrap().logs_stop.is_none() {
             let (tx, rx) = tokio::sync::mpsc::channel::<()>(1);
             self.state.lock().unwrap().logs_stop = Some(tx);
@@ -353,27 +353,27 @@ impl KernelManager {
         }
     }
 
-    /// 当前流量快照（内核停止后为零值）。
+    /// Current traffic snapshot (zero after the kernel stops).
     pub fn traffic(&self) -> TrafficSnapshot {
         self.traffic.snapshot()
     }
 
-    /// 连接快照（活跃, 已关闭）；内核停止后为空。
+    /// Connection snapshot (active, closed); empty after the kernel stops.
     pub fn connections(&self) -> (Vec<ConnectionInfo>, Vec<ConnectionInfo>) {
         self.tracker.connections()
     }
 
-    /// 内核日志（旧→新）；内核停止后为空。
+    /// Kernel logs (old → new); empty after the kernel stops.
     pub fn logs(&self) -> Vec<LogEntry> {
         self.tracker.logs()
     }
 
-    /// 规则命中聚合（count 降序，top 100）；内核停止后为空。
+    /// Rule hit aggregation (count descending, top 100); empty after the kernel stops.
     pub fn rule_hits(&self) -> Vec<RuleHit> {
         self.tracker.rule_hits()
     }
 
-    /// 清空日志与命中缓冲（连接态不动）。
+    /// Clear log and hit buffers (connection state untouched).
     pub fn clear_logs(&self) {
         self.tracker.clear_logs();
     }
@@ -391,7 +391,7 @@ impl KernelManager {
             .stderr(std::process::Stdio::null());
         #[cfg(windows)]
         {
-            // CREATE_NO_WINDOW（tokio::process::Command 自带 creation_flags）
+            // CREATE_NO_WINDOW (tokio::process::Command has built-in creation_flags)
             cmd.creation_flags(0x08000000);
         }
         let child = cmd.spawn().map_err(|e| format!("内核启动失败: {e}"))?;
@@ -400,8 +400,8 @@ impl KernelManager {
         Ok(child)
     }
 
-    /// supervisor：独占子进程；崩溃指数退避重启（1/2/4/8/16s，上限 5 次）；
-    /// 收到停止信号即 kill 并退出，收尾清理句柄。
+    /// supervisor: owns the child process; exponential-backoff restart on crash (1/2/4/8/16s, max 5 times);
+    /// kills and exits on stop signal, then cleans up the handle.
     fn supervise(&self, mut rx: tokio::sync::mpsc::Receiver<()>) {
         let state = self.state.clone();
         let restart_count = self.restart_count.clone();
@@ -431,7 +431,7 @@ impl KernelManager {
                         }
                         roles::audit("gui.kernel_crash", serde_json::json!({"restart": restarts}));
                         let backoff = 1u64 << (restarts - 1).min(4);
-                        // 退避期间同样响应停止信号
+                        // Respond to the stop signal during backoff as well
                         if tokio::time::timeout(
                             std::time::Duration::from_secs(backoff),
                             rx.recv(),
@@ -452,11 +452,11 @@ impl KernelManager {
         });
     }
 
-    /// 停止内核（经 clone 的发送端发信号；槽位作存活标记由 supervisor 收尾清除，等待上限 5s）。
+    /// Stop the kernel (signal via the cloned sender; the liveness slot is cleared by the supervisor on exit, wait up to 5s).
     pub async fn stop(&self) {
         self.drain_stop(|s| &mut s.stop_tx).await;
-        // 流量/连接/日志采集任务随内核停止：发信号并等待任务退出自清槽位（上限 5s；
-        // 保证 stop→start 快速重启时挂载函数看到的是已清槽位，新旧任务不打架）
+        // Traffic/connection/log collectors stop with the kernel: signal and wait for task exit to self-clear the slot (up to 5s;
+        // ensures a fast stop→start restart sees cleared slots, so old and new tasks never clash)
         self.drain_stop(|s| &mut s.traffic_stop).await;
         self.drain_stop(|s| &mut s.conns_stop).await;
         self.drain_stop(|s| &mut s.logs_stop).await;
@@ -465,7 +465,7 @@ impl KernelManager {
         roles::audit("gui.kernel_stop", serde_json::json!({}));
     }
 
-    /// 经槽位发停止信号并等待任务自清槽位（上限 5s；pick 从聚合状态取目标槽位，锁不跨 await）。
+    /// Signal stop via the slot and wait for the task to self-clear it (up to 5s; pick selects the target slot from the aggregate state, no lock across await).
     async fn drain_stop(
         &self,
         pick: impl Fn(&mut KernelState) -> &mut Option<tokio::sync::mpsc::Sender<()>>,
@@ -518,25 +518,25 @@ mod tests {
     };
     use crate::kernel::wintun::{ensure_wintun, wintun_dll_path};
 
-    /// 真实订阅全链路 E2E：AG_E2E_SUB_URL=<订阅地址> cargo test real_sub_e2e -- --ignored --nocapture
-    /// 拉取 → 启动内核 → 选择 AG_E2E_NODE_PREFIX（默认"荷兰-NL-4"）节点 → 经 mixed 出口访问谷歌 204
+    /// Real-subscription full-chain E2E: AG_E2E_SUB_URL=<subscription URL> cargo test real_sub_e2e -- --ignored --nocapture
+    /// Fetch → start kernel → select the AG_E2E_NODE_PREFIX node (default: the Netherlands NL node) → reach google 204 via the mixed outbound
     #[tokio::test]
     #[ignore = "真实订阅联网测试，显式 --ignored 运行"]
     async fn real_sub_e2e() {
         let url = std::env::var("AG_E2E_SUB_URL").expect("AG_E2E_SUB_URL 未设置");
         let prefix = std::env::var("AG_E2E_NODE_PREFIX").unwrap_or_else(|_| "荷兰-NL-4".into());
 
-        // 拉取校验
+        // Fetch and verify
         let sub = add_subscription("e2e-real", &url).await.unwrap();
         eprintln!("订阅拉取成功: {} 节点, 流量 {}/{} 到期 {:?}", sub.node_count, sub.download, sub.total, sub.expire);
         assert!(sub.node_count > 0);
 
-        // 启动内核
+        // Start the kernel
         let km = KernelManager::default();
         km.start().await.unwrap();
         eprintln!("内核已启动并就绪");
 
-        // 找到目标节点并选择
+        // Find and select the target node
         let api = kernel_api().await.unwrap();
         let px = api.proxies().await.unwrap();
         let mut node = None;
@@ -561,7 +561,7 @@ mod tests {
         eprintln!("选择节点: {node} @ {group}");
         api.select(&group, &node).await.unwrap();
 
-        // 经 mixed 出口访问谷歌（204 即通）
+        // Reach google via the mixed outbound (204 = reachable)
         let proxy = reqwest::Proxy::all(format!("http://127.0.0.1:{MIHOMO_MIXED_PORT}")).unwrap();
         let client = reqwest::Client::builder().proxy(proxy).build().unwrap();
         let resp = client
@@ -574,14 +574,14 @@ mod tests {
         assert_eq!(resp.status().as_u16(), 204, "经订阅节点访问谷歌失败");
 
         km.stop().await;
-        // 订阅保留在清单中供 GUI 使用（用户随后可自行删除）
+        // Keep the subscription in the manifest for GUI use (the user can delete it later)
     }
-    /// E2E（真实下载内核 + 启动 + REST 握手 + 停止），手动运行：
+    /// E2E (real kernel download + start + REST handshake + stop), run manually:
     /// cargo test --manifest-path apps/desktop/Cargo.toml kernel_e2e -- --ignored --nocapture
     #[tokio::test]
     #[ignore = "联网下载内核，显式 --ignored 运行"]
     async fn kernel_e2e() {
-        // 备份并隔离真实订阅清单（测试结束还原，不污染用户数据）
+        // Back up and isolate the real subscription manifest (restored after the test; user data untouched)
         let path = store_path();
         let backup = std::fs::read_to_string(&path).ok();
         let restore = |b: Option<String>| {
@@ -595,7 +595,7 @@ mod tests {
 
         let mut store = SubStore::default();
         ensure_secret(&mut store);
-        // 不可达 provider：拉取失败不阻塞内核启动与控制面
+        // Unreachable provider: fetch failure does not block kernel start or the control plane
         store.subscriptions.push(Subscription {
             id: "e2e".into(),
             name: "e2e-dummy".into(),
@@ -610,7 +610,7 @@ mod tests {
         });
         save_store(&store).unwrap();
 
-        // 内核缺失时先经下载管理器落盘（ensure_kernel 不再当场下载）
+        // If the kernel is missing, land it via the download manager first (ensure_kernel no longer downloads in place)
         if !kernel_bin_exists() {
             let st = std::sync::Arc::new(std::sync::Mutex::new(crate::download::DlState::default()));
             crate::download::run_download(crate::download::Artifact::Kernel, st)
@@ -620,7 +620,7 @@ mod tests {
         let km = KernelManager::default();
         let result = async {
             km.start().await.map_err(|e| format!("start: {e}"))?;
-            // 控制面最多等 15s（含解压后冷启动）
+            // Wait up to 15s for the control plane (including cold start after extraction)
             let mut version = String::new();
             for _ in 0..30 {
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -635,7 +635,7 @@ mod tests {
                 return Err("external-controller 15s 内未就绪".to_string());
             }
             eprintln!("kernel version: {version}");
-            // proxies 端点可用（即使 provider 失败也有内置 DIRECT/REJECT）
+            // The proxies endpoint is usable (built-in DIRECT/REJECT exist even if the provider failed)
             let api = kernel_api().await.unwrap();
             let px = api.proxies().await.unwrap();
             assert!(px["proxies"].is_object());
@@ -649,16 +649,16 @@ mod tests {
         result.unwrap();
     }
 
-    /// TUN 接管全链路 E2E（docs/plan/tun.md §2.8；需管理员本机手动，显式 --ignored 运行）：
+    /// TUN takeover full-chain E2E (docs/plan/tun.md §2.8; admin machine, manual, run with --ignored):
     /// cargo test --manifest-path apps/desktop/Cargo.toml tun_e2e -- --ignored --nocapture
     ///
-    /// 自动断言：wintun 下载校验落盘 → TUN 配置启动内核 → 控制面 /configs 确认 tun.enable=true
-    /// 且无 mixed-port。以下步骤按 §2.8 手动验证（需 FlClash 监听 7890 与 AgileNet 端点在线）：
-    ///   1. curl http://ip.sb（不带 -x，模拟不读系统代理应用）→ 出口 IP = FlClash 节点
-    ///   2. AgileNet 内网域名走隧道通
-    ///   3. 浏览器系统代理 = 57890 访问谷歌经 anet→FlClash 通
-    ///   4. 关 FlClash → 未命中失败 + 灵动岛上报告警
-    ///   5. 退出 GUI → 系统代理与路由表还原
+    /// Auto-asserts: wintun download verified and landed → kernel started with TUN config → control plane /configs
+    /// confirms tun.enable=true and no mixed-port. Verify these steps manually per §2.8 (needs FlClash listening on 7890 and the AgileNet endpoint online):
+    ///   1. curl http://ip.sb (without -x, simulating an app that ignores the system proxy) → egress IP = FlClash node
+    ///   2. AgileNet internal domains reachable through the tunnel
+    ///   3. Browser with system proxy = 57890 reaches google via anet→FlClash
+    ///   4. Kill FlClash → miss/failure + dynamic-island alert
+    ///   5. Exit GUI → system proxy and route table restored
     #[tokio::test]
     #[ignore = "需管理员本机 + 联网下载 wintun/内核，显式 --ignored 运行"]
     async fn tun_e2e() {
@@ -667,7 +667,7 @@ mod tests {
             eprintln!("跳过：需以管理员身份运行本测试（TUN 需管理员权限）");
             return;
         }
-        // 备份并隔离真实配置（测试结束还原，不污染用户数据）
+        // Back up and isolate the real config (restored after the test; user data untouched)
         let settings_file = roles::data_dir().join("gui-settings.json");
         let settings_backup = std::fs::read_to_string(&settings_file).ok();
         let sub_file = store_path();
@@ -689,7 +689,7 @@ mod tests {
 
         let mut store = SubStore::default();
         ensure_secret(&mut store);
-        // 不可达 provider：拉取失败不阻塞内核启动与控制面
+        // Unreachable provider: fetch failure does not block kernel start or the control plane
         store.subscriptions.push(Subscription {
             id: "e2e".into(),
             name: "e2e-dummy".into(),
@@ -712,7 +712,7 @@ mod tests {
 
         let km = KernelManager::default();
         let result = async {
-            // 内核/wintun 缺失时先经下载管理器落盘（ensure_* 不再当场下载）
+            // If kernel/wintun is missing, land it via the download manager first (ensure_* no longer downloads in place)
             if !kernel_bin_exists() {
                 let st = std::sync::Arc::new(std::sync::Mutex::new(
                     crate::download::DlState::default(),

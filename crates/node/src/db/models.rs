@@ -1,8 +1,8 @@
-//! 数据库模型定义（对应 docs/database/schema.md）
+//! Database model definitions (see docs/database/schema.md)
 
 use serde::{Deserialize, Serialize};
 
-/// 管理员记录
+/// Admin record
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AdminRecord {
     pub id: String,
@@ -13,7 +13,7 @@ pub struct AdminRecord {
     pub updated_at: String,
 }
 
-/// 路由规则记录
+/// Route rule record
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuleRecord {
     pub id: String,
@@ -29,7 +29,7 @@ pub struct RuleRecord {
     pub updated_at: String,
 }
 
-/// 权限组记录
+/// Group record
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GroupRecord {
     pub id: String,
@@ -43,7 +43,7 @@ pub struct GroupRecord {
     pub updated_at: String,
 }
 
-/// 客户端账号记录
+/// Client account record
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccountRecord {
     pub id: String,
@@ -52,7 +52,7 @@ pub struct AccountRecord {
     #[serde(default)]
     pub group_name: Option<String>,
     pub enabled: bool,
-    /// 「管理此节点」权限（管理版接入链接）
+    /// "Manage this node" permission (admin connect URL)
     #[serde(default)]
     pub admin_console: bool,
     #[serde(default)]
@@ -64,25 +64,25 @@ pub struct AccountRecord {
     pub updated_at: String,
 }
 
-/// Relay Token 记录（列表展示用，不含明文）
+/// Relay token record (for list display; no plaintext)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RelayTokenRecord {
     pub id: String,
     pub token_prefix: String,
     pub remark: String,
-    /// 允许该下游中继管理本节点（默认关）
+    /// Allow this fan-in relay to manage this node (default off)
     #[serde(default)]
     pub expose_control: bool,
-    /// 管理授权档位：ro / rules / full
+    /// Admin grant scope: ro / rules / full
     #[serde(default = "default_control_scope")]
     pub control_scope: String,
-    /// 收敛挂载点：权限组 ID（None = 不收敛，放行一切）
+    /// ACL mount point: group ID (None = no restriction, allow all)
     #[serde(default)]
     pub group_id: Option<String>,
-    /// 组名（联查展示用）
+    /// Group name (joined for display)
     #[serde(default)]
     pub group_name: Option<String>,
-    /// 带宽配额（KB/s；None = 不限）
+    /// Bandwidth quota (KB/s; None = unlimited)
     #[serde(default)]
     pub rate_limit_kbps: Option<i64>,
     pub last_used_at: Option<String>,
@@ -93,7 +93,7 @@ fn default_control_scope() -> String {
     "full".into()
 }
 
-/// 审计日志记录
+/// Audit log record
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditLogRecord {
     pub id: String,
@@ -106,7 +106,7 @@ pub struct AuditLogRecord {
     pub created_at: String,
 }
 
-/// 流量统计记录
+/// Traffic stat record
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrafficStatRecord {
     pub account_id: Option<String>,
@@ -116,7 +116,7 @@ pub struct TrafficStatRecord {
     pub connections: i64,
 }
 
-/// 流量时间序列点
+/// Traffic time-series point
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrafficPoint {
     pub time: String,
@@ -124,7 +124,7 @@ pub struct TrafficPoint {
     pub bytes_rx: i64,
 }
 
-/// 节点级流量小时序列点（traffic_24h 契约：hour 为本地时间 "YYYY-MM-DD HH:00"）
+/// Node-level hourly traffic point (traffic_24h contract: hour is local time "YYYY-MM-DD HH:00")
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeTrafficPoint {
     pub hour: String,
@@ -132,7 +132,7 @@ pub struct NodeTrafficPoint {
     pub down: i64,
 }
 
-/// 节点级三维流量 24h 聚合（扇入/扇出/中继途径）
+/// Node-level 24h traffic aggregate across three dimensions (fan-in / fan-out / relay transit)
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct NodeTraffic24h {
     pub fanin: Vec<NodeTrafficPoint>,
@@ -140,7 +140,7 @@ pub struct NodeTraffic24h {
     pub transit: Vec<NodeTrafficPoint>,
 }
 
-/// 管理引导票据核销结果（不含哈希/明文）。
+/// Admin bootstrap ticket redemption result (no hash/plaintext).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AdminTicketRecord {
     pub kind: String,
@@ -149,27 +149,27 @@ pub struct AdminTicketRecord {
     pub expires_at: String,
 }
 
-/// 扇出 Connector 记录（DB 行；token_enc 为密文，严禁日志/审计输出）。
+/// Fan-out connector record (DB row; token_enc is ciphertext, never log/audit it).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConnectorRecord {
     pub id: String,
-    /// 对端显示名（管理端列表/审计用）
+    /// Peer display name (for admin list / audit)
     pub name: String,
     pub upstream_addr: String,
-    /// 扇出 token 密文（`v1:nonce_b64:ct_b64`，见 docs/todo/peer-acl.md §5）
+    /// Fan-out token ciphertext (`v1:nonce_b64:ct_b64`, see docs/todo/peer-acl.md §5)
     #[serde(skip_serializing, default)]
     pub token_enc: String,
     pub sni_hostname: String,
     pub insecure: bool,
-    /// 自定义 CA 证书路径（PEM；空 = 不使用）
+    /// Custom CA cert path (PEM; empty = unused)
     #[serde(default)]
     pub ca_cert_path: String,
-    /// 证书固定：上游服务端证书路径（PEM；空 = 不使用）
+    /// Cert pinning: upstream server cert path (PEM; empty = unused)
     #[serde(default)]
     pub pinned_cert_path: String,
-    /// 原 ConnectorConfig.advertise 序列化
+    /// Serialized former ConnectorConfig.advertise
     pub advertise: String,
-    /// 收敛挂载点：权限组 ID（None = 不收敛，放行一切）
+    /// ACL mount point: group ID (None = no restriction, allow all)
     #[serde(default)]
     pub group_id: Option<String>,
     pub enabled: bool,
@@ -178,13 +178,13 @@ pub struct ConnectorRecord {
     pub updated_at: String,
 }
 
-/// 扇出 Connector 展示视图（含组名联查；绝不含 token 明文/密文）。
+/// Fan-out connector display view (with joined group name; never contains token plaintext/ciphertext).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConnectorView {
     pub id: String,
     pub name: String,
     pub upstream_addr: String,
-    /// token 前缀展示位（仅用于辨认，非完整凭据）
+    /// Token prefix for identification only (not a full credential)
     pub token_prefix: String,
     pub sni_hostname: String,
     pub insecure: bool,

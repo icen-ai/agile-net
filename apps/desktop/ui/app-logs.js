@@ -1,12 +1,12 @@
 'use strict';
-/* 从 app.js 拆分：日志视图 / 连接详情 / 事件中心（纯搬运，零逻辑变更） */
+/* Split from app.js: logs view / connection detail / event center (pure move, zero logic change) */
 
-/* ================= 日志视图（订阅内核可观测：实时连接 / 实时日志 / 命中追踪） =================
-   仅在本页打开时轮询（连接/日志 1s、命中 2s，单一定时器按页签分派），离开即停；
-   窗口不可见或内核未运行时定时器轻量空转、跳过内核 IPC（停内核瞬间放行最后一次拉取落空态）；
-   连接表签名对比整表重绘，日志流增量追加（上限 500 行 DOM 裁剪），渲染防频闪。 */
+/* ================= Logs view (subscription kernel observability: live connections / live logs / hit tracking) =================
+   Poll only while this page is open (connections/logs 1s, hits 2s; single timer dispatched by tab), stops on leave;
+   when the window is hidden or the kernel is not running, the timer idles lightly and skips kernel IPC (on kernel stop, one final pull is allowed through to land the empty state);
+   connection table redrawn wholesale on signature compare, log stream appended incrementally (500-line DOM cap), anti-flicker rendering. */
 
-/* ---- 日志行渲染（级别归一 + 关键字 mark.logv-hl 高亮；先 esc 再高亮，替换串同为转义文本） ---- */
+/* ---- Log line rendering (level normalization + keyword mark.logv-hl highlight; esc first then highlight, the replacement string is escaped text too) ---- */
 function canonLevel(level) {
   if (level === 'warning' || level === 'warn') return 'warning';
   if (level === 'error' || level === 'err' || level === 'fatal') return 'error';
@@ -27,13 +27,13 @@ function logLineHtml(e, kw) {
 const LogsView = {
   tab: 'conn',
   timer: null, tick: 0,
-  kernelOff: false, // 内核未运行且已落空态（onTick 据此空转跳过内核 IPC，恢复运行自动复位）
+  kernelOff: false, // kernel not running and empty state already shown (onTick uses this to idle and skip kernel IPC; auto-resets when running again)
   connSig: '', hitsSig: '', evSig: '',
-  connMap: {},        // 最近一次连接数据 id → {c, live}（详情展开/重绘恢复的数据源）
-  connDetailId: null, // 展开中的连接详情行 id（同时只开一行；行消失即收起）
-  entries: [],      // 实时日志缓存（过滤变更时全量重渲染的数据源）
-  logCursor: null,  // 已渲染最后一条 {time,level,payload}（增量游标；丢失 = 缓冲轮换，全量重绘）
-  follow: true,     // 自动滚底（用户上滚暂停跟随，回底恢复）
+  connMap: {},        // latest connection data id → {c, live} (data source for detail expand/redraw restore)
+  connDetailId: null, // id of the expanded connection detail row (only one open at a time; collapses when the row disappears)
+  entries: [],      // live log cache (data source for full re-render on filter change)
+  logCursor: null,  // last rendered {time,level,payload} (incremental cursor; losing it = buffer rotation → full redraw)
+  follow: true,     // auto scroll to bottom (pauses when the user scrolls up, resumes at bottom)
   enter() {
     this.stop();
     this.tick = 0;
@@ -43,10 +43,10 @@ const LogsView = {
   stop() { if (this.timer) { clearInterval(this.timer); this.timer = null; } },
   onTick() {
     this.tick++;
-    // 窗口不可见：跳过当次 IPC（定时器保持轻量空转，恢复可见后自行接续）
+    // Window hidden: skip this IPC round (timer keeps idling lightly, resumes on its own when visible again)
     if (document.hidden) return;
-    if (this.tab === 'ev') { if (this.tick % 10 === 0) this.pollEvents(); return; } // 事件低频：10s（本机事件日志，不依赖内核）
-    // 内核未运行：空转跳过内核 IPC；刚停内核时放行最后一次拉取，让页面落回「内核未运行」空态
+    if (this.tab === 'ev') { if (this.tick % 10 === 0) this.pollEvents(); return; } // events are low frequency: 10s (local event log, no kernel dependency)
+    // Kernel not running: idle and skip kernel IPC; right after a kernel stop, allow one final pull so the page falls back to the 「内核未运行」 empty state
     let settling = false;
     if (!window._subRunning) {
       if (this.kernelOff) return;
@@ -63,7 +63,7 @@ const LogsView = {
     else this.pollConns();
   },
 
-  /* ---- 实时连接（1s；签名对比，活跃置顶 + 已关闭灰显在后，上限 100 行已关闭） ---- */
+  /* ---- Live connections (1s; signature compare, active pinned on top + closed dimmed below, max 100 closed rows) ---- */
   async pollConns() {
     if (HTTP_MODE) return;
     let v;
@@ -79,15 +79,15 @@ const LogsView = {
     closed.forEach(c => { this.connMap[c.id] = { c, live: false }; });
     if (!act.length && !closed.length) {
       this.connDetailId = null;
-      body.innerHTML = '<tr><td colspan="7" class="empty">内核未运行或暂无连接</td></tr>';
+      body.innerHTML = '<tr><td colspan="7" class="empty">' + AgI18n.t('logs.empty.conn') + '</td></tr>';
       return;
     }
     body.innerHTML = act.map(c => connRowHtml(c, true)).join('') +
       closed.map(c => connRowHtml(c, false)).join('');
-    this.restoreConnDetail(); // 整表重绘后恢复展开行（最新数据即详情实时刷新；行没了则收起）
+    this.restoreConnDetail(); // restore the expanded row after wholesale redraw (latest data = live detail refresh; collapse if the row is gone)
   },
 
-  /* 展开/收起连接详情（再点同一行或点其他行收起；同时只开一行） */
+  /* Expand/collapse connection detail (clicking the same row again or another row collapses; only one open at a time) */
   toggleConnDetail(id) {
     const old = $('lg-conn-body').querySelector('.conn-detail-row');
     if (old) old.remove();
@@ -98,14 +98,14 @@ const LogsView = {
     const id = this.connDetailId;
     if (!id) return;
     const rec = this.connMap[id];
-    if (!rec) { this.connDetailId = null; return; } // 行已消失：收起
+    if (!rec) { this.connDetailId = null; return; } // row gone: collapse
     let anchor = null;
     $('lg-conn-body').querySelectorAll('tr[data-cid]').forEach(r => { if (r.dataset.cid === id) anchor = r; });
     if (!anchor) { this.connDetailId = null; return; }
     anchor.insertAdjacentHTML('afterend', connDetailRowHtml(rec.c, rec.live));
   },
 
-  /* ---- 实时日志（1s；增量追加，缓冲轮换/过滤变更时全量重绘） ---- */
+  /* ---- Live logs (1s; incremental append, full redraw on buffer rotation / filter change) ---- */
   async pollLogs() {
     if (HTTP_MODE) return;
     let logs;
@@ -123,7 +123,7 @@ const LogsView = {
       return !kwl || (e.payload || '').toLowerCase().includes(kwl);
     };
     const entries = this.entries;
-    if (!entries.length) { // 已清空或内核未运行
+    if (!entries.length) { // cleared or kernel not running
       if (view.children.length) view.innerHTML = '';
       this.logCursor = null;
       return;
@@ -152,7 +152,7 @@ const LogsView = {
     if (this.follow) view.scrollTop = view.scrollHeight;
   },
 
-  /* ---- 命中追踪（2s；签名对比整表重绘） ---- */
+  /* ---- Hit tracking (2s; wholesale redraw on signature compare) ---- */
   async pollHits() {
     if (HTTP_MODE) return;
     let hits;
@@ -162,7 +162,7 @@ const LogsView = {
     this.hitsSig = sig;
     const body = $('lg-hits-body');
     if (!hits || !hits.length) {
-      body.innerHTML = '<tr><td colspan="5" class="empty">内核未运行或暂无命中记录</td></tr>';
+      body.innerHTML = '<tr><td colspan="5" class="empty">' + AgI18n.t('logs.empty.hits') + '</td></tr>';
       return;
     }
     body.innerHTML = hits.map(h =>
@@ -173,7 +173,7 @@ const LogsView = {
       '<td class="dim">' + esc(fmtAgo(h.last_seen)) + '</td></tr>').join('');
   },
 
-  /* ---- 事件中心（低频：进页签拉一次 + onTick 10s + 手动刷新；签名对比，上限 50 条） ---- */
+  /* ---- Event center (low frequency: one pull on tab entry + onTick 10s + manual refresh; signature compare, max 50 entries) ---- */
   async pollEvents() {
     if (HTTP_MODE) return;
     let evs;
@@ -184,27 +184,27 @@ const LogsView = {
     const list = $('lg-ev-list');
     if (!evs || !evs.length) {
       list.innerHTML = '<div class="empty-state">' + AgIcon('bell', 36) +
-        '<div class="empty-t">暂无事件</div>' +
-        '<div class="empty-d">本机操作与系统事件会记录在这里</div></div>';
+        '<div class="empty-t">' + AgI18n.t('logs.empty.ev') + '</div>' +
+        '<div class="empty-d">' + AgI18n.t('logs.empty.evDesc') + '</div></div>';
       return;
     }
     list.innerHTML = evs.map(evRowHtml).join('');
   },
 };
 
-/* 事件类型 → pill 映射（未识别 kind 兜底 pill-dim + 原始 kind 名） */
+/* Event kind → pill mapping (unrecognized kinds fall back to pill-dim + raw kind name) */
 const EV_KIND = {
-  role_toggle: ['pill-dim', '开关'],
-  kernel: ['pill-ok', '内核'],
-  sysproxy: ['pill-warn', '系统代理'],
-  custom_rule: ['pill-dim', '规则'],
-  sub_script: ['pill-warn', '脚本'],
-  doctor: ['pill-ok', '诊断'],
-  install: ['pill-dim', '安装'],
-  uninstall: ['pill-danger', '卸载'],
-  connector: ['pill-dim', '扇出'],
+  role_toggle: ['pill-dim', 'logs.ev.role'],
+  kernel: ['pill-ok', 'term.kernel'],
+  sysproxy: ['pill-warn', 'logs.ev.sysproxy'],
+  custom_rule: ['pill-dim', 'term.rule'],
+  sub_script: ['pill-warn', 'logs.ev.script'],
+  doctor: ['pill-ok', 'logs.ev.doctor'],
+  install: ['pill-dim', 'app.install'],
+  uninstall: ['pill-danger', 'app.uninstall'],
+  connector: ['pill-dim', 'term.fanout'],
 };
-/* 事件时间：今天 HH:MM:SS；非今天 MM-DD HH:MM */
+/* Event time: today HH:MM:SS; otherwise MM-DD HH:MM */
 function evTimeFmt(ts) {
   const d = new Date((ts || 0) * 1000);
   const pad = (n) => String(n).padStart(2, '0');
@@ -215,13 +215,15 @@ function evTimeFmt(ts) {
     : pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
 }
 function evRowHtml(e) {
-  const k = EV_KIND[e.kind] || ['pill-dim', e.kind || '事件'];
+  const k = EV_KIND[e.kind];
+  const cls = k ? k[0] : 'pill-dim';
+  const label = k ? AgI18n.t(k[1]) : (e.kind || AgI18n.t('term.events'));
   return '<div class="ev-row"><span class="ev-time">' + evTimeFmt(e.ts) + '</span>' +
-    '<span class="pill ' + k[0] + '">' + esc(k[1]) + '</span>' +
+    '<span class="pill ' + cls + '">' + esc(label) + '</span>' +
     '<span class="ev-detail" title="' + esc(e.detail) + '">' + esc(e.detail) + '</span></div>';
 }
 
-/* 连接行 HTML：活跃行左 3px accent 条（var token，无硬编码色值），已关闭整行灰显 */
+/* Connection row HTML: active rows get a left 3px accent bar (var token, no hardcoded colors), closed rows fully dimmed */
 function connRowHtml(c, live) {
   const dim = live ? '' : ' class="dim"';
   const exit = (c.chains && c.chains.length) ? c.chains[0] : '—';
@@ -239,10 +241,10 @@ function connRowHtml(c, live) {
     '<td class="mono">' + fmtDur(c.elapsed) + '</td></tr>';
 }
 
-/* 链路迷你拓扑（纯 HTML flex，零依赖无 SVG）：本机 → chains 倒序各中继 → 目标 host
-   （chains[0] 是出口，链路顺序 = 本机 + chains.slice().reverse() + host；chains 空则 本机→host 两点）。
-   圆点语义色全走 var token（本机 accent / 中继 dim2 / 目标 ok-text），连线与右箭头用 --border2；
-   节点名 10px 居中，超 8 字截断加省略号，全名挂 title。 */
+/* Chain mini topology (pure HTML flex, zero deps, no SVG): local machine → relays in reversed chains order → target host
+   (chains[0] is the egress; chain order = local + chains.slice().reverse() + host; empty chains = just local→host two points).
+   Dot semantic colors all via var tokens (local accent / relay dim2 / target ok-text), links and right arrows use --border2;
+   node names 10px centered, truncated with ellipsis beyond 8 chars, full name in title. */
 function connTopoHtml(c) {
   const cut = (s) => s.length > 8 ? s.slice(0, 8) + '…' : s;
   const node = (name, color) =>
@@ -252,22 +254,22 @@ function connTopoHtml(c) {
   const link = '<div style="flex:1;min-width:24px;height:9px;display:flex;align-items:center">' +
     '<span style="flex:1;height:1px;background:var(--border2)"></span>' +
     '<span style="width:0;height:0;border-top:3.5px solid transparent;border-bottom:3.5px solid transparent;border-left:5px solid var(--border2)"></span></div>';
-  const nodes = [['本机', 'var(--accent)']];
+  const nodes = [[AgI18n.t('logs.topo.local'), 'var(--accent)']];
   (c.chains || []).slice().reverse().forEach(n => nodes.push([String(n), 'var(--dim2)']));
   nodes.push([c.host || '—', 'var(--ok-text)']);
   return '<div style="display:flex;align-items:flex-start;margin-bottom:7px">' +
     nodes.map((n, i) => (i ? link : '') + node(n[0], n[1])).join('') + '</div>';
 }
 
-/* 连接详情展开行（标杆 Surge：链路拓扑 + 两行内布局；样式全走内联，CSS 无此类）。
-   拓扑行 = 本机 → 中继链 → 目标（connTopoHtml）；第一行 = 完整出站链 + 命中规则；
-   第二行 = 进程 / 开始时间 / 累计流量 / 状态 pill。
-   数据随 pollConns 整表重绘原位重插，即实时刷新。 */
+/* Connection detail expanded row (benchmark Surge: chain topology + two-line inner layout; styles all inline, no CSS class for this).
+   Topology row = local → relay chain → target (connTopoHtml); first line = full outbound chain + matched rule;
+   second line = process / start time / cumulative traffic / status pill.
+   Data re-inserted in place on pollConns wholesale redraw = live refresh. */
 function connDetailRowHtml(c, live) {
   const chains = (c.chains && c.chains.length) ? c.chains.join(' → ') : '—';
   const rule = c.rule
     ? esc(c.rule) + (c.rule_payload ? ' <span class="dim">' + esc(c.rule_payload) + '</span>' : '')
-    : '<span class="dim">未命中（最终出口）</span>';
+    : '<span class="dim">' + AgI18n.t('logs.conn.final') + '</span>';
   const d = c.start ? new Date(c.start * 1000) : null;
   const pad = (n) => String(n).padStart(2, '0');
   const startTxt = d ? pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds()) : '—';
@@ -276,33 +278,33 @@ function connDetailRowHtml(c, live) {
     connTopoHtml(c) +
     '<div style="font-size:12px;line-height:1.7;word-break:break-all">' +
     '<span class="mono" style="font-size:11.5px">' + esc(chains) + '</span>' +
-    '<span class="dim">　规则　</span>' + rule + '</div>' +
+    '<span class="dim">　' + AgI18n.t('term.rule') + '　</span>' + rule + '</div>' +
     '<div class="dim" style="margin-top:3px;font-size:12px;display:flex;gap:14px;flex-wrap:wrap;align-items:center">' +
-    '<span>进程 ' + esc(c.process || '—') + '</span>' +
-    '<span>开始 ' + startTxt + '</span>' +
-    '<span>累计 ↓ ' + fmtBytes(c.download) + '</span>' +
-    '<span>累计 ↑ ' + fmtBytes(c.upload) + '</span>' +
-    '<span class="pill ' + (live ? 'pill-ok' : 'pill-dim') + '">' + (live ? '活跃' : '已关闭') + '</span>' +
+    '<span>' + AgI18n.t('logs.conn.process') + ' ' + esc(c.process || '—') + '</span>' +
+    '<span>' + AgI18n.t('logs.conn.started') + ' ' + startTxt + '</span>' +
+    '<span>' + AgI18n.t('logs.conn.down') + ' ' + fmtBytes(c.download) + '</span>' +
+    '<span>' + AgI18n.t('logs.conn.up') + ' ' + fmtBytes(c.upload) + '</span>' +
+    '<span class="pill ' + (live ? 'pill-ok' : 'pill-dim') + '">' + AgI18n.t(live ? 'logs.conn.live' : 'logs.conn.closed') + '</span>' +
     '</div></td></tr>';
 }
 
-/* 一键加规则：主机直连放行 / 经订阅出口（后端去 scheme/端口并幂等） */
+/* One-click add rule: direct-allow for the host / route via subscription egress (backend strips scheme/port and is idempotent) */
 async function addRuleForHost(host, target) {
   try {
     await invoke('sub_add_rule_for_host', { host, target });
-    toast(target === 'direct' ? '已添加直连规则：' + host : '已添加经订阅规则：' + host, 'ok');
+    toast(AgI18n.t(target === 'direct' ? 'logs.rule.direct' : 'logs.rule.sub', { host }), 'ok');
     refreshCustomRules(true);
   } catch (err) { toast(friendlyError(err), 'err'); }
 }
 
 function initLogs() {
   agTabsBind($('lg-tabs'), (key) => { LogsView.tab = key; LogsView.tick = 0; LogsView.pollNow(); });
-  // 日志流跟随：上滚暂停自动滚底，回底恢复
+  // Log stream follow: scrolling up pauses auto scroll-to-bottom, back at bottom resumes
   const view = $('lg-log-view');
   view.addEventListener('scroll', () => {
     LogsView.follow = view.scrollTop + view.clientHeight >= view.scrollHeight - 30;
   });
-  // 过滤变更：以缓存 entries 全量重渲染
+  // Filter change: full re-render from cached entries
   $('lg-log-filter').addEventListener('input', () => LogsView.renderLogs(true));
   $('lg-log-level').addEventListener('change', () => LogsView.renderLogs(true));
   $('btn-lg-clear').onclick = async () => {
@@ -311,7 +313,7 @@ function initLogs() {
       LogsView.entries = [];
       LogsView.logCursor = null;
       view.innerHTML = '';
-      toast('日志已清空', 'ok');
+      toast(AgI18n.t('logs.cleared'), 'ok');
     } catch (err) { toast(friendlyError(err), 'err'); }
   };
   $('btn-hits-clear').onclick = async () => {
@@ -319,19 +321,19 @@ function initLogs() {
       await invoke('sub_clear_logs');
       LogsView.hitsSig = '';
       LogsView.pollHits();
-      toast('命中记录已清空', 'ok');
+      toast(AgI18n.t('logs.hitsCleared'), 'ok');
     } catch (err) { toast(friendlyError(err), 'err'); }
   };
-  // 事件中心手动刷新（清签名强制重拉重绘）
+  // Event center manual refresh (clear signature to force re-pull and redraw)
   $('btn-ev-refresh').onclick = () => { LogsView.evSig = ''; LogsView.pollEvents(); };
-  // 连接行点击展开/收起详情（再点同一行或点其他行收起，同时只开一行）；
-  // 详情行内点击/右键不外溢（不触发展开切换与行右键菜单）
+  // Click a connection row to expand/collapse detail (clicking the same row again or another row collapses; only one open at a time);
+  // clicks/right-clicks inside the detail row do not leak out (no expand toggle, no row context menu)
   $('lg-conn-body').addEventListener('click', (e) => {
     if (e.target.closest('.conn-detail-row')) { e.stopPropagation(); return; }
     const tr = e.target.closest('tr[data-cid]');
     if (tr) LogsView.toggleConnDetail(tr.dataset.cid);
   });
-  // 连接行右键菜单：强制打断（仅活跃）/ 直连该域名 / 走订阅该域名
+  // Connection row context menu: force kill (active only) / direct for this domain / subscription for this domain
   $('lg-conn-body').addEventListener('contextmenu', (e) => {
     if (e.target.closest('.conn-detail-row')) { e.preventDefault(); e.stopPropagation(); return; }
     const tr = e.target.closest('tr[data-cid]');
@@ -341,19 +343,25 @@ function initLogs() {
     const id = tr.dataset.cid, host = tr.dataset.host;
     const items = [];
     if (tr.dataset.live === '1') {
-      items.push({ label: '强制打断', danger: true, fn: async () => {
+      items.push({ label: AgI18n.t('logs.ctx.kill'), danger: true, fn: async () => {
         try {
           await invoke('sub_close_connection', { id });
-          toast('连接已打断', 'ok');
+          toast(AgI18n.t('logs.killed'), 'ok');
           LogsView.pollConns();
         } catch (err) { toast(friendlyError(err), 'err'); }
       } });
     }
     if (host) {
       if (items.length) items.push('-');
-      items.push({ label: '直连该域名', fn: () => addRuleForHost(host, 'direct') });
-      items.push({ label: '走订阅该域名', fn: () => addRuleForHost(host, 'subscription') });
+      items.push({ label: AgI18n.t('logs.ctx.direct'), fn: () => addRuleForHost(host, 'direct') });
+      items.push({ label: AgI18n.t('logs.ctx.sub'), fn: () => addRuleForHost(host, 'subscription') });
     }
     if (items.length) ctxShow(e.clientX, e.clientY, items);
   });
 }
+
+/* Language switch: clear signatures to force re-pull and redraw (connections/hits/events all render by signature compare; locale entry changes must break the signature) */
+AgI18n.onChange(() => {
+  LogsView.connSig = LogsView.hitsSig = LogsView.evSig = '';
+  if (LogsView.timer) LogsView.pollNow();
+});

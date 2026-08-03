@@ -1,10 +1,11 @@
-//! 第 7 节：规则冲突（非法/重复自定义规则清理、hosts 托管块漂移重写、节点库 CIDR 包含冲突）。
+//! Section 7: rule conflicts (invalid/duplicate custom-rule cleanup, managed hosts-block drift
+//! rewrite, CIDR containment conflicts in the node database).
 
 use super::{DoctorContext, DoctorSection, DoctorStatus, item, section};
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 
-/// GUI 托管块标记（与 apps/desktop/src/custom_rules.rs 一致）。
+/// GUI managed-block markers (kept in sync with apps/desktop/src/custom_rules.rs).
 const GUI_BLOCK_BEGIN: &str = "# AgileNet begin";
 const GUI_BLOCK_END: &str = "# AgileNet end";
 
@@ -21,12 +22,12 @@ fn system_hosts_path() -> PathBuf {
     }
 }
 
-/// 放行 pattern 合法性（对齐 desktop add_bypass：非空且无空白字符）。
+/// Bypass-pattern validity (aligned with desktop add_bypass: non-empty, no whitespace).
 fn valid_bypass_pattern(p: &str) -> bool {
     !p.is_empty() && !p.chars().any(|c| c.is_whitespace())
 }
 
-/// hosts 映射合法性（对齐 desktop add_host：主机名非 IP、无空白/*/#；IP 可解析）。
+/// hosts-mapping validity (aligned with desktop add_host: hostname is not an IP, no whitespace/*/#; IP parses).
 fn valid_host_entry(host: &str, ip: &str) -> bool {
     !host.is_empty()
         && !host.chars().any(|c| c.is_whitespace() || c == '*' || c == '#')
@@ -34,7 +35,7 @@ fn valid_host_entry(host: &str, ip: &str) -> bool {
         && ip.parse::<IpAddr>().is_ok()
 }
 
-/// 从 gui-custom-rules.json 提取生效的 hosts 映射（enabled 且 to_system）。
+/// Extract the effective hosts mappings from gui-custom-rules.json (enabled and to_system).
 fn expected_hosts_entries(v: &serde_json::Value) -> Vec<(String, String)> {
     v["hosts"]
         .as_array()
@@ -52,7 +53,7 @@ fn expected_hosts_entries(v: &serde_json::Value) -> Vec<(String, String)> {
         .unwrap_or_default()
 }
 
-/// 解析系统 hosts 中的 GUI 托管块条目。
+/// Parse the GUI managed-block entries in the system hosts file.
 pub(super) fn read_managed_block(content: &str) -> Vec<(String, String)> {
     let mut out = Vec::new();
     let mut in_block = false;
@@ -73,7 +74,7 @@ pub(super) fn read_managed_block(content: &str) -> Vec<(String, String)> {
     out
 }
 
-/// 剔除托管块（语义对齐 desktop strip_block）。
+/// Strip the managed block (semantics aligned with desktop strip_block).
 pub(super) fn strip_managed_block(content: &str) -> String {
     let mut out = Vec::new();
     let mut in_block = false;
@@ -98,7 +99,7 @@ pub(super) fn strip_managed_block(content: &str) -> String {
     s
 }
 
-/// 幂等重写系统 hosts 托管块（temp + rename；权限不足返回 Err）。
+/// Idempotently rewrite the system hosts managed block (temp + rename; Err on insufficient permission).
 pub(super) fn rewrite_managed_block(path: &Path, entries: &[(String, String)]) -> Result<(), String> {
     let content = std::fs::read_to_string(path).unwrap_or_default();
     let mut new_content = strip_managed_block(&content);
@@ -119,7 +120,8 @@ pub(super) fn rewrite_managed_block(path: &Path, entries: &[(String, String)]) -
     std::fs::rename(&tmp, path).map_err(|e| e.to_string())
 }
 
-/// 清理规则文件中的非法项（Value 层面操作以保留未知字段）；返回移除项描述。
+/// Remove invalid entries from the rules file (operates at the Value level to preserve unknown
+/// fields); returns descriptions of removed entries.
 pub(super) fn sanitize_rules_file(v: &mut serde_json::Value) -> Vec<String> {
     let mut removed = Vec::new();
     let mut removed_ids: Vec<String> = Vec::new();
@@ -150,7 +152,7 @@ pub(super) fn sanitize_rules_file(v: &mut serde_json::Value) -> Vec<String> {
             ok
         });
     }
-    // 级联清理组合中的失效成员 key（对齐 desktop remove 语义）
+    // Cascade-remove stale member keys from combos (aligned with desktop remove semantics)
     if !removed_ids.is_empty()
         && let Some(combos) = v["combos"].as_array_mut()
     {
@@ -167,7 +169,7 @@ pub(super) fn sanitize_rules_file(v: &mut serde_json::Value) -> Vec<String> {
     removed
 }
 
-/// 放行 pattern 重复检测（大小写不敏感）；返回重复的 pattern 列表。
+/// Duplicate bypass-pattern detection (case-insensitive); returns the duplicated patterns.
 pub(super) fn duplicate_patterns(v: &serde_json::Value) -> Vec<String> {
     let mut seen: Vec<String> = Vec::new();
     let mut dups: Vec<String> = Vec::new();
@@ -195,7 +197,7 @@ pub(super) fn section_rules(ctx: &DoctorContext) -> DoctorSection {
         .and_then(|s| serde_json::from_str(&s).ok());
 
     if let Some(mut v) = rules_val {
-        // 非法项（err + fix 移除）
+        // Invalid entries (err + removed on fix)
         let invalid = sanitize_rules_file(&mut v);
         if !invalid.is_empty() {
             let fixed = ctx.fix
@@ -219,7 +221,7 @@ pub(super) fn section_rules(ctx: &DoctorContext) -> DoctorSection {
                 ));
             }
         }
-        // pattern 重复（warn）
+        // Duplicated patterns (warn)
         let dups = duplicate_patterns(&v);
         if !dups.is_empty() {
             items.push(item(
@@ -239,7 +241,7 @@ pub(super) fn section_rules(ctx: &DoctorContext) -> DoctorSection {
                 None,
             ));
         }
-        // hosts 托管块漂移（fix 重写）
+        // Managed hosts-block drift (rewritten on fix)
         let expected = expected_hosts_entries(&v);
         let hosts_path = system_hosts_path();
         let content = std::fs::read_to_string(&hosts_path).unwrap_or_default();
@@ -285,7 +287,7 @@ pub(super) fn section_rules(ctx: &DoctorContext) -> DoctorSection {
             }
         }
     } else if rules_path.exists() {
-        // 损坏文件由「配置与数据」节负责修复（本节在其后执行，届时已重置为 {}）
+        // Corrupt files are repaired by the "config & data" section (it runs before this one, so the file is {} by then)
         items.push(item(
             "custom",
             "自定义规则",
@@ -295,7 +297,7 @@ pub(super) fn section_rules(ctx: &DoctorContext) -> DoctorSection {
         ));
     }
 
-    // 节点库 CIDR 包含关系冲突（只读；无库跳过）
+    // CIDR containment conflicts in the node database (read-only; skipped without a database)
     match &ctx.db_path {
         Some(db) if db.exists() => match read_db_cidrs(db) {
             Ok(values) => {
@@ -348,7 +350,7 @@ pub(super) fn section_rules(ctx: &DoctorContext) -> DoctorSection {
     section("rules", "规则冲突", items)
 }
 
-/// 只读打开节点库读取 ip-cidr 规则值（不走 db 模块——避免触发迁移写）。
+/// Open the node database read-only and read ip-cidr rule values (bypasses the db module — avoids triggering migration writes).
 fn read_db_cidrs(path: &Path) -> Result<Vec<String>, String> {
     let conn = rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
         .map_err(|e| e.to_string())?;
@@ -365,7 +367,8 @@ fn read_db_cidrs(path: &Path) -> Result<Vec<String>, String> {
     Ok(out)
 }
 
-/// CIDR 包含关系对（大网, 被包含网）；同值重复也报告。纯函数便于测试。
+/// CIDR containment pairs (containing net, contained net); exact duplicates are also reported.
+/// Pure function for testability.
 pub(super) fn cidr_conflicts(values: &[String]) -> Vec<(String, String)> {
     let nets: Vec<Option<ip_network::IpNetwork>> =
         values.iter().map(|v| v.parse().ok()).collect();

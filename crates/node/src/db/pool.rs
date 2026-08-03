@@ -1,4 +1,4 @@
-//! 从 db/mod.rs 拆分：连接池与共享基础（纯搬运，零逻辑变更）
+//! Split from db/mod.rs: connection pool and shared helpers (pure move, no logic change)
 
 use agile_net_core::error::{Error, Result};
 use r2d2_sqlite::SqliteConnectionManager;
@@ -10,7 +10,7 @@ pub struct Database {
 }
 
 impl Database {
-    /// 打开数据库并执行迁移（WAL 模式 + 读连接池，写操作经 busy_timeout 串行）。
+    /// Open the database and run migrations (WAL mode + read pool; writes serialized via busy_timeout).
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
         let manager = SqliteConnectionManager::file(path.as_ref()).with_init(|conn| {
             conn.pragma_update(None, "journal_mode", "WAL")?;
@@ -27,7 +27,7 @@ impl Database {
         Ok(db)
     }
 
-    /// 内存数据库（测试专用，单连接保证共享状态）
+    /// In-memory database (test-only; single connection to share state)
     pub fn in_memory() -> Result<Self> {
         let manager = SqliteConnectionManager::memory().with_init(|conn| {
             conn.pragma_update(None, "foreign_keys", "ON")?;

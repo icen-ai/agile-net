@@ -1,10 +1,10 @@
-//! 从 lib.rs 拆分：端点连接 / 凭据 / 规则暂停（纯搬运，零逻辑变更）
+//! Split from lib.rs: endpoint connect / credentials / rule pause (pure move, zero logic change)
 
 use crate::{map_err, AppState, ConnectInput};
 use agile_net_client::{ConnectParams, Credential, NodeState};
 use tauri::State;
 
-/// 连接节点
+/// Connect to a node
 #[tauri::command]
 pub(crate) async fn connect_node(state: State<'_, AppState>, input: ConnectInput) -> Result<NodeState, String> {
     if !state.roles.lock().await.client {
@@ -40,7 +40,7 @@ pub(crate) async fn connect_node(state: State<'_, AppState>, input: ConnectInput
     Ok(node_state)
 }
 
-/// 断开节点（保留已保存凭据；删除凭据走 delete_credential）
+/// Disconnect a node (saved credentials are kept; removal goes through delete_credential)
 #[tauri::command]
 pub(crate) async fn disconnect_node(state: State<'_, AppState>, node_id: String) -> Result<(), String> {
     state.client.disconnect(&node_id).await;
@@ -51,7 +51,7 @@ pub(crate) async fn disconnect_node(state: State<'_, AppState>, node_id: String)
     Ok(())
 }
 
-/// 删除已保存的凭据
+/// Delete a saved credential
 #[tauri::command]
 pub(crate) async fn delete_credential(state: State<'_, AppState>, key: String) -> Result<(), String> {
     if let Some(store) = state.creds.as_ref() {
@@ -60,7 +60,7 @@ pub(crate) async fn delete_credential(state: State<'_, AppState>, key: String) -
     Ok(())
 }
 
-/// 导出已保存凭据为 agilenet://connect 接入链接（含明文密码，谨慎分享）
+/// Export a saved credential as an agilenet://connect URL (contains plaintext password; share with care)
 #[tauri::command]
 pub(crate) async fn export_credential(state: State<'_, AppState>, key: String) -> Result<String, String> {
     let store = state.creds.as_ref().as_ref().ok_or("凭据存储不可用")?;
@@ -68,7 +68,7 @@ pub(crate) async fn export_credential(state: State<'_, AppState>, key: String) -
     Ok(agile_net_client::connect_url_of(&c))
 }
 
-/// 暂停/恢复一条路由规则（rule_key 格式 "type:value"）
+/// Pause/resume a routing rule (rule_key format "type:value")
 #[tauri::command]
 pub(crate) async fn set_rule_paused(
     state: State<'_, AppState>,
@@ -80,13 +80,13 @@ pub(crate) async fn set_rule_paused(
     Ok(())
 }
 
-/// 查询某节点被暂停的规则
+/// List a node's paused rules
 #[tauri::command]
 pub(crate) async fn get_paused_rules(state: State<'_, AppState>, node_id: String) -> Result<Vec<String>, String> {
     Ok(state.client.get_paused_rules(&node_id))
 }
 
-/// 整体恢复某节点的暂停集合（前端持久化恢复用）
+/// Replace a node's paused set as a whole (for frontend persistence restore)
 #[tauri::command]
 pub(crate) async fn set_paused_rules(
     state: State<'_, AppState>,
@@ -97,7 +97,7 @@ pub(crate) async fn set_paused_rules(
     Ok(())
 }
 
-/// 节点列表（含实时状态）
+/// Node list (with live status)
 #[tauri::command]
 pub(crate) async fn list_nodes(state: State<'_, AppState>) -> Result<Vec<NodeState>, String> {
     let mut nodes = state.client.list_nodes().await;
@@ -107,7 +107,7 @@ pub(crate) async fn list_nodes(state: State<'_, AppState>) -> Result<Vec<NodeSta
     Ok(nodes)
 }
 
-/// 已保存凭据列表
+/// List saved credentials
 #[tauri::command]
 pub(crate) async fn list_credentials(state: State<'_, AppState>) -> Result<Vec<(String, Credential)>, String> {
     let Some(store) = state.creds.as_ref() else {
@@ -122,7 +122,7 @@ pub(crate) async fn list_credentials(state: State<'_, AppState>) -> Result<Vec<(
     Ok(out)
 }
 
-/// 解析 agilenet://connect?... 接入链接（实现位于 agile-net-client，与 Web REST 共用）
+/// Parse an agilenet://connect?... URL (implemented in agile-net-client, shared with Web REST)
 #[tauri::command]
 pub(crate) fn parse_connect_url(url: String) -> Result<ConnectInput, String> {
     agile_net_client::parse_connect_url(&url)

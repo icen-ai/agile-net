@@ -1,4 +1,4 @@
-//! 从 db/mod.rs 拆分：admin 表与管理引导票据（纯搬运，零逻辑变更）
+//! Split from db/mod.rs: admin table and admin bootstrap tickets (pure move, no logic change)
 
 use super::models::*;
 use super::pool::{Database, db_err, now_rfc3339};
@@ -121,12 +121,12 @@ impl Database {
         Ok(())
     }
 
-    // ==================== Admin Ticket（管理引导票据） ====================
+    // ==================== Admin Ticket (bootstrap tickets) ====================
 
-    /// 签发管理引导票据：明文返回一次，库中只存 SHA-256 哈希。
+    /// Issue an admin bootstrap ticket: plaintext returned once; only the SHA-256 hash is stored.
     ///
-    /// kind: account（管理版接入链接）/ relay（中继暴露控制面）；
-    /// subject: account_id 或 "psk_前缀@下游节点名"；max_uses > 1 时限期多次用（relay 场景）。
+    /// kind: account (admin connect URL) / relay (relay-exposed control plane);
+    /// subject: account_id or "psk_prefix@fan-in node name"; max_uses > 1 allows repeated use within TTL (relay case).
     pub fn create_admin_ticket(
         &self,
         kind: &str,
@@ -158,7 +158,7 @@ impl Database {
         Ok(ticket)
     }
 
-    /// 核销管理引导票据（原子计次防重放；过期/超次返回 None）。
+    /// Redeem an admin bootstrap ticket (atomic use-count against replay; None if expired/exhausted).
     pub fn redeem_admin_ticket(&self, ticket: &str) -> Result<Option<AdminTicketRecord>> {
         let hash = sha256_hex(ticket.as_bytes());
         let now = now_rfc3339();
@@ -190,7 +190,7 @@ impl Database {
         })
     }
 
-    /// 清理过期票据（随每日留存任务执行）。
+    /// Delete expired tickets (runs with the daily retention task).
     pub fn cleanup_admin_tickets(&self) -> Result<usize> {
         let conn = self.conn();
         let n = conn

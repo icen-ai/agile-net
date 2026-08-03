@@ -1,9 +1,9 @@
 'use strict';
-/* 从 app.js 拆分：invoke 桥 / 全局状态 / 本端工具与组件（纯搬运，零逻辑变更）。
-   $ / esc / ahelp 已沉淀共享层 agutil.js（index.html 先于本文件引入）；图标走共享 icons.js 的 AgIcon。 */
+/* Split from app.js: invoke bridge / global state / local utils & components (pure move, zero logic change).
+   $ / esc / ahelp live in shared layer agutil.js (index.html loads it before this file); icons use shared icons.js AgIcon. */
 
-/* 双传输 invoke 桥：Tauri 窗口内走 IPC；浏览器（Web 远程面）走 HTTP REST。
-   REST 端点与命令一一映射（服务端见 crates/client/src/api.rs），信封 {code,data}/{code,message}。 */
+/* Dual-transport invoke bridge: IPC inside Tauri window; HTTP REST in browser (Web remote panel).
+   REST endpoints map 1:1 to commands (server side see crates/client/src/api.rs), envelope {code,data}/{code,message}. */
 const TAURI = window.__TAURI__ || null;
 const HTTP_MODE = !TAURI;
 let httpToken = localStorage.getItem('ag_web_token') || '';
@@ -26,7 +26,7 @@ const CMD_MAP = {
 
 async function httpInvoke(cmd, args) {
   const spec = CMD_MAP[cmd];
-  if (!spec) throw new Error('该操作不支持 Web 远程调用');
+  if (!spec) throw new Error(AgI18n.t('core.err-no-web'));
   const method = spec[0], path = spec[1], bodyFn = spec[2];
   const url = typeof path === 'function' ? path(args || {}) : path;
   const headers = { 'Authorization': 'Bearer ' + httpToken };
@@ -40,21 +40,21 @@ async function httpInvoke(cmd, args) {
     localStorage.removeItem('ag_web_token');
     httpToken = '';
     showLogin();
-    throw new Error('未登录或会话已过期');
+    throw new Error(AgI18n.t('core.err-auth-expired'));
   }
   const json = await resp.json().catch(() => ({}));
-  if (json.code !== 0) throw new Error(json.message || ('请求失败 (code ' + json.code + ')'));
+  if (json.code !== 0) throw new Error(json.message || AgI18n.t('core.err-request-failed', { code: json.code }));
   return json.data;
 }
 
 const invoke = TAURI ? TAURI.core.invoke : httpInvoke;
 
-/* ================= 原生化：屏蔽 WebView 浏览器行为（仅 Tauri 窗口；浏览器远程面不受影响） ================= */
+/* ================= Native-ize: block WebView browser behaviors (Tauri window only; browser remote panel unaffected) ================= */
 if (TAURI) {
-  // 右键菜单 / 拖拽
+  // Context menu / drag
   document.addEventListener('contextmenu', e => e.preventDefault());
   document.addEventListener('dragstart', e => e.preventDefault());
-  // F12 / DevTools / 查看源码 / 刷新 / 打印 / 缩放 等浏览器快捷键
+  // Browser shortcuts: F12 / DevTools / view source / refresh / print / zoom
   document.addEventListener('keydown', e => {
     const k = e.key.toLowerCase();
     const devCombo = e.ctrlKey && e.shiftKey && ['i', 'j', 'c'].includes(k);
@@ -62,9 +62,9 @@ if (TAURI) {
     if (e.key === 'F12' || e.key === 'F5' || devCombo || zoomCombo ||
         (e.ctrlKey && ['u', 'r', 'p'].includes(k))) e.preventDefault();
   });
-  // Ctrl + 滚轮缩放
+  // Ctrl + wheel zoom
   document.addEventListener('wheel', e => { if (e.ctrlKey) e.preventDefault(); }, { passive: false });
-  // 关闭表单自动填充 / 拼写检查等浏览器提示
+  // Disable browser hints: form autofill / spellcheck etc.
   window.addEventListener('DOMContentLoaded', () => {
     document.querySelectorAll('input, textarea, select').forEach(el => {
       el.setAttribute('autocomplete', 'off');
@@ -82,56 +82,35 @@ const PREFS = {
   set autoreconnect(v) { localStorage.setItem('ag_autoreconnect', v ? '1' : '0'); },
 };
 
-/* ================= i18n & 主题 ================= */
-const I18N = {
-  zh: {
-    'st-connected': '已连接', 'st-connecting': '连接中', 'st-reconnecting': '重连中', 'st-disconnected': '已断开',
-    'st-unreachable': '不可达', 'st-degraded': '部分网络不可达',
-    'banner-degraded': '端点 {name} 网络不可达，正在自动重连…',
-    'banner-down': '端点 {name} 已离线，其网段当前不可达',
-    'proxy-running': '代理运行中', 'proxy-stopped': '代理未启动',
-    'reconnecting-nodes': '正在自动重连 {n} 个已保存的扇入…',
-    'connected-toast': '已连接 {name}（下发规则 {n} 条）',
-    'proxy-on': '代理已启动', 'proxy-off': '代理已停止',
-    'btn-start-proxy': '启动代理', 'btn-stop-proxy': '停止代理',
-    'err-need-url': '请粘贴接入链接', 'err-bad-url': '链接格式不正确，应以 agilenet://connect? 开头',
-    'clip-ok': '已识别剪贴板中的接入链接', 'clip-none': '剪贴板中没有接入链接', 'clip-fail': '无法读取剪贴板',
-    'disconnected': '已断开', 'no-rules': '无生效规则', 'no-creds': '尚未添加扇入',
-  },
-  en: {
-    'st-connected': 'Connected', 'st-connecting': 'Connecting', 'st-reconnecting': 'Reconnecting', 'st-disconnected': 'Disconnected',
-    'st-unreachable': 'Unreachable', 'st-degraded': 'Some networks unreachable',
-    'banner-degraded': 'Node {name} unreachable, reconnecting…',
-    'banner-down': 'Node {name} is offline; its networks are unreachable',
-    'proxy-running': 'Proxy running', 'proxy-stopped': 'Proxy stopped',
-    'reconnecting-nodes': 'Reconnecting {n} saved fan-ins…',
-    'connected-toast': 'Connected {name} ({n} rules)',
-    'proxy-on': 'Proxy started', 'proxy-off': 'Proxy stopped',
-    'btn-start-proxy': 'Start Proxy', 'btn-stop-proxy': 'Stop Proxy',
-    'err-need-url': 'Please paste a connect URL', 'err-bad-url': 'Invalid URL: must start with agilenet://connect?',
-    'clip-ok': 'Connect URL detected in clipboard', 'clip-none': 'No connect URL in clipboard', 'clip-fail': 'Cannot read clipboard',
-    'disconnected': 'Disconnected', 'no-rules': 'No active rules', 'no-creds': 'No fan-in saved',
-  },
-};
-let LANG = localStorage.getItem('ag_lang') || 'zh';
-const T = (k) => (I18N[LANG] && I18N[LANG][k]) || I18N.zh[k] || k;
-function applyLanguage() { LANG = localStorage.getItem('ag_lang') || 'zh'; refreshNodes(true); refreshProxy(); }
+/* ================= i18n & theme ================= */
+/* Locale entries moved to lang/desktop-core.js (core.*); T(k) keeps the old-key compat bridge for app-views etc.;
+   st-connected is synonymous with common.connected, aliased to avoid duplicate keys */
+const CORE_ALIAS = { 'st-connected': 'common.connected' };
+const T = (k, vars) => AgI18n.t(CORE_ALIAS[k] || ('core.' + k), vars);
+function applyLanguage() { AgI18n.setLang(localStorage.getItem('ag_lang') || 'zh'); }
+/* Language switch: refresh node/proxy sections (former applyLanguage behavior); re-render in place if Dynamic Island detail is expanded */
+AgI18n.onChange(() => {
+  refreshNodes(true); refreshProxy();
+  if (Island.current === 'detail') Island.renderDetail();
+  // Custom ag-select labels only sync on change; refresh them so option text follows the new language
+  document.querySelectorAll('select[data-agsel]').forEach(agSelectRefresh);
+});
 function applyTheme() {
   document.documentElement.dataset.theme = localStorage.getItem('ag_theme') || 'light';
 }
-/* 性能模式（减少特效）：切 html.no-blur 关毛玻璃与动画（components.css/style.css 托底规则）。
-   localStorage 缓存先行避免首帧等待，initRoles 读 get_role_settings().reduce_effects 后校正。 */
+/* Performance mode (reduced effects): toggle html.no-blur to disable glass blur & animations (fallback rules in components.css/style.css).
+   localStorage cache applied first to avoid first-frame wait; initRoles corrects after reading get_role_settings().reduce_effects. */
 function applyReduceEffects(on) {
   document.documentElement.classList.toggle('no-blur', !!on);
 }
-// 解析即应用，避免首帧浅色闪烁（与 wiki / 控制台行为一致）
+// Apply at parse time to avoid first-frame light flash (same behavior as wiki / admin console)
 applyTheme();
 applyReduceEffects(localStorage.getItem('ag_reduce_fx') === '1');
 
-/* odo 数字滚动驱动（结构 .odo > .odo-digit > .odo-strip 见 components.css；滚动动效由 CSS transition 完成）。
-   用法：元素带 class="odo"，每帧调 odoSet(el, text)——按字符对齐 diff：数字位复用/新建 digit 并写
-   strip.style.transform = translateY(-N em)，非数字位（. / : 单位等）放裸文本节点；值短变长自动补 digit、
-   长变短自动裁；内部签名对比，文本未变不动 DOM。仅供 hero 中控台等少量大数字使用，勿全站铺开。 */
+/* odo digit scroll driver (structure .odo > .odo-digit > .odo-strip see components.css; scroll animation done by CSS transition).
+   Usage: element with class="odo", call odoSet(el, text) per frame — char-aligned diff: digit chars reuse/create a digit and set
+   strip.style.transform = translateY(-N em), non-digit chars (. / : units etc.) become bare text nodes; value growing auto-adds digits,
+   shrinking auto-trims; internal signature compare, unchanged text leaves DOM alone. Only for a few big numbers like the hero dashboard; do not roll out site-wide. */
 function odoSet(el, text) {
   if (!el) return;
   text = String(text);
@@ -164,28 +143,28 @@ function odoSet(el, text) {
   used.forEach(d => { d.firstChild.style.transform = 'translateY(-' + d._odoN + 'em)'; });
 }
 
-/* 变更检测写入：内容不变不动 DOM（轮询渲染防频闪） */
+/* Change-detection writes: leave DOM untouched when content is unchanged (anti-flicker for polling renders) */
 function setText(id, s) { const el = $(id); if (el && el.textContent !== s) el.textContent = s; }
 function setHtml(id, h) { const el = $(id); if (el && el.innerHTML !== h) el.innerHTML = h; }
 
-/* ================= 行内编辑（.agedit，共享样式在 components.css） =================
-   通用小模式：显示「值 [修改]」→ 点击变输入框 + [保存]；Enter 保存 / Esc 取消。
-   opts: { get(): 显示值, editValue?(): 输入框初值（默认同 get）, validate?(v): 错误文案|null, set(v): Promise }
-   validate 报错 → toast 且不写入（保持编辑态）；轮询侧用返回句柄 refresh() 同步显示值（编辑中不打扰）。 */
+/* ================= Inline edit (.agedit, shared styles in components.css) =================
+   Generic mini pattern: shows "value [Edit]" → click turns into input + [Save]; Enter saves / Esc cancels.
+   opts: { get(): display value, editValue?(): input initial value (defaults to get), validate?(v): error text|null, set(v): Promise }
+   validate error → toast without writing (stays in edit mode); polling side syncs the display value via returned handle refresh() (never disturbs while editing). */
 function bindInlineEdit(el, opts) {
   let editing = false, lastVal = null;
   el.classList.add('agedit');
   function render() {
     if (editing) return;
     const v = opts.get();
-    if (v === lastVal && el.firstChild) return; // 变更检测：显示值未变不动 DOM
+    if (v === lastVal && el.firstChild) return; // change detection: display value unchanged, leave DOM alone
     lastVal = v;
     el.innerHTML = '<span class="agedit-val">' + esc(v) + '</span>' +
-      '<button type="button" class="ghost small agedit-btn">修改</button>';
+      '<button type="button" class="ghost small agedit-btn">' + AgI18n.t('common.edit') + '</button>';
     el.querySelector('.agedit-btn').onclick = () => {
       editing = true;
       el.innerHTML = '<input type="text" class="agedit-input" autocomplete="off" spellcheck="false">' +
-        '<button type="button" class="ghost small agedit-btn">保存</button>';
+        '<button type="button" class="ghost small agedit-btn">' + AgI18n.t('common.save') + '</button>';
       const input = el.querySelector('.agedit-input');
       const btn = el.querySelector('.agedit-btn');
       input.value = opts.editValue ? opts.editValue() : v;
@@ -216,12 +195,12 @@ function bindInlineEdit(el, opts) {
   return { refresh: render };
 }
 
-/* ================= ag-select 统一自定义下拉（共享组件，样式在 components.css） =================
-   渐进增强：原生 select 保留为数据/逻辑载体（视觉隐藏），自定义 UI 与其双向同步——
-   选择自定义项 = 写回 sel.value 并 dispatch change（冒泡，既有绑定照常触发）；
-   程序化改选项/值后调 agSelectRefresh(sel) 刷新标签；sel.disabled 同步禁用态。
-   弹出层 fixed 挂 body（避开 overflow 裁剪），点击外部 / Esc / 滚动 / 缩放关闭。 */
-let agselOpen = null; // 当前打开的下拉 {root, btn, pop, cleanup}（全局同时只开一个）
+/* ================= ag-select unified custom dropdown (shared component, styles in components.css) =================
+   Progressive enhancement: native select kept as data/logic carrier (visually hidden), custom UI synced both ways —
+   picking a custom item = write back sel.value and dispatch change (bubbles, existing bindings fire as usual);
+   after programmatically changing options/value call agSelectRefresh(sel) to refresh the label; sel.disabled syncs disabled state.
+   Popup is fixed on body (avoids overflow clipping), closes on outside click / Esc / scroll / resize. */
+let agselOpen = null; // currently open dropdown {root, btn, pop, cleanup} (only one open at a time globally)
 
 function agSelClose() {
   if (!agselOpen) return;
@@ -232,7 +211,7 @@ function agSelClose() {
   o.cleanup();
 }
 
-/* 标签与禁用态同步（增强/打开/选择/refresh 时调用） */
+/* Label & disabled-state sync (called on enhance/open/select/refresh) */
 function agSelSyncLabel(sel) {
   const root = sel._agsel; if (!root) return;
   const opt = sel.options[sel.selectedIndex];
@@ -240,7 +219,7 @@ function agSelSyncLabel(sel) {
   root.querySelector('.agsel-btn').disabled = sel.disabled;
 }
 
-/* 打开时重建选项列表（天然兼容动态选项变更）并定位弹出层 */
+/* Rebuild the option list on open (naturally handles dynamic option changes) and position the popup */
 function agSelOpenPop(sel, root, btn) {
   const pop = document.createElement('div');
   pop.className = 'agsel-pop';
@@ -262,7 +241,7 @@ function agSelOpenPop(sel, root, btn) {
   document.body.appendChild(pop);
   root.classList.add('open');
   btn.setAttribute('aria-expanded', 'true');
-  // 定位：默认按钮下方，下方空间不足翻上方；右缘越界则左移
+  // Position: below button by default, flip above when space below is insufficient; shift left if right edge overflows
   const r = btn.getBoundingClientRect();
   pop.style.minWidth = r.width + 'px';
   const pw = pop.offsetWidth;
@@ -293,7 +272,7 @@ function agSelOpenPop(sel, root, btn) {
   } };
 }
 
-/* 扫描 root 内未增强的 select 并增强（幂等）；动态内容渲染后再调一次即可 */
+/* Scan for unenhanced selects under root and enhance them (idempotent); call once more after dynamic content renders */
 function agSelectEnhance(root) {
   (root || document).querySelectorAll('select:not([data-agsel])').forEach(sel => {
     sel.dataset.agsel = '1';
@@ -318,19 +297,19 @@ function agSelectEnhance(root) {
       agSelClose();
       agSelOpenPop(sel, wrap, btn);
     });
-    // 外部代码直接改值并派发 change 时同步标签
+    // Sync label when external code sets the value directly and dispatches change
     sel.addEventListener('change', () => agSelSyncLabel(sel));
     agSelSyncLabel(sel);
   });
 }
 
-/* 程序化改选项/值/disabled 后刷新自定义 UI（未增强时安全 no-op） */
+/* Refresh the custom UI after programmatic option/value/disabled changes (safe no-op when not enhanced) */
 function agSelectRefresh(sel) { if (sel && sel._agsel) agSelSyncLabel(sel); }
 
-/* ================= ag-tabs 横向页签条（共享组件，样式在 components.css） =================
-   结构：<div class="agtabs"><div class="agtabs-pill"><button class="agtab" data-agtab="k">…
-         面板 = 与页签条同容器内的直属 [data-agpanel="k"]；点击置 active 并显示对应面板。
-   纯显隐切换不重渲染；onSwitch(key) 供页面同步状态。 */
+/* ================= ag-tabs horizontal tab bar (shared component, styles in components.css) =================
+   Structure: <div class="agtabs"><div class="agtabs-pill"><button class="agtab" data-agtab="k">…
+         panel = direct [data-agpanel="k"] child in the same container as the tab bar; click sets active and shows the matching panel.
+   Pure show/hide toggle, no re-render; onSwitch(key) lets the page sync state. */
 function agTabsBind(bar, onSwitch) {
   const scope = bar.parentElement;
   const apply = (key, fire) => {
@@ -343,29 +322,29 @@ function agTabsBind(bar, onSwitch) {
   if (cur) apply(cur.dataset.agtab, false);
 }
 
-/* ================= 灵动岛（状态 + 通知 + 异常详情） =================
-   形变原则：容器显式宽高动画（overflow:hidden 全程包裹内容），
-   旧内容即刻退场、新内容延迟淡入——任何中间帧都不会出现内容溢出岛体。 */
+/* ================= Dynamic Island (status + notifications + error detail) =================
+   Morph principle: explicit width/height animation on the container (overflow:hidden wraps content the whole time),
+   old content exits instantly, new content fades in delayed — no intermediate frame ever shows content overflowing the island. */
 const Island = {
   timer: null, canExpand: false, detailNodes: [], current: 'bar', _t1: null, _t2: null,
   init() {
     $('island-bar').onclick = () => { if (this.canExpand) this.toggleDetail(); };
-    // 展开详情时点击岛外任意处自动收回
+    // Collapse automatically when clicking anywhere outside the island while detail is expanded
     document.addEventListener('click', (e) => {
       if (this.current === 'detail' && !e.target.closest('#island')) this.morph('bar');
     });
   },
   _parts() { return { bar: $('island-bar'), msg: $('island-msg'), detail: $('island-detail') }; },
-  /** 显式尺寸形变：先量后动、先形后内容（苹果式弹簧）；bar 在 detail 展开/收起间常显 */
+  /** Explicit-size morph: measure before animating, shape before content (Apple-style spring); bar stays visible across detail expand/collapse */
   morph(showPart) {
     const el = $('island');
     const parts = this._parts();
     const prev = this.current;
     const same = showPart === prev;
-    // 1. 冻结当前渲染尺寸（可从过渡中任意帧打断续接）
+    // 1. Freeze current rendered size (can interrupt mid-transition and resume from any frame)
     const cw = el.offsetWidth, ch = el.offsetHeight;
     el.style.width = cw + 'px'; el.style.height = ch + 'px';
-    // 2. 切换内容布局：detail 态 = bar + 详情共存；新出现的部分占位但不可见
+    // 2. Switch content layout: detail state = bar + detail coexist; newly appearing parts take space but stay invisible
     const barPersist = (showPart === 'detail' && prev === 'bar') || (showPart === 'bar' && prev === 'detail');
     if (!same) {
       for (const [k, p] of Object.entries(parts)) {
@@ -374,18 +353,18 @@ const Island = {
         p.style.visibility = (show && k === showPart && !(k === 'bar' && barPersist)) ? 'hidden' : '';
       }
     }
-    // 3. 量取目标尺寸（临时 auto，同帧内完成不回绘）
+    // 3. Measure target size (temporarily auto, done within the same frame without repaint)
     el.style.transition = 'none';
     el.style.width = ''; el.style.height = '';
     const tw = el.offsetWidth, th = el.offsetHeight;
     el.style.width = cw + 'px'; el.style.height = ch + 'px';
     void el.offsetHeight;
     el.style.transition = '';
-    // 4. 弹性形变至目标尺寸
+    // 4. Spring-morph to target size
     requestAnimationFrame(() => { el.style.width = tw + 'px'; el.style.height = th + 'px'; });
     el.classList.toggle('expanded', showPart !== 'bar');
-    el.dataset.state = showPart;  // 三态梯度配色：bar 常驻 / msg 轻梯度 / detail 强梯度
-    // 5. 形变过半 → 新内容淡入（模糊+微位移消散）；bar 持续可见的场景无淡出淡入
+    el.dataset.state = showPart;  // three-state gradient colors: bar persistent / msg light gradient / detail strong gradient
+    // 5. Morph past halfway → new content fades in (blur + slight drift dissipates); scenes with the bar persistently visible skip fade-out/in
     clearTimeout(this._t1); clearTimeout(this._t2);
     if (!same && !(showPart === 'bar' && barPersist)) {
       this._t1 = setTimeout(() => {
@@ -396,15 +375,15 @@ const Island = {
         target.classList.add('island-part');
       }, 200);
     } else {
-      // 同态连续调用（如两条通知 200ms 内接连到达）：上一次的 reveal 定时器已被
-      // clear，若不补显，内容会永远残留 visibility:hidden —— 空岛（白 pill 无内容）
+      // Consecutive same-state calls (e.g. two notifications arriving within 200ms): the previous reveal timer was
+      // cleared; without forcing visibility here the content would stay visibility:hidden forever — empty island (blank white pill)
       parts[showPart].style.visibility = '';
     }
-    // 6. 收尾释放显式尺寸（回到自适应）
+    // 6. Release the explicit size at the end (back to adaptive)
     this._t2 = setTimeout(() => { el.style.width = ''; el.style.height = ''; }, 520);
     this.current = showPart;
   },
-  /** 常态状态条。mode: on | off | warn */
+  /** Normal status bar. mode: on | off | warn */
   setStatus(mode, text, detailNodes) {
     const t = $('proxy-text');
     const changed = t.textContent !== text;
@@ -416,9 +395,9 @@ const Island = {
     $('island').classList.toggle('warn', mode === 'warn');
     if (!this.canExpand && this.current === 'detail') this.morph('bar');
     else if (this.current === 'detail') this.renderDetail();
-    else if (changed && this.current === 'bar') this.morph('bar');  // 文本变长变短也弹性过渡
+    else if (changed && this.current === 'bar') this.morph('bar');  // spring transition even when text just grows/shrinks
   },
-  /** 瞬时通知（弹性弹出，自动收回） */
+  /** Transient notification (spring pop-out, auto-collapse) */
   notify(msg, type) {
     clearTimeout(this.timer);
     const m = $('island-msg');
@@ -436,7 +415,7 @@ const Island = {
     this.morph('detail');
   },
   renderDetail() {
-    $('island-detail').innerHTML = '<div class="dt-title">以下端点当前不可达，其网段流量不会进入隧道：</div>' +
+    $('island-detail').innerHTML = '<div class="dt-title">' + esc(AgI18n.t('core.island-detail')) + '</div>' +
       this.detailNodes.map(n =>
         '<div class="island-row"><span class="dot off"></span><b>' + esc(n.node_name) + '</b>' +
         '<span class="mono">' + esc(n.addr) + '</span><span class="st">' + esc(statusText(n.status)) + '</span></div>'
@@ -446,19 +425,19 @@ const Island = {
 };
 function toast(msg, type) { Island.notify(msg, type); }
 
-/** 把底层错误翻译成用户友好的中文提示 */
+/** Map low-level errors to user-friendly messages */
 function friendlyError(e) {
   let s = String(e);
-  // 命令契约前缀（具体页面已按前缀分流；兜底场景剥掉前缀再展示）
+  // Command contract prefixes (specific pages already dispatch by prefix; the fallback path strips the prefix before showing)
   if (s.indexOf('NEED_DOWNLOAD:') === 0) s = s.slice('NEED_DOWNLOAD:'.length);
   if (s.indexOf('NEED_ELEVATION:') === 0) s = s.slice('NEED_ELEVATION:'.length);
-  if (/login failed|401|invalid username|invalid_credentials/i.test(s)) return '账号或密码错误，请核对接入信息';
-  if (/tunnel_token|not a client/i.test(s)) return '该账号不是客户端账号，请向管理员确认';
-  if (/certificate|tls|TLS|certificate verify/i.test(s)) return '证书校验失败：请检查证书固定配置，或仅在受信网络开启 insecure';
-  if (/timed out|timeout|deadline/i.test(s)) return '连接超时：端点不可达或网络受限';
-  if (/ConnectionRefused|refused|10061/i.test(s)) return '无法连接端点：地址/端口错误或端点未启动';
-  if (/dns|resolve|lookup/i.test(s)) return '域名解析失败：请检查端点地址';
-  if (/account disabled/i.test(s)) return '账号已被禁用，请联系管理员';
+  if (/login failed|401|invalid username|invalid_credentials/i.test(s)) return AgI18n.t('core.err-login');
+  if (/tunnel_token|not a client/i.test(s)) return AgI18n.t('core.err-not-client');
+  if (/certificate|tls|TLS|certificate verify/i.test(s)) return AgI18n.t('core.err-cert');
+  if (/timed out|timeout|deadline/i.test(s)) return AgI18n.t('core.err-timeout');
+  if (/ConnectionRefused|refused|10061/i.test(s)) return AgI18n.t('core.err-refused');
+  if (/dns|resolve|lookup/i.test(s)) return AgI18n.t('core.err-dns');
+  if (/account disabled/i.test(s)) return AgI18n.t('core.err-disabled');
   return s.length > 120 ? s.slice(0, 120) + '…' : s;
 }
 
@@ -471,12 +450,12 @@ function fmtBytes(n) {
 }
 
 function fmtAgo(ts) {
-  if (!ts) return '未刷新';
+  if (!ts) return AgI18n.t('core.ago-never');
   const d = Date.now() / 1000 - ts;
-  if (d < 3600) return Math.max(1, Math.floor(d / 60)) + ' 分钟前';
-  if (d < 86400) return Math.floor(d / 3600) + ' 小时前';
-  if (d < 86400 * 30) return Math.floor(d / 86400) + ' 天前';
-  return Math.floor(d / 86400 / 30) + ' 个月前';
+  if (d < 3600) return AgI18n.t('core.ago-min', { n: Math.max(1, Math.floor(d / 60)) });
+  if (d < 86400) return AgI18n.t('core.ago-hour', { n: Math.floor(d / 3600) });
+  if (d < 86400 * 30) return AgI18n.t('core.ago-day', { n: Math.floor(d / 86400) });
+  return AgI18n.t('core.ago-month', { n: Math.floor(d / 86400 / 30) });
 }
 
 function fmtDur(s) {
@@ -487,7 +466,7 @@ function fmtDur(s) {
   return h + 'h' + (m ? m + 'm' : '');
 }
 
-/* ---- 右键上下文菜单（共享组件 .ctx-menu；fixed 浮层，边缘收进视口，点外部/Esc 关闭） ---- */
+/* ---- Right-click context menu (shared component .ctx-menu; fixed overlay, clamped into viewport, closes on outside click/Esc) ---- */
 let ctxOpen = null;
 function ctxClose() {
   if (!ctxOpen) return;

@@ -1,10 +1,11 @@
-//! `anet init` 交互式初始化向导（企业级首装体验）。
+//! `anet init` interactive setup wizard (first-install experience).
 //!
-//! 步骤：配置文件 → 端点名称 → Web 管理/API 监听 → Relay listener → 管理员 → 系统服务 → 启动。
-//! - 交互式：逐项回车取默认值，密码双输+强度校验
-//! - 非交互（自动化）：`--yes` + `AGILE_ADMIN_PASSWORD`（可选 AGILE_ADMIN_USERNAME）
-//! - 系统服务：自动识别发行版（Ubuntu / Rocky / 麒麟 / 统信 UOS 等 systemd 系）注册并启动；
-//!   无 systemd 或无 root 时降级打印手动指引；Windows 经 sc.exe 注册
+//! Steps: config file -> endpoint name -> Web admin/API listen -> Relay listener -> admin -> system service -> start.
+//! - Interactive: Enter accepts defaults; password typed twice + strength check
+//! - Non-interactive (automation): `--yes` + `AGILE_ADMIN_PASSWORD` (optional AGILE_ADMIN_USERNAME)
+//! - System service: auto-detects distro (Ubuntu / Rocky / Kylin / UOS and other systemd
+//!   systems), registers and starts; without systemd or root, falls back to printing manual
+//!   instructions; on Windows registers via sc.exe
 
 use anyhow::{Context, Result, bail};
 use clap::Args;
@@ -13,33 +14,33 @@ use std::path::{Path, PathBuf};
 
 #[derive(Args, Debug)]
 pub struct InitArgs {
-    /// 跳过确认使用默认值（密码仍需 AGILE_ADMIN_PASSWORD 或 TTY 输入）
+    /// Skip confirmation and use defaults (password still required via AGILE_ADMIN_PASSWORD or TTY)
     #[arg(short = 'y', long)]
     pub yes: bool,
-    /// 配置文件路径
+    /// Config file path
     #[arg(long, default_value = "agile-net.toml")]
     pub config: String,
-    /// 端点名称（默认本机主机名）
+    /// Endpoint name (defaults to local hostname)
     #[arg(long)]
     pub name: Option<String>,
-    /// API/Web 管理监听地址（Web 管理后台随 API 开启）
+    /// API/Web admin listen address (Web admin UI comes up with the API)
     #[arg(long, default_value = "127.0.0.1:59090")]
     pub api: String,
-    /// 数据库路径（默认与配置文件同目录的 agile-net.db）
+    /// Database path (defaults to agile-net.db next to the config file)
     #[arg(long)]
     pub db: Option<String>,
-    /// 关闭 Relay listener（默认开启 0.0.0.0:54430，证书首启自动生成）
+    /// Disable the Relay listener (default on at 0.0.0.0:54430, cert auto-generated on first start)
     #[arg(long)]
     pub no_listener: bool,
-    /// 不注册系统服务
+    /// Do not register a system service
     #[arg(long)]
     pub no_service: bool,
-    /// 只打印 systemd unit 不写入（调试/审计用）
+    /// Print the systemd unit without writing it (debug/audit)
     #[arg(long, hide = true)]
     pub print_service: bool,
 }
 
-// ==================== 交互输入 ====================
+// ==================== Interactive input ====================
 
 fn tty() -> bool {
     std::io::stdin().is_terminal()
@@ -80,7 +81,7 @@ fn prompt_password_twice() -> Result<String> {
     }
 }
 
-// ==================== OS / systemd 识别 ====================
+// ==================== OS / systemd detection ====================
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct OsInfo {
@@ -89,7 +90,7 @@ pub struct OsInfo {
     pub systemd: bool,
 }
 
-/// 解析 /etc/os-release 内容（ubuntu/debian/rocky/almalinux/kylin/uos 等）。
+/// Parse /etc/os-release content (ubuntu/debian/rocky/almalinux/kylin/uos etc.).
 pub fn parse_os_release(content: &str) -> (String, String) {
     let mut id = String::new();
     let mut pretty = String::new();
@@ -137,23 +138,23 @@ pub fn render_systemd_unit(exe: &Path, config: &Path) -> String {
     )
 }
 
-/// TOML 基本字符串中的路径安全形式（Windows 反斜杠转正斜杠，避免 \U 转义事故）。
+/// Path-safe form for a TOML basic string (Windows backslashes to forward slashes, avoiding \U escape accidents).
 fn toml_path(s: &str) -> String {
     s.replace('\\', "/")
 }
 
-// ==================== 主流程 ====================
+// ==================== Main flow ====================
 
 pub async fn run(args: InitArgs) -> Result<()> {
     let interactive = tty() && !args.yes;
     if !interactive && !tty() && std::env::var("AGILE_ADMIN_PASSWORD").is_err() {
-        // 非 TTY 且未给密码时仅在需要建管理员的情况下报错（后面按需校验）
+        // non-TTY without a password: only an error if an admin must be created (validated later on demand)
         eprintln!("提示：非交互环境，管理员密码将读取 AGILE_ADMIN_PASSWORD");
     }
     println!("AgileNet 初始化向导");
     println!("────────────────────");
 
-    // 1. 配置文件
+    // 1. Config file
     let config_path = PathBuf::from(&args.config);
     if config_path.exists() {
         if interactive && !prompt_yes_no(&format!("配置文件 {} 已存在，在其基础上继续初始化？", args.config), true)? {
@@ -175,14 +176,14 @@ pub async fn run(args: InitArgs) -> Result<()> {
     };
     let config_abs = config_parent_abs.join(config_path.file_name().unwrap());
 
-    // 调试：仅打印 systemd unit（不写配置/库/服务）
+    // Debug: print the systemd unit only (no config/DB/service writes)
     if args.print_service {
         let exe = std::env::current_exe()?;
         println!("{}", render_systemd_unit(&exe, &config_abs));
         return Ok(());
     }
 
-    // 2. 端点名称
+    // 2. Endpoint name
     let hostname = sysinfo::System::host_name().unwrap_or_else(|| "AgileNet 节点".into());
     let name = match (&args.name, interactive) {
         (Some(n), _) => n.clone(),
@@ -191,7 +192,7 @@ pub async fn run(args: InitArgs) -> Result<()> {
     };
     println!("② 端点名称: {name}");
 
-    // 3. Web 管理 / API 监听（Web 管理后台随 API 开启，默认开）
+    // 3. Web admin / API listen (Web admin UI comes up with the API, on by default)
     let api = if interactive {
         let a = prompt("③ Web 管理后台监听（随 API 开启；0.0.0.0 对局域网暴露）", &args.api)?;
         if a.starts_with("0.0.0.0") {
@@ -216,7 +217,7 @@ pub async fn run(args: InitArgs) -> Result<()> {
         if listener_on { "0.0.0.0:54430（证书首启自动生成）" } else { "关闭" }
     );
 
-    // 写配置（不存在才写）
+    // Write config (only if it does not exist)
     let db_path = args
         .db
         .clone()
@@ -246,7 +247,7 @@ pub async fn run(args: InitArgs) -> Result<()> {
         println!("   已写入 {}", config_path.display());
     }
 
-    // 5. 管理员
+    // 5. Admin
     let db = crate::db::Database::open(&db_path)?;
     if db.has_admin()? {
         println!("⑤ 管理员: 已存在，跳过");
@@ -268,7 +269,7 @@ pub async fn run(args: InitArgs) -> Result<()> {
         println!("⑤ 管理员: {username}（已创建，密码不落地只存 argon2id 哈希）");
     }
 
-    // 6. 系统服务
+    // 6. System service
     let os = detect_os();
     println!("⑥ 系统: {}（systemd {}）", os.pretty, if os.systemd { "可用" } else { "不可用" });
     let mut service_started = false;
@@ -283,7 +284,7 @@ pub async fn run(args: InitArgs) -> Result<()> {
         }
     }
 
-    // 7. 启动
+    // 7. Start
     if !service_started {
         let want = if interactive {
             prompt_yes_no("⑦ 现在启动节点（后台运行）？", true)?
@@ -308,7 +309,7 @@ pub async fn run(args: InitArgs) -> Result<()> {
     Ok(())
 }
 
-/// systemd 注册（Linux）；无 root 时降级输出 sudo 指引；Windows 经 sc.exe。
+/// systemd registration (Linux); without root, degrades to sudo instructions; on Windows uses sc.exe.
 fn register_service(config_abs: &Path) -> Result<bool> {
     if cfg!(target_os = "linux") {
         let exe = std::env::current_exe()?;

@@ -1,4 +1,4 @@
-//! 路由规则管理（`anet rule ...`）。
+//! Route rule management (`anet rule ...`).
 
 use anyhow::{Context as _, Result};
 use clap::{Args, Subcommand};

@@ -3,37 +3,40 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AgileNet 悬浮球</title>
+<title data-i18n="float.winTitle">AgileNet 悬浮球</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%233C3F43' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z'/></svg>">
 <link rel="stylesheet" href="tokens.css">
+<script src="agi18n.js"></script>
+<script src="aglang.js"></script>
+<script src="lang/desktop-trayfloat.js"></script>
 <script src="icons.js"></script>
 <script src="float.js"></script>
 <style>
-/* 悬浮球：72×72 全透明窗口，恒等尺寸（菜单/气泡已拆为独立窗口，本页不做任何扩容）。
-   球体锚定右下（right/bottom 8px）——72px 窗口内即居中。
-   token 一律吃 tokens.css；--glass-bg 已收录于 tokens.css，rgba 仅作极端兜底注释。 */
+/* Float ball: 72×72 fully transparent window, fixed size (menu/bubble are split into separate windows; this page never resizes).
+   Ball anchored bottom-right (right/bottom 8px) — i.e. centered within the 72px window.
+   Tokens all come from tokens.css; --glass-bg is defined in tokens.css, rgba kept only as last-resort fallback note. */
 html, body { height: 100%; overflow: hidden; background: transparent; }
 [hidden] { display: none !important; }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body { font: 12px/1.4 -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; color: var(--text); user-select: none; -webkit-user-select: none; }
 :root { --fl-ease: cubic-bezier(.22, 1, .36, 1); }
 
-/* ---- 球体 ---- */
+/* ---- Ball ---- */
 #ball { position: fixed; right: 8px; bottom: 8px; width: 56px; height: 56px; border-radius: 50%;
-  background: var(--glass-bg, rgba(248, 248, 248, .78)); /* 兜底：浅色 --panel2 加透明 */
+  background: var(--glass-bg, rgba(248, 248, 248, .78)); /* fallback: light --panel2 with transparency */
   backdrop-filter: blur(12px) saturate(1.4); -webkit-backdrop-filter: blur(12px) saturate(1.4);
   border: 1px solid var(--border);
-  box-shadow: 0 4px 16px rgba(0, 0, 0, .13), 0 1px 3px rgba(0, 0, 0, .07); /* 柔和投影，rgba 阴影不涉主题色 */
+  box-shadow: 0 4px 16px rgba(0, 0, 0, .13), 0 1px 3px rgba(0, 0, 0, .07); /* soft drop shadow; rgba shadow is theme-color independent */
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0;
   cursor: default;
   transition: transform .16s var(--fl-ease), box-shadow .16s var(--fl-ease), border-color .16s; }
 html[data-theme="dark"] #ball {
-  background: var(--glass-bg, rgba(58, 56, 56, .72)); /* 兜底：深色 --panel2 加透明 */
+  background: var(--glass-bg, rgba(58, 56, 56, .72)); /* fallback: dark --panel2 with transparency */
   box-shadow: 0 4px 16px rgba(0, 0, 0, .45), 0 1px 3px rgba(0, 0, 0, .3); }
 #ball:hover { border-color: var(--border2); }
 #ball.dragging { transform: scale(.94);
   box-shadow: 0 10px 26px rgba(0, 0, 0, .22), 0 2px 6px rgba(0, 0, 0, .12); }
-/* 单击 Q 弹：scale .88→1.06→.97→1，播完由 JS 移除 class（连击不叠加） */
+/* Single-click bounce: scale .88→1.06→.97→1; JS removes the class after it plays (no stacking on rapid clicks) */
 #ball.boing { animation: fl-boing .35s cubic-bezier(.34, 1.56, .64, 1); }
 @keyframes fl-boing {
   0% { transform: scale(.88); }
@@ -48,7 +51,7 @@ html[data-theme="dark"] #ball {
 #ball-speed .down { font-size: 10.5px; color: var(--text-strong); }
 #ball-speed .up { font-size: 8.5px; color: var(--dim2); }
 
-/* 无 TAURI 环境兜底 */
+/* Fallback when TAURI is absent */
 #fl-noenv { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
   padding: 12px; text-align: center; font-size: 11px; color: var(--dim2); background: var(--panel2); }
 </style>
@@ -63,6 +66,6 @@ html[data-theme="dark"] #ball {
     </span>
   </div>
 </div>
-<div id="fl-noenv" hidden>需在 AgileNet 桌面端中使用</div>
+<div id="fl-noenv" hidden data-i18n="float.noenv">需在 AgileNet 桌面端中使用</div>
 </body>
 </html>

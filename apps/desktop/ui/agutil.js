@@ -1,21 +1,21 @@
 'use strict';
-/* AgileNet 共享基础工具（agutil，AGENTS.md §6 组件沉淀）：
-   桌面端 <script src="agutil.js"> 引入；管理端经 crates/node/src/ui/mod.rs 内嵌服务于 /ui/agutil.js
-   （同 agchart.js / icons.js 机制）。仅收录两端语义完全一致的工具——
-   有差异的（如 fmtBytes 输出格式、toast 通知通道）各端保留本地实现，严禁为合并而改行为。
-   依赖：ahelp 的问号图标走共享图标表 AgIcon（icons.js 须先加载）。 */
+/* AgileNet shared base utilities (agutil, AGENTS.md §6 shared component layer):
+   desktop loads via <script src="agutil.js">; admin UI serves it embedded via crates/node/src/ui/mod.rs at /ui/agutil.js
+   (same mechanism as agchart.js / icons.js). Only utilities with identical semantics on both ends —
+   divergent ones (e.g. fmtBytes output format, toast channel) keep local per-end implementations; never change behavior to force a merge.
+   Dependency: ahelp's question-mark icon uses the shared icon table AgIcon (icons.js must load first). */
 (function () {
 
 const $ = (id) => document.getElementById(id);
 
-/* HTML 转义：动态内容进 innerHTML/属性前必须过 esc */
+/* HTML escape: dynamic content must pass through esc before entering innerHTML/attributes */
 function esc(s) {
   return String(s ?? '').replace(/[&<>"'`]/g, c => ({
     '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;','`':'&#96;'
   }[c]));
 }
 
-/* 行内帮助（共享组件 .ahelp，样式在 components.css）：问号图标 + 纯 CSS hover 说明卡 */
+/* Inline help (shared component .ahelp, styles in components.css): question-mark icon + pure CSS hover tip card */
 function ahelp(text) {
   return '<span class="ahelp">' + AgIcon('badge-question-mark', 13) + '<span class="ahelp-tip">' + esc(text) + '</span></span>';
 }

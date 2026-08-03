@@ -1,4 +1,4 @@
-//! 从 subscription.rs 拆分：WS 采集与聚合（纯搬运，零逻辑变更）
+//! Split out of subscription.rs: WS collection and aggregation (pure move, zero logic change)
 
 use serde::Serialize;
 use std::sync::Arc;
@@ -7,10 +7,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use super::config::MIHOMO_CTRL_PORT;
 use super::store::now_ts;
 
-// ==================== 流量统计（/traffic WS 累计） ====================
+// ==================== Traffic stats (/traffic WS accumulation) ====================
 
-/// 内核流量累计器：/traffic WS 每秒推送 {up,down}（该秒字节数），此处累计会话总量并记录最近秒速率。
-/// 全 Atomic 无锁；内核停止即清零（任务退出时统一 reset）。
+/// Kernel traffic accumulator: /traffic WS pushes {up,down} (bytes for that second) each second;
+/// session totals and latest per-second rates are recorded here. All-atomic, lock-free; zeroed on kernel stop (single reset at task exit).
 #[derive(Debug, Default)]
 pub struct TrafficStats {
     up_total: AtomicU64,
@@ -19,7 +19,7 @@ pub struct TrafficStats {
     down_rate: AtomicU64,
 }
 
-/// 流量快照（sub_traffic 命令返回体）
+/// Traffic snapshot (sub_traffic command response body)
 #[derive(Debug, Clone, Copy, Default, Serialize)]
 pub struct TrafficSnapshot {
     pub up_total: u64,
@@ -54,8 +54,8 @@ impl TrafficStats {
     }
 }
 
-/// /traffic WS 累计任务：断线指数退避重连（1s 起、30s 封顶，会话稳定 10s 后断线重置退避）；
-/// 停止信号（含发送端被丢弃）即退出并清零计数。
+/// /traffic WS accumulation task: exponential backoff reconnect on drop (1s start, 30s cap;
+/// backoff resets after a 10s-stable session); stop signal (incl. dropped sender) exits and zeroes counters.
 pub(crate) async fn traffic_ws_loop(secret: String, stats: Arc<TrafficStats>, mut stop: tokio::sync::mpsc::Receiver<()>) {
     let mut backoff = 1u64;
     loop {
@@ -64,7 +64,7 @@ pub(crate) async fn traffic_ws_loop(secret: String, stats: Arc<TrafficStats>, mu
             _ = stop.recv() => break,
             _ = traffic_ws_session(&secret, &stats) => {}
         }
-        // 断线：速率归零（总量保留，重连后续累计）
+        // Disconnected: zero the rates (totals kept; resume accumulating after reconnect)
         stats.clear_rates();
         if started.elapsed() >= std::time::Duration::from_secs(10) {
             backoff = 1;
@@ -80,12 +80,12 @@ pub(crate) async fn traffic_ws_loop(secret: String, stats: Arc<TrafficStats>, mu
     stats.reset();
 }
 
-/// 单段 /traffic WS 会话（语义保持：text 帧 {up,down} 累计）。
+/// One /traffic WS session (semantics preserved: accumulate {up,down} text frames).
 async fn traffic_ws_session(secret: &str, stats: &TrafficStats) -> Result<(), String> {
     traffic_ws_session_on(MIHOMO_CTRL_PORT, secret, stats).await
 }
 
-/// 端口可参数化的 /traffic 会话（生产走控制面端口；测试注入 mock 端口）。
+/// /traffic session with parameterized port (production uses the control plane port; tests inject a mock port).
 async fn traffic_ws_session_on(port: u16, secret: &str, stats: &TrafficStats) -> Result<(), String> {
     ws_session_on(port, secret, "/traffic", &mut |payload| {
         if let Ok(v) = serde_json::from_slice::<serde_json::Value>(payload) {
@@ -98,8 +98,8 @@ async fn traffic_ws_session_on(port: u16, secret: &str, stats: &TrafficStats) ->
     .await
 }
 
-/// 采集通用重连循环（/connections、/logs 共用）：断线指数退避重连
-/// （1s 起、30s 封顶，会话稳定 10s 后断线重置退避）；停止信号（含发送端被丢弃）即退出。
+/// Generic collection reconnect loop (shared by /connections and /logs): exponential backoff
+/// reconnect on drop (1s start, 30s cap; backoff resets after a 10s-stable session); stop signal (incl. dropped sender) exits.
 pub(crate) async fn collect_ws_loop<F>(
     secret: String,
     path: &str,
@@ -128,9 +128,9 @@ pub(crate) async fn collect_ws_loop<F>(
     }
 }
 
-/// 通用单段 WS 会话（握手路径参数化）：握手 → 帧循环（text/binary 帧交 handler /
-/// ping→pong / close 正常结束）。极简 RFC 6455 客户端，仅面向 loopback mihomo 控制面，
-/// 不引入额外依赖。
+/// Generic single WS session (handshake path parameterized): handshake → frame loop (text/binary
+/// frames to handler / ping→pong / close ends normally). Minimal RFC 6455 client, only for the
+/// loopback mihomo control plane; no extra dependencies.
 async fn ws_session_on<F: FnMut(&[u8])>(
     port: u16,
     secret: &str,
@@ -146,7 +146,7 @@ async fn ws_session_on<F: FnMut(&[u8])>(
         ws_key()
     );
     stream.write_all(req.as_bytes()).await.map_err(|e| e.to_string())?;
-    // HTTP 101 响应头（到 \r\n\r\n 为止）
+    // HTTP 101 response headers (read up to \r\n\r\n)
     let mut head = Vec::with_capacity(256);
     let mut b = [0u8; 1];
     while !head.ends_with(b"\r\n\r\n") {
@@ -182,11 +182,11 @@ async fn ws_session_on<F: FnMut(&[u8])>(
                 }
                 0x8 => return Ok(()), // close
                 0x9 => {
-                    // ping → pong（客户端帧须掩码）
+                    // ping → pong (client frames must be masked)
                     let pong = build_ws_frame(0xA, &frame.payload);
                     stream.write_all(&pong).await.map_err(|e| e.to_string())?;
                 }
-                _ => {} // pong / 其他忽略
+                _ => {} // pong / others ignored
             }
         }
         if buf.len() > 1 << 20 {
@@ -202,8 +202,8 @@ struct WsFrame {
     consumed: usize,
 }
 
-/// 解析一帧服务端 WS 帧（RFC 6455）：Ok(None)=数据不足；
-/// 带掩码/保留位/非法控制帧视为协议错误（服务端→客户端帧不允许掩码）。
+/// Parse one server WS frame (RFC 6455): Ok(None) = insufficient data;
+/// masked frames, reserved bits, and invalid control frames are protocol errors (server→client frames must not be masked).
 fn parse_ws_frame(buf: &[u8]) -> Result<Option<WsFrame>, String> {
     if buf.len() < 2 {
         return Ok(None);
@@ -246,7 +246,7 @@ fn parse_ws_frame(buf: &[u8]) -> Result<Option<WsFrame>, String> {
     }))
 }
 
-/// 构造客户端 WS 帧（FIN 置位；RFC 6455 要求客户端帧掩码）。
+/// Build a client WS frame (FIN set; RFC 6455 requires client frames to be masked).
 fn build_ws_frame(opcode: u8, payload: &[u8]) -> Vec<u8> {
     let mask: [u8; 4] = uuid::Uuid::new_v4().as_bytes()[..4].try_into().unwrap();
     let mut out = Vec::with_capacity(payload.len() + 14);
@@ -265,7 +265,7 @@ fn build_ws_frame(opcode: u8, payload: &[u8]) -> Vec<u8> {
     out
 }
 
-/// Sec-WebSocket-Key（16 随机字节 base64）
+/// Sec-WebSocket-Key (16 random bytes, base64)
 fn ws_key() -> String {
     b64_encode(uuid::Uuid::new_v4().as_bytes())
 }
@@ -286,7 +286,7 @@ fn b64_encode(data: &[u8]) -> String {
     out
 }
 
-/// 速率格式化（B/KB/MB 自适应，1024 进制；托盘 tooltip 与前端展示共用）
+/// Rate formatting (B/KB/MB adaptive, base 1024; shared by tray tooltip and frontend display)
 pub fn format_rate(bytes: u64) -> String {
     if bytes >= 1 << 20 {
         format!("{:.1} MB", bytes as f64 / 1048576.0)
@@ -297,41 +297,41 @@ pub fn format_rate(bytes: u64) -> String {
     }
 }
 
-// ==================== 连接/日志采集（/connections、/logs WS） ====================
+// ==================== Connection/log collection (/connections, /logs WS) ====================
 
-/// 连接记录（活跃与已关闭共用结构；速率由相邻快照差分得出）
+/// Connection record (shared by active and closed; rates diffed from adjacent snapshots)
 #[derive(Debug, Clone, Serialize)]
 pub struct ConnectionInfo {
     pub id: String,
-    /// 目标主机（metadata.host 优先，缺省 destinationIP）
+    /// Target host (metadata.host preferred, fallback destinationIP)
     pub host: String,
-    /// 发起进程（metadata.process；未知为空串）
+    /// Originating process (metadata.process; empty string if unknown)
     pub process: String,
-    /// 出站链（末段即节点名）
+    /// Outbound chain (last segment is the node name)
     pub chains: Vec<String>,
     pub rule: String,
     pub rule_payload: String,
     pub upload: u64,
     pub download: u64,
-    /// 快照差分速率（字节/秒；已关闭连接恒 0）
+    /// Snapshot-diffed rates (bytes/sec; always 0 for closed connections)
     pub up_rate: u64,
     pub down_rate: u64,
-    /// 建立时间（秒级时间戳）
+    /// Establish time (second-precision timestamp)
     pub start: u64,
-    /// 存活时长（秒；活跃=至今，关闭=总存活）
+    /// Alive duration (seconds; active = up to now, closed = total lifetime)
     pub elapsed: u64,
 }
 
-/// 内核日志条目（/logs WS 推送）
+/// Kernel log entry (pushed over /logs WS)
 #[derive(Debug, Clone, Serialize)]
 pub struct LogEntry {
-    /// 收到时间（秒级时间戳）
+    /// Receive time (second-precision timestamp)
     pub time: u64,
     pub level: String,
     pub payload: String,
 }
 
-/// 规则命中聚合（按 rule+rule_payload）
+/// Rule hit aggregation (by rule+rule_payload)
 #[derive(Debug, Clone, Serialize)]
 pub struct RuleHit {
     pub rule: String,
@@ -341,7 +341,7 @@ pub struct RuleHit {
     pub last_seen: u64,
 }
 
-/// 活跃连接内部态（ConnectionInfo + 差分基准）
+/// Active connection internal state (ConnectionInfo + diff baseline)
 #[derive(Debug)]
 struct ConnState {
     info: ConnectionInfo,
@@ -350,21 +350,21 @@ struct ConnState {
     last_tick: std::time::Instant,
 }
 
-/// 连接/日志/命中缓冲（Mutex 短临界区，与 TrafficStats 全 Atomic 风格并列的既定简单方案；
-/// 随内核 stop 清零——内核停止后命令层返回空集）
+/// Connection/log/hit buffers (short Mutex critical sections — the accepted simple design,
+/// parallel to TrafficStats' all-atomic style; cleared on kernel stop, so commands return empty sets)
 #[derive(Debug, Default)]
 pub struct ConnTracker {
     active: std::sync::Mutex<std::collections::HashMap<String, ConnState>>,
-    /// 最近已关闭（新的在前，上限 300）
+    /// Recently closed (newest first, cap 300)
     closed: std::sync::Mutex<std::collections::VecDeque<ConnectionInfo>>,
-    /// 命中聚合 key=(rule, rule_payload)，保留 top 100
+    /// Hit aggregation, key=(rule, rule_payload), keep top 100
     hits: std::sync::Mutex<std::collections::HashMap<(String, String), RuleHit>>,
-    /// 日志 ring buffer（上限 500，旧→新排列）
+    /// Log ring buffer (cap 500, ordered oldest→newest)
     logs: std::sync::Mutex<std::collections::VecDeque<LogEntry>>,
 }
 
 impl ConnTracker {
-    /// /connections 全量快照：更新活跃表（差分速率）、迁移消失项到已关闭环、登记新连接命中。
+    /// /connections full snapshot: update the active table (diff rates), move vanished entries to the closed ring, register hits for new connections.
     pub(crate) fn apply_snapshot(&self, v: &serde_json::Value) {
         let now = now_ts();
         let Some(list) = v["connections"].as_array() else {
@@ -428,7 +428,7 @@ impl ConnTracker {
                 );
             }
         }
-        // 快照中消失 = 已关闭：迁移到环首（固定速率清零，elapsed 定格）
+        // Vanished from snapshot = closed: move to ring front (rates zeroed, elapsed frozen)
         let gone: Vec<String> = active.keys().filter(|k| !seen.contains(*k)).cloned().collect();
         if !gone.is_empty() {
             let mut closed = self.closed.lock().unwrap();
@@ -445,7 +445,7 @@ impl ConnTracker {
         }
     }
 
-    /// 新连接命中登记（count 递增；超过 128 键时修剪保留 top 100）
+    /// Hit registration for new connections (count increments; pruned to top 100 when over 128 keys)
     fn record_hit(&self, info: &ConnectionInfo) {
         if info.rule.is_empty() {
             return;
@@ -511,13 +511,13 @@ impl ConnTracker {
         self.logs.lock().unwrap().iter().cloned().collect()
     }
 
-    /// 清空日志与命中缓冲（sub_clear_logs 命令；连接态不动）
+    /// Clear log and hit buffers (sub_clear_logs command; connection state untouched)
     pub(crate) fn clear_logs(&self) {
         self.logs.lock().unwrap().clear();
         self.hits.lock().unwrap().clear();
     }
 
-    /// 采集任务退出即清零（对齐 traffic 停止清零语义）
+    /// Zeroed when collection tasks exit (aligned with traffic's clear-on-stop semantics)
     pub(crate) fn reset(&self) {
         self.active.lock().unwrap().clear();
         self.closed.lock().unwrap().clear();
@@ -526,15 +526,15 @@ impl ConnTracker {
     }
 }
 
-/// 极简 RFC3339 时间戳解析（mihomo start 字段；容忍小数秒与 Z/±HH:MM 偏移，仅取秒）。
-/// 不引入 chrono——控制面数据，解析失败由调用方回落当前时间。
+/// Minimal RFC3339 timestamp parser (mihomo start field; tolerates fractional seconds and Z/±HH:MM offsets, seconds only).
+/// No chrono dependency — control plane data; callers fall back to current time on parse failure.
 fn parse_rfc3339_ts(s: &str) -> Option<u64> {
     let (date, rest) = s.split_once('T')?;
     let mut it = date.split('-');
     let y: i64 = it.next()?.parse().ok()?;
     let mo: i64 = it.next()?.parse().ok()?;
     let d: i64 = it.next()?.parse().ok()?;
-    // 时区标记只可能出现在 "HH:MM:SS" 第 8 字节之后
+    // The timezone marker can only appear after byte 8 of "HH:MM:SS"
     let tz_at = rest
         .char_indices()
         .skip_while(|(i, _)| *i < 8)
@@ -559,7 +559,7 @@ fn parse_rfc3339_ts(s: &str) -> Option<u64> {
             sign * (h * 3600 + m * 60)
         }
     };
-    // days-from-civil（Howard Hinnant 算法）
+    // days-from-civil (Howard Hinnant's algorithm)
     let y2 = if mo <= 2 { y - 1 } else { y };
     let era = if y2 >= 0 { y2 } else { y2 - 399 } / 400;
     let yoe = y2 - era * 400;
@@ -597,7 +597,7 @@ mod tests {
 
     #[test]
     fn ws_frame_parse_text_and_close() {
-        // 短文本帧
+        // Short text frame
         let payload = br#"{"up":3,"down":5}"#;
         let mut buf = vec![0x81, payload.len() as u8];
         buf.extend_from_slice(payload);
@@ -606,10 +606,10 @@ mod tests {
         assert_eq!(f.opcode, 0x1);
         assert_eq!(f.payload, payload);
         assert_eq!(f.consumed, buf.len());
-        // close 帧
+        // close frame
         let f = parse_ws_frame(&[0x88, 0x00]).unwrap().unwrap();
         assert_eq!(f.opcode, 0x8);
-        // 数据不足 → None
+        // Insufficient data → None
         assert!(parse_ws_frame(&[0x81]).unwrap().is_none());
         assert!(parse_ws_frame(&[0x81, 20, b'{']).unwrap().is_none());
     }
@@ -624,17 +624,17 @@ mod tests {
         assert_eq!(f.opcode, 0x2);
         assert_eq!(f.payload.len(), 300);
         assert_eq!(f.consumed, 304);
-        // 16 位长度头不全 → None
+        // Incomplete 16-bit length header → None
         assert!(parse_ws_frame(&[0x82, 126, 0x01]).unwrap().is_none());
     }
 
     #[test]
     fn ws_frame_rejects_masked_and_bad_control() {
-        // 服务端帧带掩码 → 协议错误
+        // Masked server frame → protocol error
         assert!(parse_ws_frame(&[0x81, 0x80]).is_err());
-        // 保留位 → 协议错误
+        // Reserved bits → protocol error
         assert!(parse_ws_frame(&[0xC1, 0x00]).is_err());
-        // 分片控制帧 → 协议错误
+        // Fragmented control frame → protocol error
         assert!(parse_ws_frame(&[0x08, 0x00]).is_err());
     }
 
@@ -642,7 +642,7 @@ mod tests {
     fn ws_client_frame_is_masked() {
         let out = build_ws_frame(0xA, b"hi");
         assert_eq!(out[0], 0x8A); // FIN + pong
-        assert_eq!(out[1] & 0x80, 0x80); // 掩码位
+        assert_eq!(out[1] & 0x80, 0x80); // mask bit
         assert_eq!(out[1] & 0x7f, 2);
         let mask = &out[2..6];
         assert_eq!(out[6] ^ mask[0], b'h');
@@ -672,14 +672,14 @@ mod tests {
     #[test]
     fn rfc3339_parse_variants() {
         assert_eq!(parse_rfc3339_ts("1970-01-01T00:00:00Z"), Some(0));
-        // +08:00 的 08:00 = UTC 00:00
+        // 08:00 at +08:00 = UTC 00:00
         assert_eq!(parse_rfc3339_ts("1970-01-01T08:00:00+08:00"), Some(0));
         assert_eq!(parse_rfc3339_ts("2024-01-01T00:00:00Z"), Some(1704067200));
-        // 小数秒容忍（mihomo 实际格式）
+        // Tolerate fractional seconds (mihomo's actual format)
         assert_eq!(parse_rfc3339_ts("2024-01-01T00:00:00.123456Z"), Some(1704067200));
-        // 负偏移
+        // Negative offset
         assert_eq!(parse_rfc3339_ts("2023-12-31T19:00:00-05:00"), Some(1704067200));
-        // 非法输入
+        // Invalid input
         assert!(parse_rfc3339_ts("not-a-time").is_none());
         assert!(parse_rfc3339_ts("").is_none());
     }
@@ -698,7 +698,7 @@ mod tests {
                 "rule": "DomainSuffix", "rulePayload": "example.com"
             })
         };
-        // 首个快照：两条活跃
+        // First snapshot: two active connections
         t.apply_snapshot(&snap(serde_json::json!([conn("c1", 100, 200), conn("c2", 0, 0)])));
         let (active, closed) = t.connections();
         assert_eq!(active.len(), 2);
@@ -710,12 +710,12 @@ mod tests {
         assert_eq!(c1.rule, "DomainSuffix");
         assert_eq!(c1.rule_payload, "example.com");
         assert_eq!((c1.upload, c1.download), (100, 200));
-        // 命中聚合
+        // Hit aggregation
         let hits = t.rule_hits();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].count, 2);
         assert_eq!(hits[0].last_host, "example.com");
-        // 第二个快照：c1 仍在（累计增长）, c2 消失 → 已关闭环
+        // Second snapshot: c1 still present (counters grown), c2 gone → closed ring
         std::thread::sleep(std::time::Duration::from_millis(1100));
         t.apply_snapshot(&snap(serde_json::json!([conn("c1", 300, 500)])));
         let (active, closed) = t.connections();
@@ -727,7 +727,7 @@ mod tests {
         assert_eq!((c1.upload, c1.download), (300, 500));
         assert!(c1.up_rate > 0 && c1.down_rate > 0, "差分速率应 > 0");
         assert!(c1.elapsed >= 1, "start=epoch，elapsed 须为大值");
-        // host 缺省回落 destinationIP；rule 空不记命中
+        // host missing → fall back to destinationIP; empty rule records no hit
         let bare = serde_json::json!({
             "id": "c3", "metadata": {"destinationIP": "1.1.1.1"},
             "upload": 1, "download": 1, "start": "bad-start", "chains": []
@@ -737,7 +737,7 @@ mod tests {
         let c3 = active.iter().find(|c| c.id == "c3").unwrap();
         assert_eq!(c3.host, "1.1.1.1");
         assert_eq!(t.rule_hits().len(), 1, "rule 缺失不记命中");
-        // 清空后全空
+        // Everything empty after reset
         t.reset();
         let (active, closed) = t.connections();
         assert!(active.is_empty() && closed.is_empty());
@@ -754,14 +754,14 @@ mod tests {
         assert_eq!(logs.len(), 500, "ring 上限 500");
         assert_eq!(logs[0].payload, "log-5", "最旧的被挤出（旧→新排列）");
         assert_eq!(logs[499].payload, "log-504");
-        // 非日志载荷忽略
+        // Non-log payload ignored
         t.push_log(&serde_json::json!({"type": "info"}));
         assert_eq!(t.logs().len(), 500);
         t.clear_logs();
         assert!(t.logs().is_empty());
     }
 
-    /// mock 控制面：校验握手请求 → 推两条 /traffic 帧 → close，验证端到端累计
+    /// Mock control plane: verify handshake request → push two /traffic frames → close; verify end-to-end accumulation
     #[tokio::test]
     async fn ws_session_accumulates_from_mock_server() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};

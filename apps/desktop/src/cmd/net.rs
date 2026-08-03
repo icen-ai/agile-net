@@ -1,12 +1,12 @@
-//! 从 lib.rs 拆分：网络检测（出口 IP / 内网 IP）（纯搬运，零逻辑变更）
+//! Split from lib.rs: network probes (exit IP / LAN IP) (pure move, zero logic change)
 
 use crate::{map_err, subscription, AppState};
 use serde::Serialize;
 use tauri::State;
 
-// ==================== 网络检测（出口 IP / 内网 IP） ====================
+// ==================== Network probes (exit IP / LAN IP) ====================
 
-/// 出口探测结果：归属地仅用文字（国家代码/名称），不使用国旗图标
+/// Exit probe result: location shown as text only (country code/name), no flag icons
 #[derive(Debug, Clone, Serialize)]
 pub struct ExitIpInfo {
     pub ip: String,
@@ -14,7 +14,7 @@ pub struct ExitIpInfo {
     pub country_code: String,
 }
 
-/// 解析 ipwho.is 响应（{success, ip, country, country_code}）
+/// Parse ipwho.is response ({success, ip, country, country_code})
 pub(crate) fn parse_ipwho(v: &serde_json::Value) -> Option<ExitIpInfo> {
     if v["success"].as_bool() != Some(true) {
         return None;
@@ -26,7 +26,7 @@ pub(crate) fn parse_ipwho(v: &serde_json::Value) -> Option<ExitIpInfo> {
     })
 }
 
-/// 解析 ip-api.com 响应（{status, query, country, countryCode}）
+/// Parse ip-api.com response ({status, query, country, countryCode})
 pub(crate) fn parse_ip_api(v: &serde_json::Value) -> Option<ExitIpInfo> {
     if v["status"].as_str() != Some("success") {
         return None;
@@ -38,17 +38,17 @@ pub(crate) fn parse_ip_api(v: &serde_json::Value) -> Option<ExitIpInfo> {
     })
 }
 
-/// 出口 IP 探测：HTTPS 端点优先，失败回落备用端点；via_proxy 时经 mihomo mixed 出口
-/// （验证订阅流量真实出口）。5s 超时，全部失败由前端呈现「探测失败」。
+/// Exit IP probe: HTTPS endpoint first, fallback endpoint on failure; with via_proxy goes through the
+/// mihomo mixed exit (verifies the real exit of subscription traffic). 5s timeout; total failure is shown by the frontend as "probe failed".
 #[tauri::command]
 pub(crate) async fn fetch_exit_ip(state: State<'_, AppState>, via_proxy: bool) -> Result<ExitIpInfo, String> {
     let mut builder = reqwest::Client::builder()
         .user_agent(concat!("anet-gui/", env!("CARGO_PKG_VERSION")))
         .timeout(std::time::Duration::from_secs(5));
     if via_proxy {
-        // TUN 模式 mixed 口（57892）按防环设计关闭，探测改走订阅出口 socks 口（57893）：
-        // socks5h scheme（域名交代理侧解析，避开 fake-ip 段地址在本机直连失败）；
-        // 非 TUN 走 mixed 口 http 代理。
+        // In TUN mode the mixed port (57892) is disabled by the anti-loop design, so probes go through
+        // the subscription exit socks port (57893) instead: socks5h scheme (proxy-side DNS resolution,
+        // avoiding fake-ip range addresses failing local direct connect); non-TUN uses the mixed port http proxy.
         let proxy = if state.roles.lock().await.tun_mode {
             reqwest::Proxy::all(format!(
                 "socks5h://127.0.0.1:{}",
@@ -65,7 +65,7 @@ pub(crate) async fn fetch_exit_ip(state: State<'_, AppState>, via_proxy: bool) -
     }
     let client = builder.build().map_err(map_err)?;
 
-    // 首选 ipwho.is（HTTPS、无需密钥）
+    // Preferred: ipwho.is (HTTPS, no key required)
     if let Ok(resp) = client.get("https://ipwho.is/").send().await {
         if let Ok(v) = resp.json::<serde_json::Value>().await {
             if let Some(info) = parse_ipwho(&v) {
@@ -73,7 +73,7 @@ pub(crate) async fn fetch_exit_ip(state: State<'_, AppState>, via_proxy: bool) -
             }
         }
     }
-    // 备选 ip-api.com（免费档仅 HTTP）
+    // Fallback: ip-api.com (free tier is HTTP only)
     let resp = client
         .get("http://ip-api.com/json")
         .send()
@@ -83,18 +83,18 @@ pub(crate) async fn fetch_exit_ip(state: State<'_, AppState>, via_proxy: bool) -
     parse_ip_api(&v).ok_or_else(|| "出口探测失败".into())
 }
 
-/// 内网 IP 探测结果（默认网卡首个 IPv4）
+/// LAN IP probe result (first IPv4 of the default interface)
 #[derive(Debug, Clone, Serialize)]
 pub struct LanIpInfo {
     pub ip: String,
     pub iface: String,
 }
 
-/// 从 ifconfig 网卡清单挑选内网 IPv4：默认网卡优先，其次第一块 UP 且非回环的网卡。
+/// Pick a LAN IPv4 from the ifconfig interface list: default interface first, then the first UP non-loopback interface.
 pub(crate) fn pick_lan_ip(ifaces: &[serde_json::Value]) -> Option<LanIpInfo> {
     let pick = |pred: &dyn Fn(&serde_json::Value) -> bool| -> Option<LanIpInfo> {
         ifaces.iter().filter(|i| pred(i)).find_map(|i| {
-            // ipv4 元素带前缀长度（如 192.168.1.5/24），展示只取地址段
+            // ipv4 entries carry a prefix length (e.g. 192.168.1.5/24); display keeps only the address part
             let raw = i["ipv4"].as_array()?.first()?.as_str()?;
             let ip = raw.split('/').next()?.to_string();
             let iface = i["friendly_name"]
@@ -110,7 +110,7 @@ pub(crate) fn pick_lan_ip(ifaces: &[serde_json::Value]) -> Option<LanIpInfo> {
     })
 }
 
-/// 内网 IP：复用 anet tool ifconfig 的网卡枚举（Windows 含 netsh 子进程，放阻塞池执行）。
+/// LAN IP: reuses anet tool ifconfig interface enumeration (Windows involves a netsh subprocess, so run on the blocking pool).
 #[tauri::command]
 pub(crate) async fn lan_ip() -> Result<LanIpInfo, String> {
     tokio::task::spawn_blocking(|| {
@@ -132,7 +132,7 @@ mod tests {
         assert_eq!(info.ip, "203.0.113.7");
         assert_eq!(info.country, "China");
         assert_eq!(info.country_code, "CN");
-        // success=false / 缺 ip 均不取
+        // success=false / missing ip are both rejected
         assert!(parse_ipwho(&serde_json::json!({"success": false, "message": "invalid"})).is_none());
         assert!(parse_ipwho(&serde_json::json!({"success": true})).is_none());
     }
@@ -166,7 +166,7 @@ mod tests {
         ];
         let info = pick_lan_ip(&ifaces).expect("应回落到首块可用网卡");
         assert_eq!(info.ip, "10.0.0.8");
-        // friendly_name 优先（Windows 网卡名为 GUID 不具可读性）
+        // friendly_name wins (Windows interface names are unreadable GUIDs)
         assert_eq!(info.iface, "WLAN");
         assert!(pick_lan_ip(&[]).is_none());
     }

@@ -1,18 +1,18 @@
-//! 从 lib.rs 拆分：自定义规则命令（放行 / hosts 映射 / 组合）（纯搬运，零逻辑变更）
+//! Split from lib.rs: custom rule commands (bypass / hosts mapping / combo) (pure move, zero logic change)
 
 use crate::{custom_rules, AppState};
 use serde::Serialize;
 use tauri::State;
 
-// ==================== 自定义规则（放行 / hosts 映射 / 组合） ====================
+// ==================== Custom rules (bypass / hosts mapping / combo) ====================
 //
-// 模型 / 存储 / 系统 hosts 托管 / 生效并集见 custom_rules.rs；
-// 引擎集成（set_custom_rules ArcSwap 热更 → rebuild 烘焙路由自定义层，
-// 本地代理入站评估优先于合并路由与订阅回落）见 agile-net-client。
-// 规则 key 约定：自定义规则 = 其 id；拉取规则 = 现有 ruleKey（type:value 小写，app.js ruleKey），
-// 组合中的拉取规则 key 由前端经既有暂停接口（set_rule_paused）另行处理。
+// Model / storage / system hosts management / effective union: see custom_rules.rs;
+// engine integration (set_custom_rules ArcSwap hot reload → rebuild bakes the custom routing layer,
+// evaluated at local proxy ingress ahead of merged routes and subscription fallback): see agile-net-client.
+// Rule key convention: custom rule = its id; pulled rule = existing ruleKey (lowercase type:value, app.js ruleKey);
+// pulled-rule keys inside combos are handled separately by the frontend via the existing pause API (set_rule_paused).
 
-/// 自定义规则列表视图（list_custom_rules 返回形状即 WaveB 前端契约）。
+/// Custom rules list view (list_custom_rules return shape is the WaveB frontend contract).
 #[derive(Debug, Clone, Serialize)]
 pub struct CustomRulesView {
     pub bypass: Vec<custom_rules::BypassRule>,
@@ -25,14 +25,14 @@ pub struct HostRuleView {
     pub hostname: String,
     pub ip: String,
     pub enabled: bool,
-    /// user = 用户自建；system = 系统 hosts 既有（非本软件托管，只读）
+    /// user = user-created; system = pre-existing system hosts entry (not managed by this app, read-only)
     pub source: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct AddHostResult {
     pub id: String,
-    /// system = 已落系统 hosts 托管块；internal = 仅进程内映射（无权限等回落）
+    /// system = persisted to the system hosts managed block; internal = in-process mapping only (fallback e.g. on missing privileges)
     pub persisted: String,
 }
 
@@ -50,7 +50,7 @@ pub(crate) async fn list_custom_rules() -> Result<CustomRulesView, String> {
             source: "user".into(),
         })
         .collect();
-    // 系统 hosts 既有（非本软件托管）映射合并展示；与用户自建同名时以用户条目为准
+    // Merge pre-existing system hosts mappings (not managed by this app) into the view; user entries win on hostname collision
     for (hostname, ip) in custom_rules::SystemHosts::new().read_entries() {
         if data.hosts.iter().any(|r| r.hostname == hostname) {
             continue;

@@ -1,13 +1,13 @@
 'use strict';
-/* 从 app.js 拆分：中控台英雄卡 / 新手检查单 / 侧栏底部 / 网络检测（纯搬运，零逻辑变更） */
+/* Split from app.js: dashboard hero card / onboarding checklist / sidebar footer / net probe (pure move, zero logic change) */
 
-/* ---------- 侧栏底部状态区（订阅内核速率 + 代理状态；2s 轮询驱动，变更检测写入） ---------- */
+/* ---------- Sidebar footer status area (subscription kernel rates + proxy status; 2s polling driven, change detection writes) ---------- */
 function renderSideFoot() {
   const up = $('sf-up');
   if (!up) return;
   const running = !!window._subRunning;
   const r = SubTraffic.rates || { up: 0, down: 0 };
-  // 显隐先行（不受变更检测拦截）
+  // show/hide first (not blocked by change detection)
   up.style.display = running ? '' : 'none';
   $('sf-down').style.display = running ? '' : 'none';
   $('sf-idle').style.display = running ? 'none' : '';
@@ -16,24 +16,24 @@ function renderSideFoot() {
   setText('sf-down', fmtBytes(r.down) + '/s');
 }
 
-/* ================= 中控台英雄卡（竞品标杆：FlClash 大开关 + 速率曲线、Stash 中控台摘要） =================
-   数据源：proxy_power / proxy_power_toggle（10s 主轮询；HTTP_MODE 回落 proxy_status+start/stop_proxy）；
-   速率曲线吃 SubTraffic 2s 差分速率（60 点环形缓冲，同 tray.js down60/up60 思路，onTraffic 钩子驱动）；
-   活跃连接 sub_connections active.length（10s 主轮询挂一次，1s 高频归日志视图）；
-   当前模式读 proxy_power.on + window._rolesCache（initRoles 缓存 get_role_settings，各变更点同步更新）。
-   anet 代理流量无计数器：内核未运行曲线区空态「订阅内核未运行，暂无速率数据」，不造假。全部签名对比。 */
+/* ================= Dashboard hero card (benchmarks: FlClash big switch + rate chart, Stash dashboard summary) =================
+   Data source: proxy_power / proxy_power_toggle (10s main polling; HTTP_MODE falls back to proxy_status+start/stop_proxy);
+   rate chart feeds on SubTraffic 2s delta rates (60-point ring buffer, same idea as tray.js down60/up60, onTraffic hook driven);
+   active connections sub_connections active.length (hooked once into 10s main polling; 1s high-freq belongs to logs view);
+   current mode reads proxy_power.on + window._rolesCache (initRoles caches get_role_settings, synced at each change point).
+   anet proxy traffic has no counter: kernel stopped -> chart area empty state 「订阅内核未运行，暂无速率数据」, no faking. All signature-compared. */
 const Hero = {
-  power: null,          // { on, detail }：detail = '127.0.0.1:57890' / '已停止'
-  down60: [], up60: [], // 60 点速率环形缓冲（B/s）
+  power: null,          // { on, detail }: detail = '127.0.0.1:57890' / '已停止'
+  down60: [], up60: [], // 60-point rate ring buffer (B/s)
   _powerSig: '',
   async pollPower() {
     if (HTTP_MODE) {
-      this.power = { on: PROXY_ST.running, detail: PROXY_ST.running ? '127.0.0.1:' + PROXY_ST.port : '已停止' };
+      this.power = { on: PROXY_ST.running, detail: PROXY_ST.running ? '127.0.0.1:' + PROXY_ST.port : AgI18n.t('common.stopped') };
     } else {
       try { this.power = await invoke('proxy_power'); } catch (e) { return; }
     }
     this.renderPower();
-    this.renderMode(); // 模式文案随 power 即时翻转（运行中 ↔ 已停止）
+    this.renderMode(); // mode text flips with power immediately (运行中 ↔ 已停止)
   },
   renderPower() {
     const p = this.power;
@@ -47,11 +47,11 @@ const Hero = {
     btn.classList.toggle('on', on);
     btn.disabled = tunLocked || clientOff;
     btn.style.opacity = (tunLocked || clientOff) ? '.45' : '';
-    setText('hero-power-state', on ? '运行中 ' + p.detail : (p ? p.detail : '已停止'));
-    const hint = tunLocked ? 'TUN 模式运行中，总开关不可用' : (clientOff ? '请先在首页开启扇入' : '');
+    setText('hero-power-state', on ? AgI18n.t('common.running') + ' ' + p.detail : (p ? p.detail : AgI18n.t('common.stopped')));
+    const hint = tunLocked ? AgI18n.t('hero.powerTunLocked') : (clientOff ? AgI18n.t('hero.powerNeedFanin') : '');
     $('hero-power-hint').style.display = hint ? '' : 'none';
     setText('hero-power-hint', hint);
-    btn.title = hint || '代理总开关';
+    btn.title = hint || AgI18n.t('hero.powerTitle');
   },
   async toggle() {
     const btn = $('btn-power');
@@ -61,16 +61,16 @@ const Hero = {
         if (PROXY_ST.running) await invoke('stop_proxy');
         else await invoke('start_proxy', { port: proxyPort() });
       } else {
-        // TUN 运行中后端 Err「TUN 模式运行中，请先关闭 TUN」→ friendlyError 上岛
+        // while TUN runs, backend Err「TUN 模式运行中，请先关闭 TUN」-> friendlyError onto Dynamic Island
         this.power = await invoke('proxy_power_toggle');
         this.renderPower();
       }
     } catch (err) { toast(friendlyError(err), 'err'); }
     btn.disabled = false;
     this.pollPower();
-    refreshProxy(); // 代理卡 / 灵动岛 / 侧栏底部同步
+    refreshProxy(); // proxy card / Dynamic Island / sidebar footer sync
   },
-  /* SubTraffic 2s 钩子：速率缓冲 + 双序列曲线（下行为主 --chart-down / 上行 --chart-up）+ 今日已用（含上下行拆分小字） */
+  /* SubTraffic 2s hook: rate buffers + dual-series chart (down primary --chart-down / up --chart-up) + today usage (with up/down split subtext) */
   onTraffic() {
     const running = !!window._subRunning;
     const r = SubTraffic.rates || { up: 0, down: 0 };
@@ -78,7 +78,7 @@ const Hero = {
       this.down60.push(r.down); if (this.down60.length > 60) this.down60.shift();
       this.up60.push(r.up); if (this.up60.length > 60) this.up60.shift();
     } else if (this.down60.length) {
-      this.down60 = []; this.up60 = []; // 内核停止即清缓冲：重启后曲线不拖旧尾巴
+      this.down60 = []; this.up60 = []; // clear buffers on kernel stop: chart won't drag a stale tail after restart
     }
     const chart = $('hero-chart'), empty = $('hero-chart-empty');
     chart.style.display = running ? '' : 'none';
@@ -90,29 +90,29 @@ const Hero = {
     setText('hero-traffic-split', running && t ? '↑ ' + fmtBytes(t.up_total) + ' · ↓ ' + fmtBytes(t.down_total) : '');
     if (!running) return;
     AgChart.sparkline(chart, [
-      { name: '下行', values: this.down60.slice(), color: 'var(--chart-down)' },
-      { name: '上行', values: this.up60.slice(), color: 'var(--chart-up)' },
+      { name: AgI18n.t('hero.down'), values: this.down60.slice(), color: 'var(--chart-down)' },
+      { name: AgI18n.t('hero.up'), values: this.up60.slice(), color: 'var(--chart-up)' },
     ]);
   },
-  /* 活跃连接：10s 主轮询挂一次（sub_connections 的 1s 高频轮询归日志视图，不重复起） */
+  /* Active connections: hooked once into 10s main polling (sub_connections 1s high-freq polling belongs to logs view; not duplicated) */
   async pollConns() {
     if (HTTP_MODE) return;
     let n = 0;
     try { n = ((await invoke('sub_connections')).active || []).length; } catch (e) { return; }
     odoSet($('hero-conns'), window._subRunning ? String(n) : '-');
   },
-  /* 当前模式：proxy_power.on + _rolesCache（get_role_settings 前端缓存，变更点同步，不重复拉取）。
-     映射：关→已停止；tun_mode→TUN · 出站（§2.5 互斥固定 rule）；否则 系统代理/本地代理 · 出站模式 */
+  /* Current mode: proxy_power.on + _rolesCache (frontend cache of get_role_settings, synced at change points, no re-fetch).
+     Mapping: off -> 已停止; tun_mode -> TUN · outbound (§2.5 mutual exclusion pins rule); else system proxy/local proxy · outbound mode */
   renderMode() {
     if (HTTP_MODE) { setText('hero-mode', '-'); return; }
     const on = !!(this.power && this.power.on);
     const r = window._rolesCache || {};
-    const sub = { rule: '规则', global: '全局', direct: '直连' }[r.sub_mode || 'rule'] || '规则';
-    setText('hero-mode', !on ? '已停止'
-      : r.tun_mode ? 'TUN · ' + sub
-      : (r.system_proxy !== false ? '系统代理' : '本地代理') + ' · ' + sub);
+    const sub = { rule: AgI18n.t('sub.modeRule'), global: AgI18n.t('sub.modeGlobal'), direct: AgI18n.t('sub.modeDirect') }[r.sub_mode || 'rule'] || AgI18n.t('sub.modeRule');
+    setText('hero-mode', !on ? AgI18n.t('common.stopped')
+      : r.tun_mode ? AgI18n.t('hero.modeTun', { mode: sub })
+      : (r.system_proxy !== false ? AgI18n.t('hero.modeSysProxy') : AgI18n.t('hero.modeLocalProxy')) + ' · ' + sub);
   },
-  /* 10s 主轮询条目：先落总开关（Onboarding 步骤③依赖；pollPower 内已联动 renderPower/renderMode），再刷连接/检查单 */
+  /* 10s main polling entry: settle main switch first (Onboarding step ③ depends on it; pollPower already cascades renderPower/renderMode), then refresh connections/checklist */
   async tick10s() {
     await this.pollPower();
     this.pollConns();
@@ -121,19 +121,24 @@ const Hero = {
 };
 function initHero() {
   $('btn-power').onclick = () => Hero.toggle();
-  Hero.onTraffic();  // 首帧空态/速率读数
+  /* i18n: force re-render of this domain on language switch (signatures cleared so change detection won't block old-language text) */
+  AgI18n.onChange(() => {
+    Hero._powerSig = ''; NetProbe._sig = ''; Onboarding._sig = '';
+    Hero.pollPower(); Hero.onTraffic(); NetProbe.render(); Onboarding.refresh();
+  });
+  Hero.onTraffic();  // first-frame empty state / rate readings
   Hero.tick10s();
 }
 
-/* ================= 新手检查单（首次成功路径显性化；全部就绪 5s 后淡出隐藏） =================
-   判定：① get_role_settings().subscription_feature ② list_subscriptions 非空
-        ③ proxy_power.on（HTTP_MODE 回落 PROXY_ST）④ NetProbe.data 经出口（via）且未失败。
-   localStorage ag_ob_dismissed / ag_ob_done 任一标记在 = 整张卡不渲染（display:none）。 */
+/* ================= Onboarding checklist (first-success path made explicit; fades out and hides 5s after all done) =================
+   Checks: ① get_role_settings().subscription_feature ② list_subscriptions non-empty
+           ③ proxy_power.on (HTTP_MODE falls back to PROXY_ST) ④ NetProbe.data via egress (via) and not failed.
+   localStorage ag_ob_dismissed / ag_ob_done either flag set = whole card not rendered (display:none). */
 const OB_STEPS = [
-  { label: '激活订阅功能', desc: '设置页安装内核并激活，解锁订阅与节点页', goto: 'settings' },
-  { label: '添加一个订阅', desc: '导入 Clash 系订阅链接，或拖拽 YAML 文件到订阅页', goto: 'subscription' },
-  { label: '开启本地代理', desc: '点本页左侧总开关，系统流量经 AgileNet 分流', goto: '' },
-  { label: '出口探测成功', desc: '网络检测卡验证流量真实经订阅节点出口', goto: '' },
+  { label: 'hero.ob1Label', desc: 'hero.ob1Desc', goto: 'settings' },
+  { label: 'hero.ob2Label', desc: 'hero.ob2Desc', goto: 'subscription' },
+  { label: 'hero.ob3Label', desc: 'hero.ob3Desc', goto: '' },
+  { label: 'hero.ob4Label', desc: 'hero.ob4Desc', goto: '' },
 ];
 const Onboarding = {
   _sig: '', _doneTimer: 0,
@@ -160,13 +165,13 @@ const Onboarding = {
       this._sig = sig;
       $('ob-list').innerHTML = OB_STEPS.map((s, i) =>
         '<div class="role-row">' +
-        '<div class="role-info"><b><input type="checkbox" disabled' + (done[i] ? ' checked' : '') + '> ' + esc(s.label) + '</b>' +
-        '<span class="hint">' + esc(s.desc) + '</span></div>' +
-        (!done[i] && s.goto ? '<button class="ghost small" data-ob-goto="' + s.goto + '">去完成</button>' : '') +
+        '<div class="role-info"><b><input type="checkbox" disabled' + (done[i] ? ' checked' : '') + '> ' + esc(AgI18n.t(s.label)) + '</b>' +
+        '<span class="hint">' + esc(AgI18n.t(s.desc)) + '</span></div>' +
+        (!done[i] && s.goto ? '<button class="ghost small" data-ob-goto="' + s.goto + '">' + AgI18n.t('hero.obGo') + '</button>' : '') +
         '</div>').join('');
     }
     if (all && !this._doneTimer) {
-      setText('ob-title', '全部就绪');
+      setText('ob-title', AgI18n.t('hero.obAllDone'));
       this._doneTimer = setTimeout(() => {
         localStorage.setItem('ag_ob_done', '1');
         card.style.transition = 'opacity .5s ease';
@@ -182,7 +187,7 @@ const Onboarding = {
       localStorage.setItem('ag_ob_dismissed', '1');
       card.style.display = 'none';
     };
-    // 「去完成」跳对应视图（事件委托，无内联事件）
+    // 「去完成」jumps to the matching view (event delegation, no inline events)
     $('ob-list').addEventListener('click', (e) => {
       const b = e.target.closest('[data-ob-goto]');
       if (b) switchView(b.dataset.obGoto);
@@ -191,11 +196,11 @@ const Onboarding = {
   },
 };
 
-/* ================= 网络检测（出口 IP / 文字归属地 / 内网 IP） =================
-   JS 侧缓存结果：30s 轮询 + 内核状态翻转/手动刷新时重探；签名对比，不变不重绘。
-   订阅内核运行时经 mihomo mixed 出口探测（验证订阅代理真实生效），否则直连。 */
+/* ================= Net probe (egress IP / text geolocation / LAN IP) =================
+   JS caches results: 30s polling + re-probe on kernel state flip / manual refresh; signature compare, no redraw when unchanged.
+   While subscription kernel runs, probe via mihomo mixed egress (verify the subscription proxy truly works), else direct. */
 const NetProbe = {
-  data: null,   // { ip, country, country_code, via } 或 { fail: true, via }
+  data: null,   // { ip, country, country_code, via } or { fail: true, via }
   lan: '',
   _sig: '',
   _busy: false,
@@ -226,25 +231,25 @@ const NetProbe = {
     this._sig = sig;
     const d = this.data;
     const geo = (x) => [x.country_code, x.country].filter(Boolean).join(' · ');
-    // 首页网络检测卡：失败仅显示「探测失败」，不占位报错
-    setText('d-net-ip', !d ? '探测中…' : (d.fail ? '探测失败' : d.ip));
+    // home net-probe card: on failure show only 「探测失败」, no placeholder error
+    setText('d-net-ip', !d ? AgI18n.t('hero.probeLoading') : (d.fail ? AgI18n.t('hero.probeFailed') : d.ip));
     setText('d-net-geo', !d ? '' : (d.fail
-      ? (d.via ? '经 mihomo 出口探测失败' : '直连出口探测失败')
-      : (geo(d) || '归属地未知') + ' · ' + (d.via ? '经 mihomo 出口' : '直连出口')));
+      ? (d.via ? AgI18n.t('hero.probeFailVia') : AgI18n.t('hero.probeFailDirect'))
+      : (geo(d) || AgI18n.t('hero.geoUnknown')) + ' · ' + (d.via ? AgI18n.t('hero.viaMihomo') : AgI18n.t('hero.viaDirect'))));
     setText('d-net-lan', this.lan || '-');
-    // 订阅页：内核运行时同显出口（验证 mihomo 是否代理成功），只采用经内核出口的探测结果
+    // subscription page: while kernel runs also show egress (verify mihomo proxying works); only use probe results via kernel egress
     if ($('sub-exit-ip')) {
       if (!window._subRunning) {
-        setText('sub-exit-ip', '内核未运行');
+        setText('sub-exit-ip', AgI18n.t('tun.kernelNotRunning'));
         setText('sub-exit-geo', '');
       } else if (d && d.via && !d.fail) {
         setText('sub-exit-ip', d.ip);
-        setText('sub-exit-geo', (geo(d) || '归属地未知') + ' · 经 mihomo 出口');
+        setText('sub-exit-geo', (geo(d) || AgI18n.t('hero.geoUnknown')) + ' · ' + AgI18n.t('hero.viaMihomo'));
       } else if (d && d.via && d.fail) {
-        setText('sub-exit-ip', '探测失败');
-        setText('sub-exit-geo', '经 mihomo 出口探测失败');
+        setText('sub-exit-ip', AgI18n.t('hero.probeFailed'));
+        setText('sub-exit-geo', AgI18n.t('hero.probeFailVia'));
       } else {
-        setText('sub-exit-ip', '探测中…');
+        setText('sub-exit-ip', AgI18n.t('hero.probeLoading'));
         setText('sub-exit-geo', '');
       }
     }

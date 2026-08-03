@@ -1,6 +1,6 @@
-//! 客户端角色守护进程（`anet-svc client [config.toml]`）。
+//! Client role daemon (`anet-svc client [config.toml]`).
 //!
-//! 配置文件缺省为 ./agile-net-client.toml，示例：
+//! Config file defaults to ./agile-net-client.toml, example:
 //! ```toml
 //! proxy_port = 57890
 //! manage_hosts = true
@@ -52,7 +52,7 @@ fn default_proxy_port() -> u16 {
     57890
 }
 
-/// 以客户端角色运行：连接配置中的全部节点 + 本地代理，直到收到 Ctrl-C。
+/// Run in client role: connect all configured nodes + local proxy, until Ctrl-C.
 pub async fn run(config_path: &str) -> Result<()> {
     let content = std::fs::read_to_string(config_path)
         .map_err(|e| anyhow::anyhow!("read config {config_path}: {e}"))?;
@@ -60,7 +60,7 @@ pub async fn run(config_path: &str) -> Result<()> {
 
     let client = AgileNetClient::new();
 
-    // 连接全部节点（失败不阻塞其他节点）
+    // Connect all nodes (a failure does not block other nodes)
     for node in &config.nodes {
         let params = ConnectParams {
             addr: node.addr.clone(),
@@ -79,7 +79,7 @@ pub async fn run(config_path: &str) -> Result<()> {
         }
     }
 
-    // 启动本地代理
+    // Start local proxy
     let auth = config.proxy_auth.map(|a| (a.username, a.password));
     client
         .start_proxy_with_auth(config.proxy_port, auth)

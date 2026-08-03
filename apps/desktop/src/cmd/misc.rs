@@ -1,12 +1,12 @@
-//! 从 lib.rs 拆分：杂项——外部链接 / 卸载 / 控制台通道 / 扇出连接管理 / 事件中心（纯搬运，零逻辑变更）。
-//! report_client_proxy 被 proxy 与 roles 两域共用，按约定集中放于此（crate 根 re-export 后调用点不变）。
+//! Split out of lib.rs: misc — external links / uninstall / console channels / fan-out connection management / event center (pure move, zero logic change).
+//! report_client_proxy is shared by the proxy and roles domains; by convention it lives here (call sites unchanged via crate-root re-export).
 
 use crate::{map_err, roles, subscription, sysproxy, AppState};
 use serde::Serialize;
 use std::sync::Arc;
 use tauri::State;
 
-/// 用系统默认浏览器打开外部链接（仅 http/https）。
+/// Open an external link with the system default browser (http/https only).
 #[tauri::command]
 pub(crate) fn open_url(url: String) -> Result<(), String> {
     if !(url.starts_with("https://") || url.starts_with("http://")) {
@@ -27,7 +27,7 @@ pub(crate) fn open_url(url: String) -> Result<(), String> {
     Ok(())
 }
 
-/// 桌面端管理 SPA 静态资产（include_str! 内嵌，无 Node 构建链）。
+/// Desktop admin SPA static assets (embedded via include_str!, no Node build chain).
 pub(crate) fn spa_assets() -> agile_net_client::api::SpaAssets {
     agile_net_client::api::SpaAssets {
         index: include_str!("../../ui/index.html"),
@@ -46,7 +46,7 @@ pub(crate) fn spa_assets() -> agile_net_client::api::SpaAssets {
     }
 }
 
-/// 主题 query 片段（仅接受 light/dark；控制台 SPA 据此与主窗主题一致）
+/// Theme query fragment (accepts light/dark only; lets the console SPA match the main window theme)
 pub(crate) fn theme_query(theme: &Option<String>) -> String {
     match theme.as_deref() {
         Some("dark") => "?theme=dark".to_string(),
@@ -55,11 +55,11 @@ pub(crate) fn theme_query(theme: &Option<String>) -> String {
     }
 }
 
-/// 管理端控制台 URL：主窗内嵌 iframe 加载（不再开子窗口）。
-/// - 无参 → 内嵌节点（本机服务端角色，SPA 登录页）
-/// - node_id → 经客户端隧道的远端端点（管理引导票据自举，#boot 不进日志与历史）
-/// - node_id + upstream → 可管理上游（握手 v2 发现）
-/// URL 恒带 embed=1（SPA 隐藏自身侧栏与标题栏，导航经 postMessage 由主窗驱动）。
+/// Admin console URL, loaded in the main window's embedded iframe (no more child windows).
+/// - no args → embedded node (local server role, SPA login page)
+/// - node_id → remote endpoint via the client tunnel (bootstrap with admin ticket; #boot stays out of logs and history)
+/// - node_id + upstream → manageable upstream (discovered via handshake v2)
+/// URL always carries embed=1 (SPA hides its own sidebar and title bar; navigation is driven by the main window via postMessage).
 #[tauri::command]
 pub(crate) async fn console_url(
     state: State<'_, AppState>,
@@ -81,7 +81,7 @@ pub(crate) async fn console_url(
             Ok(format!("http://{addr}/{embed}"))
         }
         (Some(node_id), None) => {
-            // 管理引导票据（10 分钟一次性；节点侧校验 admin_console 授权）
+            // Admin bootstrap ticket (one-time, 10 min TTL; the node side checks admin_console authorization)
             let (ticket, api_port) = state.client.console_ticket(&node_id).await.map_err(map_err)?;
             let local_port = ensure_console_forwarder(&state, &node_id, "127.0.0.1", api_port).await?;
             roles::audit(
@@ -116,10 +116,10 @@ pub(crate) async fn console_url(
     }
 }
 
-// ==================== 控制台通道（管理此节点） ====================
+// ==================== Console channels (manage this node) ====================
 
-/// 控制台 loopback 转发器：本地环回端口 → 指定节点隧道 → 目标 API。
-/// key 去重（node_id 或 node_id|upstream）；断开重连后由调用方清理重建。
+/// Console loopback forwarder: local loopback port → target node tunnel → target API.
+/// Deduped by key (node_id or node_id|upstream); the caller cleans up and rebuilds after reconnect.
 pub(crate) async fn ensure_console_forwarder(
     state: &State<'_, AppState>,
     key: &str,
@@ -130,7 +130,7 @@ pub(crate) async fn ensure_console_forwarder(
     if let Some(p) = map.get(key) {
         return Ok(*p);
     }
-    // key 的第一段恒为 node_id
+    // The first segment of key is always node_id
     let node_id = key.split('|').next().unwrap_or(key);
     let opener = state.client.opener(node_id).ok_or("节点未连接")?;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -161,9 +161,9 @@ pub(crate) async fn ensure_console_forwarder(
     Ok(port)
 }
 
-// ==================== 扇出连接管理（DB 为唯一事实来源；运行中经 ConnectorManager 热操作，无需重启） ====================
+// ==================== Fan-out connection management (DB is the single source of truth; hot-apply via ConnectorManager at runtime, no restart) ====================
 
-/// 扇出列表视图（token 脱敏仅前缀，绝不回显；编辑需重新输入或留空保留）。
+/// Fan-out list view (token redacted to prefix only, never echoed; editing requires re-entry or leaving it blank to keep).
 #[derive(Debug, Clone, Serialize)]
 pub struct ServerConnectorView {
     pub id: String,
@@ -172,25 +172,25 @@ pub struct ServerConnectorView {
     pub token_prefix: String,
     pub sni_hostname: String,
     pub insecure: bool,
-    /// 路由再发布（逗号分隔入库；编辑回显拆行）
+    /// Re-advertised routes (stored comma-separated; the edit form echoes them one per line)
     pub advertise: String,
-    /// 收敛权限组（None = 不收敛，放行一切）
+    /// Restricting group (None = unrestricted, allow everything)
     pub group_id: Option<String>,
     pub group_name: Option<String>,
     pub enabled: bool,
     pub remark: String,
-    /// 实时状态（connected/connecting/reconnecting/disconnected；内嵌节点未运行恒 disconnected）
+    /// Live state (connected/connecting/reconnecting/disconnected; always disconnected while the embedded node is not running)
     pub state: String,
 }
 
-/// 权限组下拉选项（扇出表单用）
+/// Group dropdown option (for the fan-out form)
 #[derive(Debug, Clone, Serialize)]
 pub struct GroupOption {
     pub id: String,
     pub name: String,
 }
 
-/// 本机内嵌节点的权限组清单（扇出表单「权限组」下拉；留空 = 不收敛）。
+/// Groups of the local embedded node (the "group" dropdown in the fan-out form; empty = unrestricted).
 #[tauri::command]
 pub(crate) async fn list_embedded_groups() -> Result<Vec<GroupOption>, String> {
     let db = roles::open_embedded_db()?;
@@ -201,9 +201,9 @@ pub(crate) async fn list_embedded_groups() -> Result<Vec<GroupOption>, String> {
         .collect())
 }
 
-/// 运行中的内嵌节点热应用单条扇出变更（先断旧再起新；未运行则跳过，启动时自 DB 装配）。
+/// Hot-apply a single fan-out change to the running embedded node (tear down the old, then bring up the new; skipped when not running — startup assembles from DB).
 pub(crate) async fn hot_upsert_connector(state: &State<'_, AppState>, id: &str, name: &str) {
-    // 先取 ConnectorManager 句柄即放锁，避免持锁跨 await（upsert 内含 DNS 解析）
+    // Grab the ConnectorManager handle and release the lock immediately — never hold it across await (upsert does DNS resolution)
     let manager = state.server.lock().await.as_ref().map(|s| s.connector_manager());
     if let Some(m) = manager {
         if let Err(e) = m.upsert_from_db(id).await {
@@ -212,7 +212,7 @@ pub(crate) async fn hot_upsert_connector(state: &State<'_, AppState>, id: &str, 
     }
 }
 
-/// 校验收敛组存在（Some 时），给前端友好报错（DB 外键报错不易读）。
+/// Validate the restricting group exists (when Some) so the frontend gets a readable error (DB foreign-key errors are not).
 pub(crate) fn validate_group(db: &agile_net_node::db::Database, group_id: Option<&str>) -> Result<(), String> {
     if let Some(gid) = group_id {
         if db.get_group(gid).map_err(map_err)?.is_none() {
@@ -254,10 +254,10 @@ pub(crate) async fn list_server_connectors(
         .collect())
 }
 
-/// 扇出表单（add/update 两命令的公共参数）。
-/// 注意：tauri command 的扁平参数即前端 invoke 契约（camelCase 逐参映射），
-/// 结构体无法作为单参整体传入（tauri 不支持 serde flatten），
-/// 故仅用于内部收敛，命令边界保留扁平签名并豁免参数过多 lint。
+/// Fan-out form (shared parameters of the add/update commands).
+/// Note: a tauri command's flat parameters are the frontend invoke contract (camelCase per-arg mapping);
+/// a struct cannot be passed as a single argument (tauri does not support serde flatten),
+/// so this is internal-only — command boundaries keep flat signatures and waive the too-many-args lint.
 struct ConnectorForm {
     upstream_addr: String,
     token: String,
@@ -270,7 +270,7 @@ struct ConnectorForm {
 }
 
 #[tauri::command]
-#[allow(clippy::too_many_arguments)] // 扁平参数 = 前端 invoke 契约，缘由见 ConnectorForm
+#[allow(clippy::too_many_arguments)] // flat parameters = frontend invoke contract, see ConnectorForm
 pub(crate) async fn add_server_connector(
     state: State<'_, AppState>,
     upstream_addr: String,
@@ -303,7 +303,7 @@ async fn add_server_connector_inner(
     if addr.is_empty() || form.token.trim().is_empty() {
         return Err("扇出目标地址与 Relay Token 不能为空".into());
     }
-    // 名称可空：留空 = 取目标地址（沿用 TOML 导入惯例；connector.name 唯一约束）
+    // Name is optional: blank = use the target address (TOML import convention; connector.name has a unique constraint)
     let name = form
         .name
         .map(|n| n.trim().to_string())
@@ -342,7 +342,7 @@ async fn add_server_connector_inner(
 }
 
 #[tauri::command]
-#[allow(clippy::too_many_arguments)] // 扁平参数 = 前端 invoke 契约，缘由见 ConnectorForm
+#[allow(clippy::too_many_arguments)] // flat parameters = frontend invoke contract, see ConnectorForm
 pub(crate) async fn update_server_connector(
     state: State<'_, AppState>,
     id: String,
@@ -377,7 +377,7 @@ async fn update_server_connector_inner(
     if addr.is_empty() {
         return Err("扇出目标地址不能为空".into());
     }
-    // 名称可空：留空 = 取目标地址（与 add 同惯例）
+    // Name is optional: blank = use the target address (same convention as add)
     let name = form
         .name
         .map(|n| n.trim().to_string())
@@ -397,8 +397,8 @@ async fn update_server_connector_inner(
     {
         return Err("同名扇出连接已存在".into());
     }
-    // token / advertise / remark 三态：token 留空 = 保留原值；advertise/remark 缺省(None) = 保留，
-    // 前端恒传（空串 = 用户显式清空）；证书路径 GUI 不编辑，原样保留
+    // Tri-state token / advertise / remark: blank token = keep the old value; advertise/remark absent (None) = keep,
+    // the frontend always sends them (empty string = user cleared explicitly); cert paths are not edited in the GUI, kept as-is
     let token_reset = if form.token.trim().is_empty() {
         None
     } else {
@@ -446,8 +446,8 @@ pub(crate) async fn remove_server_connector(state: State<'_, AppState>, id: Stri
     Ok(())
 }
 
-/// 客户端代理真实状态写入内嵌节点状态槽（start/stop/模式切换/角色关闭后调用；
-/// 管理端「本地代理」卡经 node status 读取，模式来自 GUI 代理设置）。
+/// Write the real client proxy state into the embedded node state slot (call after start/stop/mode switch/role shutdown;
+/// the admin "local proxy" card reads it via node status; the mode comes from the GUI proxy settings).
 pub(crate) async fn report_client_proxy(state: &State<'_, AppState>) {
     let port = state.client.proxy_port();
     let system = state.roles.lock().await.system_proxy;
@@ -464,22 +464,22 @@ pub(crate) async fn report_client_proxy(state: &State<'_, AppState>) {
     )));
 }
 
-// ==================== 卸载 ====================
+// ==================== Uninstall ====================
 
-/// 卸载清理选项（勾选哪些本地数据随卸载一并删除）
+/// Uninstall cleanup options (which local data to delete along with the uninstall)
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct UninstallOptions {
-    /// 已保存的节点与凭据（credentials.json）
+    /// Saved nodes and credentials (credentials.json)
     pub credentials: bool,
-    /// 服务端节点数据（embedded-node/：数据库与证书）
+    /// Server node data (embedded-node/: database and certificates)
     pub server_data: bool,
-    /// 配置与偏好（gui-settings.json / web-auth.json；主题语言由前端清 localStorage）
+    /// Config and preferences (gui-settings.json / web-auth.json; theme and language are cleared from localStorage by the frontend)
     pub prefs: bool,
-    /// 审计日志（gui-audit.jsonl）
+    /// Audit log (gui-audit.jsonl)
     pub audit: bool,
 }
 
-/// 卸载应用：记审计 → 停机释放文件锁 → 清理所选数据 → 关闭自启 → 拉起系统卸载程序并退出。
+/// Uninstall the app: write audit → shut down to release file locks → clean the selected data → disable autostart → launch the system uninstaller and exit.
 #[tauri::command]
 pub(crate) async fn uninstall_app(
     app: tauri::AppHandle,
@@ -496,7 +496,7 @@ pub(crate) async fn uninstall_app(
         }),
     );
 
-    // 停掉内嵌节点 / Web 远程面 / 订阅内核 / 全部隧道（释放 SQLite 与端口占用）
+    // Stop embedded node / web remote access / subscription kernel / all tunnels (release SQLite and port usage)
     if let Some(s) = state.server.lock().await.take() {
         s.stop().await;
     }
@@ -507,7 +507,7 @@ pub(crate) async fn uninstall_app(
     state.client.disconnect_all().await;
     state.client.stop_proxy().await;
 
-    // 系统代理托管中（含 TUN 模式自动托管）：卸载前还原系统代理
+    // System proxy is managed (including auto-management in TUN mode): restore the system proxy before uninstall
     {
         let r = state.roles.lock().await;
         if r.system_proxy || r.tun_mode {
@@ -516,7 +516,7 @@ pub(crate) async fn uninstall_app(
         }
     }
 
-    // 卸载必做：移除开机自启
+    // Mandatory on uninstall: remove login autostart
     {
         use tauri_plugin_autostart::ManagerExt;
         let _ = app.autolaunch().disable();
@@ -544,8 +544,8 @@ pub(crate) async fn uninstall_app(
     Ok(())
 }
 
-/// 拉起系统卸载程序（Windows NSIS：安装目录 uninstall.exe，自带确认页，
-/// 用户确认时本进程已退出，可正常删除安装目录）。
+/// Launch the system uninstaller (Windows NSIS: uninstall.exe in the install dir, with its own confirmation page;
+/// by the time the user confirms, this process has exited, so the install dir can be deleted).
 #[cfg(windows)]
 pub(crate) fn launch_system_uninstaller() -> Result<(), String> {
     let exe = std::env::current_exe().map_err(map_err)?;
@@ -562,14 +562,14 @@ pub(crate) fn launch_system_uninstaller() -> Result<(), String> {
     Ok(())
 }
 
-/// 非 Windows 桌面平台无系统卸载程序：数据已清理，提示用户手动移除应用本体。
+/// Non-Windows desktops have no system uninstaller: data is cleaned; ask the user to remove the app manually.
 #[cfg(not(windows))]
 pub(crate) fn launch_system_uninstaller() -> Result<(), String> {
     Err("数据已按所选清理；请将应用本体移入废纸篓/删除以完成卸载".into())
 }
 
-/// 事件中心：gui-audit.jsonl 尾部倒读白名单事件（新的在前；默认 50 条，上限 200）。
-/// 文件不存在返回空 Vec。
+/// Event center: read whitelisted events backwards from the tail of gui-audit.jsonl (newest first; default 50, max 200).
+/// Returns an empty Vec when the file does not exist.
 #[tauri::command]
 pub(crate) fn recent_events(limit: Option<u32>) -> Result<Vec<roles::GuiEvent>, String> {
     let n = limit.unwrap_or(50).clamp(1, 200) as usize;

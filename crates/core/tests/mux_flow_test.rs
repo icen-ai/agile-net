@@ -1,14 +1,14 @@
-//! Per-channel 窗口流控测试（协议 v2）
+//! Per-channel window flow control tests (protocol v2)
 //!
-//! - 大流量跨窗口传输不死锁（WindowUpdate 补充额度）
-//! - 慢读者仅自身通道挂起，不队头阻塞其他通道
-//! - v1 降级模式（无流控）行为不变
+//! - large transfers crossing the window must not deadlock (WindowUpdate refills credit)
+//! - a slow reader stalls only its own channel, no head-of-line blocking for others
+//! - v1 fallback mode (no flow control) behavior unchanged
 
 use agile_net_core::relay::mux::{CHANNEL_WINDOW, MuxSession};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-/// TCP 回环 mux 对（duplex 在大缓冲场景下有唤醒怪癖，用真实 TCP 更可靠）
+/// TCP loopback mux pair (duplex has wakeup quirks with large buffers; real TCP is more reliable)
 async fn mux_pair(flow_control: bool) -> (Arc<MuxSession>, Arc<MuxSession>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -20,7 +20,7 @@ async fn mux_pair(flow_control: bool) -> (Arc<MuxSession>, Arc<MuxSession>) {
     (a, b)
 }
 
-/// 传输 4 MiB（4 倍于窗口）必须完成——证明 WindowUpdate 正常补充额度
+/// Transferring 4 MiB (4x the window) must complete — proves WindowUpdate refills credit
 #[tokio::test]
 async fn large_transfer_crosses_window() {
     const TOTAL: usize = 4 * 1024 * 1024;
@@ -51,29 +51,29 @@ async fn large_transfer_crosses_window() {
     assert!(received.iter().all(|&b| b == 0xAB));
 }
 
-/// 慢读者：通道 1 写满窗口后挂起，通道 2 仍可正常传输（无队头阻塞）
+/// Slow reader: channel 1 stalls once its window fills, channel 2 still flows (no head-of-line blocking)
 #[tokio::test]
 async fn slow_reader_does_not_block_other_channels() {
     let (a, b) = mux_pair(true).await;
 
-    // 通道 1：A 写、B 不读（积压超过窗口）
+    // channel 1: A writes, B never reads (backlog exceeds the window)
     let mut ch1_a = a.accept_channel(1);
     let _ch1_b = b.accept_channel(1);
 
-    // 通道 2：正常收发
+    // channel 2: normal send/recv
     let mut ch2_a = a.accept_channel(3);
     let mut ch2_b = b.accept_channel(3);
 
-    // A 在通道 1 上写 窗口+16KB（将挂起在窗口处——预期行为）
+    // A writes window+16KB on channel 1 (will stall at the window — expected)
     let writer = tokio::spawn(async move {
         let data = vec![0x01u8; CHANNEL_WINDOW as usize + 16384];
         let _ = ch1_a.write_all(&data).await;
     });
 
-    // 给通道 1 的写操作一点时间堆积到窗口上限
+    // give the channel 1 write time to pile up to the window cap
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-    // 通道 2 必须仍然畅通
+    // channel 2 must stay clear
     ch2_a.write_all(b"independent").await.unwrap();
     let mut buf = [0u8; 11];
     tokio::time::timeout(
@@ -88,7 +88,7 @@ async fn slow_reader_does_not_block_other_channels() {
     writer.abort();
 }
 
-/// v1 降级（flow_control=false）：大流量传输照常（无窗口限制）
+/// v1 fallback (flow_control=false): large transfer proceeds as usual (no window limit)
 #[tokio::test]
 async fn v1_fallback_large_transfer() {
     const TOTAL: usize = 2 * 1024 * 1024;
@@ -119,7 +119,7 @@ async fn v1_fallback_large_transfer() {
     assert_eq!(received, TOTAL);
 }
 
-/// 流控标志如实上报
+/// flow control flag reported truthfully
 #[tokio::test]
 async fn flow_control_flag_reported() {
     let (a, _b) = mux_pair(true).await;

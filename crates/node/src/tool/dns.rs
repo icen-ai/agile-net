@@ -1,8 +1,8 @@
-//! dns / dnsconf — DNS 查询与系统 DNS 配置（P0，零新增依赖）。
+//! dns / dnsconf — DNS queries and system DNS configuration (P0, zero new dependencies).
 //!
-//! 实现要点：手写最小 UDP DNS 查询（A/AAAA/PTR/CNAME/MX，含 512 截断重试 TCP）；
-//! dnsconf：Linux 解析 /etc/resolv.conf，Windows 读注册表各网卡 DNS
-//! （`Tcpip\Parameters\Interfaces`，经 `reg query` 免新依赖）。
+//! Implementation notes: a hand-rolled minimal UDP DNS query (A/AAAA/PTR/CNAME/MX, with TCP
+//! retry on 512-byte truncation); dnsconf parses /etc/resolv.conf on Linux and reads per-interface
+//! DNS from the registry on Windows (`Tcpip\Parameters\Interfaces`, via `reg query`, no new dependencies).
 
 use super::ToolOutcome;
 use serde::Serialize;
@@ -11,7 +11,7 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpStream, UdpSocket};
 
-/// 单条 DNS 记录的结构化结果（dns/diag 复用）。
+/// Structured result for a single DNS record (shared by dns/diag).
 #[derive(Debug, Clone, Serialize)]
 pub struct DnsAnswer {
     pub name: String,
@@ -20,14 +20,14 @@ pub struct DnsAnswer {
     pub ttl: u32,
 }
 
-/// 单台服务器的查询超时（UDP 与 TCP 重试共用）。
+/// Query timeout per server (shared by UDP and the TCP retry).
 const QUERY_TIMEOUT: Duration = Duration::from_secs(3);
-/// 缺省 DNS 端口。
+/// Default DNS port.
 const DNS_PORT: u16 = 53;
 
-// ==================== 公开入口（签名固定，diag 依赖） ====================
+// ==================== Public entry points (fixed signatures; diag depends on them) ====================
 
-/// DNS 查询核心（dns/diag 复用）：返回记录列表或错误描述。
+/// DNS query core (shared by dns/diag): returns the record list or an error description.
 pub async fn query(
     domain: &str,
     server: Option<&str>,
@@ -38,7 +38,7 @@ pub async fn query(
         return Err("域名不能为空".into());
     }
     let qtype = parse_rtype(rtype)?;
-    // PTR 支持直接传 IP 字面量（自动转反向域），其余类型按字面域名编码
+    // PTR accepts IP literals directly (auto-converted to the reverse domain); other types encode the domain verbatim
     let name = if qtype == 12 {
         ptr_name(domain)
     } else {
@@ -47,7 +47,7 @@ pub async fn query(
     let servers = resolve_servers(server)?;
     let id: u16 = rand::random();
     let packet = build_query(id, &name, qtype)?;
-    // 依次尝试各 nameserver，首个成功应答即返回
+    // Try each nameserver in turn; the first successful answer wins
     let mut last_err = String::from("无可用 DNS 服务器");
     for srv in &servers {
         match query_server(*srv, &packet, id).await {
@@ -58,9 +58,9 @@ pub async fn query(
     Err(last_err)
 }
 
-/// `anet tool dns <domain> [@server] [type]`（等同 nslookup/dig）。
+/// `anet tool dns <domain> [@server] [type]` (equivalent to nslookup/dig).
 pub async fn dns_query(domain: &str, server: Option<&str>, rtype: &str) -> ToolOutcome {
-    // 参数级错误 exit 2；探测失败（超时/拒绝/空应答）exit 1
+    // Argument-level errors → exit 2; probe failures (timeout/refused/empty answer) → exit 1
     if domain.trim().is_empty() {
         return ToolOutcome::usage_error("域名不能为空");
     }
@@ -114,7 +114,7 @@ pub async fn dns_query(domain: &str, server: Option<&str>, rtype: &str) -> ToolO
     }
 }
 
-/// `anet tool dnsconf`：查看系统 DNS 配置。
+/// `anet tool dnsconf`: show the system DNS configuration.
 pub fn dnsconf() -> ToolOutcome {
     match system_dns_config() {
         Ok(cfg) => {
@@ -124,7 +124,7 @@ pub fn dnsconf() -> ToolOutcome {
                     human.push_str(&format!("nameserver {ns}\n"));
                 }
             } else {
-                // Windows：按网卡分组展示（静态优先，DHCP 标注）
+                // Windows: group by interface (static first, DHCP marked)
                 for ifs in &cfg.interfaces {
                     human.push_str(&format!("接口 {}\n", ifs.iface));
                     for ns in &ifs.nameservers {
@@ -148,29 +148,29 @@ pub fn dnsconf() -> ToolOutcome {
             let json = serde_json::to_value(&cfg).unwrap_or_default();
             ToolOutcome::ok(human.trim_end(), json)
         }
-        // 读取失败属环境错误（exit 2）
+        // Read failure is an environment error (exit 2)
         Err(e) => ToolOutcome::usage_error(format!("读取系统 DNS 配置失败：{e}")),
     }
 }
 
-// ==================== 系统 DNS 配置（dnsconf 与 query 缺省服务器共用） ====================
+// ==================== System DNS configuration (shared by dnsconf and query's default servers) ====================
 
-/// 系统 DNS 配置。
+/// System DNS configuration.
 #[derive(Debug, Clone, Default, Serialize)]
 struct SystemDns {
-    /// 配置来源（/etc/resolv.conf 或注册表路径）
+    /// Configuration source (/etc/resolv.conf or a registry path)
     source: String,
-    /// 生效 nameserver（各来源去重保序）
+    /// Effective nameservers (deduplicated, order preserved, across sources)
     nameservers: Vec<String>,
-    /// 搜索域（类 Unix）
+    /// Search domains (Unix-like)
     search: Vec<String>,
-    /// options 指令（类 Unix）
+    /// options directives (Unix-like)
     options: Vec<String>,
-    /// 各网卡 DNS（仅 Windows 非空）
+    /// Per-interface DNS (non-empty only on Windows)
     interfaces: Vec<IfaceDns>,
 }
 
-/// 单块网卡的 DNS（Windows）。
+/// DNS of a single interface (Windows).
 #[derive(Debug, Clone, Serialize)]
 struct IfaceDns {
     iface: String,
@@ -178,10 +178,10 @@ struct IfaceDns {
     dhcp_nameservers: Vec<String>,
 }
 
-/// 读取系统 DNS 配置。两个分支均为纯 std 实现，跨平台编译、按 cfg! 分流。
+/// Read the system DNS configuration. Both branches are pure-std, cross-compiled, dispatched via cfg!.
 fn system_dns_config() -> Result<SystemDns, String> {
     if cfg!(windows) {
-        // 注册表 Tcpip\Parameters\Interfaces：各网卡 NameServer / DhcpNameServer
+        // Registry Tcpip\Parameters\Interfaces: per-interface NameServer / DhcpNameServer
         const KEY: &str = r"HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces";
         let output = std::process::Command::new("reg")
             .args(["query", KEY, "/s"])
@@ -193,7 +193,7 @@ fn system_dns_config() -> Result<SystemDns, String> {
                 output.status.code()
             ));
         }
-        // 键路径与 IP 值均为 ASCII，非 UTF-8 本地码页不影响解析
+        // Key paths and IP values are ASCII; a non-UTF-8 local code page does not affect parsing
         let text = String::from_utf8_lossy(&output.stdout);
         let mut cfg = parse_windows_reg_dns(&text);
         cfg.source = r"注册表 Tcpip\Parameters\Interfaces".into();
@@ -208,11 +208,11 @@ fn system_dns_config() -> Result<SystemDns, String> {
     }
 }
 
-/// 解析 /etc/resolv.conf：nameserver / search / domain / options，忽略注释与其余指令。
+/// Parse /etc/resolv.conf: nameserver / search / domain / options; comments and other directives ignored.
 fn parse_resolv_conf(content: &str) -> SystemDns {
     let mut cfg = SystemDns::default();
     for line in content.lines() {
-        // 注释以 # 或 ; 起始（含行内注释）
+        // Comments start with # or ; (including inline comments)
         let line = line.split(['#', ';']).next().unwrap_or("");
         let mut it = line.split_whitespace();
         let Some(kw) = it.next() else { continue };
@@ -222,7 +222,7 @@ fn parse_resolv_conf(content: &str) -> SystemDns {
                     cfg.nameservers.push(ns.to_string());
                 }
             }
-            // search 与 domain 互斥，后出现者覆盖（与 resolver 语义一致）
+            // search and domain are mutually exclusive; the later one wins (matches resolver semantics)
             "search" => cfg.search = it.map(str::to_string).collect(),
             "domain" => cfg.search = it.next().map(|d| vec![d.to_string()]).unwrap_or_default(),
             "options" => cfg.options = it.map(str::to_string).collect(),
@@ -232,11 +232,11 @@ fn parse_resolv_conf(content: &str) -> SystemDns {
     cfg
 }
 
-/// 解析 `reg query <Interfaces> /s` 输出：每个接口小节的 NameServer / DhcpNameServer。
+/// Parse `reg query <Interfaces> /s` output: NameServer / DhcpNameServer of each interface section.
 fn parse_windows_reg_dns(text: &str) -> SystemDns {
     let mut cfg = SystemDns::default();
     let mut current: Option<IfaceDns> = None;
-    // 小节结束：合并进总表（空接口丢弃，nameserver 去重保序）
+    // End of a section: merge into the totals (empty interfaces dropped, nameservers deduplicated in order)
     fn flush(cfg: &mut SystemDns, cur: &mut Option<IfaceDns>) {
         if let Some(ifs) = cur.take()
             && (!ifs.nameservers.is_empty() || !ifs.dhcp_nameservers.is_empty())
@@ -262,7 +262,7 @@ fn parse_windows_reg_dns(text: &str) -> SystemDns {
             continue;
         }
         let Some(cur) = current.as_mut() else { continue };
-        // 值行形如 "    NameServer    REG_SZ    223.5.5.5,8.8.8.8"
+        // Value lines look like "    NameServer    REG_SZ    223.5.5.5,8.8.8.8"
         let line = line.trim();
         for (key, is_dhcp) in [("NameServer", false), ("DhcpNameServer", true)] {
             if let Some(rest) = line.strip_prefix(key)
@@ -286,7 +286,7 @@ fn parse_windows_reg_dns(text: &str) -> SystemDns {
     cfg
 }
 
-/// 确定查询使用的服务器列表：显式 @server 或系统配置（缺省 53 端口）。
+/// Determine the server list to query: explicit @server or the system configuration (default port 53).
 fn resolve_servers(server: Option<&str>) -> Result<Vec<SocketAddr>, String> {
     match server {
         Some(s) => Ok(vec![parse_server(s)?]),
@@ -306,7 +306,7 @@ fn resolve_servers(server: Option<&str>) -> Result<Vec<SocketAddr>, String> {
     }
 }
 
-/// 解析服务器地址：`IP`（补 53 端口）或 `IP:port`（测试注入用）。
+/// Parse a server address: `IP` (port 53 added) or `IP:port` (for test injection).
 fn parse_server(s: &str) -> Result<SocketAddr, String> {
     if let Ok(addr) = s.parse::<SocketAddr>() {
         return Ok(addr);
@@ -317,9 +317,9 @@ fn parse_server(s: &str) -> Result<SocketAddr, String> {
     Err(format!("无效 DNS 服务器地址（形如 @223.5.5.5）: {s}"))
 }
 
-// ==================== 最小 DNS 协议（RFC 1035，无 EDNS） ====================
+// ==================== Minimal DNS protocol (RFC 1035, no EDNS) ====================
 
-/// 记录类型字串 → qtype。
+/// Record-type string → qtype.
 fn parse_rtype(rtype: &str) -> Result<u16, String> {
     match rtype.to_ascii_uppercase().as_str() {
         "A" => Ok(1),
@@ -333,7 +333,7 @@ fn parse_rtype(rtype: &str) -> Result<u16, String> {
     }
 }
 
-/// qtype → 记录类型字串（未知类型按 dig 惯例显示 TYPE<n>）。
+/// qtype → record-type string (unknown types shown as TYPE<n>, per dig convention).
 fn rtype_name(qtype: u16) -> String {
     match qtype {
         1 => "A".into(),
@@ -348,7 +348,7 @@ fn rtype_name(qtype: u16) -> String {
     }
 }
 
-/// rcode → 可读描述。
+/// rcode → readable description.
 fn rcode_name(rcode: u16) -> String {
     match rcode {
         1 => "FORMERR（查询格式错误）".into(),
@@ -360,7 +360,7 @@ fn rcode_name(rcode: u16) -> String {
     }
 }
 
-/// PTR 查询名规范化：已是反向域则原样返回；IP 字面量转 in-addr.arpa / ip6.arpa。
+/// PTR query-name normalization: reverse domains pass through verbatim; IP literals convert to in-addr.arpa / ip6.arpa.
 fn ptr_name(input: &str) -> String {
     let s = input.trim_end_matches('.');
     if s.ends_with(".in-addr.arpa") || s.ends_with(".ip6.arpa") {
@@ -371,7 +371,7 @@ fn ptr_name(input: &str) -> String {
         return format!("{}.{}.{}.{}.in-addr.arpa", o[3], o[2], o[1], o[0]);
     }
     if let Ok(v6) = s.parse::<Ipv6Addr>() {
-        // 32 个半字节逆序拼接（每字节先低半字节后高半字节）
+        // 32 nibbles concatenated in reverse (low nibble first, then high, per byte)
         let mut out = String::new();
         for byte in v6.octets().iter().rev() {
             out.push_str(&format!("{:x}.{:x}.", byte & 0xF, byte >> 4));
@@ -382,7 +382,7 @@ fn ptr_name(input: &str) -> String {
     s.to_string()
 }
 
-/// 构造查询报文：RD 标志 + 单 question（QCLASS=IN）。
+/// Build a query packet: RD flag + single question (QCLASS=IN).
 fn build_query(id: u16, name: &str, qtype: u16) -> Result<Vec<u8>, String> {
     let mut buf = Vec::with_capacity(64);
     buf.extend_from_slice(&id.to_be_bytes());
@@ -395,11 +395,11 @@ fn build_query(id: u16, name: &str, qtype: u16) -> Result<Vec<u8>, String> {
     Ok(buf)
 }
 
-/// 域名编码为 label 序列（校验标签长度，空串编码为根域）。
+/// Encode a domain name as a label sequence (label lengths validated; empty string encodes the root).
 fn encode_name(buf: &mut Vec<u8>, name: &str) -> Result<(), String> {
     let name = name.trim_end_matches('.');
     if name.is_empty() {
-        buf.push(0); // 根域
+        buf.push(0); // root domain
         return Ok(());
     }
     if name.len() > 253 {
@@ -416,7 +416,7 @@ fn encode_name(buf: &mut Vec<u8>, name: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// 解析域名（含 0xC0 压缩指针），返回 (name, 下一个读取位置)。
+/// Parse a domain name (including 0xC0 compression pointers); returns (name, next read position).
 fn read_name(buf: &[u8], mut pos: usize) -> Result<(String, usize), String> {
     let mut labels = Vec::new();
     let mut jumped = false;
@@ -425,7 +425,7 @@ fn read_name(buf: &[u8], mut pos: usize) -> Result<(String, usize), String> {
     loop {
         let len = *buf.get(pos).ok_or("报文越界")?;
         if len & 0xC0 == 0xC0 {
-            // 压缩指针：仅首个指针更新返回位置，限制跳转次数防循环
+            // Compression pointer: only the first pointer updates the returned position; jumps are capped against loops
             let b2 = *buf.get(pos + 1).ok_or("报文越界")?;
             let ptr = (((len & 0x3F) as usize) << 8) | b2 as usize;
             if !jumped {
@@ -475,12 +475,12 @@ fn hex_dump(data: &[u8]) -> String {
     s
 }
 
-/// TC 截断标志（应答超过 512 字节时服务器置位，需重试 TCP）。
+/// TC truncation flag (set by the server when the answer exceeds 512 bytes; retry over TCP).
 fn is_truncated(buf: &[u8]) -> bool {
     buf.len() >= 4 && buf[2] & 0x02 != 0
 }
 
-/// 解析 DNS 响应报文：校验 ID/rcode，抽取 answer 段记录。
+/// Parse a DNS response packet: validate ID/rcode, extract the answer-section records.
 fn parse_response(buf: &[u8], expect_id: u16) -> Result<Vec<DnsAnswer>, String> {
     if buf.len() < 12 {
         return Err("响应报文过短".into());
@@ -499,7 +499,7 @@ fn parse_response(buf: &[u8], expect_id: u16) -> Result<Vec<DnsAnswer>, String> 
     let qd = be_u16(buf, 4)? as usize;
     let an = be_u16(buf, 6)? as usize;
     let mut pos = 12;
-    // 跳过 question 段
+    // Skip the question section
     for _ in 0..qd {
         let (_, n) = read_name(buf, pos)?;
         pos = n + 4;
@@ -533,14 +533,14 @@ fn parse_response(buf: &[u8], expect_id: u16) -> Result<Vec<DnsAnswer>, String> 
                 octets.copy_from_slice(&buf[rdata..rend]);
                 Ipv6Addr::from(octets).to_string()
             }
-            // NS/CNAME/PTR：rdata 为（可压缩）域名
+            // NS/CNAME/PTR: rdata is a (possibly compressed) domain name
             2 | 5 | 12 => read_name(buf, rdata)?.0,
             15 if rdlen >= 3 => {
                 let pref = be_u16(buf, rdata)?;
                 let (exchange, _) = read_name(buf, rdata + 2)?;
                 format!("{pref} {exchange}")
             }
-            // 其余类型按 dig 惯例 \# <len> <hex> 展示
+            // Other types shown as \# <len> <hex>, per dig convention
             _ => format!("\\# {rdlen} {}", hex_dump(&buf[rdata..rend])),
         };
         answers.push(DnsAnswer {
@@ -554,7 +554,7 @@ fn parse_response(buf: &[u8], expect_id: u16) -> Result<Vec<DnsAnswer>, String> 
     Ok(answers)
 }
 
-/// 查询单台服务器：UDP 优先，TC 截断自动重试 TCP。
+/// Query a single server: UDP first, automatic TCP retry on TC truncation.
 async fn query_server(
     server: SocketAddr,
     packet: &[u8],
@@ -562,14 +562,14 @@ async fn query_server(
 ) -> Result<Vec<DnsAnswer>, String> {
     let resp = query_udp(server, packet).await?;
     if is_truncated(&resp) {
-        // RFC 1035：UDP 应答截断时必须以 TCP 重查
+        // RFC 1035: a truncated UDP answer must be re-queried over TCP
         let resp = query_tcp(server, packet).await?;
         return parse_response(&resp, expect_id);
     }
     parse_response(&resp, expect_id)
 }
 
-/// UDP 查询：新建临时 socket 发送并等待单个响应。
+/// UDP query: send from a fresh temporary socket and wait for a single response.
 async fn query_udp(server: SocketAddr, packet: &[u8]) -> Result<Vec<u8>, String> {
     let bind: SocketAddr = if server.is_ipv4() {
         SocketAddr::from(([0, 0, 0, 0], 0))
@@ -582,7 +582,7 @@ async fn query_udp(server: SocketAddr, packet: &[u8]) -> Result<Vec<u8>, String>
     sock.send_to(packet, server)
         .await
         .map_err(|e| format!("发送失败：{e}"))?;
-    // 缓冲放宽到 4K：个别服务器无 EDNS 也回超 512 的报文
+    // Buffer relaxed to 4K: some servers return over-512 packets even without EDNS
     let mut buf = vec![0u8; 4096];
     let (n, _) = tokio::time::timeout(QUERY_TIMEOUT, sock.recv_from(&mut buf))
         .await
@@ -592,7 +592,7 @@ async fn query_udp(server: SocketAddr, packet: &[u8]) -> Result<Vec<u8>, String>
     Ok(buf)
 }
 
-/// TCP 查询：2 字节大端长度前缀 + 报文（RFC 1035 §4.2.2）。
+/// TCP query: 2-byte big-endian length prefix + packet (RFC 1035 §4.2.2).
 async fn query_tcp(server: SocketAddr, packet: &[u8]) -> Result<Vec<u8>, String> {
     let fut = async {
         let mut stream = TcpStream::connect(server)
@@ -629,9 +629,9 @@ async fn query_tcp(server: SocketAddr, packet: &[u8]) -> Result<Vec<u8>, String>
 mod tests {
     use super::*;
 
-    // ---- 测试用最小报文构造辅助 ----
+    // ---- Minimal packet-building helpers for tests ----
 
-    /// A 记录 answer（owner 名用压缩指针 0xC00C 指向 question）。
+    /// A-record answer (owner name uses compression pointer 0xC00C into the question).
     fn ans_a(ttl: u32, ip: [u8; 4]) -> Vec<u8> {
         let mut v = vec![0xC0, 0x0C];
         v.extend_from_slice(&1u16.to_be_bytes());
@@ -642,7 +642,7 @@ mod tests {
         v
     }
 
-    /// rdata 为域名的 answer（CNAME/PTR/NS）。
+    /// Answer whose rdata is a domain name (CNAME/PTR/NS).
     fn ans_name(rtype: u16, ttl: u32, target: &str) -> Vec<u8> {
         let mut rdata = Vec::new();
         encode_name(&mut rdata, target).unwrap();
@@ -655,7 +655,7 @@ mod tests {
         v
     }
 
-    /// MX 记录 answer。
+    /// MX-record answer.
     fn ans_mx(ttl: u32, pref: u16, exchange: &str) -> Vec<u8> {
         let mut rdata = Vec::new();
         rdata.extend_from_slice(&pref.to_be_bytes());
@@ -669,22 +669,22 @@ mod tests {
         v
     }
 
-    /// 由查询报文构造响应：QR+RA 标志 + flags_extra（TC/rcode），question 原样回显。
+    /// Build a response from a query: QR+RA flags + flags_extra (TC/rcode); question echoed verbatim.
     fn build_response(query: &[u8], flags_extra: u16, answers: &[Vec<u8>]) -> Vec<u8> {
         let mut v = Vec::new();
-        v.extend_from_slice(&query[0..2]); // id 回显
+        v.extend_from_slice(&query[0..2]); // id echo
         v.extend_from_slice(&(0x8080u16 | flags_extra).to_be_bytes());
         v.extend_from_slice(&1u16.to_be_bytes()); // QD
         v.extend_from_slice(&(answers.len() as u16).to_be_bytes()); // AN
         v.extend_from_slice(&[0u8; 4]); // NS/AR
-        v.extend_from_slice(&query[12..]); // question 原样
+        v.extend_from_slice(&query[12..]); // question verbatim
         for a in answers {
             v.extend_from_slice(a);
         }
         v
     }
 
-    /// 回环 mock DNS UDP 服务：收一个查询，handler 生成响应回送；返回端口。
+    /// Loopback mock DNS UDP service: receive one query, send back the handler's response; returns the port.
     async fn spawn_mock<F>(handler: F) -> u16
     where
         F: Fn(Vec<u8>) -> Option<Vec<u8>> + Send + 'static,
@@ -702,7 +702,7 @@ mod tests {
         port
     }
 
-    // ---- 纯函数测试 ----
+    // ---- Pure-function tests ----
 
     #[test]
     fn parse_rtype_支持与拒绝() {
@@ -721,7 +721,7 @@ mod tests {
             ptr_name("::1"),
             "1.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.ip6.arpa"
         );
-        // 普通域名原样保留
+        // Plain domains kept verbatim
         assert_eq!(ptr_name("example.com."), "example.com");
     }
 
@@ -756,7 +756,7 @@ mod tests {
         );
         assert!(encode_name(&mut Vec::new(), "a..b").is_err());
         assert!(encode_name(&mut Vec::new(), &"x".repeat(64)).is_err());
-        // 根域
+        // Root domain
         let mut root = Vec::new();
         encode_name(&mut root, "").unwrap();
         assert_eq!(root, vec![0u8]);
@@ -780,7 +780,7 @@ sortlist 130.155.160.0/255.255.240.0
 
     #[test]
     fn parse_resolv_conf_domain覆盖search() {
-        // domain 与 search 互斥，后出现者生效
+        // domain and search are mutually exclusive; the later one takes effect
         let cfg = parse_resolv_conf("search a.com b.com\ndomain c.com\n");
         assert_eq!(cfg.search, vec!["c.com"]);
         let cfg = parse_resolv_conf("; 注释\nnameserver 8.8.8.8\n");
@@ -806,7 +806,7 @@ HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces
 HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces
 "#;
         let cfg = parse_windows_reg_dns(text);
-        // 聚合去重保序，空接口被丢弃
+        // Aggregated, deduplicated in order; empty interfaces dropped
         assert_eq!(
             cfg.nameservers,
             vec!["223.5.5.5", "223.6.6.6", "192.168.1.1"]
@@ -820,7 +820,7 @@ HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces
     #[test]
     fn parse_response_各记录类型() {
         let q = build_query(0x1234, "example.com", 1).unwrap();
-        // AAAA：::1
+        // AAAA: ::1
         let mut v6 = vec![0xC0, 0x0C];
         v6.extend_from_slice(&28u16.to_be_bytes());
         v6.extend_from_slice(&1u16.to_be_bytes());
@@ -858,7 +858,7 @@ HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces
     #[test]
     fn parse_response_异常报文() {
         let q = build_query(0x1234, "example.com", 1).unwrap();
-        // ID 不匹配
+        // ID mismatch
         let resp = build_response(&q, 0, &[ans_a(300, [1, 1, 1, 1])]);
         assert!(parse_response(&resp, 0x9999).unwrap_err().contains("不匹配"));
         // NXDOMAIN
@@ -868,13 +868,13 @@ HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces
         // SERVFAIL
         let resp = build_response(&q, 2, &[]);
         assert!(parse_response(&resp, 0x1234).unwrap_err().contains("SERVFAIL"));
-        // 过短
+        // Too short
         assert!(parse_response(&[0u8; 5], 0x1234).is_err());
     }
 
     #[test]
     fn read_name_压缩指针循环防护() {
-        // question 名为指向自身的指针
+        // Question name is a pointer to itself
         let mut buf = Vec::new();
         buf.extend_from_slice(&[0u8; 12]);
         buf.extend_from_slice(&[0xC0, 0x0C]);
@@ -882,7 +882,7 @@ HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces
         assert!(read_name(&buf, 12).unwrap_err().contains("循环"));
     }
 
-    // ---- 回环 mock 集成测试（不依赖外网） ----
+    // ---- Loopback mock integration tests (no external network) ----
 
     #[tokio::test]
     async fn query_udp_mock_a记录() {
@@ -902,7 +902,7 @@ HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces
     #[tokio::test]
     async fn query_udp_mock_ptr反解() {
         let port = spawn_mock(|q| {
-            // 校验查询名已自动转为反向域
+            // Verify the query name was auto-converted to the reverse domain
             let (name, _) = read_name(&q, 12).unwrap();
             assert_eq!(name, "4.3.2.1.in-addr.arpa");
             Some(build_response(&q, 0, &[ans_name(12, 600, "host.example.com")]))
@@ -916,7 +916,7 @@ HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces
 
     #[tokio::test]
     async fn query_截断后自动重试tcp() {
-        // UDP 侧：一律回 TC=1 空应答
+        // UDP side: always answer with TC=1 and an empty body
         let udp = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let port = udp.local_addr().unwrap().port();
         tokio::spawn(async move {
@@ -926,7 +926,7 @@ HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces
                 let _ = udp.send_to(&resp, peer).await;
             }
         });
-        // TCP 侧（同端口）：按长度前缀读查询，回完整应答
+        // TCP side (same port): read the query by length prefix, answer in full
         let tcp = tokio::net::TcpListener::bind(("127.0.0.1", port)).await.unwrap();
         tokio::spawn(async move {
             if let Ok((mut s, _)) = tcp.accept().await {
@@ -963,7 +963,7 @@ HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces
 
     #[tokio::test]
     async fn dns_query_结果与退出码映射() {
-        // 成功：exit 0 + json 记录
+        // Success: exit 0 + json records
         let port = spawn_mock(|q| Some(build_response(&q, 0, &[ans_a(60, [1, 2, 3, 4])]))).await;
         let server = format!("127.0.0.1:{port}");
         let out = dns_query("example.com", Some(&server), "A").await;
@@ -972,14 +972,14 @@ HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces
         assert_eq!(out.json["answers"][0]["value"], "1.2.3.4");
         assert!(out.human.contains("1.2.3.4"));
 
-        // 探测失败（SERVFAIL）：exit 1
+        // Probe failure (SERVFAIL): exit 1
         let port = spawn_mock(|q| Some(build_response(&q, 2, &[]))).await;
         let server = format!("127.0.0.1:{port}");
         let out = dns_query("example.com", Some(&server), "A").await;
         assert!(!out.success);
         assert_eq!(out.exit_code, 1);
 
-        // 用法错误：exit 2
+        // Usage error: exit 2
         let out = dns_query("example.com", None, "TXT").await;
         assert_eq!(out.exit_code, 2);
         let out = dns_query("example.com", Some("bad::addr"), "A").await;
@@ -988,7 +988,7 @@ HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces
 
     #[test]
     fn dnsconf_冒烟() {
-        // 只读系统配置，成功（0）或环境错误（2）均合法，绝不 panic
+        // Read-only system config; success (0) or environment error (2) are both valid; never panic
         let out = dnsconf();
         assert!(out.exit_code == 0 || out.exit_code == 2);
         if out.exit_code == 0 {

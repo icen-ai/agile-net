@@ -1,20 +1,20 @@
-//! 第 2 节：系统代理（残留检测与自动还原；Windows 注册表 / macOS networksetup）。
+//! Section 2: system proxy (leftover detection and automatic restore; Windows registry / macOS networksetup).
 
 use super::util::listeners_on;
 use super::{DoctorContext, DoctorSection, DoctorStatus, item, section};
 use crate::tool::netstat::SocketInfo;
 
-/// 系统代理读取结果。
+/// System-proxy read result.
 enum SysProxy {
     Off,
     On(String),
-    /// 仅非 Windows/macOS 构造（read_sysproxy 的平台 cfg 分支）
+    /// Constructed only on non-Windows/macOS (the platform cfg branch of read_sysproxy)
     #[allow(dead_code)]
     Unsupported,
     Unknown(String),
 }
 
-/// Windows：reg query 读 HKCU Internet Settings（零新依赖；值不存在/查询失败 → None）。
+/// Windows: reg query of HKCU Internet Settings (zero new dependencies; missing value/query failure → None).
 #[cfg(windows)]
 fn reg_query(value: &str) -> Option<String> {
     let out = super::util::silent_command("reg")
@@ -33,7 +33,7 @@ fn reg_query(value: &str) -> Option<String> {
     for line in stdout.lines() {
         let l = line.trim();
         if l.starts_with(value) {
-            // 形如 "ProxyEnable    REG_DWORD    0x1"
+            // Looks like "ProxyEnable    REG_DWORD    0x1"
             return l.split_whitespace().last().map(|s| s.to_string());
         }
     }
@@ -81,7 +81,7 @@ fn disable_sysproxy() -> Result<(), String> {
 mod macos_proxy {
     use super::SysProxy;
 
-    /// (种类, 查询参数, 关态参数)
+    /// (kind, query arg, off arg)
     const KINDS: &[(&str, &str, &str)] = &[
         ("web", "-getwebproxy", "-setwebproxystate"),
         ("secure", "-getsecurewebproxy", "-setsecurewebproxystate"),
@@ -124,7 +124,7 @@ mod macos_proxy {
         (enabled, server, port)
     }
 
-    /// 任一服务启用 web/secure/socks 代理则返回首个命中 server:port。
+    /// Return the first server:port whose web/secure/socks proxy is enabled on any service.
     pub fn get() -> SysProxy {
         match services() {
             Ok(svcs) => {
@@ -147,7 +147,7 @@ mod macos_proxy {
         }
     }
 
-    /// 关闭所有指向本地代理端口（127.0.0.1:57890）的服务代理状态。
+    /// Turn off proxy state on all services pointing at the local proxy port (127.0.0.1:57890).
     pub fn disable_local() -> Result<(), String> {
         for svc in services()? {
             for (_, get_arg, off_arg) in KINDS {
@@ -172,7 +172,8 @@ fn read_sysproxy() -> SysProxy {
     SysProxy::Unsupported
 }
 
-/// 代理地址是否指向本机客户端代理端口（兼容 "127.0.0.1:57890" 与按协议分段形式）。
+/// Whether the proxy address points at the local client proxy port (accepts both
+/// "127.0.0.1:57890" and the per-protocol segmented form).
 fn targets_local_proxy(server: &str) -> bool {
     (server.contains("127.0.0.1") || server.contains("localhost")) && server.contains("57890")
 }
@@ -212,7 +213,7 @@ pub(super) fn section_sysproxy(ctx: &DoctorContext, socks: &[SocketInfo]) -> Doc
                     None,
                 ));
             } else if ctx.fix {
-                // 残留：代理已不在运行，系统代理仍指向 57890 → 还原关闭
+                // Leftover: the proxy is no longer running but the system proxy still points at 57890 → restore by disabling
                 #[cfg(windows)]
                 let res = disable_sysproxy();
                 #[cfg(target_os = "macos")]

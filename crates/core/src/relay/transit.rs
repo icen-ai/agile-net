@@ -1,33 +1,36 @@
-//! 中继途径流量核算（TransitMeter）
+//! Relay transit traffic accounting (TransitMeter)
 //!
-//! 在流转发路径上按「来源 × 去向」累计字节（本节点可见的相邻两跳）：
-//! - 来源（from）：扇入对端 node_id / 本地代理入站 "proxy" / 扇出 connector 名（上游反向来流）
-//! - 去向（to）：下游对端 node_id / 本机终结 "local"（代理 Forward 出站亦按本机终结计）
+//! Accumulates bytes on the forwarding path by "source x destination" (the two adjacent
+//! hops visible to this node):
+//! - source (from): fan-in peer node_id / local proxy inbound "proxy" / fan-out connector name (reverse flow from upstream)
+//! - destination (to): fan-out peer node_id / locally terminated "local" (proxy Forward outbound also counts as local)
 //!
-//! 热路径零侵入：不做逐字节计数，桥接关闭时按 `bridge()` 返回的总量一次性入账
-//!（一次 DashMap 查找 + 两次原子加；长连接的字节在其关闭时才入途径对账，
-//! 实时会话级流量另见 `MuxSession::traffic()`）。
+//! Zero hot-path intrusion: no per-byte counting; when a bridge closes, the totals from
+//! `bridge()` are booked in one shot (one DashMap lookup + two atomic adds; long-lived
+//! connections only enter the transit ledger on close — see `MuxSession::traffic()` for
+//! real-time per-session traffic).
 
 use dashmap::DashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// 途径对数量上限（防异常标签组合无界增长；正常规模约为 对端数 × 去向数）。
+/// Cap on transit pairs (guards against unbounded growth from abnormal label combos;
+/// normal scale is about peers x destinations).
 const MAX_PAIRS: usize = 4096;
 
-/// 本地代理入站的来源标识（契约固定值）。
+/// Source label for the local proxy inbound (fixed contract value).
 pub const FROM_PROXY: &str = "proxy";
-/// 本机终结的去向标识（契约固定值）。
+/// Destination label for locally terminated traffic (fixed contract value).
 pub const TO_LOCAL: &str = "local";
 
-/// 单条途径对计数。
+/// Counters for a single transit pair.
 #[derive(Default)]
 struct PairBytes {
     up: AtomicU64,
     down: AtomicU64,
 }
 
-/// 途径对快照（up = from→to 方向字节，down = to→from 方向字节）。
+/// Transit pair snapshot (up = from->to bytes, down = to->from bytes).
 #[derive(Debug, Clone)]
 pub struct TransitPair {
     pub from: String,
@@ -36,7 +39,7 @@ pub struct TransitPair {
     pub bytes_down: u64,
 }
 
-/// 中继途径核算表（全节点共享一份，listener / connector / proxy 三处打点）。
+/// Relay transit accounting table (one per node, metered from listener / connector / proxy).
 #[derive(Default)]
 pub struct TransitMeter {
     pairs: DashMap<(String, String), PairBytes>,
@@ -47,7 +50,7 @@ impl TransitMeter {
         Arc::new(Self::default())
     }
 
-    /// 入账一条已关闭桥接的字节量（up = from→to 方向，down = to→from 方向）。
+    /// Book the bytes of a closed bridge (up = from->to, down = to->from).
     pub fn record(&self, from: &str, to: &str, up: u64, down: u64) {
         if up == 0 && down == 0 {
             return;
@@ -61,7 +64,7 @@ impl TransitMeter {
         entry.down.fetch_add(down, Ordering::Relaxed);
     }
 
-    /// 快照：(汇总 up, 汇总 down, 全部途径对)（按总字节降序，稳定次序）。
+    /// Snapshot: (total up, total down, all transit pairs) (sorted by total bytes desc, stable order).
     pub fn snapshot(&self) -> (u64, u64, Vec<TransitPair>) {
         let mut pairs: Vec<TransitPair> = self
             .pairs
@@ -101,7 +104,7 @@ mod tests {
         assert_eq!(up, 151);
         assert_eq!(down, 262);
         assert_eq!(pairs.len(), 2);
-        // 降序：proxy→local (110) 在前，peer-a→peer-b (303) 实际更大应在最前
+        // descending: proxy->local (110) would come first, but peer-a->peer-b (303) is larger and leads
         assert_eq!(pairs[0].from, "peer-a");
         assert_eq!(pairs[0].to, "peer-b");
         assert_eq!(pairs[0].bytes_up, 101);

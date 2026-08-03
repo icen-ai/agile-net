@@ -1,8 +1,8 @@
-//! 客户端隧道 (ClientTunnel)
+//! Client tunnel (ClientTunnel)
 //!
-//! 客户端到节点的数据面连接：TLS 1.3 + tunnel_token 认证，
-//! 在单条 TLS 连接上多路复用逻辑通道，每个通道对应一条端到端 TCP 连接。
-//! 支持心跳保活、空闲超时检测与指数退避自动重连。
+//! Client-to-node data-plane connection: TLS 1.3 + tunnel_token auth, multiplexing
+//! logical channels over a single TLS connection, one channel per end-to-end TCP connection.
+//! Supports heartbeat keepalive, idle timeout detection and exponential-backoff auto-reconnect.
 
 use crate::error::{Error, Result};
 use crate::proto::frame::{Frame, FrameType};
@@ -24,18 +24,18 @@ use tokio::sync::{Mutex, Notify};
 use tokio_rustls::TlsConnector;
 use tracing::{debug, info, warn};
 
-/// 心跳基础间隔（实际为 25s + 0~10s 随机）。
+/// Base heartbeat interval (actual: 25s + 0-10s random).
 const PING_BASE_SECS: u64 = 25;
-/// 空闲超时：90s 未收到服务端任何帧则判定断线。
+/// Idle timeout: no frame from the server for 90s means the connection is dead.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(90);
-/// 重连退避上限。
+/// Reconnect backoff cap.
 const MAX_BACKOFF: Duration = Duration::from_secs(60);
 
-/// 客户端隧道：到单个节点的数据面连接。
+/// Client tunnel: data-plane connection to a single node.
 pub struct ClientTunnel {
     upstream_addr: SocketAddr,
     account_id: String,
-    /// tunnel_token（登录/刷新时服务端轮换，重连必须用最新值）
+    /// tunnel_token (rotated by the server on login/refresh; reconnects must use the latest value)
     tunnel_token: std::sync::Arc<std::sync::RwLock<String>>,
     tls_connector: TlsConnector,
     sni_hostname: String,
@@ -46,7 +46,7 @@ pub struct ClientTunnel {
 }
 
 impl ClientTunnel {
-    /// 使用自定义 TLS 配置创建（生产推荐证书固定 pinning）。
+    /// Create with a custom TLS config (cert pinning recommended in production).
     pub fn with_tls_builder(
         upstream_addr: SocketAddr,
         account_id: impl Into<String>,
@@ -67,7 +67,7 @@ impl ClientTunnel {
         })
     }
 
-    /// 开发模式创建（不校验服务端证书，仅调试使用）。
+    /// Create in dev mode (no server cert verification, debug only).
     pub fn new_insecure(
         upstream_addr: SocketAddr,
         account_id: impl Into<String>,
@@ -93,9 +93,9 @@ impl ClientTunnel {
         self.state() == ConnectionState::Connected
     }
 
-    /// 数据面流量计数（上行字节, 下行字节）：上行 = 发往节点，下行 = 来自节点。
-    /// 仅统计 Data 帧 payload（同 `MuxSession::traffic`）。
-    /// 当前会话语义：自动重连会新建 MuxSession，计数从 0 重新起算；未连接返回 (0, 0)。
+    /// Data-plane traffic counters (up bytes, down bytes): up = to the node, down = from the node.
+    /// Data frame payloads only (same as `MuxSession::traffic`).
+    /// Current-session semantics: auto-reconnect creates a new MuxSession and counters restart at 0; (0, 0) when not connected.
     pub async fn traffic(&self) -> (u64, u64) {
         match self.session.lock().await.as_ref() {
             Some(mux) => mux.traffic(),
@@ -103,7 +103,7 @@ impl ClientTunnel {
         }
     }
 
-    /// 建立一次连接（TLS + 认证 + 会话维护任务）。
+    /// Establish one connection (TLS + auth + session maintenance task).
     pub async fn connect(&self) -> Result<()> {
         self.state
             .store(ConnectionState::Connecting as u8, Ordering::Relaxed);
@@ -171,12 +171,12 @@ impl ClientTunnel {
             }
         }
 
-        // 客户端是会话中唯一发起 Open 的一方，使用偶数 channel_id
+        // the client is the only side issuing Open on this session; use even channel_ids
         let flow_control = server_version >= PROTOCOL_VERSION_FLOW_CONTROL;
-        // 客户端侧不做会话限速（若被限速，由对端 listener 注入的桶在 ingress 回压）
+        // no session rate limit on the client side (if limited, the peer listener's injected bucket back-pressures at ingress)
         let (mux, reader_handle) = MuxSession::start(tls_stream, 2, None, flow_control, None);
 
-        // 会话维护任务：心跳（带抖动）+ 空闲超时检测
+        // session maintenance task: heartbeat (with jitter) + idle timeout detection
         let shutdown_notify = self.shutdown_notify.clone();
         let shutdown_flag = self.shutdown_flag.clone();
         let state = self.state.clone();
@@ -212,7 +212,7 @@ impl ClientTunnel {
                             ping_timeout = next_ping_delay();
                         }
                     }
-                    // reader 任务结束（连接断开）时退出：通过等待 reader_handle 实现
+                    // exit when the reader task ends (connection dropped): await reader_handle
                     _ = futures_lite_wait(&reader_handle) => {
                         break;
                     }
@@ -229,7 +229,7 @@ impl ClientTunnel {
         Ok(mux)
     }
 
-    /// 在隧道上打开到目标地址的通道。
+    /// Open a channel to a target address over the tunnel.
     pub async fn open_channel(&self, target_host: &str, target_port: u16) -> Result<MuxChannel> {
         let session = {
             let guard = self.session.lock().await;
@@ -246,7 +246,7 @@ impl ClientTunnel {
         session.open_channel(Bytes::from(payload)).await
     }
 
-    /// 永久运行：断线自动重连（指数退避 + 抖动），直到 shutdown。
+    /// Run forever: auto-reconnect on disconnect (exponential backoff + jitter) until shutdown.
     pub async fn run(&self) {
         let mut attempt: u32 = 0;
 
@@ -294,12 +294,12 @@ impl ClientTunnel {
             .store(ConnectionState::Disconnected as u8, Ordering::Relaxed);
     }
 
-    /// 服务端轮换后的新 tunnel_token（刷新时调用，供下次重连使用）。
+    /// New tunnel_token after server rotation (call on refresh; used by the next reconnect).
     pub fn update_token(&self, new_token: String) {
         *self.tunnel_token.write().unwrap_or_else(|e| e.into_inner()) = new_token;
     }
 
-    /// 断开隧道。
+    /// Disconnect the tunnel.
     pub async fn disconnect(&self) {
         self.shutdown_flag.store(true, Ordering::Relaxed);
         self.shutdown_notify.notify_waiters();
@@ -308,15 +308,15 @@ impl ClientTunnel {
     }
 }
 
-/// 等待 JoinHandle 完成（不消耗它）。
+/// Wait for a JoinHandle to finish (without consuming it).
 async fn futures_lite_wait(handle: &tokio::task::JoinHandle<()>) {
-    // JoinHandle 不能直接 & 等待；轮询 is_finished 即可（reader 结束即返回）
+    // a JoinHandle cannot be awaited by reference; poll is_finished (returns once the reader ends)
     while !handle.is_finished() {
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
 }
 
-/// 下一次心跳间隔：25s + 0~10s 随机抖动。
+/// Next heartbeat interval: 25s + 0-10s random jitter.
 fn next_ping_delay() -> Duration {
     Duration::from_secs(PING_BASE_SECS + rand::random::<u64>() % 10)
 }

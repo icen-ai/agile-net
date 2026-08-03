@@ -3,38 +3,41 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AgileNet 悬浮球气泡</title>
+<title data-i18n="float.bubbleTitle">AgileNet 悬浮球气泡</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%233C3F43' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z'/></svg>">
 <link rel="stylesheet" href="tokens.css">
+<script src="agi18n.js"></script>
+<script src="aglang.js"></script>
+<script src="lang/desktop-trayfloat.js"></script>
 <script src="float-bubble.js"></script>
 <style>
-/* 悬浮球气泡：独立小窗，整窗一张卡片。后端创建 float-bubble 窗后 emit ag-bubble-text(payload=string)，
-   本页渲染文本，4s 后淡出并自行 close()。
-   token 一律吃 tokens.css；--glass-bg 已收录，兜底实色 var(--panel2)。 */
+/* Float ball bubble: standalone mini window, one card per window. Backend creates the float-bubble window then emits ag-bubble-text(payload=string);
+   this page renders the text, fades out after 4s and close()es itself.
+   Tokens all come from tokens.css; --glass-bg is defined there, fallback is solid var(--panel2). */
 html, body { height: 100%; overflow: hidden; background: transparent; }
 [hidden] { display: none !important; }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body { font: 12px/1.4 -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; color: var(--text); user-select: none; -webkit-user-select: none; }
 
 #bb-card { position: fixed; inset: 0; padding: 10px 12px; border-radius: 12px;
-  background: var(--glass-bg, var(--panel2)); /* 兜底实色 --panel2 */
+  background: var(--glass-bg, var(--panel2)); /* fallback solid --panel2 */
   backdrop-filter: blur(12px) saturate(1.4); -webkit-backdrop-filter: blur(12px) saturate(1.4);
-  border: 1px solid var(--glass-border, var(--border)); /* 兜底 --border */
+  border: 1px solid var(--glass-border, var(--border)); /* fallback --border */
   box-shadow: var(--shadow-2);
   font-size: 11.5px; line-height: 1.45; color: var(--text); word-break: break-all;
-  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; /* 最多 3 行省略 */
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; /* clamp to max 3 lines with ellipsis */
   opacity: 0; transform: translateX(8px);
   transition: opacity .3s, transform .3s; }
 #bb-card.show { opacity: 1; transform: none; }
 #bb-card.out { opacity: 0; transform: translateX(8px); }
 
-/* 无 TAURI 环境兜底 */
+/* Fallback when TAURI is absent */
 #bb-noenv { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
   padding: 12px; text-align: center; font-size: 11px; color: var(--dim2); background: var(--panel2); }
 </style>
 </head>
 <body>
 <div id="bb-card" hidden></div>
-<div id="bb-noenv" hidden>需在 AgileNet 桌面端中使用</div>
+<div id="bb-noenv" hidden data-i18n="float.noenv">需在 AgileNet 桌面端中使用</div>
 </body>
 </html>

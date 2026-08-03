@@ -1,9 +1,9 @@
-//! 协议级带宽诊断服务集成测试（echo / sink / source，listener 与 connector 两侧）
+//! Protocol-level bandwidth diagnostics service integration tests (echo / sink / source, listener and connector sides)
 //!
-//! - 回环隧道上验证 RTT / 上下行吞吐（量级断言，宽松下限防 CI 抖动）
-//! - 保留地址在 ACL 检查之前拦截：两侧挂收敛表时带宽流仍可测（无路由能力，非旁路），
-//!   且普通目标的收敛判定不受影响、不产生 AclDenied 事件
-//! - 未知模式字节静默关闭
+//! - verify RTT / up-down throughput over a loopback tunnel (order-of-magnitude asserts, loose floor against CI jitter)
+//! - reserved addresses are intercepted before the ACL check: bandwidth streams still measure when both sides carry an ACL
+//!   (no routing capability, not a bypass), and ACL decisions for normal targets stay unaffected with no AclDenied events
+//! - unknown mode byte closes the channel silently
 
 use agile_net_core::proto::frame::{Frame, FrameType};
 use agile_net_core::proto::message::{
@@ -24,7 +24,7 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
-/// 辅助函数：获取空闲端口
+/// Helper: get a free port
 fn get_free_addr() -> SocketAddr {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
@@ -32,14 +32,14 @@ fn get_free_addr() -> SocketAddr {
     addr
 }
 
-/// 仅放行 127.0.0.0/8 的收敛表（魔法地址不是 IP，永不命中 → 被拦截即证明在 ACL 之前）
+/// ACL allowing only 127.0.0.0/8 (the magic address is not an IP, never matches → being served proves pre-ACL interception)
 fn loopback_acl() -> Arc<PeerAcl> {
     let mut router = ProxyRouter::new();
     router.add_cidr("127.0.0.0/8", Outbound::Direct).unwrap();
     Arc::new(PeerAcl::new(router))
 }
 
-/// 测试用校验器：静态 token + 可选的对端收敛表
+/// Test validator: static token + optional peer ACL
 struct AclValidator {
     token: String,
     acl: Option<Arc<PeerAcl>>,
@@ -63,7 +63,7 @@ impl TokenValidator for AclValidator {
     }
 }
 
-/// 以原始 mux 会话模拟一个扇入对端（Node 认证，之后可主动发起 Open）
+/// Simulate a fan-in peer over a raw mux session (Node auth, may then open channels)
 async fn connect_raw_peer(relay_addr: SocketAddr, node_id: &str, token: &str) -> Arc<MuxSession> {
     let tls_builder = TlsConfigBuilder::new().allow_self_signed(true);
     let server_name =
@@ -97,7 +97,7 @@ async fn connect_raw_peer(relay_addr: SocketAddr, node_id: &str, token: &str) ->
     mux
 }
 
-/// 起静态 token listener 并后台运行
+/// Start a static-token listener in the background
 async fn start_listener(relay_addr: SocketAddr, token: &str) -> Arc<RelayListener> {
     let listener = Arc::new(RelayListener::new(relay_addr, token).unwrap());
     let l = listener.clone();
@@ -108,7 +108,7 @@ async fn start_listener(relay_addr: SocketAddr, token: &str) -> Arc<RelayListene
     listener
 }
 
-/// 发起侧完整测量：RTT 统计有序、上下行字节数精确、吞吐达宽松量级下限
+/// Full initiator-side measurement: ordered RTT stats, exact up/down byte counts, throughput above a loose floor
 #[tokio::test]
 async fn bandwidth_full_measure_over_connector_tunnel() {
     let relay_addr = get_free_addr();
@@ -129,7 +129,7 @@ async fn bandwidth_full_measure_over_connector_tunnel() {
     assert!(sample.rtt.avg_ms <= sample.rtt.max_ms);
     assert_eq!(sample.up.bytes, 4 * 1024 * 1024);
     assert_eq!(sample.down.bytes, 4 * 1024 * 1024);
-    // 宽松量级下限：回环隧道（TLS+mux）应远大于 10 MB/s（80 Mbps），防 CI 抖动不设硬阈值
+    // loose floor: a loopback tunnel (TLS+mux) should far exceed 10 MB/s (80 Mbps); no hard cap, CI jitter safe
     assert!(
         sample.up.mbps > 80.0,
         "upload throughput too low: {} Mbps",
@@ -144,7 +144,7 @@ async fn bandwidth_full_measure_over_connector_tunnel() {
     connector.disconnect().await;
 }
 
-/// RelayConnector::open_stream 直达保留地址 + echo 往返
+/// RelayConnector::open_stream straight to the reserved address + echo roundtrip
 #[tokio::test]
 async fn bandwidth_connector_open_stream_echo() {
     let relay_addr = get_free_addr();
@@ -164,8 +164,8 @@ async fn bandwidth_connector_open_stream_echo() {
     connector.disconnect().await;
 }
 
-/// 扇入侧（listener）挂收敛表：魔法地址仍被拦截应答（ACL 之前），
-/// 普通未命中目标仍被拒绝，且魔法地址不产生 AclDenied 事件
+/// Fan-in side (listener) with ACL: magic address still intercepted and served (before ACL),
+/// normal missing targets still denied, and the magic address emits no AclDenied event
 #[tokio::test]
 async fn bandwidth_listener_side_serves_before_acl() {
     let relay_addr = get_free_addr();
@@ -189,15 +189,15 @@ async fn bandwidth_listener_side_serves_before_acl() {
 
     let mux = connect_raw_peer(relay_addr, "peer-a", token).await;
 
-    // sink：上行 1 MiB，对端计数确认（魔法地址非 IP，永不命中 loopback ACL → 被测即拦截）
+    // sink: 1 MiB upload, peer confirms the count (magic address is not an IP, never matches the loopback ACL → intercepted)
     let up = bandwidth::measure_upload(&mux, 1024 * 1024).await.unwrap();
     assert_eq!(up.bytes, 1024 * 1024);
 
-    // source：下行 1 MiB 读满
+    // source: 1 MiB download read in full
     let down = bandwidth::measure_download(&mux, 1024 * 1024).await.unwrap();
     assert_eq!(down.bytes, 1024 * 1024);
 
-    // echo：小负载往返
+    // echo: small payload roundtrip
     let mut ch = bandwidth::open_stream(&mux).await.unwrap();
     ch.write_u8(MODE_ECHO).await.unwrap();
     ch.write_all(b"acl-before").await.unwrap();
@@ -206,7 +206,7 @@ async fn bandwidth_listener_side_serves_before_acl() {
     assert_eq!(&buf[..n], b"acl-before");
     drop(ch);
 
-    // 魔法地址不产生 AclDenied 事件（300ms 窗口内忽略上下线等其余事件）
+    // magic address emits no AclDenied (ignore online/offline etc. within a 300ms window)
     let deadline = tokio::time::Instant::now() + Duration::from_millis(300);
     loop {
         match tokio::time::timeout_at(deadline, events.recv()).await {
@@ -214,11 +214,11 @@ async fn bandwidth_listener_side_serves_before_acl() {
                 panic!("magic target must not emit AclDenied: {target}")
             }
             Ok(_) => continue,
-            Err(_) => break, // 窗口内无更多事件
+            Err(_) => break, // no more events within the window
         }
     }
 
-    // 收敛判定不受影响：扇入对端发起普通未命中目标仍 OpenFail
+    // ACL decisions unaffected: a normal missing target from the fan-in peer still OpenFails
     let payload = serde_json::to_vec(&agile_net_core::proto::message::OpenChannel {
         target_addr: "8.8.8.8".to_string(),
         target_port: 443,
@@ -228,8 +228,8 @@ async fn bandwidth_listener_side_serves_before_acl() {
     assert!(denied.is_err(), "non-magic target must still be denied by ACL");
 }
 
-/// 扇出侧（connector）挂收敛表：上游反向发到魔法地址仍被拦截应答（ACL 之前），
-/// 普通未命中目标仍被拒绝
+/// Fan-out side (connector) with ACL: upstream reverse traffic to the magic address still intercepted (before ACL),
+/// normal missing targets still denied
 #[tokio::test]
 async fn bandwidth_connector_side_serves_before_acl() {
     let relay_addr = get_free_addr();
@@ -243,7 +243,7 @@ async fn bandwidth_connector_side_serves_before_acl() {
     connector.connect().await.unwrap();
     assert!(connector.is_connected());
 
-    // echo 往返（上游 listener 反向发起）
+    // echo roundtrip (reverse-opened by the upstream listener)
     let mut ch = listener
         .open_channel("node-b", MAGIC_HOST, 0)
         .await
@@ -255,7 +255,7 @@ async fn bandwidth_connector_side_serves_before_acl() {
     assert_eq!(&buf[..n], b"fanout-magic");
     drop(ch);
 
-    // sink：1 MiB 上行（对端 connector 接收计数确认）
+    // sink: 1 MiB upload (peer connector confirms the received count)
     let mut ch = listener.open_channel("node-b", MAGIC_HOST, 0).await.unwrap();
     ch.write_u8(MODE_SINK).await.unwrap();
     let chunk = vec![0u8; 64 * 1024];
@@ -267,7 +267,7 @@ async fn bandwidth_connector_side_serves_before_acl() {
     assert_eq!(acked, 1024 * 1024);
     drop(ch);
 
-    // source：512 KiB 下行读满
+    // source: 512 KiB download read in full
     let mut ch = listener.open_channel("node-b", MAGIC_HOST, 0).await.unwrap();
     ch.write_u8(MODE_SOURCE).await.unwrap();
     ch.write_u64(512 * 1024).await.unwrap();
@@ -283,7 +283,7 @@ async fn bandwidth_connector_side_serves_before_acl() {
     assert_eq!(got, 512 * 1024);
     drop(ch);
 
-    // 收敛判定不受影响：普通未命中目标仍 OpenFail + AclDenied 事件
+    // ACL decisions unaffected: normal missing target still OpenFail + AclDenied event
     let denied = listener.open_channel("node-b", "8.8.8.8", 443).await;
     assert!(denied.is_err(), "non-magic target must still be denied by ACL");
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
@@ -301,7 +301,7 @@ async fn bandwidth_connector_side_serves_before_acl() {
     connector.disconnect().await;
 }
 
-/// 未知模式字节：对端静默关闭通道（读到 EOF），不 panic 不挂死
+/// Unknown mode byte: peer silently closes the channel (reads EOF), no panic, no hang
 #[tokio::test]
 async fn bandwidth_unknown_mode_closes_channel() {
     let relay_addr = get_free_addr();

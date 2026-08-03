@@ -3,23 +3,26 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AgileNet 托盘</title>
+<title data-i18n="tray.winTitle">AgileNet 托盘</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%233C3F43' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z'/></svg>">
 <link rel="stylesheet" href="tokens.css">
 <link rel="stylesheet" href="components.css">
 <link rel="stylesheet" href="style.css">
+<script src="agi18n.js"></script>
+<script src="aglang.js"></script>
+<script src="lang/desktop-trayfloat.js"></script>
 <script src="icons.js"></script>
 <script src="agchart.js"></script>
 <script src="tray.js"></script>
 <style>
-/* 托盘弹窗：292×400 固定窗口，整版面板。token 一律吃 tokens.css；
-   .pill 为 components.css 同名类的内联兜底（其升级落地前本页可独立成立）。 */
+/* Tray popup: 292×400 fixed window, single-panel layout. Tokens all come from tokens.css;
+   .pill is an inline fallback for the same-named components.css class (this page stands alone until that upgrade lands). */
 html, body { background: var(--panel2); overflow: hidden; height: 100%; }
 [hidden] { display: none !important; }
 body { display: block; padding: 0; font-size: 13px; }
 .tp { height: 100vh; box-sizing: border-box; background: var(--panel2); display: flex; flex-direction: column; user-select: none; }
 
-/* ---- 头部：品牌 + 状态 pill ---- */
+/* ---- Header: brand + status pill ---- */
 .tp-head { display: flex; align-items: center; gap: 8px; padding: 12px 14px 6px; flex-shrink: 0; }
 .tp-head .logo { width: 22px; height: 22px; border-radius: 6px; background: var(--accent); color: var(--accent-fg); display: inline-flex; align-items: center; justify-content: center; }
 .tp-head b { font-size: 13px; color: var(--text-strong); letter-spacing: .02em; }
@@ -28,7 +31,7 @@ body { display: block; padding: 0; font-size: 13px; }
 .pill.on { background: var(--ok-bg); color: var(--ok-text); }
 .pill.on::before { background: var(--ok); }
 
-/* ---- 状态区：实时网速 + sparkline ---- */
+/* ---- Status area: live speed + sparkline ---- */
 .tp-hero { padding: 4px 14px 10px; border-bottom: 1px solid var(--row-border); flex-shrink: 0; }
 .tp-speeds { display: flex; align-items: baseline; gap: 20px; }
 .tp-speed { display: inline-flex; align-items: baseline; gap: 5px; min-width: 0; }
@@ -39,23 +42,23 @@ body { display: block; padding: 0; font-size: 13px; }
 .tp-chart { height: 54px; margin-top: 6px; }
 .tp-legend { display: flex; gap: 12px; margin-top: 3px; font-size: 10px; color: var(--dim2); }
 .tp-legend .c { display: inline-block; width: 7px; height: 7px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
-/* 与 AgChart 默认色板一致：主序列 --accent（下行），次序列 --dim2（上行） */
+/* Matches AgChart default palette: primary series --accent (down), secondary series --dim2 (up) */
 .tp-legend .c.d { background: var(--accent); }
 .tp-legend .c.u { background: var(--dim2); }
 .tp-legend .sp { margin-left: auto; }
 
-/* ---- 滚动区：模式 / 代理组 / 连接 ---- */
+/* ---- Scroll area: mode / proxy groups / connections ---- */
 .tp-body { flex: 1; overflow-y: auto; padding: 2px 8px 8px; }
 .tp-sec { font-size: 10.5px; color: var(--dim2); padding: 8px 6px 4px; letter-spacing: .04em; }
 
-/* 三段式模式胶囊 */
+/* Three-way mode segmented control */
 .seg { display: flex; gap: 2px; padding: 2px; background: var(--chip); border-radius: 8px; }
 .seg button { flex: 1; border: 0; background: transparent; padding: 4px 0; border-radius: 6px; font-size: 12px; color: var(--dim); cursor: pointer; transition: background .15s, color .15s; }
 .seg button:hover { color: var(--text); }
 .seg button.cur { background: var(--panel2); color: var(--text-strong); font-weight: 600; box-shadow: 0 1px 3px rgba(0,0,0,.10); }
 .seg.off { opacity: .45; pointer-events: none; }
 
-/* 代理组：默认收起仅组名行，点击展开（.grp.open） */
+/* Proxy group: collapsed to just the group-name row by default, click to expand (.grp.open) */
 .grp-name { display: flex; align-items: center; gap: 6px; padding: 5px 6px; border-radius: 7px; font-size: 12px; color: var(--dim); cursor: pointer; }
 .grp-name:hover { background: var(--hover); }
 .grp-name .now { margin-left: auto; max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dim2); font-size: 11px; }
@@ -68,7 +71,7 @@ body { display: block; padding: 0; font-size: 13px; }
 .tp-node .ms { margin-left: auto; font-size: 11px; color: var(--dim2); font-variant-numeric: tabular-nums; flex-shrink: 0; }
 .tp-empty { padding: 8px 10px; font-size: 12px; color: var(--dim2); }
 
-/* 连接摘要 */
+/* Connection summary */
 .tp-conns-head { display: flex; align-items: baseline; cursor: pointer; border-radius: 6px; }
 .tp-conns-head:hover { background: var(--hover); }
 .tp-conns-head .chev { margin-left: 4px; display: inline-flex; transition: transform .15s; color: var(--dim2); }
@@ -78,7 +81,7 @@ body { display: block; padding: 0; font-size: 13px; }
 .tp-conn .host { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tp-conn .via { margin-left: auto; font-size: 11px; color: var(--dim2); max-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex-shrink: 0; }
 
-/* ---- 底部操作行 ---- */
+/* ---- Footer action row ---- */
 .tp-foot { display: flex; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--row-border); flex-shrink: 0; }
 .tp-btn { flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 5px; padding: 7px 2px; border-radius: 8px; border: 1px solid var(--border); background: var(--panel2); font-size: 12px; color: var(--text); cursor: pointer; transition: transform .12s, background .15s, border-color .15s; }
 .tp-btn:hover { background: var(--hover); }
@@ -88,7 +91,7 @@ body { display: block; padding: 0; font-size: 13px; }
 .tp-btn.warn { color: var(--danger-text); }
 .tp-btn[disabled] { opacity: .5; pointer-events: none; }
 
-/* 无 TAURI 环境（浏览器误开）兜底提示 */
+/* Fallback notice for missing TAURI (opened in a browser by mistake) */
 #tp-noenv { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; padding: 24px; text-align: center; font-size: 12px; color: var(--dim); background: var(--panel2); }
 </style>
 </head>
@@ -96,7 +99,7 @@ body { display: block; padding: 0; font-size: 13px; }
 <div class="tp" id="tp-root" hidden>
   <div class="tp-head">
     <span class="logo"><i data-ic="zap" data-sz="12"></i></span><b>AgileNet</b>
-    <span class="pill" id="tp-pill">已停止</span>
+    <span class="pill" id="tp-pill" data-i18n="common.stopped">已停止</span>
   </div>
 
   <div class="tp-hero">
@@ -104,32 +107,32 @@ body { display: block; padding: 0; font-size: 13px; }
       <span class="tp-speed"><span class="dir">↓</span><span class="num" id="tp-down-num">-</span><span class="unit" id="tp-down-unit"></span></span>
       <span class="tp-speed"><span class="dir">↑</span><span class="num" id="tp-up-num">-</span><span class="unit" id="tp-up-unit"></span></span>
     </div>
-    <div class="tp-addr" id="tp-addr">本地代理未启动</div>
+    <div class="tp-addr" id="tp-addr" data-i18n="tray.proxyOff">本地代理未启动</div>
     <div class="tp-chart" id="tp-chart"></div>
-    <div class="tp-legend"><span><span class="c d"></span>下行</span><span><span class="c u"></span>上行</span><span class="sp">60s</span></div>
+    <div class="tp-legend"><span><span class="c d"></span><span data-i18n="tray.down">下行</span></span><span><span class="c u"></span><span data-i18n="tray.up">上行</span></span><span class="sp">60s</span></div>
   </div>
 
   <div class="tp-body">
-    <div class="tp-sec">出站模式</div>
+    <div class="tp-sec" data-i18n="tray.outMode">出站模式</div>
     <div class="seg" id="tp-mode">
-      <button type="button" data-mode="rule">规则</button>
-      <button type="button" data-mode="global">全局</button>
-      <button type="button" data-mode="direct">直连</button>
+      <button type="button" data-mode="rule" data-i18n="term.rule">规则</button>
+      <button type="button" data-mode="global" data-i18n="tray.outGlobal">全局</button>
+      <button type="button" data-mode="direct" data-i18n="tray.outDirect">直连</button>
     </div>
 
-    <div class="tp-sec">代理组</div>
+    <div class="tp-sec" data-i18n="tray.groups">代理组</div>
     <div id="tp-groups"></div>
 
-    <div class="tp-sec tp-conns-head" id="tp-conns-head">连接<span class="cnt" id="tp-conn-count"></span><span class="chev"><i data-ic="chevron-down" data-sz="11"></i></span></div>
+    <div class="tp-sec tp-conns-head" id="tp-conns-head"><span data-i18n="tray.conns">连接</span><span class="cnt" id="tp-conn-count"></span><span class="chev"><i data-ic="chevron-down" data-sz="11"></i></span></div>
     <div id="tp-conns"></div>
   </div>
 
   <div class="tp-foot">
-    <button type="button" class="tp-btn primary" id="tp-show"><i data-ic="monitor" data-sz="13"></i>主面板</button>
-    <button type="button" class="tp-btn" id="tp-toggle"><i data-ic="power" data-sz="13"></i><span id="tp-toggle-label">启动代理</span></button>
-    <button type="button" class="tp-btn warn" id="tp-quit"><i data-ic="x" data-sz="13"></i>退出</button>
+    <button type="button" class="tp-btn primary" id="tp-show"><i data-ic="monitor" data-sz="13"></i><span data-i18n="tray.showMain">主面板</span></button>
+    <button type="button" class="tp-btn" id="tp-toggle"><i data-ic="power" data-sz="13"></i><span id="tp-toggle-label" data-i18n="tray.startProxy">启动代理</span></button>
+    <button type="button" class="tp-btn warn" id="tp-quit"><i data-ic="x" data-sz="13"></i><span data-i18n="tray.quit">退出</span></button>
   </div>
 </div>
-<div id="tp-noenv" hidden>此页面需在 AgileNet 桌面端窗口中打开</div>
+<div id="tp-noenv" hidden data-i18n="tray.noenv">此页面需在 AgileNet 桌面端窗口中打开</div>
 </body>
 </html>

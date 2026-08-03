@@ -1,6 +1,6 @@
-//! 内存日志环形缓冲（/api/v1/admin/node/logs 数据源）
+//! In-memory log ring buffer (data source for /api/v1/admin/node/logs).
 //!
-//! 实现一个 tracing Layer，把最近的日志事件写入有界环形缓冲。
+//! Implements a tracing Layer that writes recent log events into a bounded ring buffer.
 
 use serde::Serialize;
 use std::collections::VecDeque;
@@ -39,7 +39,7 @@ impl LogBuffer {
         buf.push_back(entry);
     }
 
-    /// 查询最近日志（新的在前），可选级别/模块过滤。
+    /// Query recent logs (newest first), with optional level/module filters.
     pub fn query(&self, limit: usize, level: Option<&str>, module: Option<&str>) -> Vec<LogEntry> {
         let buf = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         buf.iter()
@@ -62,7 +62,7 @@ impl Default for LogBuffer {
     }
 }
 
-/// tracing_subscriber Layer 实现。
+/// tracing_subscriber Layer implementation.
 pub struct LogBufferLayer {
     buffer: LogBuffer,
 }

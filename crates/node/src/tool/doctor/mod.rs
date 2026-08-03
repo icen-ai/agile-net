@@ -1,15 +1,16 @@
-//! doctor — 自我诊断引擎（`anet doctor` 与 anet-gui「自我诊断」按钮共用）。
+//! doctor — self-diagnosis engine (shared by `anet doctor` and the anet-gui "self-diagnosis" button).
 //!
-//! 契约要点：
-//! - [`run`] 返回结构化 [`DoctorReport`]（serde Serialize 即 GUI 契约，字段名不得改动），
-//!   [`render`] 负责人类可读渲染（分节 + 状态标记 + 建议 + 汇总行）；
-//! - 能安全自动修复的问题直接修并标 `fixed`：孤儿 mihomo、残留系统代理、损坏的 GUI
-//!   配置文件（备份后重置）、非法自定义规则、系统 hosts 托管块漂移、损坏的 wintun/内核文件；
-//! - 退出码语义由调用方决定：[`exit_code`] —— 有 `err` 项 → 1，否则 0（warn/info 不影响）；
-//! - 本机操作：不走会话校验、不写审计日志；节点数据库仅以只读方式打开（CIDR 冲突检查）。
+//! Contract points:
+//! - [`run`] returns a structured [`DoctorReport`] (serde Serialize is the GUI contract; field names must not change),
+//!   [`render`] produces the human-readable rendering (sections + status tags + suggestions + summary line);
+//! - safely auto-fixable problems are fixed directly and marked `fixed`: orphaned mihomo, leftover system proxy,
+//!   corrupt GUI config files (reset after backup), invalid custom rules, managed hosts-block drift, corrupt wintun/kernel files;
+//! - exit-code semantics are the caller's choice: [`exit_code`] — any `err` item → 1, else 0 (warn/info do not count);
+//! - local operations: no session validation, no audit log; the node database is opened read-only (CIDR conflict check).
 //!
-//! 检查各节按域拆分子模块（ports/sysproxy/tun/kernel/network/config/rules），
-//! 报告模型在 model、跨节小工具在 util；本入口只留编排、渲染与对外 pub API。
+//! Check sections are split into per-domain submodules (ports/sysproxy/tun/kernel/network/config/rules),
+//! the report model lives in model, cross-section helpers in util; this entry keeps only orchestration,
+//! rendering, and the public API.
 
 mod config;
 mod kernel;
@@ -24,16 +25,17 @@ mod util;
 pub use model::{
     DoctorContext, DoctorItem, DoctorReport, DoctorSection, DoctorStatus, DoctorSummary,
 };
-// wintun.dll 钉值对外导出：anet-gui wintun 下发与本节校验共用同一来源
+// The pinned wintun.dll hash is exported: anet-gui's wintun provisioning and this section's check share one source
 pub use tun::WINTUN_DLL_SHA256;
 
 use std::time::Instant;
 
 use super::netstat;
 
-// ==================== 入口 ====================
+// ==================== Entry points ====================
 
-/// 检查节计划（id, 标题），顺序即执行顺序；GUI 据此在诊断开始时预渲染骨架占位。
+/// Check-section plan (id, title); order is execution order. The GUI pre-renders skeleton
+/// placeholders from it when diagnosis starts.
 pub const SECTION_PLAN: [(&str, &str); 7] = [
     ("ports", "端口与占用"),
     ("sysproxy", "系统代理"),
@@ -44,18 +46,19 @@ pub const SECTION_PLAN: [(&str, &str); 7] = [
     ("rules", "规则冲突"),
 ];
 
-/// 执行全部检查并生成报告（检查项失败只落到对应 item，绝不 panic/中断整体）。
+/// Run all checks and build the report (a failing check only lands on its item; never panics or aborts the whole run).
 pub async fn run(ctx: DoctorContext) -> DoctorReport {
     run_streaming(ctx, |_| {}).await
 }
 
-/// 同 [`run`]，但每完成一节即回调（GUI 流式渲染：逐节到达逐节上屏）。
+/// Same as [`run`], but calls back as each section completes (GUI streaming rendering: sections displayed as they arrive).
 pub async fn run_streaming(
     ctx: DoctorContext,
     on_section: impl Fn(&DoctorSection),
 ) -> DoctorReport {
     let start = Instant::now();
-    // socket 枚举一次，ports/sysproxy/kernel 三节共享（失败时 ports 节报 err，其余按无监听处理）
+    // Enumerate sockets once, shared by the ports/sysproxy/kernel sections (on failure the ports
+    // section reports err; the others treat it as no listeners)
     let socks_result = netstat::sockets();
     let enum_failed = socks_result.is_err();
     let socks = socks_result.unwrap_or_default();
@@ -80,7 +83,7 @@ pub async fn run_streaming(
     }
 }
 
-/// 退出码：有 err → 1，否则 0（warn/info 不影响）。
+/// Exit code: any err → 1, else 0 (warn/info do not count).
 pub fn exit_code(report: &DoctorReport) -> i32 {
     if report.summary.err > 0 { 1 } else { 0 }
 }
@@ -125,7 +128,7 @@ fn section(id: &str, title: &str, items: Vec<DoctorItem>) -> DoctorSection {
     }
 }
 
-/// 人类可读渲染（cli 无着色体系，沿用 [标记] 文本风格）。
+/// Human-readable rendering (the CLI has no color system; keeps the [tag] text style).
 pub fn render(report: &DoctorReport) -> String {
     let mut out = String::from("AgileNet 自我诊断报告");
     for sec in &report.sections {
@@ -160,7 +163,7 @@ fn tag(status: DoctorStatus) -> &'static str {
     }
 }
 
-// ==================== 单元测试 ====================
+// ==================== Unit tests ====================
 
 #[cfg(test)]
 mod tests {
@@ -206,7 +209,7 @@ mod tests {
         }
     }
 
-    // ---------- 契约与汇总 ----------
+    // ---------- Contract and summary ----------
 
     #[test]
     fn status_serializes_lowercase_contract() {
@@ -237,7 +240,7 @@ mod tests {
         assert_eq!(it["status"], "ok");
         assert_eq!(it["detail"], "d");
         assert_eq!(it["suggestion"], "sug");
-        // suggestion 缺省序列化为 null（GUI 契约字段必须存在）
+        // suggestion defaults to null in serialization (the GUI contract requires the field to exist)
         let it2 = serde_json::to_value(item("a", "b", DoctorStatus::Info, "c", None)).unwrap();
         assert!(it2.get("suggestion").is_some());
         assert!(it2["suggestion"].is_null());
@@ -299,7 +302,7 @@ mod tests {
         assert!(text.contains("耗时 7ms"));
     }
 
-    // ---------- 端口评估 ----------
+    // ---------- Port evaluation ----------
 
     #[test]
     fn eval_port_foreign_occupation_is_err() {
@@ -340,7 +343,7 @@ mod tests {
         assert!(it.detail.contains("无权限"));
     }
 
-    // ---------- 规则检查 ----------
+    // ---------- Rules check ----------
 
     #[test]
     fn duplicate_patterns_case_insensitive() {
@@ -368,13 +371,13 @@ mod tests {
             "combos":[{"id":"c1","name":"n","rule_keys":["b1","b2","h2"]}]
         });
         let removed = sanitize_rules_file(&mut v);
-        assert_eq!(removed.len(), 4); // b2 空白 / b3 空串 / h2 主机名为 IP / h3 IP 不可解析
+        assert_eq!(removed.len(), 4); // b2 whitespace / b3 empty / h2 hostname is an IP / h3 IP unparseable
         let bypass = v["bypass"].as_array().unwrap();
         assert_eq!(bypass.len(), 1);
         assert_eq!(bypass[0]["pattern"], "ok.com");
         let hosts = v["hosts"].as_array().unwrap();
         assert_eq!(hosts.len(), 1);
-        // 组合中失效 id 被级联清理
+        // Stale ids are cascaded out of combos
         let keys = v["combos"][0]["rule_keys"].as_array().unwrap();
         assert_eq!(keys.len(), 1);
         assert_eq!(keys[0], "b1");
@@ -399,7 +402,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    // ---------- hosts 托管块 ----------
+    // ---------- Managed hosts block ----------
 
     #[test]
     fn managed_block_roundtrip_and_strip() {
@@ -423,7 +426,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    // ---------- 配置文件修复 ----------
+    // ---------- Config file repair ----------
 
     #[test]
     fn config_section_backs_up_and_resets_corrupt_file() {
@@ -436,13 +439,13 @@ mod tests {
             .find(|i| i.id == "file-gui-settings.json")
             .unwrap();
         assert_eq!(it.status, DoctorStatus::Fixed);
-        // 新文件可解析且为默认三字段
+        // The new file parses and holds the default three fields
         let v: serde_json::Value = serde_json::from_str(
             &std::fs::read_to_string(dir.join("gui-settings.json")).unwrap(),
         )
         .unwrap();
         assert_eq!(v["client"], true);
-        // 备份存在
+        // Backup exists
         let bak = std::fs::read_dir(&dir)
             .unwrap()
             .filter_map(|e| e.ok())
@@ -466,7 +469,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    // ---------- CIDR 冲突 ----------
+    // ---------- CIDR conflicts ----------
 
     #[test]
     fn cidr_conflicts_detects_containment_and_duplicates() {
@@ -491,7 +494,7 @@ mod tests {
         assert!(cidr_conflicts(&values).is_empty());
     }
 
-    // ---------- 端到端冒烟 ----------
+    // ---------- End-to-end smoke ----------
 
     #[tokio::test]
     async fn run_produces_all_sections_and_consistent_summary() {
@@ -506,7 +509,7 @@ mod tests {
         assert_eq!(s.ok, report.summary.ok);
         assert_eq!(s.err, report.summary.err);
         assert_eq!(exit_code(&report), if s.err > 0 { 1 } else { 0 });
-        // 渲染不 panic 且含汇总行
+        // Rendering must not panic and must contain the summary line
         assert!(render(&report).contains("汇总："));
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -1,9 +1,9 @@
-//! bandwidth 诊断 API 集成测试（POST /api/v1/admin/tool/bandwidth，批次四）
+//! bandwidth diagnostics API integration tests (POST /api/v1/admin/tool/bandwidth, batch four)
 //!
-//! 进程内起真实 RelayListener + ConnectorManager 扇出隧道，验证：
-//! - 缺省 peer：取第一个 connected connector，返回 RTT/上下行结构化结果（字节数精确）
-//! - 按名称 / 上游地址指定 peer 均可命中；未知 peer → 40400
-//! - 无已连接对端 → 40401（PEER_UNAVAILABLE）
+//! Spins up a real in-process RelayListener + ConnectorManager fan-out tunnel, verifying:
+//! - default peer: picks the first connected connector, returns structured RTT/up-down results (exact byte counts)
+//! - peer specified by name / upstream address both resolve; unknown peer → 40400
+//! - no connected peer → 40401 (PEER_UNAVAILABLE)
 
 use agile_net_core::relay::RelayListener;
 use agile_net_node::api::{ApiState, NodeRuntime, create_app};
@@ -29,7 +29,7 @@ fn get_free_addr() -> SocketAddr {
     addr
 }
 
-/// 构建测试用 App（内存数据库 + 指定 ConnectorManager）。
+/// Build a test App (in-memory database + given ConnectorManager).
 fn test_app_with(db: Database, manager: ConnectorManager) -> Router {
     let jwt = Arc::new(JwtService::load_or_create(db.clone()).unwrap());
     let runtime = Arc::new(NodeRuntime {
@@ -76,7 +76,7 @@ async fn req(
     (status, json)
 }
 
-/// 初始化 admin 并登录，返回 access_token。
+/// Init admin and log in, returning an access_token.
 async fn init_and_login(app: &Router) -> String {
     let (status, _) = req(
         app,
@@ -99,8 +99,8 @@ async fn init_and_login(app: &Router) -> String {
     body["data"]["access_token"].as_str().unwrap().to_string()
 }
 
-/// 起静态 token listener + DB connector + ConnectorManager，等隧道连通。
-/// 返回 (app, db, connector 名称, 上游地址字符串)。
+/// Start a static-token listener + DB connector + ConnectorManager, wait for the tunnel.
+/// Returns (app, db, connector name, upstream address string).
 async fn setup_tunnel_app() -> (Router, Database, String, String) {
     let relay_addr = get_free_addr();
     let token = "bw-api-token";
@@ -129,7 +129,7 @@ async fn setup_tunnel_app() -> (Router, Database, String, String) {
     let manager = ConnectorManager::new(db.clone()).with_node_id("bw-node".into());
     manager.upsert_from_db(&rec.id).await.expect("upsert");
 
-    // 等隧道连通（轮询实时状态，至多 5s）
+    // wait for the tunnel (poll live state, up to 5s)
     let deadline = Instant::now() + Duration::from_secs(5);
     while manager.state_of(&rec.id) != Some("connected") {
         assert!(Instant::now() < deadline, "connector 5s 内未连通");
@@ -140,13 +140,13 @@ async fn setup_tunnel_app() -> (Router, Database, String, String) {
     (app, db, "up1".to_string(), relay_addr.to_string())
 }
 
-/// 缺省 peer + 按名称/地址指定 peer：结构化结果完整、字节数精确、量级合理
+/// Default peer + peer by name/address: complete structured results, exact byte counts, sane magnitude
 #[tokio::test]
 async fn bandwidth_api_default_and_named_peer() {
     let (app, _db, name, upstream) = setup_tunnel_app().await;
     let token = init_and_login(&app).await;
 
-    // 缺省 = 第一个 connected connector
+    // default = first connected connector
     let (status, body) = req(
         &app,
         "POST",
@@ -165,11 +165,11 @@ async fn bandwidth_api_default_and_named_peer() {
     assert!(rtt["avg_ms"].as_f64().unwrap() <= rtt["max_ms"].as_f64().unwrap());
     assert_eq!(up["bytes"], json!(8 * 1024 * 1024));
     assert_eq!(down["bytes"], json!(8 * 1024 * 1024));
-    // 宽松量级下限：进程内回环隧道应远大于 10 MB/s（80 Mbps），防 CI 抖动不设硬阈值
+    // loose floor: an in-process loopback tunnel should far exceed 10 MB/s (80 Mbps); no hard cap, CI jitter safe
     assert!(up["mbps"].as_f64().unwrap() > 80.0, "up: {up}");
     assert!(down["mbps"].as_f64().unwrap() > 80.0, "down: {down}");
 
-    // 按名称指定
+    // by name
     let (status, body) = req(
         &app,
         "POST",
@@ -181,7 +181,7 @@ async fn bandwidth_api_default_and_named_peer() {
     assert_eq!(status, StatusCode::OK, "body: {body}");
     assert_eq!(body["data"]["peer"], json!("up1"));
 
-    // 按上游地址指定
+    // by upstream address
     let (status, body) = req(
         &app,
         "POST",
@@ -193,7 +193,7 @@ async fn bandwidth_api_default_and_named_peer() {
     assert_eq!(status, StatusCode::OK, "body: {body}");
     assert_eq!(body["data"]["peer"], json!("up1"));
 
-    // 未知 peer → 40400
+    // unknown peer → 40400
     let (status, body) = req(
         &app,
         "POST",
@@ -205,19 +205,19 @@ async fn bandwidth_api_default_and_named_peer() {
     assert_eq!(status, StatusCode::NOT_FOUND, "body: {body}");
     assert_eq!(body["code"], json!(40400));
 
-    // 未带 token → 401（AdminAuth 口径不退化）
+    // no token → 401 (AdminAuth semantics must not degrade)
     let (status, _) = req(&app, "POST", "/api/v1/admin/tool/bandwidth", None, Some(json!({}))).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
-/// 无任何 connector / connector 未连接 → 40401（PEER_UNAVAILABLE）
+/// No connector at all / connector not connected → 40401 (PEER_UNAVAILABLE)
 #[tokio::test]
 async fn bandwidth_api_no_connected_peer() {
     let db = Database::in_memory().unwrap();
     let app = test_app_with(db.clone(), ConnectorManager::new(db.clone()));
     let token = init_and_login(&app).await;
 
-    // 无 connector 记录：缺省解析失败
+    // no connector records: default resolution fails
     let (status, body) = req(
         &app,
         "POST",
@@ -229,7 +229,7 @@ async fn bandwidth_api_no_connected_peer() {
     assert_eq!(status, StatusCode::NOT_FOUND, "body: {body}");
     assert_eq!(body["code"], json!(40401));
 
-    // connector 存在但无运行时句柄（未连接）：指定解析失败
+    // connector exists but has no runtime handle (not connected): named resolution fails
     db.create_connector(
         "down1",
         "127.0.0.1:1",

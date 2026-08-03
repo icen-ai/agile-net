@@ -1,10 +1,10 @@
-//! 第 1 节：端口与占用（本家进程识别 + 遗留 mihomo 孤儿清扫）。
+//! Section 1: ports and occupancy (own-process recognition + orphaned mihomo sweep).
 
 use super::util::{kernel_bin_name, listeners_on};
 use super::{DoctorContext, DoctorItem, DoctorSection, DoctorStatus, item, section};
 use crate::tool::netstat::SocketInfo;
 
-/// 受检端口（端口, 说明）：默认端口规范见 AGENTS.md §4（5 万段避让 Clash 系）。
+/// Ports under check (port, description): default port conventions in AGENTS.md §4 (50k range avoids the Clash family).
 const PORT_CHECKS: &[(u16, &str)] = &[
     (59090, "API 管理面（anet-svc）"),
     (54430, "Relay 扇入监听（anet-svc）"),
@@ -16,7 +16,7 @@ const PORT_CHECKS: &[(u16, &str)] = &[
     (59292, "订阅内核控制面（mihomo）"),
 ];
 
-/// 本家进程名关键字（占用这些端口时不视为冲突）。
+/// Own-process name keywords (occupancy by these is not a conflict).
 const OUR_PROCESS_KEYWORDS: &[&str] = &["anet", "agile", "mihomo"];
 
 fn is_our_process(name: &str) -> bool {
@@ -24,8 +24,9 @@ fn is_our_process(name: &str) -> bool {
     OUR_PROCESS_KEYWORDS.iter().any(|k| n.contains(k))
 }
 
-/// 单端口评估（纯函数，测试直接注入监听者）。
-/// `expected`：该端口按当前角色「应监听」；`idle_reason` 为未监听且不应监听时的说明。
+/// Single-port evaluation (pure function; tests inject listeners directly).
+/// `expected`: the port "should be listening" under the current roles; `idle_reason` explains
+/// the not-listening state when it should not listen.
 pub(super) fn eval_port(
     port: u16,
     label: &str,
@@ -91,7 +92,7 @@ pub(super) fn eval_port(
     }
 }
 
-/// 读取 gui-settings.json（存在且可解析时；仅取角色布尔字段做端口期望判定）。
+/// Read gui-settings.json (when present and parseable; only the role booleans are used for port expectations).
 fn read_gui_settings(ctx: &DoctorContext) -> Option<serde_json::Value> {
     std::fs::read_to_string(ctx.data_dir.join("gui-settings.json"))
         .ok()
@@ -174,7 +175,7 @@ pub(super) fn section_ports(
                 },
             ),
         };
-        // 54430 不应监听时 reason 已给出；59090 服务未运行时的 reason
+        // For 54430 the not-expected reason is already given; this is the 59090 reason when the service is down
         let reason = if port == 59090 && !svc_running {
             "anet-svc 未运行".to_string()
         } else {
@@ -189,15 +190,17 @@ pub(super) fn section_ports(
     section("ports", "端口与占用", items)
 }
 
-/// 清扫遗留 mihomo 孤儿进程（只杀 exe 路径=本应用内核目录者，用户自建的 mihomo/Clash 不动；
-/// 无权限读 exe 路径的进程跳过——与 GUI sweep_orphan_kernels 同口径，跨平台 sysinfo 实现）。
+/// Sweep leftover orphaned mihomo processes (only kills those whose exe path is inside this app's
+/// kernel directory; user-installed mihomo/Clash is untouched; processes whose exe path is unreadable
+/// are skipped — same criteria as GUI sweep_orphan_kernels, cross-platform via sysinfo).
 fn sweep_orphan_kernels(ctx: &DoctorContext, socks: &[SocketInfo]) -> Option<DoctorItem> {
     use sysinfo::{ProcessesToUpdate, System};
     let kernel_dir = ctx.data_dir.join("mihomo");
     if !kernel_dir.exists() {
         return None;
     }
-    // 受管白名单：控制面 59292 的监听者（内核启动即绑定，覆盖 GUI 托管实例）+ 显式传入
+    // Managed whitelist: listeners of control-plane 59292 (bound as soon as the kernel starts,
+    // covers GUI-managed instances) + explicitly passed-in PIDs
     let mut managed: Vec<u32> = ctx.managed_pids.clone();
     managed.extend(listeners_on(socks, 59292).iter().filter_map(|s| s.pid));
 
@@ -209,7 +212,7 @@ fn sweep_orphan_kernels(ctx: &DoctorContext, socks: &[SocketInfo]) -> Option<Doc
         if name != "mihomo" && name != "mihomo.exe" {
             continue;
         }
-        let Some(exe) = proc_.exe() else { continue }; // 无权限读路径（如提权实例）：跳过
+        let Some(exe) = proc_.exe() else { continue }; // exe path unreadable (e.g. elevated instance): skip
         if !exe.starts_with(&kernel_dir) {
             continue;
         }

@@ -1,4 +1,4 @@
-//! 配置离线缓存（断网沿用旧规则）。
+//! Offline config cache (keep using stale rules when offline).
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 use crate::client::ClientRule;
 
-/// 节点配置缓存（断网沿用旧规则：docs/architecture/config-file.md 承诺）。
+/// Node config cache (keep using stale rules when offline; promised in docs/architecture/config-file.md).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CachedNodeConfig {
     pub addr: String,
@@ -23,7 +23,7 @@ pub struct CachedNodeConfig {
     pub updated_at: String,
 }
 
-/// 缓存目录（~/.agile-net/cache/），文件权限 0600。
+/// Cache directory (~/.agile-net/cache/), file mode 0600.
 pub struct ConfigCache {
     dir: PathBuf,
 }
@@ -35,7 +35,7 @@ impl ConfigCache {
         Ok(Self { dir })
     }
 
-    /// 指定缓存目录（主要用于测试与降级兜底）
+    /// Custom cache directory (mainly for tests and degraded fallback)
     pub fn with_dir(dir: PathBuf) -> Self {
         std::fs::create_dir_all(&dir).unwrap();
         Self { dir }

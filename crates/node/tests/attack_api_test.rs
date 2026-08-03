@@ -1,7 +1,7 @@
-//! 攻击面测试（API 面）：暴力登录锁定、JWT 伪造、注入、超大请求体、
-//! XSS 存储、越权访问、批量赋值、审计泄露、WS 未授权。
+//! Attack-surface tests (API side): brute-force lockout, JWT forgery, injection, oversized body,
+//! stored XSS, privilege escalation, mass assignment, audit leakage, unauthorized WS.
 //!
-//! 原则：攻击必须被安全拒绝，错误不泄露内部信息，审计不泄露凭据。
+//! Rule: attacks must be safely rejected, errors must not leak internals, audit must not leak credentials.
 
 use agile_net_node::api::{ApiState, NodeRuntime, create_app};
 use agile_net_node::auth::jwt::JwtService;
@@ -96,12 +96,12 @@ async fn login(app: &Router) -> String {
     body["data"]["access_token"].as_str().unwrap().to_string()
 }
 
-/// B1: 连续失败登录触发锁定，锁定期间正确密码也返回 429
+/// B1: repeated failed logins trigger lockout; even the correct password gets 429 during lockout
 #[tokio::test]
 async fn login_bruteforce_lockout() {
     let (app, _db, _jwt) = test_app().await;
 
-    // 连续 5 次错误（达到锁定阈值）
+    // 5 failures in a row (hits lockout threshold)
     for _ in 0..5 {
         req(
             &app,
@@ -114,7 +114,7 @@ async fn login_bruteforce_lockout() {
         )
         .await;
     }
-    // 第 6 次错误 → 429
+    // 6th failure → 429
     let (status, body) = req(
         &app,
         "POST",
@@ -128,7 +128,7 @@ async fn login_bruteforce_lockout() {
     assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
     assert_eq!(body["code"], 42900);
 
-    // 锁定期间正确密码也被拒（防爆破窗口）
+    // Correct password also rejected during lockout (anti-bruteforce window)
     let (status, _) = req(
         &app,
         "POST",
@@ -142,12 +142,12 @@ async fn login_bruteforce_lockout() {
     assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
 }
 
-/// B2: JWT 伪造 —— 错误密钥签名 / alg=none / 过期 token 全部 401
+/// B2: JWT forgery — wrong-key signature / alg=none / expired token all get 401
 #[tokio::test]
 async fn jwt_forgery_rejected() {
     let (app, _db, _jwt) = test_app().await;
 
-    // 1) 错误密钥签名
+    // 1) wrong-key signature
     let fake = jsonwebtoken::encode(
         &jsonwebtoken::Header::default(),
         &json!({"sub":"x","username":"admin","role":"admin","exp":4102444800i64,"iat":1i64,"jti":"f","typ":"access"}),
@@ -157,7 +157,7 @@ async fn jwt_forgery_rejected() {
     let (status, _) = req(&app, "GET", "/api/v1/admin/rules", Some(&fake), None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 
-    // 2) alg=none 伪造（header.payload. 空签名）
+    // 2) alg=none forgery (header.payload. with empty signature)
     let none_token = format!(
         "{}.{}.",
         base64url(br#"{"alg":"none","typ":"JWT"}"#),
@@ -166,7 +166,7 @@ async fn jwt_forgery_rejected() {
     let (status, _) = req(&app, "GET", "/api/v1/admin/rules", Some(&none_token), None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 
-    // 3) 过期 token（真实密钥，已过期）
+    // 3) expired token (real key, past exp)
     let expired = jsonwebtoken::encode(
         &jsonwebtoken::Header::default(),
         &json!({"sub":"x","username":"admin","role":"admin","exp":1000000000,"iat":1,"jti":"f","typ":"access"}),
@@ -176,7 +176,7 @@ async fn jwt_forgery_rejected() {
     let (status, _) = req(&app, "GET", "/api/v1/admin/rules", Some(&expired), None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 
-    // 4) refresh token 冒充 access token
+    // 4) refresh token posing as access token
     let issued = _jwt.issue("admin-id", "admin", "admin").unwrap();
     let (status, _) = req(
         &app,
@@ -213,13 +213,13 @@ fn read_secret(db: &Database) -> String {
     db.get_config("jwt_secret").unwrap().unwrap()
 }
 
-/// B3: SQL 注入尝试 —— 不产生 500，不泄露数据
+/// B3: SQL injection attempts — no 500, no data leak
 #[tokio::test]
 async fn sql_injection_safe() {
     let (app, _db, _jwt) = test_app().await;
     let token = login(&app).await;
 
-    // 登录注入
+    // login injection
     let (status, _) = req(
         &app,
         "POST",
@@ -232,7 +232,7 @@ async fn sql_injection_safe() {
     .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 
-    // 搜索注入
+    // search injection
     let (status, body) = req(
         &app,
         "GET",
@@ -244,7 +244,7 @@ async fn sql_injection_safe() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["total"], 0);
 
-    // ID 注入
+    // ID injection
     let (status, _) = req(
         &app,
         "DELETE",
@@ -256,7 +256,7 @@ async fn sql_injection_safe() {
     assert_ne!(status, StatusCode::INTERNAL_SERVER_ERROR);
 }
 
-/// B4: 超大请求体被拒绝
+/// B4: oversized body rejected
 #[tokio::test]
 async fn oversized_body_rejected() {
     let (app, _db, _jwt) = test_app().await;
@@ -273,7 +273,7 @@ async fn oversized_body_rejected() {
     );
 }
 
-/// B5: XSS 载荷存储安全（JSON 原样存储，UI 渲染层转义）
+/// B5: XSS payload stored safely (stored verbatim as JSON; UI render layer escapes)
 #[tokio::test]
 async fn xss_payload_stored_safely() {
     let (app, _db, _jwt) = test_app().await;
@@ -292,19 +292,19 @@ async fn xss_payload_stored_safely() {
     .await;
     assert_eq!(status, StatusCode::CREATED);
 
-    // API 返回 JSON（不含可执行 HTML 上下文），UI 层 esc() 负责渲染转义（ui_test 覆盖）
+    // API returns JSON (no executable HTML context); UI esc() handles render escaping (covered by ui_test)
     let (_, body) = req(&app, "GET", "/api/v1/admin/rules", Some(&token), None).await;
     let remark = body["data"]["items"][0]["remark"].as_str().unwrap();
     assert_eq!(remark, xss, "存储保持原文，渲染层负责转义");
 }
 
-/// B6: 越权与资源枚举 —— 不存在资源 404，client 角色访问 admin 接口 403
+/// B6: privilege escalation & resource enumeration — 404 for missing resources, 403 for client role on admin endpoints
 #[tokio::test]
 async fn authorization_enforced() {
     let (app, db, _jwt) = test_app().await;
     let admin_token = login(&app).await;
 
-    // 不存在的资源
+    // nonexistent resources
     let (status, _) = req(
         &app,
         "PUT",
@@ -324,7 +324,7 @@ async fn authorization_enforced() {
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 
-    // client 角色访问 admin API
+    // client role hitting admin API
     let gid = db.create_group("g", "").unwrap().id;
     db.create_account("c1", &hash_password("x").unwrap(), &gid, "")
         .unwrap();
@@ -371,7 +371,7 @@ async fn authorization_enforced() {
     assert_eq!(status, StatusCode::FORBIDDEN);
     assert_eq!(body["code"], 40301);
 
-    // client 角色访问他人 config（只能访问自己的）
+    // client role reading config (only its own is reachable)
     let (status, _) = req(
         &app,
         "GET",
@@ -382,7 +382,7 @@ async fn authorization_enforced() {
     .await;
     assert_eq!(status, StatusCode::OK);
 
-    // WS 事件未授权（升级后首条消息认证：握手 101，发送无效 token 首帧即被关闭，不产生事件流）
+    // Unauthorized WS events (first message after upgrade authenticates: handshake 101, invalid token closes connection on first frame, no event stream)
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     tokio::spawn(async move {
@@ -404,7 +404,7 @@ async fn authorization_enforced() {
     let resp = String::from_utf8_lossy(&buf[..n]);
     assert!(resp.contains("101"), "WS 升级应成功，实际: {}", &resp[..resp.len().min(120)]);
 
-    // 发送 masked text frame "bad"（首条消息即 token；无效则连接被关闭）
+    // Send masked text frame "bad" (first message is the token; invalid → connection closed)
     let mask = [0x01u8, 0x02, 0x03, 0x04];
     let mut frame = vec![0x81u8, 0x80 | 3u8];
     frame.extend_from_slice(&mask);
@@ -420,10 +420,10 @@ async fn authorization_enforced() {
     if n > 0 {
         assert_eq!(buf[0], 0x88, "无效认证后应收到 close 帧，实际收到数据帧");
     }
-    // n == 0：服务端直接断开，同样满足「未授权即关闭」
+    // n == 0: server dropped the connection outright — also satisfies "close on unauthorized"
 }
 
-/// B7: 批量赋值攻击 —— 未知字段被忽略，不能提权
+/// B7: mass assignment — unknown fields ignored, no privilege escalation
 #[tokio::test]
 async fn mass_assignment_ignored() {
     let (app, _db, _jwt) = test_app().await;
@@ -451,7 +451,7 @@ async fn mass_assignment_ignored() {
     let aid = a["data"]["id"].as_str().unwrap().to_string();
     let pwd = a["data"]["password"].as_str().unwrap().to_string();
 
-    // 尝试注入 role/is_admin/password_hash 字段
+    // Try injecting role/is_admin/password_hash fields
     let (status, _) = req(
         &app,
         "PUT",
@@ -464,7 +464,7 @@ async fn mass_assignment_ignored() {
     .await;
     assert_eq!(status, StatusCode::OK);
 
-    // 登录仍是 client 角色
+    // Login still yields client role
     let (_, l) = req(
         &app,
         "POST",
@@ -478,7 +478,7 @@ async fn mass_assignment_ignored() {
     assert_eq!(l["data"]["role"], "client", "批量赋值不能导致提权");
 }
 
-/// B8: 审计日志不泄露密码/令牌
+/// B8: audit log leaks no passwords/tokens
 #[tokio::test]
 async fn audit_log_no_credential_leak() {
     let (app, _db, _jwt) = test_app().await;
@@ -525,14 +525,14 @@ async fn audit_log_no_credential_leak() {
     let all = serde_json::to_string(&logs).unwrap();
     assert!(!all.contains(&password), "审计日志泄露了账号密码！");
     assert!(!all.contains("sk-"), "审计日志不应包含任何 sk- 密码");
-    // relay token 明文也不应出现（只允许 psk_ 前缀掩码）
+    // relay token plaintext must not appear either (only masked psk_ prefix allowed)
     let leak = all.matches("psk_").any(|_| {
         all.matches(|c: char| c.is_ascii_alphanumeric()).count() > 0
             && all.contains("psk_")
             && !all.contains("****")
             && all.matches("psk_").count() > all.matches("psk_").count()
     });
-    let _ = leak; // psk_ 出现必须带掩码
+    let _ = leak; // any psk_ occurrence must be masked
     for item in logs["data"]["items"].as_array().unwrap() {
         let detail = item["detail"].as_str().unwrap_or("");
         if detail.contains("psk_") {
@@ -541,7 +541,7 @@ async fn audit_log_no_credential_leak() {
     }
 }
 
-/// B9: 用户名头注入（CRLF）被拒绝
+/// B9: username header injection (CRLF) rejected
 #[tokio::test]
 async fn header_injection_rejected() {
     let (app, _db, _jwt) = test_app().await;
@@ -569,7 +569,7 @@ async fn header_injection_rejected() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
-/// B10: 登录响应不泄露用户存在性（统一错误信息）
+/// B10: login response does not reveal user existence (uniform error message)
 #[tokio::test]
 async fn login_oracle_prevented() {
     let (app, _db, _jwt) = test_app().await;

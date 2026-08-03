@@ -1,9 +1,9 @@
-//! 报告模型与诊断上下文（serde 字段名即 GUI 契约，一字不得改）。
+//! Report model and diagnosis context (serde field names are the GUI contract — never change them).
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-/// 单项检查结论：`ok` 通过 / `info` 提示 / `warn` 警告 / `err` 错误 / `fixed` 已自动修复。
+/// Verdict of a single check: `ok` passed / `info` note / `warn` warning / `err` error / `fixed` auto-fixed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum DoctorStatus {
@@ -30,7 +30,7 @@ pub struct DoctorSection {
     pub items: Vec<DoctorItem>,
 }
 
-/// 汇总计数（info 项不计入；fixed 不抵消 err——修复前的 err 已转为 fixed）。
+/// Summary counts (info items not counted; fixed does not cancel err — the pre-fix err became fixed).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DoctorSummary {
     pub ok: usize,
@@ -46,23 +46,23 @@ pub struct DoctorReport {
     pub duration_ms: u64,
 }
 
-/// 诊断上下文：控制 GUI 特有路径（GUI 数据文件 / 内核与 wintun 钉值 / 孤儿 sweep / 系统代理）。
+/// Diagnosis context: controls GUI-specific paths (GUI data files / kernel & wintun pins / orphan sweep / system proxy).
 #[derive(Debug, Clone)]
 pub struct DoctorContext {
-    /// GUI 上下文：检查 GUI 数据文件、订阅内核与 wintun、系统代理残留、hosts 托管块漂移
+    /// GUI context: check GUI data files, subscription kernel and wintun, leftover system proxy, managed hosts-block drift
     pub gui: bool,
-    /// 允许自动修复（false = 只诊断不动手；测试与只读场景用）
+    /// Allow auto-fix (false = diagnose only, never touch; for tests and read-only scenarios)
     pub fix: bool,
-    /// AgileNet 数据目录（默认 ~/.agile-net；测试注入临时目录）
+    /// AgileNet data directory (default ~/.agile-net; tests inject a temp dir)
     pub data_dir: PathBuf,
-    /// 节点 SQLite 路径（只读查 CIDR 冲突；None 或不存在 = 跳过）
+    /// Node SQLite path (read-only CIDR conflict check; None or missing = skip)
     pub db_path: Option<PathBuf>,
-    /// 已知受管的 mihomo PID（孤儿判定白名单，叠加控制面监听者自动豁免）
+    /// Known managed mihomo PIDs (orphan-detection whitelist, on top of the automatic exemption for control-plane listeners)
     pub managed_pids: Vec<u32>,
 }
 
 impl DoctorContext {
-    /// anet-gui 自我诊断：检查 GUI 数据文件 + 内嵌节点库（存在时）。
+    /// anet-gui self-diagnosis: check GUI data files + the embedded node database (when present).
     pub fn gui() -> Self {
         let data_dir = default_data_dir();
         let embedded_db = data_dir.join("embedded-node").join("node.db");
@@ -75,7 +75,7 @@ impl DoctorContext {
         }
     }
 
-    /// `anet doctor`：本机体检；节点库取 DATABASE_PATH 或 ./agile-net.db（存在时）。
+    /// `anet doctor`: local health check; node database from DATABASE_PATH or ./agile-net.db (when present).
     pub fn cli() -> Self {
         let db_path = std::env::var("DATABASE_PATH")
             .ok()
@@ -95,7 +95,7 @@ impl DoctorContext {
     }
 }
 
-/// 数据目录（与 apps/desktop roles::data_dir 同规则）。
+/// Data directory (same rule as apps/desktop roles::data_dir).
 fn default_data_dir() -> PathBuf {
     std::env::var("USERPROFILE")
         .or_else(|_| std::env::var("HOME"))

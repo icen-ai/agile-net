@@ -1,13 +1,13 @@
-//! SOCKS5 / HTTP CONNECT 代理入站实现
+//! SOCKS5 / HTTP CONNECT proxy inbound
 //!
-//! 支持自动识别首字节协议：
-//! - `0x05`: SOCKS5 握手（支持 NO AUTH 与 RFC 1929 用户名密码认证）
-//! - HTTP 动词 (G/P/C/H/O/D/T): HTTP 代理（CONNECT 与普通请求，支持 Basic 代理认证）
+//! Protocol auto-detection by first byte:
+//! - `0x05`: SOCKS5 handshake (NO AUTH and RFC 1929 username/password auth)
+//! - HTTP verb (G/P/C/H/O/D/T): HTTP proxy (CONNECT and plain requests, Basic proxy auth)
 //!
-//! 安全设计：
-//! - 可选用户名密码认证（强烈建议在非 loopback 绑定时启用）
-//! - 握手阶段 10s 超时（防 Slowloris）
-//! - 并发连接数上限（防连接洪泛）
+//! Security design:
+//! - optional username/password auth (strongly recommended on non-loopback binds)
+//! - 10s handshake timeout (Slowloris protection)
+//! - concurrent connection cap (flood protection)
 
 use crate::error::{Error, Result};
 use crate::proxy::outbound::{DirectOutbound, Socks5ForwardOutbound, TunnelOutbound};
@@ -27,14 +27,14 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tracing::{debug, info, warn};
 
-/// 握手（协议协商 + 认证 + 请求头读取）超时。
+/// Handshake timeout (protocol negotiation + auth + request header read).
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
-/// 最大并发入站连接数。
+/// Max concurrent inbound connections.
 const MAX_INBOUND_CONNECTIONS: usize = 2048;
-/// HTTP 请求头最大字节数。
+/// Max HTTP request header bytes.
 const MAX_HTTP_HEADER: usize = 16 * 1024;
 
-/// 代理入站运行统计。
+/// Proxy inbound runtime stats.
 #[derive(Default)]
 pub struct ProxyStats {
     pub active_connections: AtomicU64,
@@ -43,18 +43,18 @@ pub struct ProxyStats {
     pub bytes_down: AtomicU64,
 }
 
-/// 代理入站监听器
+/// Proxy inbound listener
 pub struct ProxyInbound {
     listen_addr: SocketAddr,
     router: Arc<ArcSwap<ProxyRouter>>,
-    /// 按 node_id 注册的通道开启器
+    /// Channel openers registered by node_id
     openers: Arc<DashMap<String, Arc<dyn ChannelOpener>>>,
-    /// 兜底通道开启器（路由命中未注册 node_id 时使用）
+    /// Fallback channel opener (used when a route hits an unregistered node_id)
     default_opener: Option<Arc<dyn ChannelOpener>>,
-    /// 可选用户名密码认证
+    /// Optional username/password auth
     auth: Option<(String, String)>,
     stats: Arc<ProxyStats>,
-    /// 中继途径核算（None = 不打点；代理入站转发按 from="proxy" 入账）
+    /// Transit accounting (None = no metering; proxy inbound forwarding is booked as from="proxy")
     transit: Option<Arc<TransitMeter>>,
 }
 
@@ -71,30 +71,30 @@ impl ProxyInbound {
         }
     }
 
-    /// 注册 RelayListener 作为兜底通道开启器（向后兼容）。
+    /// Register a RelayListener as fallback channel opener (backwards compatible).
     pub fn with_relay_listener(mut self, relay_listener: Arc<RelayListener>) -> Self {
         self.default_opener = Some(relay_listener);
         self
     }
 
-    /// 注册指定节点的通道开启器。
+    /// Register a channel opener for a given node.
     pub fn with_opener(self, node_id: impl Into<String>, opener: Arc<dyn ChannelOpener>) -> Self {
         self.openers.insert(node_id.into(), opener);
         self
     }
 
-    /// 设置兜底通道开启器。
+    /// Set the fallback channel opener.
     pub fn with_default_opener(mut self, opener: Arc<dyn ChannelOpener>) -> Self {
         self.default_opener = Some(opener);
         self
     }
 
-    /// 通道开启器注册表句柄（运行期动态注册/移除，如客户端节点上下线）。
+    /// Opener registry handle (runtime register/remove, e.g. client nodes going up/down).
     pub fn openers_handle(&self) -> Arc<DashMap<String, Arc<dyn ChannelOpener>>> {
         self.openers.clone()
     }
 
-    /// 使用外部共享的开启器注册表（客户端引擎与入站共用一张表）。
+    /// Use an externally shared opener registry (client engine and inbound share one table).
     pub fn with_openers_map(
         mut self,
         openers: Arc<DashMap<String, Arc<dyn ChannelOpener>>>,
@@ -103,19 +103,19 @@ impl ProxyInbound {
         self
     }
 
-    /// 运行期设置兜底通道开启器。
+    /// Set the fallback channel opener at runtime.
     pub fn set_default_opener(&mut self, opener: Arc<dyn ChannelOpener>) {
         self.default_opener = Some(opener);
     }
 
-    /// 启用用户名密码认证（SOCKS5 RFC1929 / HTTP Basic）。
+    /// Enable username/password auth (SOCKS5 RFC1929 / HTTP Basic).
     pub fn with_auth(mut self, username: impl Into<String>, password: impl Into<String>) -> Self {
         self.auth = Some((username.into(), password.into()));
         self
     }
 
-    /// 挂接中继途径核算表（代理入站转发按 from="proxy" 入账；
-    /// 去向标识：隧道=开启器 transit_label，直连/转发="local"）。
+    /// Attach the transit accounting table (proxy inbound forwarding booked as from="proxy";
+    /// destination label: tunnel = opener transit_label, direct/forward = "local").
     pub fn with_transit_meter(mut self, meter: Arc<TransitMeter>) -> Self {
         self.transit = Some(meter);
         self
@@ -129,15 +129,15 @@ impl ProxyInbound {
         self.stats.clone()
     }
 
-    /// 启动代理入站服务（自行绑定监听地址）
+    /// Start the proxy inbound service (binds the listen address itself)
     pub async fn start(&self) -> Result<()> {
         let listener = TcpListener::bind(self.listen_addr).await?;
         self.start_on(listener).await
     }
 
-    /// 在已绑定的 TcpListener 上提供服务（调用方需要提前拿到确定端口时使用）。
+    /// Serve on an already-bound TcpListener (when the caller needs the concrete port up front).
     pub async fn start_on(&self, listener: TcpListener) -> Result<()> {
-        // 安全提醒：无认证暴露在非 loopback 上是开放代理风险
+        // security note: unauthenticated exposure on non-loopback is an open-proxy risk
         if self.auth.is_none() && !self.listen_addr.ip().is_loopback() {
             warn!(
                 addr = %self.listen_addr,
@@ -185,7 +185,7 @@ impl ProxyInbound {
     }
 }
 
-/// 每连接上下文（避免过多参数传递）。
+/// Per-connection context (avoids excessive parameter passing).
 #[derive(Clone)]
 struct InboundCtx {
     listen_addr: SocketAddr,
@@ -197,16 +197,17 @@ struct InboundCtx {
     transit: Option<Arc<TransitMeter>>,
 }
 
-/// 途径核算入账（from="proxy"）；未挂 meter 时为空操作。
+/// Transit accounting (from="proxy"); no-op without a meter.
 fn record_transit(ctx: &InboundCtx, to: &str, up: u64, down: u64) {
     if let Some(m) = &ctx.transit {
         m.record(FROM_PROXY, to, up, down);
     }
 }
 
-/// 自连环防护：目标是代理自身监听地址时拒绝（否则 CONNECT 自身会无限递归新建连接）。
-/// 端口相同且 IP 为精确监听地址 / 任意 loopback / 未指定地址均判定为自连
-/// （0.0.0.0 监听时 127.0.0.1 请求也必须拦截）。
+/// Self-connect guard: refuse targets pointing at the proxy's own listen address
+/// (otherwise CONNECT-to-self recurses into new connections forever).
+/// Same port plus exact listen IP / any loopback / unspecified address counts as self-connect
+/// (a 127.0.0.1 request must be intercepted when listening on 0.0.0.0).
 fn is_self_connect(ctx: &InboundCtx, addr: &SocketAddr) -> bool {
     if addr.port() != ctx.listen_addr.port() {
         return false;
@@ -228,7 +229,7 @@ async fn handle_connection(
     client_addr: SocketAddr,
     ctx: InboundCtx,
 ) -> Result<()> {
-    // 读取首字节判断协议（限时，防 Slowloris）
+    // read the first byte to detect the protocol (time-limited, Slowloris protection)
     let mut first_byte = [0u8; 1];
     tokio::time::timeout(HANDSHAKE_TIMEOUT, stream.read_exact(&mut first_byte))
         .await
@@ -245,7 +246,7 @@ async fn handle_connection(
     }
 }
 
-/// 解析 Tunnel 出站对应的通道开启器。
+/// Resolve the channel opener for a Tunnel outbound.
 fn resolve_opener(ctx: &InboundCtx, node_id: &str) -> Option<Arc<dyn ChannelOpener>> {
     ctx.openers
         .get(node_id)
@@ -253,13 +254,13 @@ fn resolve_opener(ctx: &InboundCtx, node_id: &str) -> Option<Arc<dyn ChannelOpen
         .or_else(|| ctx.default_opener.clone())
 }
 
-/// 处理 SOCKS5 握手与请求
+/// Handle SOCKS5 handshake and request
 async fn handle_socks5(
     mut stream: TcpStream,
     client_addr: SocketAddr,
     ctx: InboundCtx,
 ) -> Result<()> {
-    // 1. 协商认证方式
+    // 1. negotiate auth method
     let mut nmethods = [0u8; 1];
     tokio::time::timeout(HANDSHAKE_TIMEOUT, stream.read_exact(&mut nmethods))
         .await
@@ -270,7 +271,7 @@ async fn handle_socks5(
         .map_err(|_| Error::Timeout)??;
 
     if let Some((ref expect_user, ref expect_pass)) = ctx.auth {
-        // 要求 RFC 1929 用户名密码认证 (0x02)
+        // require RFC 1929 username/password auth (0x02)
         if !methods.contains(&0x02) {
             stream.write_all(&[0x05, 0xFF]).await?;
             return Err(Error::Auth(
@@ -300,11 +301,11 @@ async fn handle_socks5(
         }
         stream.write_all(&[0x01, 0x00]).await?;
     } else {
-        // 响应 NO AUTHENTICATION REQUIRED (0x00)
+        // respond NO AUTHENTICATION REQUIRED (0x00)
         stream.write_all(&[0x05, 0x00]).await?;
     }
 
-    // 2. 读取请求头: VER(0x05), CMD(0x01=CONNECT), RSV(0x00), ATYP
+    // 2. read request header: VER(0x05), CMD(0x01=CONNECT), RSV(0x00), ATYP
     let mut req_header = [0u8; 4];
     tokio::time::timeout(HANDSHAKE_TIMEOUT, stream.read_exact(&mut req_header))
         .await
@@ -339,7 +340,7 @@ async fn handle_socks5(
             (String::from_utf8_lossy(&domain).to_string(), port_num)
         }
         0x04 => {
-            // IPv6（RFC 1928: ATYP=0x04）
+            // IPv6 (RFC 1928: ATYP=0x04)
             let mut ip = [0u8; 16];
             stream.read_exact(&mut ip).await?;
             let mut port = [0u8; 2];
@@ -360,8 +361,9 @@ async fn handle_socks5(
         return Err(Error::Protocol("invalid target port 0".into()));
     }
 
-    // 自定义规则层（GUI 自定义规则）：hosts 映射先改写解析目标，放行命中优先于一切合并路由与回落；
-    // 空层时为零开销（map_host / custom_bypass_match 空表短路）
+    // Custom rule layer (GUI custom rules): the hosts mapping rewrites the resolve target first,
+    // a bypass hit beats all merged routes and the fallback;
+    // zero cost when the layer is empty (map_host / custom_bypass_match short-circuit on empty tables)
     let (target_host, outbound) = {
         let router_ref = ctx.router.load();
         let host = match router_ref.map_host(&target_host) {
@@ -370,7 +372,7 @@ async fn handle_socks5(
         };
         let outbound = match router_ref.custom_bypass_match(&host) {
             Some(o) => o.clone(),
-            // 已解析出 host/port：按纯主机名路由，免去 "host:port" 临时串拼接与端口剥离
+            // host/port already split: route by bare hostname, no "host:port" concat or port stripping
             None => router_ref.route_host(&host).clone(),
         };
         (host, outbound)
@@ -388,7 +390,7 @@ async fn handle_socks5(
                     .ok_or_else(|| Error::Other("dns resolution failed".into()))?,
             };
 
-            // 自连环防护
+            // self-connect guard
             if is_self_connect(&ctx, &target_addr) {
                 let _ = stream
                     .write_all(&[0x05, 0x02, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
@@ -426,7 +428,7 @@ async fn handle_socks5(
                     .write_all(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
                     .await?;
 
-                // 去向标识与 open 同一解析口径（自动选路时取实际对端）
+                // destination label resolved the same way as open (actual peer when auto-routing)
                 let to_label = opener.transit_label(&node_id, &target_host);
                 let tunnel_outbound = TunnelOutbound::new(opener);
                 let (up, down) = tunnel_outbound
@@ -455,7 +457,7 @@ async fn handle_socks5(
                 Ok((up, down)) => {
                     ctx.stats.bytes_up.fetch_add(up, Ordering::Relaxed);
                     ctx.stats.bytes_down.fetch_add(down, Ordering::Relaxed);
-                    // 回环上游转发由本机发起，按本机终结计
+                    // loopback upstream forwarding is initiated locally; booked as locally terminated
                     record_transit(&ctx, TO_LOCAL, up, down);
                     Ok(())
                 }
@@ -465,14 +467,14 @@ async fn handle_socks5(
     }
 }
 
-/// 处理 HTTP CONNECT / Request
+/// Handle HTTP CONNECT / plain request
 async fn handle_http(
     mut stream: TcpStream,
     client_addr: SocketAddr,
     first_byte: u8,
     ctx: InboundCtx,
 ) -> Result<()> {
-    // 读取完整请求头（至 \r\n\r\n，上限 16KB，限时）
+    // read the full request header (up to \r\n\r\n, 16KB cap, time-limited)
     let mut req_buf = vec![first_byte];
     let mut chunk = [0u8; 4096];
     let header_end = loop {
@@ -494,7 +496,7 @@ async fn handle_http(
                     b"HTTP/1.1 431 Request Header Fields Too Large\r\nContent-Length: 0\r\n\r\n",
                 )
                 .await;
-            // 优雅关闭写端，确保客户端读到 431 而非 RST
+            // shut down the write side gracefully so the client reads the 431 instead of an RST
             let _ = stream.shutdown().await;
             return Err(Error::Protocol("http header too large".into()));
         }
@@ -511,7 +513,7 @@ async fn handle_http(
     let method = parts[0];
     let uri = parts[1];
 
-    // 代理认证校验
+    // proxy auth check
     if let Some((ref expect_user, ref expect_pass)) = ctx.auth {
         let mut ok = false;
         for line in req_str.lines() {
@@ -559,7 +561,8 @@ async fn handle_http(
         return Err(Error::Protocol("invalid target port 0".into()));
     }
 
-    // 自定义规则层（GUI 自定义规则）：hosts 映射先改写解析目标，放行命中优先于一切合并路由与回落
+    // Custom rule layer (GUI custom rules): the hosts mapping rewrites the resolve target first,
+    // a bypass hit beats all merged routes and the fallback
     let (target_host, outbound) = {
         let router_ref = ctx.router.load();
         let host = match router_ref.map_host(&target_host) {
@@ -568,7 +571,7 @@ async fn handle_http(
         };
         let outbound = match router_ref.custom_bypass_match(&host) {
             Some(o) => o.clone(),
-            // 已解析出 host/port：按纯主机名路由，免去 "host:port" 临时串拼接与端口剥离
+            // host/port already split: route by bare hostname, no "host:port" concat or port stripping
             None => router_ref.route_host(&host).clone(),
         };
         (host, outbound)
@@ -586,7 +589,7 @@ async fn handle_http(
                     .ok_or_else(|| Error::Other("dns resolution failed".into()))?,
             };
 
-            // 自连环防护
+            // self-connect guard
             if is_self_connect(&ctx, &target_addr) {
                 let _ = stream.write_all(b"HTTP/1.1 403 Forbidden\r\n\r\n").await;
                 return Err(Error::Protocol(
@@ -600,7 +603,7 @@ async fn handle_http(
                         stream
                             .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
                             .await?;
-                        // CONNECT 之后可能存在紧随的 TLS 字节，需要转发头部之后的多余数据
+                        // TLS bytes may follow right after CONNECT; forward any surplus past the header
                         if req_buf.len() > header_end {
                             target_stream.write_all(&req_buf[header_end..]).await?;
                         }
@@ -623,7 +626,7 @@ async fn handle_http(
         }
         Outbound::Tunnel { node_id } => {
             if let Some(opener) = resolve_opener(&ctx, &node_id) {
-                // 去向标识与 open 同一解析口径（自动选路时取实际对端）
+                // destination label resolved the same way as open (actual peer when auto-routing)
                 let to_label = opener.transit_label(&node_id, &target_host);
                 let channel = opener.open(&node_id, &target_host, target_port).await?;
                 let mut channel = channel;
@@ -636,7 +639,7 @@ async fn handle_http(
                         channel.write_all(&req_buf[header_end..]).await?;
                     }
                 } else {
-                    // 普通 HTTP 请求经隧道转发时必须带上原始请求
+                    // plain HTTP requests must carry the original request through the tunnel
                     channel.write_all(&req_buf).await?;
                 }
 
@@ -665,14 +668,14 @@ async fn handle_http(
                             upstream.write_all(&req_buf[header_end..]).await?;
                         }
                     } else {
-                        // 普通 HTTP 请求转发时必须带上原始请求
+                        // plain HTTP requests must carry the original request when forwarded
                         upstream.write_all(&req_buf).await?;
                     }
                     let (up, down) =
                         tokio::io::copy_bidirectional(&mut stream, &mut upstream).await?;
                     ctx.stats.bytes_up.fetch_add(up, Ordering::Relaxed);
                     ctx.stats.bytes_down.fetch_add(down, Ordering::Relaxed);
-                    // 回环上游转发由本机发起，按本机终结计
+                    // loopback upstream forwarding is initiated locally; booked as locally terminated
                     record_transit(&ctx, TO_LOCAL, up, down);
                     Ok(())
                 }
@@ -685,11 +688,11 @@ async fn handle_http(
     }
 }
 
-/// 解析 host:port（兼容 IPv6 括号写法 [::1]:443）。
+/// Parse host:port (IPv6 bracket form [::1]:443 supported).
 fn parse_host_port(s: &str, default_port: u16) -> Result<(String, u16)> {
     let s = s.trim();
     if let Some(rest) = s.strip_prefix('[') {
-        // [v6]:port 或 [v6]
+        // [v6]:port or [v6]
         if let Some((host, port_part)) = rest.split_once(']') {
             let port = port_part
                 .strip_prefix(':')
@@ -704,7 +707,7 @@ fn parse_host_port(s: &str, default_port: u16) -> Result<(String, u16)> {
             let port = p.parse().unwrap_or(default_port);
             Ok((h.to_string(), port))
         }
-        // 无端口或多冒号未加括号（裸 IPv6）
+        // no port, or multiple colons without brackets (bare IPv6)
         _ => Ok((
             s.trim_matches(|c| c == '[' || c == ']').to_string(),
             default_port,
@@ -712,12 +715,12 @@ fn parse_host_port(s: &str, default_port: u16) -> Result<(String, u16)> {
     }
 }
 
-/// 在字节串中查找子串位置。
+/// Find a subslice position in a byte string.
 fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack.windows(needle.len()).position(|w| w == needle)
 }
 
-/// 计算 Basic 认证头期望值（base64(user:pass)）。
+/// Compute the expected Basic auth header value (base64(user:pass)).
 fn basic_auth_value(user: &str, pass: &str) -> String {
     base64_encode(format!("{user}:{pass}").as_bytes())
 }

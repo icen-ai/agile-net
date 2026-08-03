@@ -1,4 +1,4 @@
-//! 从 subscription.rs 拆分：订阅清单持久化与 CRUD（纯搬运，零逻辑变更）
+//! Split from subscription.rs: subscription manifest persistence and CRUD (pure move, zero logic changes)
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -8,37 +8,37 @@ use crate::roles;
 use super::api::kernel_api;
 use super::manager::kernel_asset;
 
-// ==================== 订阅清单（敏感凭据，0600） ====================
+// ==================== Subscription manifest (sensitive credentials, 0600) ====================
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Subscription {
     pub id: String,
     pub name: String,
     pub url: String,
-    /// 当前激活的订阅（全局单选；内核只加载激活项）
+    /// Currently active subscription (global single choice; the kernel loads only the active one)
     #[serde(default)]
     pub active: bool,
-    /// 最近一次拉取/刷新时间（秒）
+    /// Last fetch/refresh time (seconds)
     #[serde(default)]
     pub updated_at: Option<u64>,
-    /// 节点数（拉取时统计）
+    /// Node count (counted at fetch time)
     #[serde(default)]
     pub node_count: usize,
-    /// 流量信息（subscription-userinfo 响应头）
+    /// Traffic info (subscription-userinfo response header)
     #[serde(default)]
     pub upload: u64,
     #[serde(default)]
     pub download: u64,
     #[serde(default)]
     pub total: u64,
-    /// 到期时间戳（秒；0/None = 长期有效）
+    /// Expiry timestamp (seconds; 0/None = never expires)
     #[serde(default)]
     pub expire: Option<u64>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub(crate) struct SubStore {
-    /// external-controller 鉴权密钥（首启随机生成持久化）
+    /// external-controller auth secret (randomly generated and persisted on first launch)
     #[serde(default)]
     pub(crate) secret: String,
     #[serde(default)]
@@ -58,12 +58,12 @@ pub(crate) fn kernel_bin_path() -> PathBuf {
     kernel_dir().join(name)
 }
 
-/// 内核二进制是否已安装。
+/// Whether the kernel binary is installed.
 pub fn kernel_bin_exists() -> bool {
     kernel_bin_path().exists()
 }
 
-/// 当前平台是否支持订阅内核（有钉版本资产）。
+/// Whether the current platform supports the subscription kernel (has a pinned-version asset).
 pub fn kernel_supported() -> bool {
     kernel_asset().is_some()
 }
@@ -104,7 +104,7 @@ pub(crate) fn ensure_secret(store: &mut SubStore) -> String {
     store.secret.clone()
 }
 
-/// 订阅 URL 脱敏（审计/日志用）：scheme://host/…前 8 位路径
+/// Redact a subscription URL (for audit/logs): scheme://host/…first 8 path chars
 pub fn mask_url(url: &str) -> String {
     match url.find("://") {
         Some(i) => {
@@ -121,10 +121,10 @@ pub fn mask_url(url: &str) -> String {
     }
 }
 
-// ==================== 订阅清单操作 ====================
+// ==================== Subscription manifest operations ====================
 
-/// 拉取订阅并解析用户/流量信息（subscription-userinfo 头）与节点数。
-/// 拉取失败或内容不像 Clash 配置即报错——添加/刷新都以拉通为准。
+/// Fetch a subscription and parse user/traffic info (subscription-userinfo header) plus node count.
+/// Errors if the fetch fails or the body does not look like a Clash config — add/refresh require a successful fetch.
 async fn fetch_subscription(url: &str) -> Result<(u64, u64, u64, Option<u64>, usize), String> {
     let client = reqwest::Client::builder()
         .user_agent("clash.meta/v1.19.29")
@@ -158,7 +158,7 @@ async fn fetch_subscription(url: &str) -> Result<(u64, u64, u64, Option<u64>, us
                     "upload" => upload = n,
                     "download" => download = n,
                     "total" => total = n,
-                    // 非标准字段：部分面板只回传 used（可带小数），u/d 为 0 时作兜底
+                    // Non-standard field: some panels only return used (may be fractional); fallback when u/d are 0
                     "used" => used_alt = val.trim().parse::<f64>().unwrap_or(0.0) as u64,
                     "expire" => {
                         if n > 0 {
@@ -178,8 +178,8 @@ async fn fetch_subscription(url: &str) -> Result<(u64, u64, u64, Option<u64>, us
     Ok((upload, download, total, expire, node_count))
 }
 
-/// 订阅体嗅探与节点数估算（URL 拉取与本地导入共用入口）：
-/// Clash YAML（proxies: 段内 "name:" 行）或 base64/明文分享链接（含 "://"）。
+/// Sniff a subscription body and estimate node count (shared entry for URL fetch and local import):
+/// Clash YAML ("name:" lines inside the proxies: section) or base64/plaintext share links (containing "://").
 fn analyze_subscription(body: &str) -> Result<usize, String> {
     let node_count = if body.contains("proxies:") {
         let start = body.find("proxies:").unwrap_or(0);
@@ -200,7 +200,7 @@ fn analyze_subscription(body: &str) -> Result<usize, String> {
     Ok(node_count)
 }
 
-/// 宽松 base64 解码（处理未填充/换行的订阅体）
+/// Lenient base64 decoding (handles unpadded/wrapped subscription bodies)
 fn base64_decode_loose(s: &str) -> Option<String> {
     const TBL: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut map = [255u8; 256];
@@ -229,12 +229,12 @@ pub fn list_subscriptions() -> Vec<Subscription> {
     load_store().subscriptions
 }
 
-/// 当前订阅清单（配置生成管线用）
+/// Current subscription manifest (for the config generation pipeline)
 pub(crate) fn current_store() -> SubStore {
     load_store()
 }
 
-/// 添加订阅：先拉取校验（拉不通/不可识别即失败），首个订阅自动激活。
+/// Add a subscription: fetch-validates first (fails if unreachable/unrecognizable); the first subscription is auto-activated.
 pub async fn add_subscription(name: &str, url: &str) -> Result<Subscription, String> {
     let url = url.trim();
     if !(url.starts_with("http://") || url.starts_with("https://")) {
@@ -274,7 +274,7 @@ pub fn remove_subscription(id: &str) -> Result<(), String> {
     let mut store = load_store();
     let before = store.subscriptions.len();
     let was_active = store.subscriptions.iter().any(|s| s.id == id && s.active);
-    // 本地导入订阅级联清理落盘 YAML（仅本应用内核目录下的 local-*.yaml，防误删用户文件）
+    // Cascade-cleanup of on-disk YAML for locally imported subscriptions (only local-*.yaml under this app's kernel dir, to avoid deleting user files)
     let local_file = store
         .subscriptions
         .iter()
@@ -291,7 +291,7 @@ pub fn remove_subscription(id: &str) -> Result<(), String> {
     if store.subscriptions.len() == before {
         return Err("订阅不存在".into());
     }
-    // 激活项被删：顺位激活第一个
+    // Active item deleted: activate the first one in order
     if was_active {
         if let Some(first) = store.subscriptions.first_mut() {
             first.active = true;
@@ -305,9 +305,9 @@ pub fn remove_subscription(id: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// 本地 YAML 导入订阅：内容嗅探（与 URL 拉取同一 analyze 入口）→ 落盘
-/// mihomo/local-<id>.yaml → 入库（url 记 file:// 前缀，provider 渲染为 type: file）。
-/// 本地订阅无在线流量信息，upload/download/total 恒 0；不支持在线刷新。
+/// Import a local YAML subscription: sniff content (same analyze entry as URL fetch) → write to
+/// mihomo/local-<id>.yaml → store (url recorded with a file:// prefix, provider rendered as type: file).
+/// Local subscriptions have no online traffic info; upload/download/total stay 0; online refresh unsupported.
 pub fn add_local_subscription(name: &str, body: &str) -> Result<Subscription, String> {
     let node_count = analyze_subscription(body)?;
     let mut store = load_store();
@@ -343,7 +343,7 @@ pub fn add_local_subscription(name: &str, body: &str) -> Result<Subscription, St
     Ok(sub)
 }
 
-/// 单选激活：仅一个 active；返回新的激活项。
+/// Single-choice activation: only one active; returns the newly activated item.
 pub fn set_active_subscription(id: &str) -> Result<Subscription, String> {
     let mut store = load_store();
     if !store.subscriptions.iter().any(|s| s.id == id) {
@@ -366,7 +366,7 @@ pub fn set_active_subscription(id: &str) -> Result<Subscription, String> {
     Ok(sub)
 }
 
-/// 刷新订阅：重新拉取（更新流量/到期/节点数/时间戳）；激活项同时通知内核更新 provider。
+/// Refresh a subscription: re-fetch (updates traffic/expiry/node count/timestamp); if active, also notify the kernel to update the provider.
 pub async fn update_subscription(id: &str) -> Result<Subscription, String> {
     let mut store = load_store();
     let idx = store
@@ -392,7 +392,7 @@ pub async fn update_subscription(id: &str) -> Result<Subscription, String> {
     save_store(&store)?;
     if sub.active {
         if let Ok(api) = kernel_api().await {
-            let _ = api.update_provider().await; // 失败不阻塞（下次定时刷新自愈）
+            let _ = api.update_provider().await; // failure is non-blocking (next scheduled refresh self-heals)
         }
     }
     roles::audit(
@@ -409,15 +409,15 @@ pub(crate) fn now_ts() -> u64 {
         .as_secs()
 }
 
-// ==================== 代理列表缓存（内核未运行时代理页只读展示） ====================
+// ==================== Proxy list cache (read-only proxy page when the kernel is not running) ====================
 
 fn proxy_cache_path() -> PathBuf {
     roles::data_dir().join("proxy-cache.json")
 }
 
-/// 把 provider 节点明细（type/history）并入 /proxies 载荷——
-/// provider 节点不在全局 /proxies 注册表，前端据 `PROXY_DATA[name].type` 展示协议。
-/// 已存在的条目（组/内置）不覆盖。
+/// Merge provider node details (type/history) into the /proxies payload —
+/// provider nodes are not in the global /proxies registry; the frontend shows the protocol via `PROXY_DATA[name].type`.
+/// Existing entries (groups/built-ins) are not overwritten.
 pub fn merge_provider_details(v: &mut serde_json::Value, pv: &serde_json::Value) {
     let (Some(map), Some(providers)) = (
         v["proxies"].as_object_mut(),
@@ -443,7 +443,7 @@ pub fn merge_provider_details(v: &mut serde_json::Value, pv: &serde_json::Value)
     }
 }
 
-/// 持久化最近一次成功的 /proxies 快照。
+/// Persist the most recent successful /proxies snapshot.
 pub fn save_proxy_cache(v: &serde_json::Value) {
     if !v["proxies"].is_object() {
         return;
@@ -454,7 +454,7 @@ pub fn save_proxy_cache(v: &serde_json::Value) {
     }
 }
 
-/// 读取缓存快照（附 `cached: true` 标记，前端据此降级为只读展示）。
+/// Load the cached snapshot (tagged with `cached: true`; the frontend degrades to read-only display accordingly).
 pub fn load_proxy_cache() -> Option<serde_json::Value> {
     let s = std::fs::read_to_string(proxy_cache_path()).ok()?;
     let mut v: serde_json::Value = serde_json::from_str(&s).ok()?;

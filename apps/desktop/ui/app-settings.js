@@ -1,10 +1,10 @@
 'use strict';
-/* 从 app.js 拆分：三路角色开关 / 系统代理托管 / 设置页 / 自我诊断 / 同步与备份（纯搬运，零逻辑变更） */
+/* Split from app.js: three-way role switches / system proxy management / settings view / doctor / sync & backup (pure move, zero logic change) */
 
-/* ================= 三路角色开关 ================= */
+/* ================= Three-way role switches ================= */
 let pwdResolver = null;
 
-/** 强制设置管理密码弹窗（Promise 化；取消 resolve null） */
+/** Forced admin-password modal (Promisified; cancel resolves null) */
 function askPassword(opts) {
   return new Promise((resolve) => {
     $('pwd-title').innerHTML = AgIcon('shield', 16) + ' ' + esc(opts.title);
@@ -35,7 +35,7 @@ async function refreshServerPanel() {
   $('sv-relay').textContent = st.relay_addr || '-';
 }
 
-/* 扇出监听开关（扇出页 r-server 与仪表盘 d-server 双入口同一逻辑，状态互相同步） */
+/* Fan-out listen switch (fan-out view r-server and dashboard d-server are two entries to the same logic, states stay in sync) */
 function syncServerSwitch(v) {
   $('r-server').checked = v;
   const d = $('d-server');
@@ -44,19 +44,19 @@ function syncServerSwitch(v) {
 async function serverToggle(on, el) {
   try {
     if (on) {
-      // 首开强制设管理密码
+      // First enable forces setting an admin password
       const st = await invoke('server_status');
       if (!st.has_admin) {
         el.checked = false;
         const cred = await askPassword({
-          title: '设置服务端管理密码',
-          desc: '首开服务端角色须先设置内嵌端点管理员，该密码用于登录控制台。',
+          title: AgI18n.t('settings.pwd-server-title'),
+          desc: AgI18n.t('settings.pwd-server-desc'),
           showUser: true,
         });
         if (!cred) return;
         await invoke('init_server_admin', { username: cred.user, password: cred.pass });
         el.checked = true;
-        toast('管理员已创建', 'ok');
+        toast(AgI18n.t('settings.admin-created'), 'ok');
       }
     }
     await invoke('set_server_role', { enabled: on });
@@ -64,7 +64,7 @@ async function serverToggle(on, el) {
     await refreshServerPanel();
     refreshAdminEntry();
     renderDashFanout();
-    toast(on ? '服务端角色已开启（内嵌端点运行中）' : '服务端角色已关闭', 'ok');
+    toast(on ? AgI18n.t('settings.server-on') : AgI18n.t('settings.server-off'), 'ok');
   } catch (err) {
     syncServerSwitch(false);
     toast(friendlyError(err), 'err');
@@ -75,17 +75,17 @@ async function serverToggle(on, el) {
 function refreshWebPanel() {
   const on = $('r-web').checked;
   $('web-panel').style.display = on ? 'block' : 'none';
-  $('web-status').textContent = on ? '监听地址保存后生效；浏览器访问需输入管理密码' : '';
+  $('web-status').textContent = on ? AgI18n.t('settings.web-hint') : '';
 }
-/* Web 远程面监听地址（inline-edit 数据源；initRoles 自 get_role_settings 载入） */
+/* Web remote panel listen address (inline-edit data source; initRoles loads it from get_role_settings) */
 let WEB_LISTEN = '127.0.0.1:59291';
 function validListenAddr(v) {
   const m = v.match(/^(.+):(\d+)$/);
-  if (!m || !m[1].trim()) return '监听地址格式须为 IP:端口';
+  if (!m || !m[1].trim()) return AgI18n.t('settings.listen-invalid');
   const p = parseInt(m[2], 10);
-  return (p >= 1 && p <= 65535) ? null : '端口须为 1-65535';
+  return (p >= 1 && p <= 65535) ? null : AgI18n.t('views.port-invalid-range');
 }
-/* 代理卡监听行 / 远程卡监听地址：统一 inline-edit（显示 ip:port [修改] → 输入框 + [保存]） */
+/* Proxy card listen row / remote card listen address: unified inline-edit (shows ip:port [修改] → input + [保存]) */
 function initInlineEdits() {
   proxyAddrEdit = bindInlineEdit($('d-proxy-addr'), {
     get: () => '127.0.0.1:' + proxyPort(),
@@ -98,9 +98,9 @@ function initInlineEdits() {
       if (st.running && st.port !== port) {
         await invoke('stop_proxy');
         const actual = await invoke('start_proxy', { port });
-        toast('端口已修改为 ' + actual + '，代理已重启生效', 'ok');
+        toast(AgI18n.t('settings.port-changed', { port: actual }), 'ok');
       } else {
-        toast(st.running ? '端口未变更' : '端口已保存，下次启动代理生效', 'ok');
+        toast(st.running ? AgI18n.t('settings.port-unchanged') : AgI18n.t('settings.port-saved'), 'ok');
       }
       refreshProxy();
       refreshSysproxy();
@@ -112,11 +112,11 @@ function initInlineEdits() {
     set: async (v) => {
       await invoke('set_web_role', { enabled: $('r-web').checked, listen: v });
       WEB_LISTEN = v;
-      toast('监听地址已保存', 'ok');
+      toast(AgI18n.t('settings.listen-saved'), 'ok');
     },
   });
 }
-/* 悬浮球气泡通知行：悬浮球未开启时置灰禁用（跟随 s-float-ball 勾选态联动） */
+/* Float-ball bubble-notification row: greyed out and disabled while the float ball is off (follows s-float-ball checked state) */
 function syncNotifyFloatRow() {
   const fb = $('s-float-ball'), row = $('row-notify-float'), sw = $('s-notify-float');
   if (!fb || !row || !sw) return;
@@ -126,24 +126,24 @@ function syncNotifyFloatRow() {
 async function initRoles() {
   let settings = { client: true, server: false, web: false, web_listen: '127.0.0.1:59291' };
   try { settings = await invoke('get_role_settings'); } catch (e) {}
-  window._rolesCache = settings; // Hero 当前模式摘要数据源（system_proxy/tun_mode/sub_mode；各变更点同步更新，不重复拉取）
+  window._rolesCache = settings; // Data source for the Hero current-mode summary (system_proxy/tun_mode/sub_mode; updated at each change point, never re-fetched)
   $('r-client').checked = settings.client;
   $('r-server').checked = settings.server;
   $('d-server').checked = settings.server;
   $('r-web').checked = settings.web;
-  // TUN 初值（详细状态由 refreshTun 轮询同步；此处先落开关）
+  // TUN initial value (detailed status synced by refreshTun polling; just set the switch here)
   TUN_UPSTREAM = settings.external_upstream || TUN_UPSTREAM;
   $('tun-mode').checked = !!settings.tun_mode;
   const subMode = settings.sub_mode || 'rule';
   $('sub-mode').value = subMode;
   $('sub-mode').dataset.prev = subMode;
   applySubFeature(!!settings.subscription_feature);
-  // 设置页本机开关初值（系统代理锁定 / 桌面悬浮球 / 悬浮球气泡通知 / 性能模式）
+  // Initial values of the settings-view local toggles (system proxy lock / desktop float ball / float-ball bubble notifications / performance mode)
   $('s-sysproxy-lock').checked = !!settings.sysproxy_lock;
   $('s-float-ball').checked = !!settings.float_ball;
   $('s-notify-float').checked = !!settings.notify_float_ball;
   syncNotifyFloatRow();
-  // 性能模式：get_role_settings().reduce_effects 校正启动时 localStorage 预应用的值
+  // Performance mode: get_role_settings().reduce_effects corrects the value pre-applied from localStorage at startup
   const reduceFx = !!settings.reduce_effects;
   $('s-reduce-effects').checked = reduceFx;
   localStorage.setItem('ag_reduce_fx', reduceFx ? '1' : '0');
@@ -157,7 +157,7 @@ async function initRoles() {
     try {
       await invoke('set_client_role', { enabled: e.target.checked });
       applyClientRole(e.target.checked);
-      toast(e.target.checked ? '扇入已开启' : '扇入已停用（已断开全部端点）', 'ok');
+      toast(e.target.checked ? AgI18n.t('settings.client-on') : AgI18n.t('settings.client-off'), 'ok');
       if (e.target.checked) { refreshNodes(true); refreshProxy(); refreshCreds(); }
     } catch (err) {
       e.target.checked = !e.target.checked;
@@ -174,33 +174,33 @@ async function initRoles() {
       if (on && !(await invoke('has_web_password'))) {
         e.target.checked = false;
         const cred = await askPassword({
-          title: '设置 Web 远程面管理密码',
-          desc: '开启 Web 远程面前须先设置管理密码；从浏览器访问本机管理界面时需输入。',
+          title: AgI18n.t('settings.pwd-web-title'),
+          desc: AgI18n.t('settings.pwd-web-desc'),
           showUser: false,
         });
         if (!cred) return;
         await invoke('set_web_password', { password: cred.pass });
         e.target.checked = true;
-        toast('管理密码已设置', 'ok');
+        toast(AgI18n.t('settings.web-pwd-set'), 'ok');
       }
       await invoke('set_web_role', { enabled: on, listen: WEB_LISTEN || null });
       refreshWebPanel();
-      toast(on ? 'Web 远程面已开启' : 'Web 远程面已关闭', 'ok');
+      toast(on ? AgI18n.t('settings.web-on') : AgI18n.t('settings.web-off'), 'ok');
     } catch (err) {
       e.target.checked = !on;
       toast(friendlyError(err), 'err');
     }
   };
 
-  $('btn-open-console').onclick = () => enterAdmin(null, null, '本机服务端');
+  $('btn-open-console').onclick = () => enterAdmin(null, null, AgI18n.t('views.admin-local'));
 
-  /* 设置页本机开关：锁定系统代理 / 桌面悬浮球（失败回滚勾选） */
+  /* Settings-view local toggles: lock system proxy / desktop float ball (roll back the checkbox on failure) */
   $('s-sysproxy-lock').onchange = async (e) => {
     const on = e.target.checked;
     try {
       await invoke('set_sysproxy_lock', { on });
       if (window._rolesCache) window._rolesCache.sysproxy_lock = on;
-      toast(on ? '已锁定系统代理（被抢占将自动收回）' : '已解锁系统代理', 'ok');
+      toast(on ? AgI18n.t('settings.lock-on') : AgI18n.t('settings.lock-off'), 'ok');
     } catch (err) {
       e.target.checked = !on;
       toast(friendlyError(err), 'err');
@@ -210,18 +210,18 @@ async function initRoles() {
     const on = e.target.checked;
     try {
       await invoke('set_float_ball', { on });
-      toast(on ? '桌面悬浮球已开启' : '桌面悬浮球已关闭', 'ok');
+      toast(on ? AgI18n.t('settings.float-on') : AgI18n.t('settings.float-off'), 'ok');
     } catch (err) {
       e.target.checked = !on;
       toast(friendlyError(err), 'err');
     }
-    syncNotifyFloatRow(); // 悬浮球关闭时气泡通知行置灰禁用
+    syncNotifyFloatRow(); // Grey out and disable the bubble-notification row when the float ball is off
   };
   $('s-notify-float').onchange = async (e) => {
     const on = e.target.checked;
     try {
       await invoke('set_notify_float_ball', { on });
-      toast(on ? '悬浮球气泡通知已开启' : '悬浮球气泡通知已关闭（事件仍记录在日志页事件签）', 'ok');
+      toast(on ? AgI18n.t('settings.notify-on') : AgI18n.t('settings.notify-off'), 'ok');
     } catch (err) {
       e.target.checked = !on;
       toast(friendlyError(err), 'err');
@@ -233,7 +233,7 @@ async function initRoles() {
       await invoke('set_reduce_effects', { on });
       applyReduceEffects(on);
       localStorage.setItem('ag_reduce_fx', on ? '1' : '0');
-      toast(on ? '性能模式已开启（毛玻璃与动画特效已关闭）' : '性能模式已关闭', 'ok');
+      toast(on ? AgI18n.t('settings.perf-on') : AgI18n.t('settings.perf-off'), 'ok');
     } catch (err) {
       e.target.checked = !on;
       toast(friendlyError(err), 'err');
@@ -244,16 +244,16 @@ async function initRoles() {
   $('pwd-ok').onclick = () => {
     const user = $('pwd-user').value.trim();
     const p1 = $('pwd-pass').value, p2 = $('pwd-pass2').value;
-    if ($('pwd-user-row').style.display !== 'none' && !user) { toast('请填写管理员账号', 'err'); return; }
-    if (p1.length < 10) { toast('管理密码至少 10 位', 'err'); return; }
-    if (p1 !== p2) { toast('两次输入的密码不一致', 'err'); return; }
+    if ($('pwd-user-row').style.display !== 'none' && !user) { toast(AgI18n.t('settings.pwd-user-required'), 'err'); return; }
+    if (p1.length < 10) { toast(AgI18n.t('settings.pwd-too-short'), 'err'); return; }
+    if (p1 !== p2) { toast(AgI18n.t('settings.pwd-mismatch'), 'err'); return; }
     closePwdModal({ user, pass: p1 });
   };
 }
 
-/* ================= 系统代理托管 ================= */
+/* ================= System proxy management ================= */
 let _spConflict = false;
-let CUR_PROXY_MODE = 'system'; // system=接管系统代理（默认） / local=仅监听端口
+let CUR_PROXY_MODE = 'system'; // system=take over the system proxy (default) / local=listen on the port only
 async function refreshSysproxy() {
   let st;
   try { st = await invoke('sysproxy_status'); } catch (e) { return; }
@@ -261,11 +261,11 @@ async function refreshSysproxy() {
   document.querySelectorAll('#proxy-mode .group-tab').forEach(b =>
     b.classList.toggle('active', b.dataset.proxyMode === CUR_PROXY_MODE));
   const banner = $('sysproxy-banner');
-  // TUN 模式下冲突由后端巡检 30s 内自动收回（§2.6），不打扰用户
+  // In TUN mode the backend patrol auto-reclaims conflicts within 30s (§2.6); don't nag the user
   if (st.managed && st.conflict && !TUN_ON) {
     banner.style.display = 'flex';
-    $('sysproxy-banner-text').textContent = '系统代理已被外部修改（当前 ' + (st.current || '未启用') + '，期望 ' + st.expected + '）';
-    if (!_spConflict) { _spConflict = true; toast('系统代理已被外部修改，可在「首页」收回', 'err'); }
+    $('sysproxy-banner-text').textContent = AgI18n.t('settings.sp-conflict', { cur: st.current || AgI18n.t('settings.sp-none'), want: st.expected });
+    if (!_spConflict) { _spConflict = true; toast(AgI18n.t('settings.sp-conflict-toast'), 'err'); }
   } else {
     banner.style.display = 'none';
     _spConflict = false;
@@ -277,16 +277,16 @@ function initSysproxy() {
     if (!btn || btn.classList.contains('active')) return;
     try {
       if (btn.dataset.proxyMode === 'system') {
-        // 代理未启动则先按当前端口启动（后端 set_system_proxy 亦会兜底拉起）
+        // If the proxy is not running, start it on the current port first (backend set_system_proxy also brings it up as fallback)
         const st = await invoke('proxy_status');
         if (!st.running) {
           await invoke('start_proxy', { port: proxyPort() });
         }
         await invoke('set_system_proxy', { enabled: true });
-        toast('已切换到系统代理（自动接管系统流量）', 'ok');
+        toast(AgI18n.t('settings.sp-system-toast'), 'ok');
       } else {
         await invoke('set_system_proxy', { enabled: false });
-        toast('已切换到本地代理（手动指向 127.0.0.1:' + proxyPort() + '）', 'ok');
+        toast(AgI18n.t('settings.sp-local-toast', { addr: '127.0.0.1:' + proxyPort() }), 'ok');
       }
       if (window._rolesCache) window._rolesCache.system_proxy = btn.dataset.proxyMode === 'system';
       refreshSysproxy();
@@ -294,19 +294,19 @@ function initSysproxy() {
     } catch (err) { toast(friendlyError(err), 'err'); }
   });
   $('btn-sysproxy-reclaim').onclick = async () => {
-    try { await invoke('reclaim_sysproxy'); toast('已收回系统代理', 'ok'); refreshSysproxy(); }
+    try { await invoke('reclaim_sysproxy'); toast(AgI18n.t('settings.sp-reclaimed'), 'ok'); refreshSysproxy(); }
     catch (err) { toast(friendlyError(err), 'err'); }
   };
 }
 
-/* ================= 自我诊断（run_doctor 逐项扫描；逐项淡入展示，fixed 项标注「已自动修复」） ================= */
+/* ================= Doctor (run_doctor scans item by item; items fade in one by one, fixed items marked 「已自动修复」) ================= */
 const DOCTOR_PILL = {
-  ok: ['pill-ok', '正常'], info: ['pill-dim', '提示'], warn: ['pill-warn', '警告'],
-  err: ['pill-danger', '错误'], fixed: ['pill-ok', '已自动修复'],
+  ok: ['pill-ok', 'settings.doc-ok'], info: ['pill-dim', 'settings.doc-info'], warn: ['pill-warn', 'settings.doc-warn'],
+  err: ['pill-danger', 'settings.doc-err'], fixed: ['pill-ok', 'settings.doc-fixed'],
 };
 function doctorPill(status) {
   const p = DOCTOR_PILL[status] || DOCTOR_PILL.info;
-  return '<span class="pill ' + p[0] + '">' + p[1] + '</span>';
+  return '<span class="pill ' + p[0] + '">' + AgI18n.t(p[1]) + '</span>';
 }
 function doctorSectionHtml(sec) {
   return '<div style="margin-bottom:4px"><b>' + esc(sec.title) + '</b></div>' +
@@ -322,16 +322,16 @@ function doctorSectionHtml(sec) {
 function doctorSummaryHtml(res) {
   const sum = res.summary || {};
   const pills = [];
-  if (sum.ok) pills.push('<span class="pill pill-ok">通过 ' + sum.ok + '</span>');
-  if (sum.warn) pills.push('<span class="pill pill-warn">警告 ' + sum.warn + '</span>');
-  if (sum.err) pills.push('<span class="pill pill-danger">错误 ' + sum.err + '</span>');
-  if (sum.fixed) pills.push('<span class="pill pill-ok">已修复 ' + sum.fixed + '</span>');
+  if (sum.ok) pills.push('<span class="pill pill-ok">' + AgI18n.t('settings.doc-pass', { n: sum.ok }) + '</span>');
+  if (sum.warn) pills.push('<span class="pill pill-warn">' + AgI18n.t('settings.doc-warns', { n: sum.warn }) + '</span>');
+  if (sum.err) pills.push('<span class="pill pill-danger">' + AgI18n.t('settings.doc-errs', { n: sum.err }) + '</span>');
+  if (sum.fixed) pills.push('<span class="pill pill-ok">' + AgI18n.t('settings.doc-fixed-n', { n: sum.fixed }) + '</span>');
   const dur = typeof res.duration_ms === 'number'
     ? (res.duration_ms >= 1000 ? (res.duration_ms / 1000).toFixed(1) + 's' : res.duration_ms + 'ms') : '';
-  return (pills.join('') || '<span class="pill pill-dim">无检查项</span>') +
-    (dur ? '<span class="hint" style="margin-top:0">耗时 ' + esc(dur) + '</span>' : '');
+  return (pills.join('') || '<span class="pill pill-dim">' + AgI18n.t('settings.doc-none') + '</span>') +
+    (dur ? '<span class="hint" style="margin-top:0">' + AgI18n.t('settings.doc-duration', { dur: esc(dur) }) + '</span>' : '');
 }
-/* 块级淡入辅助（流式与整渲共用） */
+/* Block-level fade-in helper (shared by streaming and full render) */
 function doctorFadeIn(el, delay) {
   el.style.opacity = '0';
   el.style.transform = 'translateY(4px)';
@@ -347,26 +347,26 @@ async function runDoctor() {
   const panel = $('doctor-panel');
   btn.disabled = true;
   panel.style.display = '';
-  panel.innerHTML = '<div class="hint" style="margin-top:10px"><span class="spinner"></span>正在准备诊断…</div>';
+  panel.innerHTML = '<div class="hint" style="margin-top:10px"><span class="spinner"></span>' + AgI18n.t('settings.doc-preparing') + '</div>';
   let unlisten = [], streamed = false;
   const cleanup = () => { unlisten.forEach(u => { try { u && u(); } catch (e) {} }); unlisten = []; };
   try {
     if (TAURI && TAURI.event) {
-      // 流式：begin 带检查节计划渲染骨架（逐节「诊断中…」），section 事件到达即原位替换
+      // Streaming: begin carries the section plan and renders skeletons (「诊断中…」 per section); section events replace them in place on arrival
       unlisten.push(await TAURI.event.listen('ag-doctor-begin', (ev) => {
         const plan = ev.payload || [];
         panel.innerHTML = '<div class="doctor-block" id="doctor-summary" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap"></div>' +
           plan.map(p =>
             '<div class="doctor-block" data-sec="' + esc(p[0]) + '" style="margin-top:14px">' +
             '<div style="margin-bottom:4px"><b>' + esc(p[1]) + '</b></div>' +
-            '<div class="hint" style="margin-top:0"><span class="spinner"></span>诊断中…</div></div>').join('');
+            '<div class="hint" style="margin-top:0"><span class="spinner"></span>' + AgI18n.t('settings.doc-running') + '</div></div>').join('');
         [...panel.querySelectorAll('.doctor-block')].forEach((b, i) => doctorFadeIn(b, i * 100));
       }));
       unlisten.push(await TAURI.event.listen('ag-doctor-section', (ev) => {
         const sec = ev.payload;
         if (!sec || !sec.id) return;
         const slot = panel.querySelector('.doctor-block[data-sec="' + sec.id + '"]');
-        if (!slot) return; // begin 未到时忽略，最终整体渲染兜底
+        if (!slot) return; // Ignore if begin hasn't arrived yet; the final full render is the fallback
         streamed = true;
         slot.innerHTML = doctorSectionHtml(sec);
         doctorFadeIn(slot, 0);
@@ -375,14 +375,14 @@ async function runDoctor() {
     const res = await invoke('run_doctor');
     const sumEl = $('doctor-summary');
     if (streamed && sumEl) {
-      // 流式完成：顶部落定汇总（骨架已逐节替换为真实结果）
+      // Streaming done: settle the summary at the top (skeletons already replaced section by section with real results)
       sumEl.innerHTML = doctorSummaryHtml(res);
       doctorFadeIn(sumEl, 0);
     } else {
-      renderDoctor(res); // 无事件通路（或事件丢失）：整体渲染兜底
+      renderDoctor(res); // No event channel (or events lost): fall back to full render
     }
   } catch (e) {
-    panel.innerHTML = '<div class="hint" style="margin-top:10px">诊断服务未就绪（' + esc(friendlyError(e)) + '）</div>';
+    panel.innerHTML = '<div class="hint" style="margin-top:10px">' + AgI18n.t('settings.doc-not-ready', { err: esc(friendlyError(e)) }) + '</div>';
   } finally {
     cleanup();
     btn.disabled = false;
@@ -399,7 +399,7 @@ function renderDoctor(res) {
   [...panel.querySelectorAll('.doctor-block')].forEach((b, i) => doctorFadeIn(b, i * 150));
 }
 
-/* ================= 设置 ================= */
+/* ================= Settings ================= */
 async function loadSettings() {
   $('s-autoproxy').checked = PREFS.autoproxy;
   $('s-autoreconnect').checked = PREFS.autoreconnect;
@@ -412,17 +412,17 @@ async function loadSettings() {
   $('s-autostart').onchange = async (e) => {
     try {
       await invoke('set_autostart', { enabled: e.target.checked });
-      toast(e.target.checked ? '已开启开机自启' : '已关闭开机自启', 'ok');
+      toast(e.target.checked ? AgI18n.t('settings.autostart-on') : AgI18n.t('settings.autostart-off'), 'ok');
     } catch (err) {
       e.target.checked = !e.target.checked;
       toast(friendlyError(err), 'err');
     }
   };
 
-  // 自我诊断（可重复点击重新诊断）
+  // Doctor (click again to re-run)
   $('btn-doctor-run').onclick = runDoctor;
 
-  // 同步与备份：通道切换显隐配置区；PIN 输入数字过滤；各按钮绑定（内部均防重入）
+  // Sync & backup: channel switch toggles config areas; PIN input digit filter; button bindings (all re-entry-guarded inside)
   $('sync-target').onchange = () => syncShowTarget($('sync-target').value);
   $('sync-pin').addEventListener('input', e => { e.target.value = e.target.value.replace(/\D/g, ''); });
   $('btn-sync-save').onclick = syncSave;
@@ -435,21 +435,21 @@ async function loadSettings() {
   $('sync-restore-ok').onclick = syncRestoreDo;
 }
 
-/* ================= 同步与备份（WebDAV/S3/手动文件；PIN 不落盘，每次操作取卡上输入框） =================
-   后端 apps/desktop/src/sync.rs：按版本号比对新旧（上传 = max(远端,本地)+1）；恢复/导入成功后 500ms 应用自动重启。
-   set_sync_config 入参为嵌套结构 {target, webdav:{url,user,pass}, s3:{endpoint,bucket,ak,sk,region,prefix}, pin_set}，
-   pass/sk 传空串 = 保留原值（回显掩码如 **ab，重新编辑时留空即可）。 */
-let SYNC_CFG = null;     // get_sync_config 缓存（掩码回显 / pin_set 保留 / 状态行）
-let SYNC_RESTORE = null; // 恢复确认弹窗上下文 {kind:'remote', st} | {kind:'file', path}
+/* ================= Sync & backup (WebDAV/S3/manual file; PIN never persisted, read from the card input on every op) =================
+   Backend apps/desktop/src/sync.rs: compares versions (upload = max(remote, local)+1); app auto-restarts 500ms after a successful restore/import.
+   set_sync_config takes a nested struct {target, webdav:{url,user,pass}, s3:{endpoint,bucket,ak,sk,region,prefix}, pin_set};
+   empty pass/sk = keep the original (echoed masked like **ab; leave blank when re-editing). */
+let SYNC_CFG = null;     // get_sync_config cache (masked echo / pin_set retention / status line)
+let SYNC_RESTORE = null; // Restore-confirm modal context {kind:'remote', st} | {kind:'file', path}
 
 function syncPin() { return $('sync-pin').value.trim(); }
-/* PIN 校验：空 或正好 4 位数字；非法 toast 并返回 null（空串是有效值，勿用 falsy 判断） */
+/* PIN validation: empty or exactly 4 digits; toast and return null if invalid (empty string is valid — never use a falsy check) */
 function syncPinValid() {
   const p = syncPin();
-  if (p && !/^\d{4}$/.test(p)) { toast('PIN 须为 4 位数字或留空', 'err'); return null; }
+  if (p && !/^\d{4}$/.test(p)) { toast(AgI18n.t('settings.pin-invalid'), 'err'); return null; }
   return p;
 }
-/* 后端 target 仅 none/webdav/s3；「手动导入导出」为前端纯文件通道，落盘 none（UI 选择另记 localStorage） */
+/* Backend target is only none/webdav/s3; 「手动导入导出」 is a pure frontend file channel, persisted as none (UI choice stored separately in localStorage) */
 function syncTargetBackend() {
   const v = $('sync-target').value;
   return v === 'file' ? 'none' : v;
@@ -458,11 +458,11 @@ function syncShowTarget(v) {
   $('sync-cfg-webdav').style.display = v === 'webdav' ? 'block' : 'none';
   $('sync-cfg-s3').style.display = v === 's3' ? 'block' : 'none';
   $('sync-cfg-file').style.display = v === 'file' ? 'block' : 'none';
-  // 检查/上传/拉取仅网络通道有意义；文件通道用配置区内的导出/导入按钮
+  // Check/upload/restore only make sense for network channels; the file channel uses the export/import buttons in its config area
   const ops = v === 'webdav' || v === 's3';
   ['btn-sync-check', 'btn-sync-upload', 'btn-sync-restore'].forEach(id => { $(id).style.display = ops ? '' : 'none'; });
 }
-/* 按钮防重入：进行中 disabled + spinner，结束还原原 innerHTML（含图标） */
+/* Button re-entry guard: disabled + spinner while busy, restore the original innerHTML (incl. icon) when done */
 function syncBusy(btn, on, text) {
   if (!btn) return;
   btn.disabled = on;
@@ -470,9 +470,9 @@ function syncBusy(btn, on, text) {
   else if (btn._html) { btn.innerHTML = btn._html; btn._html = null; }
 }
 
-/* 进设置视图时渲染：target 选中、字段回填（掩码进 placeholder）、状态行 */
+/* Render on entering the settings view: target selection, field backfill (mask into placeholder), status line */
 async function loadSyncConfig() {
-  if (HTTP_MODE) return; // 整卡已隐藏，且 Web 远程面无此命令
+  if (HTTP_MODE) return; // Whole card hidden, and the Web remote panel lacks this command
   let cfg;
   try { cfg = await invoke('get_sync_config'); } catch (e) { return; }
   SYNC_CFG = cfg;
@@ -484,31 +484,31 @@ async function loadSyncConfig() {
   $('sync-wd-url').value = cfg.webdav_url || '';
   $('sync-wd-user').value = cfg.webdav_user || '';
   $('sync-wd-pass').value = '';
-  $('sync-wd-pass').placeholder = cfg.webdav_pass_mask ? '已配置（' + cfg.webdav_pass_mask + '），留空保持不变' : '留空保持不变';
+  $('sync-wd-pass').placeholder = cfg.webdav_pass_mask ? AgI18n.t('settings.pw-masked', { mask: cfg.webdav_pass_mask }) : AgI18n.t('settings.pw-keep');
   $('sync-s3-endpoint').value = cfg.s3_endpoint || '';
   $('sync-s3-bucket').value = cfg.s3_bucket || '';
   $('sync-s3-ak').value = cfg.s3_ak || '';
   $('sync-s3-sk').value = '';
-  $('sync-s3-sk').placeholder = cfg.s3_sk_mask ? '已配置（' + cfg.s3_sk_mask + '），留空保持不变' : '留空保持不变';
+  $('sync-s3-sk').placeholder = cfg.s3_sk_mask ? AgI18n.t('settings.pw-masked', { mask: cfg.s3_sk_mask }) : AgI18n.t('settings.pw-keep');
   $('sync-s3-region').value = cfg.s3_region || '';
   $('sync-s3-prefix').value = cfg.s3_prefix || '';
   renderSyncState(cfg);
   $('sync-check-result').style.display = 'none';
 }
 
-/* 状态行：版本号走 odo 滚动（odoSet 内部签名对比，未变不动 DOM），其余文本变更检测写入 */
+/* Status line: version number scrolls via odo (odoSet signature-compares internally, no DOM touch when unchanged); other text written with change detection */
 function renderSyncState(cfg) {
   odoSet($('sync-ver'), 'v' + (cfg.version || 0));
   let rest = cfg.last_upload_at
-    ? ' · 上次上传 ' + fmtAgo(cfg.last_upload_at) + (cfg.last_device ? '（' + cfg.last_device + '）' : '')
-    : ' · 尚未上传过存档';
-  if (cfg.last_restore_at) rest += ' · 上次恢复 ' + fmtAgo(cfg.last_restore_at);
+    ? AgI18n.t('settings.sync-uploaded', { time: fmtAgo(cfg.last_upload_at) }) + (cfg.last_device ? AgI18n.t('settings.sync-device', { name: cfg.last_device }) : '')
+    : AgI18n.t('settings.sync-never');
+  if (cfg.last_restore_at) rest += AgI18n.t('settings.sync-restored', { time: fmtAgo(cfg.last_restore_at) });
   setText('sync-state-rest', rest);
 }
 
 async function syncSave() {
   const pin = syncPin();
-  if (pin && !/^\d{4}$/.test(pin)) { toast('PIN 须为 4 位数字或留空', 'err'); return; }
+  if (pin && !/^\d{4}$/.test(pin)) { toast(AgI18n.t('settings.pin-invalid'), 'err'); return; }
   const cfg = {
     target: syncTargetBackend(),
     webdav: { url: $('sync-wd-url').value.trim(), user: $('sync-wd-user').value.trim(), pass: $('sync-wd-pass').value },
@@ -517,33 +517,33 @@ async function syncSave() {
       ak: $('sync-s3-ak').value.trim(), sk: $('sync-s3-sk').value,
       region: $('sync-s3-region').value.trim(), prefix: $('sync-s3-prefix').value.trim(),
     },
-    // pin_set 仅 UI 提示位：本卡输满 4 位记 true；留空保留原值（PIN 本身不落盘；上传用过 PIN 后端也会置 true）
+    // pin_set is a UI hint flag only: true once 4 digits entered on this card; blank keeps the old value (PIN itself never persisted; backend also sets true after a PIN'd upload)
     pin_set: pin.length === 4 ? true : !!(SYNC_CFG && SYNC_CFG.pin_set),
   };
-  if (cfg.target === 'webdav' && !cfg.webdav.url) { toast('请填写 WebDAV 地址', 'err'); return; }
-  if (cfg.target === 's3' && (!cfg.s3.endpoint || !cfg.s3.bucket)) { toast('请填写 S3 Endpoint 与 Bucket', 'err'); return; }
+  if (cfg.target === 'webdav' && !cfg.webdav.url) { toast(AgI18n.t('settings.wd-url-required'), 'err'); return; }
+  if (cfg.target === 's3' && (!cfg.s3.endpoint || !cfg.s3.bucket)) { toast(AgI18n.t('settings.s3-required'), 'err'); return; }
   const btn = $('btn-sync-save');
-  syncBusy(btn, true, '保存中…');
+  syncBusy(btn, true, AgI18n.t('settings.saving'));
   try {
     await invoke('set_sync_config', { cfg });
     localStorage.setItem('ag_sync_target_ui', $('sync-target').value);
-    toast('同步配置已保存', 'ok');
-    await loadSyncConfig(); // 重拉刷新掩码与状态行
+    toast(AgI18n.t('settings.sync-saved'), 'ok');
+    await loadSyncConfig(); // Re-fetch to refresh the mask and status line
   } catch (e) { toast(friendlyError(e), 'err'); }
   syncBusy(btn, false);
 }
 
-/* relation → 状态行下方小字（检查远端 / 上传成功后渲染） */
+/* relation → small text under the status line (rendered after remote check / successful upload) */
 function renderSyncCheck(st) {
   const el = $('sync-check-result');
   let s;
   switch (st.relation) {
-    case 'newer': s = '远端 v' + st.remote_version + ' 更新（' + (st.remote_device || '未知设备') + ' · ' + fmtAgo(st.remote_at) + '）'; break;
-    case 'same': s = '本地已是最新 v' + st.local_version; break;
-    case 'older': s = '本地 v' + st.local_version + ' 比远端 v' + st.remote_version + ' 新'; break;
-    case 'empty': s = '远端还没有存档'; break;
-    case 'unconfigured': s = '请先保存通道配置'; break;
-    case 'need-pin': s = '远端存档已加密，请输入 PIN'; break;
+    case 'newer': s = AgI18n.t('settings.chk-newer', { v: st.remote_version, dev: st.remote_device || AgI18n.t('settings.unknown-device'), time: fmtAgo(st.remote_at) }); break;
+    case 'same': s = AgI18n.t('settings.chk-same', { v: st.local_version }); break;
+    case 'older': s = AgI18n.t('settings.chk-older', { a: st.local_version, b: st.remote_version }); break;
+    case 'empty': s = AgI18n.t('settings.chk-empty'); break;
+    case 'unconfigured': s = AgI18n.t('settings.chk-unconfigured'); break;
+    case 'need-pin': s = AgI18n.t('settings.chk-need-pin'); break;
     default: s = st.relation;
   }
   el.textContent = s;
@@ -553,7 +553,7 @@ function renderSyncCheck(st) {
 async function syncCheck() {
   const pin = syncPinValid(); if (pin === null) return;
   const btn = $('btn-sync-check');
-  syncBusy(btn, true, '检查中…');
+  syncBusy(btn, true, AgI18n.t('settings.checking'));
   try { renderSyncCheck(await invoke('sync_check', { pin })); }
   catch (e) { $('sync-check-result').style.display = 'none'; toast(friendlyError(e), 'err'); }
   syncBusy(btn, false);
@@ -562,55 +562,55 @@ async function syncCheck() {
 async function syncUpload() {
   const pin = syncPinValid(); if (pin === null) return;
   const btn = $('btn-sync-upload');
-  syncBusy(btn, true, '上传中…');
+  syncBusy(btn, true, AgI18n.t('settings.uploading'));
   try {
     const st = await invoke('sync_upload', { pin });
-    toast('已上传 v' + st.local_version, 'ok');
-    await loadSyncConfig(); // version 已 +1，状态行 odo 滚动更新
+    toast(AgI18n.t('settings.uploaded', { v: st.local_version }), 'ok');
+    await loadSyncConfig(); // version already +1; status line updates with odo scroll
     renderSyncCheck(st);
   } catch (e) { toast(friendlyError(e), 'err'); }
   syncBusy(btn, false);
 }
 
-/* 拉取恢复：先 sync_check 再弹确认 modal；不可恢复的关系（无配置/无存档/缺 PIN）直接 toast 拦截 */
+/* Pull & restore: sync_check first, then the confirm modal; unrestorable relations (unconfigured/no archive/missing PIN) blocked with a toast */
 async function syncRestoreAsk() {
   const pin = syncPinValid(); if (pin === null) return;
   const btn = $('btn-sync-restore');
-  syncBusy(btn, true, '检查中…');
+  syncBusy(btn, true, AgI18n.t('settings.checking'));
   try {
     const st = await invoke('sync_check', { pin });
-    if (st.relation === 'unconfigured') { toast('请先保存通道配置', 'err'); return; }
-    if (st.relation === 'empty') { toast('远端还没有存档', 'err'); return; }
-    if (st.relation === 'need-pin') { toast('远端存档已加密，请输入正确 PIN', 'err'); return; }
+    if (st.relation === 'unconfigured') { toast(AgI18n.t('settings.chk-unconfigured'), 'err'); return; }
+    if (st.relation === 'empty') { toast(AgI18n.t('settings.chk-empty'), 'err'); return; }
+    if (st.relation === 'need-pin') { toast(AgI18n.t('settings.need-pin-err'), 'err'); return; }
     openSyncRestoreModal({ kind: 'remote', st });
   } catch (e) { toast(friendlyError(e), 'err'); }
   finally { syncBusy(btn, false); }
 }
 
-/* 恢复确认弹窗：远端（版本对比 + older 黄色警告）与文件导入（来源文案改为文件路径）共用 */
+/* Restore-confirm modal: shared by remote (version compare + yellow warning when older) and file import (source text becomes the file path) */
 function openSyncRestoreModal(req) {
   SYNC_RESTORE = req;
   const isRemote = req.kind === 'remote';
   setText('sync-restore-src', isRemote
-    ? '来自 ' + ($('sync-target').value === 's3' ? 'S3' : 'WebDAV') + ' 远端存档'
-    : '来自本地文件');
-  setText('sync-restore-remote-k', isRemote ? '远端存档' : '存档文件');
+    ? AgI18n.t('settings.restore-src-remote', { ch: $('sync-target').value === 's3' ? 'S3' : 'WebDAV' })
+    : AgI18n.t('settings.restore-src-file'));
+  setText('sync-restore-remote-k', isRemote ? AgI18n.t('settings.restore-remote-k') : AgI18n.t('settings.restore-file-k'));
   setText('sync-restore-remote', isRemote
-    ? 'v' + req.st.remote_version + ' · ' + (req.st.remote_device || '未知设备') + ' · ' + fmtAgo(req.st.remote_at)
+    ? AgI18n.t('settings.restore-remote-fmt', { v: req.st.remote_version, dev: req.st.remote_device || AgI18n.t('settings.unknown-device'), time: fmtAgo(req.st.remote_at) })
     : req.path);
   setText('sync-restore-local', 'v' + (isRemote ? req.st.local_version : (SYNC_CFG ? SYNC_CFG.version : 0)));
   $('sync-restore-warn').style.display = isRemote && req.st.relation === 'older' ? '' : 'none';
   $('sync-restore-err').textContent = '';
-  syncBusy($('sync-restore-ok'), false); // 复开时还原（上次失败遗留 busy 态）
+  syncBusy($('sync-restore-ok'), false); // Reset on reopen (busy state left over from a previous failure)
   $('sync-restore-modal').style.display = 'flex';
 }
 
-/* 确认恢复：成功后后端 500ms 自动重启应用，前端无需任何后续动作 */
+/* Confirm restore: on success the backend auto-restarts the app in 500ms; no frontend follow-up needed */
 async function syncRestoreDo() {
   if (!SYNC_RESTORE) return;
   const pin = syncPinValid(); if (pin === null) return;
   const btn = $('sync-restore-ok');
-  syncBusy(btn, true, '正在恢复…');
+  syncBusy(btn, true, AgI18n.t('settings.restoring'));
   try {
     if (SYNC_RESTORE.kind === 'remote') await invoke('sync_restore', { pin });
     else await invoke('sync_import', { path: SYNC_RESTORE.path, pin });
@@ -620,25 +620,34 @@ async function syncRestoreDo() {
   }
 }
 
-/* 文件通道导出：toast 显示完整路径；导出同样版本 +1，刷新状态行 */
+/* File-channel export: toast shows the full path; export also bumps version +1, refresh the status line */
 async function syncExportFile() {
   const path = $('sync-file-export').value.trim();
-  if (!path) { toast('请填写导出路径', 'err'); return; }
+  if (!path) { toast(AgI18n.t('settings.export-path-required'), 'err'); return; }
   const pin = syncPinValid(); if (pin === null) return;
   const btn = $('btn-sync-export');
-  syncBusy(btn, true, '导出中…');
+  syncBusy(btn, true, AgI18n.t('settings.exporting'));
   try {
     await invoke('sync_export', { path, pin });
-    toast('已导出到 ' + path, 'ok');
+    toast(AgI18n.t('settings.exported', { path }), 'ok');
     await loadSyncConfig();
   } catch (e) { toast(friendlyError(e), 'err'); }
   syncBusy(btn, false);
 }
 
-/* 文件通道导入：同恢复确认流程（来源文案为文件路径） */
+/* File-channel import: same restore-confirm flow (source text is the file path) */
 function syncImportAsk() {
   const path = $('sync-file-import').value.trim();
-  if (!path) { toast('请填写导入路径', 'err'); return; }
+  if (!path) { toast(AgI18n.t('settings.import-path-required'), 'err'); return; }
   if (syncPinValid() === null) return;
   openSyncRestoreModal({ kind: 'file', path });
 }
+
+
+/* Language switch: re-render role panels/conflict banner/sync status line in the new language (doctor result text comes from the backend; only a re-run updates it) */
+if (window.AgI18n) AgI18n.onChange(() => {
+  refreshServerPanel();
+  refreshWebPanel();
+  refreshSysproxy();
+  if (SYNC_CFG) renderSyncState(SYNC_CFG);
+});

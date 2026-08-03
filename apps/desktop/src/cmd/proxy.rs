@@ -1,4 +1,4 @@
-//! 从 lib.rs 拆分：本地代理与系统代理托管（纯搬运，零逻辑变更）
+//! Split out of lib.rs: local proxy and system proxy management (pure move, zero logic changes)
 
 use crate::{map_err, roles, sysproxy, AppState};
 use serde::Serialize;
@@ -10,8 +10,8 @@ pub struct ProxyStatus {
     pub port: u16,
 }
 
-/// 启动本地代理共用逻辑（start_proxy 命令 / proxy_power_toggle 复用）：
-/// 按 system_proxy 角色偏好决定是否 engage 系统代理（幂等，快照不会重复覆盖）。
+/// Shared start-local-proxy logic (reused by the start_proxy command / proxy_power_toggle):
+/// engages the system proxy per the system_proxy role preference (idempotent; the snapshot is never overwritten twice).
 pub(crate) async fn start_proxy_inner(app: &tauri::AppHandle, state: &State<'_, AppState>, port: u16) -> Result<u16, String> {
     if !state.roles.lock().await.client {
         return Err("扇入已停用，请在首页开启".into());
@@ -26,8 +26,8 @@ pub(crate) async fn start_proxy_inner(app: &tauri::AppHandle, state: &State<'_, 
     Ok(state.client.proxy_port())
 }
 
-/// 停止本地代理共用逻辑：系统代理模式下还原系统代理（避免指向已死端口）；
-/// 模式偏好保留，下次启动自动再接管。
+/// Shared stop-local-proxy logic: restores the system proxy in system proxy mode (avoids pointing at a dead port);
+/// the mode preference is kept, so the next start takes over automatically.
 pub(crate) async fn stop_proxy_inner(app: &tauri::AppHandle, state: &State<'_, AppState>) -> Result<(), String> {
     state.client.stop_proxy().await;
     if state.roles.lock().await.system_proxy {
@@ -38,28 +38,28 @@ pub(crate) async fn stop_proxy_inner(app: &tauri::AppHandle, state: &State<'_, A
     Ok(())
 }
 
-/// 启动本地代理
+/// Start the local proxy
 #[tauri::command]
 pub(crate) async fn start_proxy(app: tauri::AppHandle, state: State<'_, AppState>, port: u16) -> Result<u16, String> {
     start_proxy_inner(&app, &state, port).await
 }
 
-/// 停止本地代理
+/// Stop the local proxy
 #[tauri::command]
 pub(crate) async fn stop_proxy(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     stop_proxy_inner(&app, &state).await
 }
 
-/// 全局总开关状态（首页大中控台；proxy_power 返回体）
+/// Global power-switch state (home dashboard; proxy_power response body)
 #[derive(Debug, Clone, Serialize)]
 pub struct PowerState {
-    /// 本地代理是否正在监听
+    /// Whether the local proxy is listening
     pub on: bool,
-    /// 监听地址（如 127.0.0.1:57890）或「已停止」
+    /// Listen address (e.g. 127.0.0.1:57890) or "stopped"
     pub detail: String,
 }
 
-/// 当前总开关状态快照（纯内存读，无网络 IO，可供前端轮询）。
+/// Snapshot of the current power state (pure in-memory read, no network IO, safe for frontend polling).
 pub(crate) fn power_state_of(state: &State<'_, AppState>) -> PowerState {
     let port = state.client.proxy_port();
     PowerState {
@@ -68,14 +68,14 @@ pub(crate) fn power_state_of(state: &State<'_, AppState>) -> PowerState {
     }
 }
 
-/// 全局总开关状态查询（廉价轮询用）
+/// Query the global power state (cheap to poll)
 #[tauri::command]
 pub(crate) async fn proxy_power(state: State<'_, AppState>) -> Result<PowerState, String> {
     Ok(power_state_of(&state))
 }
 
-/// 全局总开关切换：on→停止（含系统代理还原）；off→启动（默认端口 57890，
-/// 按 system_proxy 角色偏好接管系统代理）。TUN 与系统代理互斥，TUN 运行中禁止直接 toggle。
+/// Global power toggle: on -> stop (including system proxy restore); off -> start (default port 57890,
+/// taking over the system proxy per the system_proxy role preference). TUN and system proxy are mutually exclusive; direct toggle is forbidden while TUN runs.
 #[tauri::command]
 pub(crate) async fn proxy_power_toggle(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<PowerState, String> {
     if state.roles.lock().await.tun_mode {
@@ -84,7 +84,7 @@ pub(crate) async fn proxy_power_toggle(app: tauri::AppHandle, state: State<'_, A
     if state.client.proxy_port() > 0 {
         stop_proxy_inner(&app, &state).await?;
     } else {
-        // 与「连接」页/系统代理自动拉起同一默认端口
+        // Same default port as auto-start from the "Connect" page / system proxy
         start_proxy_inner(&app, &state, 57890).await?;
     }
     let st = power_state_of(&state);
@@ -92,7 +92,7 @@ pub(crate) async fn proxy_power_toggle(app: tauri::AppHandle, state: State<'_, A
     Ok(st)
 }
 
-/// 代理状态
+/// Proxy status
 #[tauri::command]
 pub(crate) async fn proxy_status(state: State<'_, AppState>) -> Result<ProxyStatus, String> {
     let port = state.client.proxy_port();
@@ -102,9 +102,9 @@ pub(crate) async fn proxy_status(state: State<'_, AppState>) -> Result<ProxyStat
     })
 }
 
-// ==================== 系统代理托管 ====================
+// ==================== System proxy management ====================
 
-/// 期望的系统代理值（本地代理端口）。
+/// Expected system proxy value (local proxy port).
 pub(crate) fn expected_sysproxy(state: &State<'_, AppState>) -> String {
     format!("127.0.0.1:{}", state.client.proxy_port())
 }
@@ -112,8 +112,8 @@ pub(crate) fn expected_sysproxy(state: &State<'_, AppState>) -> String {
 #[tauri::command]
 pub(crate) async fn set_system_proxy(state: State<'_, AppState>, enabled: bool) -> Result<(), String> {
     if enabled {
-        // 本地代理未启动则自动拉起（默认端口同「连接」页 57890），
-        // 消除"必须先手动启动本地代理"的顺序陷阱
+        // Auto-start the local proxy if not running (default port 57890, same as the "Connect" page),
+        // removing the "must start the local proxy manually first" ordering trap
         if state.client.proxy_port() == 0 {
             if !state.roles.lock().await.client {
                 return Err("扇入已停用，请在首页开启".into());
@@ -140,7 +140,7 @@ pub(crate) async fn set_system_proxy(state: State<'_, AppState>, enabled: bool) 
 
 #[tauri::command]
 pub(crate) async fn sysproxy_status(state: State<'_, AppState>) -> Result<sysproxy::SysProxyStatus, String> {
-    // TUN 模式 / 锁定模式视同托管（系统自动代理指向 57890，巡检自动收回）
+    // TUN mode / locked mode count as managed (system proxy points at 57890; watch auto-reclaims)
     let managed = {
         let r = state.roles.lock().await;
         r.system_proxy || r.tun_mode || r.sysproxy_lock
@@ -150,8 +150,8 @@ pub(crate) async fn sysproxy_status(state: State<'_, AppState>) -> Result<syspro
     let mut st = tokio::task::spawn_blocking(move || sysproxy::inspect(managed, &expected))
         .await
         .map_err(map_err)??;
-    // 代理未运行时不判冲突：启动清理已还原残留，
-    // 默认系统代理模式下"还没启动代理"不属于被抢占
+    // No conflict when the proxy is not running: startup cleanup already restored leftovers,
+    // and in default system proxy mode "proxy not started yet" is not a takeover
     if !running {
         st.conflict = false;
     }
@@ -166,9 +166,9 @@ pub(crate) async fn reclaim_sysproxy(state: State<'_, AppState>) -> Result<(), S
         .map_err(map_err)?
 }
 
-// ==================== 代理方式三态（悬浮球菜单） ====================
+// ==================== Proxy mode tri-state (floating ball menu) ====================
 
-/// 当前代理方式：tun（TUN 接管）/ system（本地代理 + 系统代理）/ local（仅本地代理）。
+/// Current proxy mode: tun (TUN takeover) / system (local proxy + system proxy) / local (local proxy only).
 #[tauri::command]
 pub(crate) async fn proxy_mode_get(state: State<'_, AppState>) -> Result<String, String> {
     let r = state.roles.lock().await;
@@ -182,10 +182,10 @@ pub(crate) async fn proxy_mode_get(state: State<'_, AppState>) -> Result<String,
     .to_string())
 }
 
-/// 设置代理方式（悬浮球菜单）。返回实际生效的模式字符串。
-/// - "tun"：复用 set_tun_mode 开启全逻辑（§2.2 管理员检查 NEED_ELEVATION / 制品下载等错误原样透传）
-/// - "system" / "local"：TUN 开着先关（复用 set_tun_mode 关闭路径）；本地代理未起则拉起（57890）；
-///   然后按模式 engage / disengage 系统代理并持久化偏好
+/// Set the proxy mode (floating ball menu). Returns the mode string actually in effect.
+/// - "tun": reuses the full set_tun_mode enable path (§2.2 admin check NEED_ELEVATION / artifact download errors passed through verbatim)
+/// - "system" / "local": turns TUN off first if on (reuses the set_tun_mode disable path); starts the local proxy if not running (57890);
+///   then engages / disengages the system proxy per mode and persists the preference
 #[tauri::command]
 pub(crate) async fn proxy_mode_set(
     app: tauri::AppHandle,
@@ -202,7 +202,7 @@ pub(crate) async fn proxy_mode_set(
             if state.roles.lock().await.tun_mode {
                 crate::set_tun_mode(app.clone(), state.clone(), false).await?;
             }
-            // 本地代理未启动则自动拉起（start_proxy_inner 内部校验扇入角色；端口同「连接」页默认）
+            // Auto-start the local proxy if not running (start_proxy_inner validates the fan-in role; default port same as the "Connect" page)
             if state.client.proxy_port() == 0 {
                 start_proxy_inner(&app, &state, 57890).await?;
             }
@@ -229,8 +229,8 @@ pub(crate) async fn proxy_mode_set(
     }
 }
 
-/// 系统代理接管 toggle（悬浮球菜单）：当前系统代理已指向期望值则还原（返 false），
-/// 否则接管（返 true）。与 set_system_proxy 的差别：方向由 inspect 实测决定，无需前端先查状态。
+/// System proxy takeover toggle (floating ball menu): restores if the system proxy already points at the expected
+/// value (returns false), otherwise takes over (returns true). Unlike set_system_proxy: the direction is decided by an inspect probe, so the frontend need not query state first.
 #[tauri::command]
 pub(crate) async fn sysproxy_toggle(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<bool, String> {
     if state.roles.lock().await.tun_mode {
@@ -267,10 +267,10 @@ pub(crate) async fn sysproxy_toggle(app: tauri::AppHandle, state: State<'_, AppS
     Ok(on)
 }
 
-/// 系统代理冲突巡检（30s）：托管中系统值 ≠ 期望值即记审计。
-/// TUN 模式（§2.6）与锁定模式（sysproxy_lock）升级为自动收回：被抢即重写期望值并记审计
-/// （含来源值；锁定来源 detail 注明 lock:true），每轮处理；
-/// 非自动收回维持"提醒手动收回"（每轮冲突只记一次，恢复后可再记）。
+/// System proxy conflict watch (30s): while managed, any system value != expected is audited.
+/// TUN mode (§2.6) and locked mode (sysproxy_lock) escalate to auto-reclaim: on takeover, rewrite the expected
+/// value and audit (including the offending value; lock-sourced entries note lock:true in detail), every round;
+/// without auto-reclaim, keep "remind to reclaim manually" (each conflict round audited once, re-armed after recovery).
 pub(crate) async fn sysproxy_watch(app: tauri::AppHandle) {
     let mut in_conflict = false;
     loop {
@@ -280,7 +280,7 @@ pub(crate) async fn sysproxy_watch(app: tauri::AppHandle) {
             let r = state.roles.lock().await;
             (r.system_proxy, r.tun_mode, r.sysproxy_lock)
         };
-        // TUN 模式与锁定模式视同托管（自动收回策略）；代理未运行时不判冲突（同 sysproxy_status）
+        // TUN mode and locked mode count as managed (auto-reclaim policy); no conflict when the proxy is not running (same as sysproxy_status)
         let managed = pref || tun_mode || lock;
         if !managed || state.client.proxy_port() == 0 {
             in_conflict = false;

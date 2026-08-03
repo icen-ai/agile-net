@@ -1,4 +1,4 @@
-//! 扇出对端管理（`anet connector ...`）。
+//! Fan-out connector management (`anet connector ...`).
 
 use anyhow::{Result, anyhow};
 use clap::{Args, Subcommand};
@@ -148,7 +148,7 @@ pub(super) async fn cmd_connector(
         }
         ConnectorSub::Update(u) => {
             let id = resolve_id(&mut client, "/api/v1/admin/connectors", &u.id).await?;
-            // PUT 为全量替换（缺省 group_id 即置不收敛）：先取现值合并，缺省参数一律保留原值
+            // PUT is a full replace (an omitted group_id clears the group): fetch current values and merge first; omitted args keep their old values.
             let d = client.api("GET", "/api/v1/admin/connectors", None).await?;
             let cur = d["items"]
                 .as_array()
@@ -170,11 +170,11 @@ pub(super) async fn cmd_connector(
                 "group_id": cur["group_id"],
                 "remark": u.remark.unwrap_or_else(|| cur["remark"].as_str().unwrap_or_default().to_string()),
             });
-            // token 留空 = 保留原值（服务端空串/null 视为未提供，绝不回显）
+            // Empty token = keep the old value (the server treats empty string/null as not provided, never echoed back)
             if let Some(t) = u.token.filter(|t| !t.is_empty()) {
                 body["token"] = json!(t);
             }
-            // 显式 --group 才换组（名称或 ID 解析）
+            // Only an explicit --group switches the group (resolved by name or ID)
             if let Some(g) = &u.group {
                 body["group_id"] = json!(
                     resolve_id(&mut client, "/api/v1/admin/groups?page_size=100", g).await?

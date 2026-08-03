@@ -1,6 +1,6 @@
-//! 客户端数据面 E2E 测试（M4 全链路）
+//! Client data-plane E2E tests (M4 full path)
 //!
-//! 链路：Client(SOCKS5) → ClientTunnel → Node-A(listener, ACL) → Node-B(connector) → Echo Server
+//! Path: Client(SOCKS5) → ClientTunnel → Node-A(listener, ACL) → Node-B(connector) → Echo Server
 
 use agile_net_core::error::Result;
 use agile_net_core::proto::message::AuthRequest;
@@ -24,7 +24,7 @@ fn get_free_addr() -> SocketAddr {
     addr
 }
 
-/// 测试用校验器：节点 PSK + 客户端 tunnel_token（带 ACL）
+/// Test validator: node PSK + client tunnel_token (with ACL)
 struct TestValidator;
 
 impl TokenValidator for TestValidator {
@@ -75,7 +75,7 @@ async fn start_echo_server(addr: SocketAddr) {
     });
 }
 
-/// 全链路：客户端经隧道穿透两级节点访问内网 Echo
+/// Full path: client reaches the internal echo through a two-node tunnel chain
 #[tokio::test]
 async fn client_to_node_to_downstream_chain() -> Result<()> {
     let echo_addr = get_free_addr();
@@ -83,7 +83,7 @@ async fn client_to_node_to_downstream_chain() -> Result<()> {
 
     start_echo_server(echo_addr).await;
 
-    // Node-A：上游 listener（校验节点 PSK 与客户端 tunnel_token）
+    // Node-A: upstream listener (validates node PSK and client tunnel_token)
     let listener = Arc::new(RelayListener::with_validator(
         relay_addr,
         Arc::new(TestValidator),
@@ -97,7 +97,7 @@ async fn client_to_node_to_downstream_chain() -> Result<()> {
     });
     tokio::time::sleep(Duration::from_millis(80)).await;
 
-    // Node-B：下游 connector，通告 127.0.0.0/8 网段
+    // Node-B: downstream connector, advertises 127.0.0.0/8
     let connector = RelayConnector::new(relay_addr, "node-b", "node-psk")?
         .with_advertise(vec!["127.0.0.0/8".to_string()]);
     connector.connect().await?;
@@ -108,7 +108,7 @@ async fn client_to_node_to_downstream_chain() -> Result<()> {
         Some("node-b".to_string())
     );
 
-    // Client：隧道 + 本地 SOCKS5 入站
+    // Client: tunnel + local SOCKS5 inbound
     let tunnel = Arc::new(ClientTunnel::new_insecure(
         relay_addr,
         "acc-zhangsan",
@@ -130,7 +130,7 @@ async fn client_to_node_to_downstream_chain() -> Result<()> {
     });
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    // SOCKS5 握手 + CONNECT echo
+    // SOCKS5 handshake + CONNECT echo
     let mut sock = tokio::net::TcpStream::connect(proxy_addr).await?;
     sock.write_all(&[0x05, 0x01, 0x00]).await?;
     let mut resp = [0u8; 2];
@@ -141,7 +141,7 @@ async fn client_to_node_to_downstream_chain() -> Result<()> {
     let mut req = vec![0x05, 0x01, 0x00, 0x01];
     req.extend_from_slice(&[127, 0, 0, 1]);
     req.extend_from_slice(&echo_addr.port().to_be_bytes());
-    let _ = ip; // 直接使用字面量 127.0.0.1
+    let _ = ip; // use the 127.0.0.1 literal directly
     sock.write_all(&req).await?;
     let mut resp = [0u8; 10];
     sock.read_exact(&mut resp).await?;
@@ -155,7 +155,7 @@ async fn client_to_node_to_downstream_chain() -> Result<()> {
     Ok(())
 }
 
-/// ACL 拒绝：目标不在客户端权限组规则内
+/// ACL deny: target outside the client group's rules
 #[tokio::test]
 async fn client_acl_denied() -> Result<()> {
     let relay_addr = get_free_addr();
@@ -176,18 +176,18 @@ async fn client_acl_denied() -> Result<()> {
     let tunnel = ClientTunnel::new_insecure(relay_addr, "acc-lisi", "tun_secret")?;
     tunnel.connect().await?;
 
-    // 10.9.9.9 不在 ACL (127.0.0.0/8) 内 → Open 应失败
+    // 10.9.9.9 is outside the ACL (127.0.0.0/8) → Open must fail
     let res = tunnel.open_channel("10.9.9.9", 8080).await;
     assert!(res.is_err(), "ACL 之外的目标必须被拒绝");
 
-    // 错误 tunnel_token 直接认证失败
+    // wrong tunnel_token fails auth outright
     let bad = ClientTunnel::new_insecure(relay_addr, "acc-lisi", "tun_wrong")?;
     assert!(bad.connect().await.is_err());
 
     Ok(())
 }
 
-/// 流量计数：traffic() 反映当前会话 Data 帧字节（上行/下行，仅 payload）
+/// Traffic counters: traffic() reflects current-session Data frame bytes (uplink/downlink, payload only)
 #[tokio::test]
 async fn client_tunnel_traffic_counters() -> Result<()> {
     let echo_addr = get_free_addr();
@@ -209,15 +209,15 @@ async fn client_tunnel_traffic_counters() -> Result<()> {
     tokio::time::sleep(Duration::from_millis(80)).await;
 
     let tunnel = ClientTunnel::new_insecure(relay_addr, "acc-wangwu", "tun_secret")?;
-    // 未连接时为 (0, 0)
+    // (0, 0) before connecting
     assert_eq!(tunnel.traffic().await, (0, 0));
 
     tunnel.connect().await?;
     tokio::time::sleep(Duration::from_millis(50)).await;
-    // 已连接但无业务数据时仍为 (0, 0)（仅计 Data 帧，认证/心跳不计）
+    // still (0, 0) when connected but idle (only Data frames count; auth/heartbeat do not)
     assert_eq!(tunnel.traffic().await, (0, 0));
 
-    // 打开通道发送固定字节，echo 原样返回（256KiB 小于流控窗口，无挂起）
+    // open a channel and send fixed bytes; echo returns them as-is (256KiB fits the flow-control window, no stall)
     const PAYLOAD: usize = 256 * 1024;
     let data = vec![0x5Au8; PAYLOAD];
     let mut ch = tunnel.open_channel("127.0.0.1", echo_addr.port()).await?;
@@ -226,7 +226,7 @@ async fn client_tunnel_traffic_counters() -> Result<()> {
     ch.read_exact(&mut received).await?;
     assert_eq!(received, data);
 
-    // 下行全部到达即说明上行已全部发出并计数；两侧都应恰好等于 payload 总量
+    // full downlink arrival implies the uplink was sent and counted; both sides equal the payload size exactly
     let (up, down) = tunnel.traffic().await;
     assert_eq!(up, PAYLOAD as u64, "上行字节应等于发送的 Data payload");
     assert_eq!(down, PAYLOAD as u64, "下行字节应等于回显的 Data payload");

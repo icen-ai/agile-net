@@ -1,46 +1,46 @@
-//! diag — 组合诊断编排（P0，纯编排零新增依赖）。
+//! diag — layered diagnostic orchestration (P0, pure orchestration, zero new dependencies).
 //!
-//! DNS 解析 → ping（降级链）→ traceroute → tcping，分层输出报告并给出
-//! 「卡在哪一层」的结论。各层复用结构化核心：[`super::dns::query`]、
-//! [`super::ping::ping_inner`]、[`super::traceroute::trace_inner`]、
-//! [`super::tcping::probe`]。traceroute 只做路径画像、不进门禁结论——
-//! 其失败多为 raw socket 权限受限或中间跳过滤，不代表连通性受损。
+//! DNS resolution → ping (fallback chain) → traceroute → tcping: layered report with a
+//! "which layer is it stuck at" conclusion. Each layer reuses a structured core: [`super::dns::query`],
+//! [`super::ping::ping_inner`], [`super::traceroute::trace_inner`],
+//! [`super::tcping::probe`]. traceroute only profiles the path and never gates the conclusion —
+//! its failures are usually raw-socket permission limits or intermediate-hop filtering, not connectivity loss.
 
 use super::{dns, ping, tcping, traceroute, ToolOutcome};
 use serde::Serialize;
 use std::net::IpAddr;
 use std::time::Duration;
 
-/// diag 层内 ping 次数（比独立 ping 命令少，控制整体耗时）。
+/// Ping count inside diag (fewer than the standalone ping command, to bound total runtime).
 const DIAG_PING_COUNT: u32 = 3;
-/// 各层单次超时预算。
+/// Per-probe timeout budget for each layer.
 const DIAG_PING_TIMEOUT: Duration = Duration::from_secs(2);
 const DIAG_TRACE_TIMEOUT: Duration = Duration::from_secs(2);
 const DIAG_TCP_TIMEOUT: Duration = Duration::from_secs(3);
-/// 路由追踪跳数上限（路径画像从简；完整追踪用 `anet tool traceroute`，默认 30 跳）。
+/// Hop limit for traceroute (lightweight path profile; for a full trace use `anet tool traceroute`, default 30 hops).
 const DIAG_MAX_HOPS: u8 = 16;
 
-/// 单层诊断结果（human/json 共用数据源）。
+/// One layer's diagnostic result (shared data source for human/json).
 #[derive(Debug, Clone, Serialize)]
 struct LayerReport {
-    /// 层名：dns / ping / traceroute / tcping
+    /// Layer name: dns / ping / traceroute / tcping
     name: &'static str,
-    /// ok 通过 / fail 失败 / skip 跳过 / unknown 受限无法判定
+    /// ok passed / fail failed / skip skipped / unknown cannot be determined (restricted)
     status: &'static str,
-    /// 单行人类可读摘要
+    /// One-line human-readable summary
     summary: String,
-    /// 各层原始结构化报告（原样嵌入，供 --json 与未来 GUI 复用）
+    /// The layer's raw structured report (embedded verbatim, for --json and future GUI reuse)
     detail: serde_json::Value,
 }
 
-/// `anet tool diag <host> [port]`：分层组合诊断。
+/// `anet tool diag <host> [port]`: layered combined diagnosis.
 pub async fn diag(host: &str, port: u16) -> ToolOutcome {
     if port == 0 {
         return ToolOutcome::usage_error("端口不能为 0");
     }
 
-    // [1] DNS：IP 字面量跳过；域名先 A 后 AAAA，任一拿到记录即通过。
-    //     解析失败时后续各层必然失败，标记跳过直接给结论。
+    // [1] DNS: skipped for IP literals; domains try A then AAAA, any record passes.
+    //     On resolution failure every later layer must fail — mark them skipped and conclude directly.
     let dns_layer = dns_layer(host).await;
     if dns_layer.status == "fail" {
         let skipped = |name: &'static str| LayerReport {
@@ -59,8 +59,8 @@ pub async fn diag(host: &str, port: u16) -> ToolOutcome {
         return render(host, port, layers, code, text);
     }
 
-    // [2] ping：ICMP 主路径，无权限自动降级 TCP（降级端口复用 diag 端口，
-    //     此时与 tcping 层同源，结论文案据此区分）。
+    // [2] ping: ICMP main path with automatic TCP fallback without permission (fallback port reuses the diag port,
+    //     making it share the same probe as the tcping layer — the conclusion text distinguishes this).
     let ping_report = ping::ping_inner(host, DIAG_PING_COUNT, DIAG_PING_TIMEOUT, port).await;
     let ping_ok = ping_report.received > 0;
     let ping_layer = LayerReport {
@@ -70,8 +70,8 @@ pub async fn diag(host: &str, port: u16) -> ToolOutcome {
         detail: serde_json::to_value(&ping_report).unwrap_or_default(),
     };
 
-    // [3] traceroute：仅 ping 通后执行（ping 失败时追踪只会空跑超时）。
-    //     Err 多为权限受限（trace_inner 错误串内含 setcap 指引），不进门禁。
+    // [3] traceroute: only runs after ping succeeds (on ping failure a trace would just time out).
+    //     Err is mostly permission-related (the trace_inner error string contains setcap guidance); never gates.
     let trace_layer = if ping_ok {
         match traceroute::trace_inner(host, DIAG_MAX_HOPS, DIAG_TRACE_TIMEOUT).await {
             Ok(hops) => LayerReport {
@@ -96,7 +96,7 @@ pub async fn diag(host: &str, port: u16) -> ToolOutcome {
         }
     };
 
-    // [4] tcping：端到端端口验证（最终门禁）。
+    // [4] tcping: end-to-end port verification (the final gate).
     let probe = tcping::probe(host, port, DIAG_TCP_TIMEOUT).await;
     let tcp_layer = LayerReport {
         name: "tcping",
@@ -117,7 +117,7 @@ pub async fn diag(host: &str, port: u16) -> ToolOutcome {
     render(host, port, layers, code, text)
 }
 
-/// DNS 层：IP 字面量跳过；域名先 A 后 AAAA，任一拿到记录即视为解析成功。
+/// DNS layer: skipped for IP literals; domains try A then AAAA, any record counts as resolved.
 async fn dns_layer(host: &str) -> LayerReport {
     if host.parse::<IpAddr>().is_ok() {
         return LayerReport {
@@ -151,8 +151,8 @@ async fn dns_layer(host: &str) -> LayerReport {
     }
 }
 
-/// 由门禁层结果推导「卡在哪一层」结论（dns → ping → tcping 顺序门禁，
-/// traceroute 不入门禁）。纯函数，供单测直接断言各分支。
+/// Derive the "which layer is it stuck at" conclusion from the gate layers (gated in dns → ping → tcping
+/// order; traceroute never gates). Pure function, unit-tested branch by branch directly.
 fn conclude(
     dns_failed: bool,
     ping_ok: bool,
@@ -173,7 +173,7 @@ fn conclude(
         if ping_ok {
             return ("ok", "全链路通畅".into());
         }
-        // ICMP 不回应但 TCP 通畅：目标或中间设备过滤 ICMP，属常见现象，不影响业务
+        // ICMP silent but TCP fine: the target or an intermediate device filters ICMP — common, harmless to traffic
         return (
             "ok",
             "全链路通畅（ICMP 不回应但 TCP 正常——目标或中间设备过滤 ICMP，属常见现象）".into(),
@@ -189,7 +189,7 @@ fn conclude(
         );
     }
     if ping_mode == "tcp" {
-        // TCP 降级已等价于 tcping 探测，两层同源失败
+        // TCP fallback is equivalent to a tcping probe; both layers share the same failure
         (
             "ping",
             format!(
@@ -204,7 +204,7 @@ fn conclude(
     }
 }
 
-/// 汇总渲染 ToolOutcome：human 分层报告 + json 结构化，结论码映射 ok/fail。
+/// Render the aggregate ToolOutcome: layered human report + structured json; conclusion code maps to ok/fail.
 fn render(
     host: &str,
     port: u16,
@@ -237,7 +237,7 @@ fn render(
     }
 }
 
-/// ping 层摘要：显式标注 mode=icmp|tcp（TCP 降级附端口），附丢包与耗时统计。
+/// ping layer summary: explicit mode=icmp|tcp marker (TCP fallback adds the port), plus loss and latency stats.
 fn ping_summary(r: &ping::PingReport) -> String {
     let mut s = format!("mode={}", r.mode);
     if let Some(p) = r.port {
@@ -255,7 +255,7 @@ fn ping_summary(r: &ping::PingReport) -> String {
     s
 }
 
-/// traceroute 层摘要：跳数与末跳地址；全超时如实说明。
+/// traceroute layer summary: hop count and last-hop address; total silence reported honestly.
 fn trace_summary(hops: &[traceroute::Hop]) -> String {
     let answered = hops.iter().filter(|h| h.addr.is_some()).count();
     match hops.iter().rev().find_map(|h| h.addr.as_deref()) {
@@ -269,7 +269,7 @@ fn trace_summary(hops: &[traceroute::Hop]) -> String {
     }
 }
 
-/// tcping 层摘要：连通给延迟，失败给原因。
+/// tcping layer summary: latency on connect, reason on failure.
 fn tcp_summary(p: &tcping::TcpProbe) -> String {
     if p.connected {
         let latency = p
@@ -291,9 +291,9 @@ fn tcp_summary(p: &tcping::TcpProbe) -> String {
 mod tests {
     use super::*;
 
-    // ---------- 结论纯函数分支（不依赖任何外部实现） ----------
+    // ---------- Conclusion pure-function branches (no external dependencies) ----------
 
-    /// DNS 失败短路：无论其余层如何，结论卡 DNS 层
+    /// DNS failure short-circuits: whatever the other layers do, the conclusion is the DNS layer
     #[test]
     fn conclude_dns_fail() {
         let (code, text) = conclude(true, false, "icmp", false, "example.com", 443);
@@ -301,7 +301,7 @@ mod tests {
         assert!(text.contains("DNS"));
     }
 
-    /// ping 通、端口不通 → 卡 tcping 层（服务未监听/防火墙拦端口）
+    /// ping ok, port closed → stuck at the tcping layer (service not listening / firewall blocking the port)
     #[test]
     fn conclude_stuck_at_tcping() {
         let (code, text) = conclude(false, true, "icmp", false, "h", 8080);
@@ -310,14 +310,14 @@ mod tests {
         assert!(text.contains("8080"));
     }
 
-    /// ICMP 模式 ping 失败且端口不通 → 卡 ping 层
+    /// ICMP-mode ping failed and port closed → stuck at the ping layer
     #[test]
     fn conclude_stuck_at_ping_icmp() {
         let (code, _) = conclude(false, false, "icmp", false, "h", 443);
         assert_eq!(code, "ping");
     }
 
-    /// TCP 降级亦失败 → 卡 ping 层，文案指明 TCP 等价探测失败
+    /// TCP fallback also failed → stuck at the ping layer; text states the TCP-equivalent probe failed
     #[test]
     fn conclude_stuck_at_ping_tcp_fallback() {
         let (code, text) = conclude(false, false, "tcp", false, "h", 443);
@@ -325,7 +325,7 @@ mod tests {
         assert!(text.contains("TCP 降级"));
     }
 
-    /// ICMP 被过滤但 TCP 通畅 → 结论仍 ok，文案标注 ICMP 过滤
+    /// ICMP filtered but TCP fine → conclusion stays ok; text notes the ICMP filtering
     #[test]
     fn conclude_icmp_filtered_tcp_ok() {
         let (code, text) = conclude(false, false, "icmp", true, "h", 443);
@@ -333,7 +333,7 @@ mod tests {
         assert!(text.contains("ICMP"));
     }
 
-    /// 全通 → ok
+    /// Everything passes → ok
     #[test]
     fn conclude_all_ok() {
         let (code, text) = conclude(false, true, "icmp", true, "h", 443);
@@ -341,9 +341,9 @@ mod tests {
         assert!(text.contains("通畅"));
     }
 
-    // ---------- DNS 层（IP 字面量分支无网络） ----------
+    // ---------- DNS layer (IP-literal branch needs no network) ----------
 
-    /// IP 字面量（v4/v6）跳过 DNS 层，不产生任何网络流量
+    /// IP literals (v4/v6) skip the DNS layer and generate no network traffic
     #[tokio::test]
     async fn dns_layer_skips_ip_literal() {
         for ip in ["127.0.0.1", "::1", "192.168.0.1"] {
@@ -353,9 +353,9 @@ mod tests {
         }
     }
 
-    // ---------- 用法错误 ----------
+    // ---------- Usage errors ----------
 
-    /// 端口 0 → 用法错误（exit 2）
+    /// Port 0 → usage error (exit 2)
     #[tokio::test]
     async fn diag_rejects_port_zero() {
         let outcome = diag("127.0.0.1", 0).await;
@@ -363,15 +363,15 @@ mod tests {
         assert!(!outcome.success);
     }
 
-    // ---------- 全链路集成（仅打本机回环） ----------
+    // ---------- Full-chain integration (loopback only) ----------
 
-    /// 起回环临时 listener，四层跑通：dns 跳过、ping 通（icmp 或 tcp 降级）、
-    /// traceroute ok 或 unknown（权限受限）、tcping 通，结论 ok、exit 0
+    /// Temporary loopback listener, all four layers: dns skipped, ping ok (icmp or tcp fallback),
+    /// traceroute ok or unknown (permission-limited), tcping ok, conclusion ok, exit 0
     #[tokio::test]
     async fn diag_loopback_full_chain() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
-        // 保活 accept，避免连接堆积导致后续 probe 失败
+        // Keep accepting so connections don't pile up and fail later probes
         tokio::spawn(async move { while listener.accept().await.is_ok() {} });
 
         let outcome = diag("127.0.0.1", port).await;
@@ -382,11 +382,11 @@ mod tests {
         let layers = outcome.json["layers"].as_array().unwrap();
         assert_eq!(layers.len(), 4);
         assert_eq!(layers[0]["name"], "dns");
-        assert_eq!(layers[0]["status"], "skip"); // IP 字面量
+        assert_eq!(layers[0]["status"], "skip"); // IP literal
         assert_eq!(layers[1]["name"], "ping");
         assert_eq!(layers[1]["status"], "ok");
         assert_eq!(layers[2]["name"], "traceroute");
-        // raw socket 权限受限时允许 unknown，不进门禁
+        // unknown is allowed when raw-socket permission is restricted; it never gates
         let trace_status = layers[2]["status"].as_str().unwrap();
         assert!(
             ["ok", "unknown"].contains(&trace_status),
@@ -394,16 +394,16 @@ mod tests {
         );
         assert_eq!(layers[3]["name"], "tcping");
         assert_eq!(layers[3]["status"], "ok");
-        // 需特权层在 human 输出中显式标注当前探测模式
+        // Privileged layers must mark the current probe mode in the human output
         assert!(outcome.human.contains("mode="), "human:\n{}", outcome.human);
         assert!(outcome.human.contains("结论"), "human:\n{}", outcome.human);
     }
 
-    /// 回环空闲端口：exit 1，结论卡在 ping 或 tcping（视本机 ICMP 权限），
-    /// tcping 层必 fail；traceroute 在 ping 失败时须跳过不空跑
+    /// Idle loopback port: exit 1, conclusion stuck at ping or tcping (depends on local ICMP permission),
+    /// tcping layer must fail; traceroute must be skipped rather than run pointlessly when ping fails
     #[tokio::test]
     async fn diag_loopback_closed_port() {
-        // bind 取号后立刻 drop，得到一个确定未监听的端口
+        // Bind then drop immediately to get a port that is definitely not listened on
         let port = {
             let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             l.local_addr().unwrap().port()

@@ -1,4 +1,4 @@
-//! 第 4 节：订阅内核（mihomo 二进制钉版校验 + 控制面 /version 可达性）。
+//! Section 4: subscription kernel (mihomo binary pinned-version check + control-plane /version reachability).
 
 use super::util::{kernel_bin_name, listeners_on};
 use super::{DoctorContext, DoctorSection, DoctorStatus, item, section};
@@ -6,9 +6,10 @@ use crate::tool::netstat::SocketInfo;
 use std::path::Path;
 use std::time::Duration;
 
-/// 钉死的 mihomo 版本（与 apps/desktop/src/subscription.rs MIHOMO_VERSION 同步）。
-/// 注：官方只对压缩包给哈希钉（裸二进制不可对钉，见 download.rs 设计），
-/// 故这里以「可运行 + 自报版本 = 钉版」做完整性代理校验。
+/// Pinned mihomo version (kept in sync with MIHOMO_VERSION in apps/desktop/src/subscription.rs).
+/// Note: upstream only publishes hashes for the archives (bare binaries cannot be pinned, see the
+/// download.rs design), so "runnable + self-reported version = pinned version" serves as the
+/// integrity proxy check here.
 const MIHOMO_VERSION: &str = "1.19.29";
 
 fn kernel_platform_supported() -> bool {
@@ -17,7 +18,7 @@ fn kernel_platform_supported() -> bool {
         || cfg!(all(target_os = "macos", target_arch = "x86_64"))
 }
 
-/// 读取 subscriptions.json 中的控制面 secret（无文件/无 secret → None）。
+/// Read the control-plane secret from subscriptions.json (no file/no secret → None).
 fn read_ctrl_secret(ctx: &DoctorContext) -> Option<String> {
     std::fs::read_to_string(ctx.data_dir.join("subscriptions.json"))
         .ok()
@@ -109,7 +110,7 @@ pub(super) async fn section_kernel(ctx: &DoctorContext, socks: &[SocketInfo]) ->
         }
     }
 
-    // 控制面 /version 可达性（无 secret 跳过）
+    // Control-plane /version reachability (skipped without a secret)
     let ctrl_listening = !listeners_on(socks, 59292).is_empty();
     if !ctrl_listening {
         items.push(item(
@@ -149,7 +150,7 @@ pub(super) async fn section_kernel(ctx: &DoctorContext, socks: &[SocketInfo]) ->
     section("kernel", "订阅内核", items)
 }
 
-/// 运行 `mihomo -v` 取版本行（3s 超时；GUI 上下文不弹黑窗）。
+/// Run `mihomo -v` and take the version line (3s timeout; no console window in GUI context).
 async fn probe_kernel_version(bin: &Path) -> Result<String, String> {
     let mut cmd = tokio::process::Command::new(bin);
     cmd.arg("-v");

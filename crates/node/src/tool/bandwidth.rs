@@ -1,17 +1,18 @@
-//! bandwidth — 穿透链路吞吐测试（P3，tool 集中唯一依赖服务端角色与登录会话的命令）。
+//! bandwidth — penetration-link throughput test (P3; the only toolkit command that depends on the server role and a login session).
 //!
-//! 不做 iperf 式裸网吞吐；经 anet 穿透链路到指定对端的实际吞吐/RTT 测试。
-//! CLI 是独立进程、拿不到运行中 anet-svc 的隧道句柄，测量在服务端执行，
-//! 经管理 API 触发：`POST /api/v1/admin/tool/bandwidth`。
-//! 前提：服务端在线 + 已登录 + 对端（扇出 connector）已连接；当前仅支持上游对端。
+//! Not an iperf-style raw-network benchmark: it measures actual throughput/RTT over the anet
+//! tunnel to a given peer. The CLI is a separate process and cannot reach the tunnel handles of a
+//! running anet-svc, so measurement runs server-side, triggered via the admin API:
+//! `POST /api/v1/admin/tool/bandwidth`.
+//! Prerequisites: server online + logged in + the peer (fan-out connector) connected; currently only fan-out peers are supported.
 
 use super::ToolOutcome;
 use crate::cli::AnetClient;
 use serde_json::{Value, json};
 
-/// `anet tool bandwidth [peer]`：peer = connector 名称或上游地址（缺省 = 第一个已连接 connector）。
+/// `anet tool bandwidth [peer]`: peer = connector name or upstream address (default = first connected connector).
 pub async fn bandwidth(peer: Option<&str>, api: Option<String>) -> ToolOutcome {
-    // tool 分发在会话校验之前分流，bandwidth 臂自行检查会话（tool 集中唯一需要登录的命令）
+    // Tool dispatch splits off before session validation; the bandwidth arm checks the session itself (the only toolkit command requiring login)
     let mut client = match AnetClient::from_session(api) {
         Ok(c) => c,
         Err(_) => {
@@ -34,7 +35,7 @@ pub async fn bandwidth(peer: Option<&str>, api: Option<String>) -> ToolOutcome {
     }
 }
 
-/// human 渲染：对端 / RTT / 上下行吞吐。
+/// human rendering: peer / RTT / up/down throughput.
 fn render(d: &Value) -> String {
     let peer = d["peer"].as_str().unwrap_or("-");
     let f = |v: &Value| v.as_f64().unwrap_or(0.0);

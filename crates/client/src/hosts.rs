@@ -1,9 +1,9 @@
-//! Hosts 管理（系统 hosts 文件 BEGIN/END AGILE-NET 标记块）。
+//! Hosts management (BEGIN/END AGILE-NET marker block in the system hosts file).
 
 use anyhow::Result;
 use std::path::PathBuf;
 
-/// 系统 hosts 文件管理（BEGIN/END AGILE-NET 标记块）。
+/// System hosts file management (BEGIN/END AGILE-NET marker block).
 pub struct HostsManager {
     path: PathBuf,
 }
@@ -27,7 +27,7 @@ impl HostsManager {
         Self { path }
     }
 
-    /// 写入托管 hosts（127.0.0.1 指向，流量经本地代理转发）。
+    /// Write managed hosts (127.0.0.1 pointing; traffic forwarded via the local proxy).
     pub fn apply(&self, hosts: &[String]) -> Result<()> {
         let content = std::fs::read_to_string(&self.path).unwrap_or_default();
         let cleaned = strip_managed_block(&content);
@@ -54,7 +54,7 @@ impl HostsManager {
         Ok(())
     }
 
-    /// 清理全部托管条目。
+    /// Remove all managed entries.
     pub fn cleanup(&self) {
         if let Ok(content) = std::fs::read_to_string(&self.path) {
             let cleaned = strip_managed_block(&content);

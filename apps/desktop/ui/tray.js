@@ -1,8 +1,8 @@
 'use strict';
-/* 托盘弹窗：状态区（网速大字 + 60s sparkline）/ 出站模式 / 代理组快切 / 连接摘要 / 底部操作行。
-   渲染纪律：所有区块签名对比，数据不变不重写 DOM；1s（网速）+ 3s（状态/组/连接）双频轮询，
-   窗口不可见时暂停。 */
-/* 主题须首行执行防闪烁（本脚本在 head 同步加载，先于首次绘制） */
+/* Tray popup: status area (big speed digits + 60s sparkline) / outbound mode / proxy group quick-switch / connection summary / bottom action row.
+   Render discipline: sig-compare all sections, no DOM rewrite when data unchanged; dual polling 1s (speed) + 3s (status/groups/conns),
+   paused while window hidden. */
+/* Theme must run on the first line to prevent flash (this script loads synchronously in head, before first paint) */
 document.documentElement.dataset.theme = localStorage.getItem('ag_theme') || 'light';
 
 const TAURI = window.__TAURI__;
@@ -15,16 +15,16 @@ function esc(s) {
   }[c]));
 }
 
-/* ---------------- 状态与签名 ---------------- */
+/* ---------------- State & sigs ---------------- */
 const S = {
-  running: false, port: 0,          // 本地代理
-  mode: 'rule', tun: false,         // 出站模式 / TUN 锁定
-  kernel: false,                    // 订阅内核
+  running: false, port: 0,          // local proxy
+  mode: 'rule', tun: false,         // outbound mode / TUN lock
+  kernel: false,                    // subscription kernel
   sigStatus: '', sigMode: '', sigGroups: '', sigConns: '',
-  openGroup: null, lastGroups: null,  // 代理组展开态（组名，同时只展开一组）与最近一次组数据
-  openConns: false,                   // 连接摘要展开态（默认收起，点击标题展开）
+  openGroup: null, lastGroups: null,  // expanded proxy group (name; only one open at a time) and last group data
+  openConns: false,                   // connection summary expanded state (collapsed by default, click header to expand)
   downSig: '', upSig: '',
-  up60: [], down60: [],             // 60s 速率采样（B/s）
+  up60: [], down60: [],             // 60s rate samples (B/s)
   chart: null,
 };
 
@@ -35,10 +35,10 @@ function fmtRate(bps) {
   return { num: String(Math.round(bps)), unit: 'B/s' };
 }
 
-/* ---------------- 快轮询（1s）：实时网速 + sparkline ---------------- */
+/* ---------------- Fast polling (1s): live speed + sparkline ---------------- */
 async function fastTick() {
   let t = null;
-  try { t = await invoke('sub_traffic'); } catch (e) { /* 内核未运行等 */ }
+  try { t = await invoke('sub_traffic'); } catch (e) { /* kernel not running etc. */ }
   if (!t) {
     setSpeed('down', null); setSpeed('up', null);
     return;
@@ -47,10 +47,10 @@ async function fastTick() {
   setSpeed('up', +t.up_rate || 0);
   S.down60.push(+t.down_rate || 0); if (S.down60.length > 60) S.down60.shift();
   S.up60.push(+t.up_rate || 0); if (S.up60.length > 60) S.up60.shift();
-  // AgChart 内部签名对比，签名不变不重绘；变化时 rAF 插值过渡
+  // AgChart sig-compares internally, no redraw when sig unchanged; rAF-interpolated transition on change
   S.chart = window.AgChart && AgChart.sparkline($('tp-chart'), [
-    { name: '下行', values: S.down60.slice() },
-    { name: '上行', values: S.up60.slice() },
+    { name: AgI18n.t('tray.down'), values: S.down60.slice() },
+    { name: AgI18n.t('tray.up'), values: S.up60.slice() },
   ]);
 }
 
@@ -66,14 +66,14 @@ function setSpeed(kind, bps) {
   unitEl.textContent = r ? r.unit : '';
 }
 
-/* ---------------- 慢轮询（3s）：状态 / 模式 / 代理组 / 连接 ---------------- */
+/* ---------------- Slow polling (3s): status / mode / proxy groups / connections ---------------- */
 async function slowTick() {
   const [stR, roleR, kR, gR, cR] = await Promise.allSettled([
     invoke('proxy_status'),
     invoke('get_role_settings'),
     invoke('subscription_status'),
     invoke('proxy_groups'),
-    invoke('sub_connections'), // 后端新增命令；未落地前 reject，空态兜底
+    invoke('sub_connections'), // new backend command; rejects until landed, empty state fallback
   ]);
   if (stR.status === 'fulfilled' && stR.value) renderStatus(!!stR.value.running, +stR.value.port || 0);
   if (roleR.status === 'fulfilled' && roleR.value) {
@@ -91,10 +91,10 @@ function renderStatus(running, port) {
   S.sigStatus = sig;
   S.running = running; S.port = port;
   const pill = $('tp-pill');
-  pill.textContent = running ? '运行中' : '已停止';
+  pill.textContent = AgI18n.t(running ? 'common.running' : 'common.stopped');
   pill.classList.toggle('on', running);
-  $('tp-addr').textContent = running ? ('本地代理 127.0.0.1:' + port) : '本地代理未启动';
-  $('tp-toggle-label').textContent = running ? '停止代理' : '启动代理';
+  $('tp-addr').textContent = running ? AgI18n.t('tray.proxyAddr', { addr: '127.0.0.1:' + port }) : AgI18n.t('tray.proxyOff');
+  $('tp-toggle-label').textContent = AgI18n.t(running ? 'tray.stopProxy' : 'tray.startProxy');
   $('tp-toggle').classList.toggle('warn', running);
 }
 
@@ -104,14 +104,14 @@ function renderMode(mode, tun) {
   S.sigMode = sig;
   S.mode = mode; S.tun = tun;
   const seg = $('tp-mode');
-  seg.classList.toggle('off', tun); // TUN 模式下出站固定规则（后端同样拒绝切换）
-  seg.title = tun ? 'TUN 模式下出站固定为规则' : '';
+  seg.classList.toggle('off', tun); // outbound pinned to rule under TUN (backend rejects switching too)
+  seg.title = tun ? AgI18n.t('tray.tunLockTip') : '';
   seg.querySelectorAll('button').forEach(b => b.classList.toggle('cur', b.dataset.mode === mode));
 }
 
-/* 代理组：仅列 Selector 组；默认收起只渲染组名行，点击 .grp-name 展开该组（再点收起，
-   同时只展开一组）；展开态存 S.openGroup 并并入签名，延迟等数据变化触发重绘后展开态保持。
-   展开组内当前选中高亮，点击节点 select_proxy。 */
+/* Proxy groups: Selector groups only; collapsed by default rendering just the group-name row, click .grp-name to expand
+   (click again to collapse; only one group open at a time); expanded state kept in S.openGroup and folded into the sig,
+   so it survives re-renders triggered by later data changes. Current selection highlighted in the expanded group; click node → select_proxy. */
 function renderGroups(d) {
   S.lastGroups = d;
   const px = (d && d.proxies) || {};
@@ -130,8 +130,8 @@ function renderGroups(d) {
   if (sig === S.sigGroups) return;
   S.sigGroups = sig;
   const box = $('tp-groups');
-  if (!S.kernel) { box.innerHTML = '<div class="tp-empty">订阅内核未运行</div>'; return; }
-  if (!groups.length) { box.innerHTML = '<div class="tp-empty">无可用代理组</div>'; return; }
+  if (!S.kernel) { box.innerHTML = '<div class="tp-empty">' + AgI18n.t('tray.kernelOff') + '</div>'; return; }
+  if (!groups.length) { box.innerHTML = '<div class="tp-empty">' + AgI18n.t('tray.noGroups') + '</div>'; return; }
   box.innerHTML = groups.map(g =>
     '<div class="grp' + (S.openGroup === g.name ? ' open' : '') + '">' +
     '<div class="grp-name" data-g="' + esc(g.name) + '"><span>' + esc(g.name) + '</span>' +
@@ -149,7 +149,7 @@ function renderGroups(d) {
   ).join('');
 }
 
-/* 连接摘要：默认收起（仅标题行+活跃数，与代理组同款），点击标题展开最近 5 条 */
+/* Connection summary: collapsed by default (header row + active count only, same as proxy groups); click header to expand the latest 5 */
 function renderConns(d) {
   S.lastConns = d;
   const active = (d && Array.isArray(d.active)) ? d.active : [];
@@ -159,12 +159,12 @@ function renderConns(d) {
     const host = it.host || md.host ||
       (md.destinationIP ? md.destinationIP + (md.destinationPort ? ':' + md.destinationPort : '') : '') || '-';
     const chains = Array.isArray(it.chains) ? it.chains : (Array.isArray(it.chain) ? it.chain : []);
-    return { host, end: chains.length ? String(chains[0]) : '' }; // mihomo chains[0] = 链末出口
+    return { host, end: chains.length ? String(chains[0]) : '' }; // mihomo chains[0] = final egress of the chain
   });
   const sig = (S.openConns ? '1' : '0') + '|' + active.length + '|' + JSON.stringify(rows);
   if (sig === S.sigConns) return;
   S.sigConns = sig;
-  $('tp-conn-count').textContent = '活跃 ' + active.length;
+  $('tp-conn-count').textContent = AgI18n.t('tray.activeCount', { n: active.length });
   const head = $('tp-conns-head');
   if (head) head.classList.toggle('open', !!S.openConns);
   $('tp-conns').innerHTML = !S.openConns
@@ -174,10 +174,10 @@ function renderConns(d) {
           '<div class="tp-conn"><span class="host">' + esc(r.host) + '</span>' +
           (r.end ? '<span class="via">' + esc(r.end) + '</span>' : '') + '</div>'
         ).join('')
-      : '<div class="tp-empty">暂无活跃连接</div>');
+      : '<div class="tp-empty">' + AgI18n.t('tray.noConns') + '</div>');
 }
 
-/* ---------------- 轮询调度：不可见暂停 ---------------- */
+/* ---------------- Poll scheduling: pause when hidden ---------------- */
 let fastT = 0, slowT = 0;
 function startLoops() {
   if (fastT || !invoke) return;
@@ -190,8 +190,9 @@ function stopLoops() {
   fastT = slowT = 0;
 }
 
-/* ---------------- 启动 ---------------- */
+/* ---------------- Startup ---------------- */
 window.addEventListener('DOMContentLoaded', () => {
+  AgI18n.hydrate(document);
   if (!invoke) {
     $('tp-noenv').hidden = false;
     return;
@@ -204,7 +205,7 @@ window.addEventListener('DOMContentLoaded', () => {
   document.addEventListener('visibilitychange', () => { document.hidden ? stopLoops() : startLoops(); });
   startLoops();
 
-  // 出站模式切换（事件委托）
+  // outbound mode switching (event delegation)
   $('tp-mode').addEventListener('click', async (e) => {
     const b = e.target.closest('button[data-mode]');
     if (!b || S.tun || b.dataset.mode === S.mode) return;
@@ -212,7 +213,7 @@ window.addEventListener('DOMContentLoaded', () => {
     slowTick();
   });
 
-  // 代理组：组名行展开/收起（单组展开，立即重绘）；节点行 select_proxy（事件委托）
+  // proxy groups: group-name row expand/collapse (one group at a time, immediate re-render); node row select_proxy (event delegation)
   $('tp-groups').addEventListener('click', async (e) => {
     const head = e.target.closest('.grp-name');
     if (head) {
@@ -226,13 +227,13 @@ window.addEventListener('DOMContentLoaded', () => {
     slowTick();
   });
 
-  // 连接摘要：标题行点击展开/收起（默认收起，立即重绘）
+  // connection summary: header row click expand/collapse (collapsed by default, immediate re-render)
   $('tp-conns-head').addEventListener('click', () => {
     S.openConns = !S.openConns;
     renderConns(S.lastConns);
   });
 
-  // 底部操作行
+  // bottom action row
   $('tp-show').addEventListener('click', () => { invoke('tray_show_main').catch(() => {}); });
   $('tp-quit').addEventListener('click', () => { invoke('tray_quit').catch(() => {}); });
   $('tp-toggle').addEventListener('click', async () => {

@@ -1,10 +1,10 @@
-//! 接入链接（agilenet://connect?...）解析与生成。
+//! agilenet://connect?... URL parse & generate.
 
 use serde::{Deserialize, Serialize};
 
 use crate::credential::Credential;
 
-/// 解析后的接入参数（桌面 IPC 与 Web REST 共用同一形状）。
+/// Parsed connect parameters (desktop IPC and Web REST share the same shape).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ParsedConnect {
     pub addr: String,
@@ -18,15 +18,15 @@ pub struct ParsedConnect {
     pub pinned_fingerprint: Option<String>,
     #[serde(default)]
     pub manage_hosts: bool,
-    /// 连接成功后是否保存凭据
+    /// Whether to save the credential after a successful connect
     #[serde(default)]
     pub save_credential: bool,
-    /// 管理版接入链接标记（admin=1：持链接者可管理该节点，导入时强警示）
+    /// Admin connect URL flag (admin=1: the holder can manage this node; strong warning on import)
     #[serde(default)]
     pub admin: Option<String>,
 }
 
-/// 解析 agilenet://connect?... 接入链接。
+/// Parse an agilenet://connect?... URL.
 pub fn parse_connect_url(url: &str) -> std::result::Result<ParsedConnect, String> {
     let rest = url
         .strip_prefix("agilenet://connect?")
@@ -56,7 +56,7 @@ pub fn parse_connect_url(url: &str) -> std::result::Result<ParsedConnect, String
     if server.is_empty() || account.is_empty() || password.is_empty() {
         return Err("接入链接缺少必要参数 (server/account/password)".into());
     }
-    // server 未含端口时用 port 参数补全
+    // Fill in the port from the port param when server has none
     let addr = if server.contains(':') {
         server
     } else {
@@ -75,7 +75,7 @@ pub fn parse_connect_url(url: &str) -> std::result::Result<ParsedConnect, String
     })
 }
 
-/// 由已保存凭据生成 agilenet://connect 接入链接（含明文密码，谨慎分享）。
+/// Generate an agilenet://connect URL from a saved credential (contains plaintext password; share with care).
 pub fn connect_url_of(c: &Credential) -> String {
     let stripped = c
         .addr

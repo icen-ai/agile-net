@@ -1,5 +1,5 @@
-/* AgileNet 客户端 — 视觉 token 共享自 tokens.css（AGENTS.md §6），本文件仅页面级样式
-   应用外壳：一体化标题栏 + 灵动岛通知 + 左侧功能分区导航 + 内容区独立滚动 */
+/* AgileNet client — visual tokens shared from tokens.css (AGENTS.md §6); page-level styles only
+   App shell: unified titlebar + Dynamic Island notifications + left grouped nav + independently scrolling content */
 :root {
   --gray: #686B72; --gray-bg: rgba(104,107,114,.12);
   --scroll: rgba(0,0,0,.16); --scroll-hover: rgba(0,0,0,.30);
@@ -12,8 +12,8 @@ html[data-theme="dark"] {
 html, body { height: 100%; overflow: hidden; }
 body { background: var(--bg); color: var(--text); font: 14px/1.55 -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; display: flex; flex-direction: column; }
 
-/* 设计系统：动效 token（统一出厂感；reduced-motion 全局关闭）
-   时长梯度：--dur-fast(120ms)/--dur-slow(320ms) 在 tokens.css，中档 --dur(180ms) 保留于此 */
+/* Design system: motion tokens (unified factory feel; reduced-motion disables globally)
+   Duration ramp: --dur-fast(120ms)/--dur-slow(320ms) in tokens.css; mid --dur(180ms) kept here */
 :root { --ease: cubic-bezier(.22, 1, .36, 1); --dur: .18s; }
 ::selection { background: rgba(60,63,67,.22); }
 html[data-theme="dark"] ::selection { background: rgba(238,238,238,.25); }
@@ -21,12 +21,12 @@ html[data-theme="dark"] ::selection { background: rgba(238,238,238,.25); }
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
 
-/* 原生化：全局禁文本选择（输入框与等宽数据除外），禁拖拽 */
+/* Native feel: disable text selection globally (except inputs and mono data), disable drag */
 body { user-select: none; -webkit-user-select: none; }
 input, textarea, .mono { user-select: text; -webkit-user-select: text; }
 img, a { -webkit-user-drag: none; }
 
-/* 细滚动条（overlay 风格：6px 槽 + 1px 透明边 = 4px 纤细条，hover 显色，轨道透明） */
+/* Thin scrollbar (overlay style: 6px track + 1px transparent border = 4px slim bar, color on hover, transparent track) */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-thumb { background: var(--scroll); border: 1px solid transparent; border-radius: 999px; background-clip: content-box; }
 ::-webkit-scrollbar-thumb:hover { background: var(--scroll-hover); border: 1px solid transparent; background-clip: content-box; }
@@ -52,7 +52,7 @@ label { color: var(--dim); font-size: 12px; display: block; margin-bottom: 4px; 
 a { color: var(--link); text-decoration: underline; text-underline-offset: 2px; }
 .ic { vertical-align: -2px; flex-shrink: 0; }
 
-/* ===== 一体化标题栏（拖拽区 + 窗口控制） ===== */
+/* ===== Unified titlebar (drag region + window controls) ===== */
 .titlebar { height: 46px; flex-shrink: 0; display: flex; align-items: stretch; background: var(--bg); border-bottom: 1px solid var(--border); user-select: none; }
 .tb-drag { flex: 1; display: flex; align-items: center; gap: 8px; padding: 0 12px; min-width: 0; }
 .tb-title { font-size: 13px; font-weight: 600; color: var(--text-strong); letter-spacing: .2px; }
@@ -65,11 +65,11 @@ a { color: var(--link); text-decoration: underline; text-underline-offset: 2px; 
 .tb-controls button:active { transform: none; background: var(--hover); }
 .tb-controls button.close:hover { background: var(--danger); color: var(--toggle-knob); }
 
-/* 标题栏图标按钮（菜单折叠 / 更多） */
+/* Titlebar icon buttons (menu collapse / more) */
 .tb-icon { display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 26px; margin-left: 6px; border-radius: 7px; background: transparent; color: var(--dim); padding: 0; align-self: center; transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease); }
 .tb-icon:hover { background: var(--hover); color: var(--text-strong); }
 
-/* 更多下拉菜单（ctx-in 出现动画定义见 components.css） */
+/* More dropdown menu (ctx-in entrance animation defined in components.css) */
 .more-menu { position: fixed; top: 46px; left: 8px; z-index: 400; min-width: 150px; background: var(--panel2); border: 1px solid var(--border); border-radius: 11px; box-shadow: var(--shadow-2); padding: 5px; transform-origin: top left; animation: ctx-in var(--dur-fast) ease-out both; }
 .more-menu button { display: flex; align-items: center; justify-content: flex-start; gap: 9px; width: 100%; padding: 8px 11px; border-radius: 7px; background: none; color: var(--text); font-size: 13px; text-align: left; }
 .more-menu button:hover { background: var(--hover); }
@@ -78,14 +78,14 @@ a { color: var(--link); text-decoration: underline; text-underline-offset: 2px; 
 #admin-menu .aitem-label { font-weight: 600; color: var(--text-strong); }
 #admin-menu .aitem-sub { margin-left: auto; font-size: 11px; color: var(--dim2); padding-left: 12px; }
 
-/* 关于弹窗 */
+/* About modal */
 .about-modal { width: 340px; text-align: center; padding: 28px 24px 20px; }
 .about-logo { display: inline-flex; width: 52px; height: 52px; border-radius: 14px; background: var(--accent); color: var(--accent-fg); align-items: center; justify-content: center; margin-bottom: 12px; }
 .about-modal h3 { font-size: 16px; margin-bottom: 2px; }
 .about-desc { font-size: 12.5px; color: var(--dim); margin: 10px 0 14px; line-height: 1.6; }
 .about-links { display: flex; justify-content: center; gap: 8px; }
 
-/* 侧栏折叠（仅图标） */
+/* Sidebar collapsed (icons only) */
 body.collapsed .sidebar { width: 58px; padding: 14px 8px; }
 body.collapsed .nav-label { opacity: 0; width: 0; }
 body.collapsed .nav-item { justify-content: center; padding: 9px 0; gap: 0; }
@@ -94,27 +94,27 @@ body.collapsed .island { left: calc(50% + 29px); }
 .dot.on { background: var(--ok); }
 .dot.off { background: var(--border2); }
 
-/* ===== 灵动岛（内容区上方居中；苹果级形变：显式宽高 + 内容延迟淡入，全程零溢出） ===== */
-:root { --spring: cubic-bezier(0.32, 0.72, 0, 1); }  /* iOS 系统弹簧的公认贝塞尔近似 */
-.island { position: fixed; top: 9px; left: calc(50% + 108px); /* 视口中心 + 侧栏宽一半(216px/2) = 内容区中心 */ transform: translateX(-50%); z-index: 300;
-  background: transparent; color: var(--dim);  /* 常驻态与标题栏同色，融为原生状态指示 */
+/* ===== Dynamic Island (centered above content; Apple-grade morph: explicit w/h + delayed content fade-in, zero overflow throughout) ===== */
+:root { --spring: cubic-bezier(0.32, 0.72, 0, 1); }  /* canonical Bezier approximation of the iOS system spring */
+.island { position: fixed; top: 9px; left: calc(50% + 108px); /* viewport center + half sidebar width (216px/2) = content area center */ transform: translateX(-50%); z-index: 300;
+  background: transparent; color: var(--dim);  /* idle state matches titlebar color, blending in as a native status indicator */
   border: 1px solid transparent;
   border-radius: 999px;
-  min-width: 172px; max-width: min(613px, calc((100vw - 240px) * .67)); /* 上限 = 内容区(≈920px)的 2/3 */
+  min-width: 172px; max-width: min(613px, calc((100vw - 240px) * .67)); /* cap = 2/3 of content area (≈920px) */
   overflow: hidden;
   transition: width .45s var(--spring), height .45s var(--spring), border-radius .45s var(--spring), box-shadow .3s ease, transform .25s var(--spring), background .3s ease, border-color .3s ease, color .3s ease, left .3s var(--spring);
   will-change: width, height;
   -webkit-user-select: none; user-select: none; }
-/* 新消息：与标题栏同色系轻梯度区分（提亮而非反色） */
+/* New message: subtle differentiation within the titlebar color family (brighten, not invert) */
 .island[data-state="msg"] { background: var(--panel2); border-color: var(--border); color: var(--text);
   box-shadow: 0 4px 14px rgba(0,0,0,.16); }
-/* 展开交互：梯度更强（面板渐变 + 更重投影） */
+/* Expanded interaction: stronger gradient (panel gradient + heavier shadow) */
 .island[data-state="detail"] { background: linear-gradient(180deg, var(--panel2), var(--panel)); border-color: var(--border2); color: var(--text); border-radius: 18px;
   box-shadow: 0 18px 48px rgba(0,0,0,.24), 0 2px 8px rgba(0,0,0,.12); }
 .island.warn .island-bar { cursor: pointer; }
 .island.warn:hover { transform: translateX(-50%) scale(1.025); }
 .island.warn:active { transform: translateX(-50%) scale(.985); }
-/* 条高固定 26px + 边框 2px = 28px，配合 top:9px 在 46px 标题栏内上下等距垂直居中 */
+/* Fixed bar height 26px + 2px borders = 28px; with top:9px, vertically centered with equal gaps inside the 46px titlebar */
 .island-bar { display: flex; align-items: center; justify-content: center; gap: 7px; height: 26px; padding: 0 15px; font-size: 12px; white-space: nowrap; }
 .island .dot.on { background: var(--ok); }
 .island .dot.off { background: var(--border2); }
@@ -134,10 +134,10 @@ body.collapsed .island { left: calc(50% + 29px); }
 .island-row b { font-weight: 600; color: var(--text-strong); }
 .island-row .mono { color: var(--dim2); font-size: 11px; }
 .island-row .st { margin-left: auto; font-size: 11px; color: var(--dim); flex-shrink: 0; }
-/* 内容入场：形变过半后由 JS 触发，模糊+微位移消散（先有形、后有内容） */
+/* Content entrance: triggered by JS past the morph midpoint; blur + slight offset dissipate (shape first, content second) */
 .island-part { animation: island-in .3s var(--spring) both; }
 @keyframes island-in { from { opacity: 0; filter: blur(5px); transform: translateY(2px); } to { opacity: 1; filter: blur(0); transform: none; } }
-/* 通知弹出：linear() 真弹簧（轻过冲），不支持的引擎退化为贝塞尔 */
+/* Notification pop: linear() true spring (light overshoot); engines without support fall back to Bezier */
 .island.pop { animation: island-pop .5s var(--spring); }
 @supports (transition-timing-function: linear(0, 1)) {
   .island.pop { animation: island-pop .55s linear(0, 0.25 8%, 0.62 18%, 0.87 28%, 1.02 40%, 1.055 50%, 1.03 62%, 1.005 74%, 0.998 86%, 1); }
@@ -148,7 +148,7 @@ body.collapsed .island { left: calc(50% + 29px); }
   .island-part, .island.pop { animation: none; }
 }
 
-/* ===== 应用外壳：侧栏 + 内容区 ===== */
+/* ===== App shell: sidebar + content area ===== */
 .shell { flex: 1; display: flex; min-height: 0; }
 .sidebar { width: 216px; flex-shrink: 0; padding: 14px 10px; display: flex; flex-direction: column; gap: 2px; border-right: 1px solid var(--border); overflow: hidden; transition: width .2s ease, padding .2s ease; }
 .nav-item { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-radius: 8px; color: var(--dim); cursor: pointer; user-select: none; font-size: 13.5px; font-weight: 600; white-space: nowrap; overflow: hidden; transition: background var(--dur) var(--ease), color var(--dur), transform var(--dur-fast) var(--ease), padding .2s ease, gap .2s ease; }
@@ -156,13 +156,13 @@ body.collapsed .island { left: calc(50% + 29px); }
 .nav-item:hover { background: var(--hover); color: var(--text-strong); }
 .nav-item:active { transform: scale(.98); }
 .nav-item.active { background: var(--accent-grad); color: var(--accent-fg); font-weight: 600; box-shadow: var(--shadow-1), inset 0 1px 0 var(--glass-hi); }
-/* 侧栏分组分隔符（收起时缩短居中） */
+/* Sidebar group separator (shortened and centered when collapsed) */
 .nav-sep { height: 1px; background: var(--border); margin: 7px 8px; flex-shrink: 0; }
 body.collapsed .nav-sep { margin: 7px 4px; }
 #nav-client, #nav-admin { display: flex; flex-direction: column; gap: 2px; }
-/* 管理端入口（无可管理端点时置灰） */
+/* Admin console entry (grayed out when no manageable endpoints) */
 .tb-icon.disabled { opacity: .35; pointer-events: none; }
-/* 管理端内嵌视图：满宽满高，无页面入场动画 */
+/* Admin console embedded view: full width/height, no page entrance animation */
 .content.admin-mode { padding: 10px; }
 .admin-view { max-width: none; height: calc(100vh - 46px - 20px); animation: none; }
 #admin-frame { width: 100%; height: 100%; border: none; border-radius: 12px; background: var(--panel2); }
@@ -173,7 +173,7 @@ body.collapsed .nav-sep { margin: 7px 4px; }
 .page-title { font-size: 18px; font-weight: 700; color: var(--text-strong); display: flex; align-items: center; gap: 9px; margin-bottom: 4px; }
 .page-desc { color: var(--dim2); font-size: 13px; margin-bottom: 18px; }
 
-/* 卡片：--shadow-1 静置，hover 微抬升 1px 并升至 --shadow-2（120ms 出厂感） */
+/* Card: --shadow-1 at rest; hover lifts 1px and steps up to --shadow-2 (120ms factory feel) */
 .card { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px 18px; margin-bottom: 14px; box-shadow: var(--shadow-1); transition: transform var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease); }
 .card:hover { transform: translateY(-1px); box-shadow: var(--shadow-2); border-color: var(--border2); }
 .card h3 { font-size: 13.5px; font-weight: 600; color: var(--text-strong); margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
@@ -187,7 +187,7 @@ body.collapsed .nav-sep { margin: 7px 4px; }
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 16px; }
 .chk { display: flex; gap: 6px; align-items: center; color: var(--text); font-size: 13px; cursor: pointer; }
 .chk input { width: auto; }
-/* 全部勾选框统一为绿色开关（同角色开关；主题无蓝，禁原生 accent-color） */
+/* All checkboxes unified as green toggles (same as role switches; no blue in theme, native accent-color banned) */
 input[type="checkbox"] { appearance: none; -webkit-appearance: none; width: 32px; height: 18px; border-radius: 999px; background: var(--border2); position: relative; cursor: pointer; transition: background var(--dur) var(--ease); flex-shrink: 0; margin: 0; padding: 0; border: none; }
 input[type="checkbox"]::before { content: ''; position: absolute; width: 14px; height: 14px; left: 2px; top: 2px; background: var(--toggle-knob); border-radius: 50%; transition: transform var(--dur) var(--ease); box-shadow: 0 1px 3px rgba(0,0,0,.25); }
 input[type="checkbox"]:checked { background: var(--ok); }
@@ -197,12 +197,12 @@ input[type="checkbox"]:disabled { opacity: .5; cursor: not-allowed; }
 .kv { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px dashed var(--row-border); font-size: 13px; }
 .kv .k { color: var(--dim); }
 
-/* 订阅页 */
+/* Subscription page */
 .sub-row { display: flex; align-items: center; gap: 10px; padding: 8px 2px; border-bottom: 1px dashed var(--row-border); font-size: 13px; }
 .sub-row:last-child { border-bottom: none; }
 .dim { color: var(--dim2); }
 
-/* 订阅卡片（标题+操作 / 进度+用量+到期+刷新）；列表双栏（窄屏单栏） */
+/* Subscription card (title+actions / progress+usage+expiry+refresh); two-column list (single column on narrow screens) */
 .sub-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .sub-grid .sub-card { margin-bottom: 0; }
 .sub-grid .empty { grid-column: 1 / -1; }
@@ -221,7 +221,7 @@ input[type="checkbox"]:disabled { opacity: .5; cursor: not-allowed; }
 .sub-card-meta { font-size: 12.5px; color: var(--text); font-variant-numeric: tabular-nums; }
 .sub-card-sub { font-size: 11.5px; color: var(--dim2); margin-top: 2px; }
 
-/* 覆写脚本列表（拖拽排序：手柄 + 名称 + 开关 + 编辑/删除） */
+/* Override script list (drag sort: handle + name + toggle + edit/delete) */
 .script-row { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel2); margin-bottom: 8px; font-size: 13px; transition: border-color .15s, box-shadow .15s; }
 .script-row:last-child { margin-bottom: 0; }
 .script-row.dragging { opacity: .45; }
@@ -234,7 +234,7 @@ input[type="checkbox"]:disabled { opacity: .5; cursor: not-allowed; }
 .script-modal textarea { background: var(--panel2); border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: 8px 12px; outline: none; width: 100%; box-sizing: border-box; resize: vertical; transition: border-color .15s, box-shadow .15s; font-size: 12.5px; line-height: 1.55; tab-size: 2; }
 .script-modal textarea:focus { border-color: var(--ring); box-shadow: 0 0 0 3px var(--ring-bg); }
 
-/* 代理页：组标签（分段控件） + 节点卡片网格 */
+/* Proxy page: group tabs (segmented control) + node card grid */
 .group-tabs { display: inline-flex; gap: 4px; background: var(--chip); border-radius: 999px; padding: 3px; margin-bottom: 14px; }
 .group-tab { padding: 6px 16px; font-size: 13px; font-weight: 600; color: var(--dim); cursor: pointer; border-radius: 999px; background: none; user-select: none; transition: background .15s, color .15s; }
 .group-tab:hover { background: none; color: var(--text-strong); }
@@ -250,7 +250,7 @@ input[type="checkbox"]:disabled { opacity: .5; cursor: not-allowed; }
 .node-foot { display: flex; align-items: center; gap: 8px; min-height: 20px; padding-right: 26px; }
 .node-proto { font-size: 11.5px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-/* 添加订阅弹窗（宽版） */
+/* Add subscription modal (wide) */
 .sub-modal { width: 560px; max-width: 94vw; padding: 26px 26px 22px; }
 .sm-head { display: flex; gap: 14px; align-items: center; margin-bottom: 18px; }
 .sm-logo { display: inline-flex; width: 44px; height: 44px; border-radius: 12px; background: var(--accent); color: var(--accent-fg); align-items: center; justify-content: center; flex-shrink: 0; }
@@ -261,17 +261,17 @@ input[type="checkbox"]:disabled { opacity: .5; cursor: not-allowed; }
 .sm-url-row input { flex: 1; min-width: 0; }
 .sm-err { color: var(--danger-text); min-height: 16px; margin-top: 8px; }
 
-/* 扇出弹窗：字段较多，超高内部滚动；textarea 对齐输入框质感（端特有，基础样式仅覆盖 input） */
+/* Fan-out modal: many fields, internal scroll when too tall; textarea matches input texture (client-specific, base styles only cover input) */
 .fo-modal { max-height: calc(100vh - 64px); overflow-y: auto; }
 .fo-modal textarea { font: inherit; background: var(--panel2); border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: 8px 12px; outline: none; width: 100%; box-sizing: border-box; resize: vertical; transition: border-color .15s, box-shadow .15s; }
 .fo-modal textarea:focus { border-color: var(--ring); box-shadow: 0 0 0 3px var(--ring-bg); }
 .fo-modal textarea::placeholder { color: var(--dim2); }
 
-/* 列表折叠搜索（默认收起，点搜索图标展开） */
+/* Collapsible list search (collapsed by default, expands via search icon) */
 .list-search { margin: -4px 0 12px; }
 .list-search input { font-size: 12.5px; padding: 7px 12px; }
 
-/* Hero 空状态引导 */
+/* Hero empty state onboarding */
 .hero { text-align: center; padding: 34px 20px 26px; animation: fadein .4s ease; }
 .hero-logo { display: inline-flex; width: 60px; height: 60px; border-radius: 16px; background: var(--accent); color: var(--accent-fg); align-items: center; justify-content: center; margin-bottom: 14px; box-shadow: var(--shadow-2); }
 .hero h1 { font-size: 24px; color: var(--text-strong); margin-bottom: 6px; }
@@ -285,33 +285,33 @@ input[type="checkbox"]:disabled { opacity: .5; cursor: not-allowed; }
 .hero-alt { color: var(--dim2); font-size: 12px; }
 @keyframes fadein { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
 
-/* 节点/凭据卡片 */
+/* Node/credential card */
 .node-card { display: flex; align-items: center; gap: 12px; border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; margin-bottom: 10px; background: var(--panel2); }
 .node-card .info { flex: 1; min-width: 0; }
 .node-card .name { font-weight: 600; color: var(--text-strong); }
 .node-card .addr { color: var(--dim); font-size: 12px; overflow: hidden; text-overflow: ellipsis; }
 .node-card .card-actions { display: flex; gap: 6px; align-items: center; flex-shrink: 0; }
-/* 断开/不可达：整卡灰色降饱和 */
+/* Down/unreachable: whole card grayed and desaturated */
 .node-card.down { opacity: .55; filter: saturate(.4); border-style: dashed; }
-/* 部分网络不可达告警条 */
+/* Partial network unreachable warning banner */
 .net-banner { display: flex; align-items: center; gap: 8px; background: var(--warn-bg); border: 1px solid var(--warn); color: var(--warn-text); border-radius: 10px; padding: 10px 14px; margin-bottom: 14px; font-size: 13px; }
 .badge { display: inline-flex; align-items: center; gap: 5px; padding: 2px 9px; border-radius: 999px; font-size: 11px; font-weight: 600; }
 .b-ok { background: var(--ok-bg); color: var(--ok-text); }
 .b-off { background: var(--danger-bg); color: var(--danger-text); }
 .b-warn { background: var(--warn-bg); color: var(--warn-text); }
 .b-gray { background: var(--gray-bg); color: var(--gray); }
-/* 路由行状态点 */
+/* Route row status dot */
 .rdot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
 .rdot.ok { background: var(--ok); }
 .rdot.warn { background: var(--warn); animation: pulse 1.2s infinite; }
 .rdot.down { background: var(--gray); }
-/* 语言/主题切换 */
+/* Language/theme switch */
 .lang-theme { display: flex; gap: 10px; margin-top: 8px; }
 .lang-theme select { font: inherit; background: var(--panel2); border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: 6px 10px; outline: none; }
-/* ag-select 端特有覆盖：grid2 表单格内拉满（对齐同格输入框） */
+/* ag-select client-specific override: full width inside grid2 form cell (aligns with input in same cell) */
 .grid2 .agsel { width: 100%; }
 
-/* 规则启停开关（暂停 = 灰降饱和行） */
+/* Rule on/off switch (paused = grayed desaturated row) */
 .switch { position: relative; display: inline-block; width: 32px; height: 18px; }
 .switch input { display: none; }
 .switch .slider { position: absolute; inset: 0; background: var(--border2); border-radius: 999px; transition: background var(--dur) var(--ease); cursor: pointer; }
@@ -320,15 +320,15 @@ input[type="checkbox"]:disabled { opacity: .5; cursor: not-allowed; }
 .switch input:checked + .slider::before { transform: translateX(14px); }
 tr.rule-paused td { opacity: .45; }
 
-/* 状态脉冲动画（连接中/重连中） */
+/* Status pulse animation (connecting/reconnecting) */
 .pulse { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--warn); margin-right: 4px; animation: pulse 1.2s infinite; }
 @keyframes pulse { 0%,100% { opacity: 1; box-shadow: 0 0 0 0 rgba(245,158,11,.5); } 50% { opacity: .5; box-shadow: 0 0 0 5px rgba(245,158,11,0); } }
 
-/* 按钮内加载动画 */
+/* In-button loading animation */
 .spinner { display: inline-block; width: 12px; height: 12px; border: 2px solid rgba(128,128,128,.35); border-top-color: currentColor; border-radius: 50%; animation: spin .7s linear infinite; vertical-align: -2px; margin-right: 6px; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-/* 长表：内部滚动 + 粘性表头（数据膨胀时不撑破页面）；质感对齐共享 .tbl */
+/* Long table: internal scroll + sticky header (data growth won't break the page); texture aligns with shared .tbl */
 .table-scroll { max-height: calc(100vh - 260px); overflow: auto; border-radius: 8px; }
 table { width: 100%; border-collapse: collapse; }
 th { text-align: left; color: var(--dim2); font-size: 12px; font-weight: 500; padding: 6px 8px; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--tbl-head-bg); z-index: 1; }
@@ -336,7 +336,7 @@ td { padding: 8px; border-bottom: 1px solid var(--row-border); font-variant-nume
 tbody tr:hover td { background: var(--tbl-row-hover); }
 tr:last-child td { border-bottom: none; }
 
-/* ===== 首页仪表盘（卡片网格；风格对齐管理端概览 stat 卡，开关在卡片右侧） ===== */
+/* ===== Home dashboard (card grid; style aligns with admin console overview stat cards, switch on card right) ===== */
 .dash-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(258px, 1fr)); gap: 12px; margin-bottom: 14px; }
 .dcard { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 13px 15px; box-shadow: var(--shadow-1); display: flex; flex-direction: column; gap: 8px; min-width: 0; align-items: flex-start; }
 .dcard > * { width: 100%; }
@@ -351,23 +351,23 @@ tr:last-child td { border-bottom: none; }
 .dc-kv { display: flex; justify-content: space-between; align-items: center; gap: 10px; font-size: 12.5px; }
 .dc-kv .k { color: var(--dim); flex-shrink: 0; }
 .dc-kv .v2 { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* 仪表盘摘要大数字（预留样式，结构由后续 agent 落地；可替换 .dc-val/.dc-sub 组合）：
-   <div class="dstat"><span class="dstat-l">标签</span><span class="dstat-v">1.2 GB</span></div> */
+/* Dashboard summary big number (reserved style, structure to be implemented by a later agent; can replace the .dc-val/.dc-sub combo):
+   <div class="dstat"><span class="dstat-l">label</span><span class="dstat-v">1.2 GB</span></div> */
 .dstat { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .dstat-l { font-size: 11px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dstat-v { font-size: 28px; font-weight: 600; line-height: 1.25; color: var(--text-strong); font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-/* ===== 响应式：窄屏（Android 竖屏等）底部导航 .bnav 接管 ===== */
+/* ===== Responsive: narrow screens (Android portrait etc.) — bottom nav .bnav takes over ===== */
 @media (max-width: 720px) {
   .tb-controls { display: none; }
   .shell { flex-direction: column; }
-  /* 二期起窄屏导航由 .bnav 底部导航接管（components.css，同断点显示）：隐藏侧栏整体
-     （含原顶部横排 nav 与 side-foot；body.collapsed 的宽度/内边距逻辑随侧栏隐藏自然失效，无需处理） */
+  /* Since phase 2, narrow-screen nav is handled by the .bnav bottom nav (components.css, shown at same breakpoint): hide the whole sidebar
+     (incl. original top horizontal nav and side-foot; body.collapsed width/padding logic becomes moot with sidebar hidden, nothing to do) */
   .sidebar { display: none; }
   .nav-item { flex-shrink: 0; min-height: 40px; padding: 10px 14px; }
   .group-tab { display: inline-flex; align-items: center; min-height: 40px; }
   .chk { min-height: 40px; }
-  /* 底部留白 64px + safe-area：给 .bnav 让位（与 .bnav 同断点联动，JS 无需干预） */
+  /* Bottom padding 64px + safe-area: makes room for .bnav (linked at the same breakpoint, no JS needed) */
   .content { padding: 14px 14px calc(64px + env(safe-area-inset-bottom, 0px)); }
   .grid2 { grid-template-columns: 1fr; }
   .sub-grid { grid-template-columns: 1fr; }
@@ -376,14 +376,14 @@ tr:last-child td { border-bottom: none; }
   .island { left: 50%; max-width: 86vw; }
 }
 
-/* ===== 角色开关与密码弹窗 ===== */
+/* ===== Role switches and password modal ===== */
 .role-list { display: flex; flex-direction: column; gap: 4px; }
 .role-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 0; }
 .role-info { display: flex; flex-direction: column; gap: 2px; }
 .role-info b { font-size: 13px; font-weight: 600; }
 .role-info .hint { font-size: 12px; }
 .modal-mask { position: fixed; inset: 0; background: var(--mask); display: flex; align-items: center; justify-content: center; z-index: 100; animation: mask-in var(--dur) ease both; backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
-/* 玻璃降级：遮罩无玻璃质感可保（--mask 本身为实色半透明托底），仅关 blur（其余玻璃组件见 components.css no-blur 一节） */
+/* Glass degradation: mask has no glass texture to preserve (--mask is solid translucent backing), just disable blur (other glass components: see no-blur section in components.css) */
 html.no-blur .modal-mask { backdrop-filter: none; -webkit-backdrop-filter: none; }
 @keyframes mask-in { from { opacity: 0; } to { opacity: 1; } }
 .modal { background: var(--panel2); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow-3), inset 0 1px 0 var(--glass-hi); padding: 20px 22px; width: 380px; max-width: calc(100vw - 48px); animation: modal-in var(--dur-slow) var(--spring) both; }
@@ -392,13 +392,13 @@ html.no-blur .modal-mask { backdrop-filter: none; -webkit-backdrop-filter: none;
 .modal label { display: block; font-size: 12px; color: var(--dim); margin-bottom: 4px; }
 .modal input { width: 100%; box-sizing: border-box; }
 
-/* ===== 规则页（全部/组合 tab；类型过滤 chips；组合编辑规则清单） ===== */
+/* ===== Rules page (All/Combos tabs; type filter chips; combo edit rule list) ===== */
 .rl-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: -4px 0 12px; }
 .rl-toolbar .rl-tools { margin-left: auto; display: inline-flex; gap: 8px; }
-/* 弹窗内 ag-select 拉满（对齐同列输入框） */
+/* ag-select full width inside modal (aligns with inputs in same column) */
 .sm-body .agsel { width: 100%; }
-/* 组合编辑弹窗：全部规则简洁清单（复选 + 类型徽标 + 匹配值 + 来源；长列表内部滚动）
-   选择器须压过 .modal label 的 display:block/灰小字（行本体是 label 元素） */
+/* Combo edit modal: compact list of all rules (checkbox + type badge + match value + source; long list scrolls internally)
+   Selector must override .modal label's display:block/gray small text (row itself is a label element) */
 .combo-rules { max-height: 260px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; }
 .combo-rules .combo-rule-row { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-bottom: 1px solid var(--row-border); font-size: 12.5px; color: var(--text); cursor: pointer; margin-bottom: 0; }
 .combo-rules .combo-rule-row:last-child { border-bottom: none; }
@@ -406,6 +406,6 @@ html.no-blur .modal-mask { backdrop-filter: none; -webkit-backdrop-filter: none;
 .combo-rule-val { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .combo-rule-src { flex-shrink: 0; font-size: 11.5px; color: var(--dim2); }
 
-/* ===== 浏览器模式（Web 远程面）：隐藏窗口控制与本机专属卡片/开关 ===== */
+/* ===== Browser mode (Web remote panel): hide window controls and local-only cards/switches ===== */
 body.http-mode .tb-controls { display: none; }
 body.http-mode .local-only { display: none !important; }

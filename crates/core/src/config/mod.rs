@@ -1,4 +1,4 @@
-//! 配置模型
+//! Config model
 
 pub mod client;
 pub mod node;

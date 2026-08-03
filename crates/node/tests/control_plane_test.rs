@@ -1,8 +1,8 @@
-//! P2 控制面暴露与可管理上游发现集成测试（握手 v2）。
+//! P2 control-plane exposure and manageable-upstream discovery integration tests (handshake v2).
 //!
-//! 拓扑：node A（listener + relay_token.expose_control）← node B（connector）。
-//! 断言：B 自动发现 A 的控制端点 → 管理版客户端配置收到 manageable →
-//! 票据链换取 scoped 管理会话（rules 档位强制）→ 开关变更落审计。
+//! Topology: node A (listener + relay_token.expose_control) ← node B (connector).
+//! Assert: B auto-discovers A's control endpoint → admin client config gets manageable →
+//! ticket chain exchanges for a scoped admin session (rules tier enforced) → toggle change audited.
 
 use agile_net_core::config::NodeConfig;
 use agile_net_core::config::node::{ConnectorConfig, ListenerConfig};
@@ -17,7 +17,7 @@ fn temp_dir(tag: &str) -> std::path::PathBuf {
     dir
 }
 
-/// 预取一个空闲端口（bind 后释放；测试环境竞态可忽略）。
+/// Grab a free port (bind then release; test-env race is negligible).
 fn free_port() -> u16 {
     let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     l.local_addr().unwrap().port()
@@ -25,7 +25,7 @@ fn free_port() -> u16 {
 
 const RELAY_TOKEN: &str = "psk_p2test_0000000000000000000000000000000000000";
 
-/// 启动上游 A：relay listener + 暴露控制面（rules 档位）。
+/// Start upstream A: relay listener + exposed control plane (rules tier).
 async fn start_upstream() -> (NodeServer, u16) {
     let dir = temp_dir("up");
     let relay_port = free_port();
@@ -51,7 +51,7 @@ async fn start_upstream() -> (NodeServer, u16) {
     )
     .await
     .unwrap();
-    // 暴露控制面：rules 档位
+    // Expose control plane: rules tier
     let hash = sha256_hex(RELAY_TOKEN.as_bytes());
     server
         .db()
@@ -60,7 +60,7 @@ async fn start_upstream() -> (NodeServer, u16) {
     (server, relay_port)
 }
 
-/// 启动下游 B：connector 接入 A。
+/// Start downstream B: connector into A.
 async fn start_downstream(relay_port: u16) -> NodeServer {
     let dir = temp_dir("down");
     let config = NodeConfig {
@@ -94,7 +94,7 @@ async fn handshake_v2_control_offer_and_manageable_discovery() {
     let (a, relay_port) = start_upstream().await;
     let b = start_downstream(relay_port).await;
 
-    // 1. B 自动发现 A 的控制端点（connector 握手 → 注册表同步 ≤ 2s）
+    // 1. B auto-discovers A's control endpoint (connector handshake → registry sync ≤ 2s)
     let mut offer = None;
     for _ in 0..20 {
         if let Some(o) = b.runtime().manageable.iter().next().map(|i| i.clone()) {
@@ -111,7 +111,7 @@ async fn handshake_v2_control_offer_and_manageable_discovery() {
     assert_eq!(offer.api_port, a.api_addr().port());
     assert!(offer.ticket.starts_with("adt_"));
 
-    // 2. 中继票据在 A 侧换取管理会话（rules 档位：GET 可、规则写可、组写拒）
+    // 2. Relay ticket exchanges on A for an admin session (rules tier: GET ok, rule write ok, group write denied)
     let http = reqwest::Client::new();
     let base_a = format!("http://{}", a.api_addr());
     let r = http
@@ -149,7 +149,7 @@ async fn handshake_v2_control_offer_and_manageable_discovery() {
         .unwrap();
     assert_eq!(r.status().as_u16(), 403, "rules 档位应拒绝非规则写");
 
-    // 3. A 侧审计：relay 换取归因
+    // 3. Audit on A: relay exchange attribution
     let admin_token = {
         let r = http
             .post(format!("{base_a}/api/v1/auth/init"))
@@ -186,7 +186,7 @@ async fn handshake_v2_control_offer_and_manageable_discovery() {
         "relay 换取审计应归因令牌前缀与下游节点: {items:?}"
     );
 
-    // 4. B 的管理版客户端：config 带 manageable，console-ticket 取上游票据
+    // 4. B's admin client: config carries manageable, console-ticket fetches upstream ticket
     let db_b = b.db();
     let gid = {
         let r = http
@@ -247,7 +247,7 @@ async fn handshake_v2_control_offer_and_manageable_discovery() {
         "管理版客户端应自动发现可管理上游: {manageable:?}"
     );
 
-    // console-ticket upstream：返回握手 v2 当前票据
+    // console-ticket upstream: returns current handshake-v2 ticket
     let r = http
         .post(format!(
             "http://{}/api/v1/client/console-ticket",
@@ -290,7 +290,7 @@ async fn expose_control_toggle_audited() {
         .unwrap()
         .to_string();
 
-    // 找到 P2 测试令牌 id
+    // Find the P2 test token id
     let r = http
         .get(format!("{base}/api/v1/admin/node/relay-tokens"))
         .bearer_auth(&token)
@@ -307,7 +307,7 @@ async fn expose_control_toggle_audited() {
     assert_eq!(t["control_scope"].as_str(), Some("rules"));
     let id = t["id"].as_str().unwrap();
 
-    // 关闭暴露 → 审计 relay_token.expose_control
+    // Disable exposure → audit relay_token.expose_control
     let r = http
         .put(format!("{base}/api/v1/admin/node/relay-tokens/{id}"))
         .bearer_auth(&token)
@@ -336,7 +336,7 @@ async fn expose_control_toggle_audited() {
     a.stop().await;
 }
 
-/// 校验 in-memory 迁移路径同样具备 v3 列（迁移幂等）。
+/// Verify the in-memory migration path also has v3 columns (idempotent migration).
 #[tokio::test]
 async fn migration_v3_columns_present() {
     let db = Database::in_memory().unwrap();

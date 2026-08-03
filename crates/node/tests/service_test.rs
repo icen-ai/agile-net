@@ -1,4 +1,4 @@
-//! NodeServer 装配根集成测试：start → API 可用 → stop 释放端口。
+//! NodeServer assembly-root integration tests: start → API usable → stop releases the port.
 
 use agile_net_core::config::NodeConfig;
 use agile_net_node::service::{NodeServer, NodeServerOptions};
@@ -31,7 +31,7 @@ async fn node_server_start_serve_stop() {
     let base = format!("http://{addr}");
     let http = reqwest::Client::new();
 
-    // Web 后台 SPA 可访问
+    // web admin SPA reachable
     let resp = http.get(format!("{base}/")).send().await.unwrap();
     assert!(
         resp.status().is_success(),
@@ -39,7 +39,7 @@ async fn node_server_start_serve_stop() {
         resp.status()
     );
 
-    // 首开初始化管理员 → 登录 → 管理接口可用
+    // first-run admin init → login → admin API usable
     let resp = http
         .post(format!("{base}/api/v1/auth/init"))
         .json(&serde_json::json!({"username": "admin", "password": "TestPassword123!"}))
@@ -74,7 +74,7 @@ async fn node_server_start_serve_stop() {
 
     server.stop().await;
 
-    // 停止后端口应释放
+    // port released after stop
     let after = tokio::time::timeout(
         std::time::Duration::from_millis(500),
         tokio::net::TcpStream::connect(addr),
@@ -88,7 +88,7 @@ async fn node_server_start_serve_stop() {
 
 #[tokio::test]
 async fn node_server_restart_same_db() {
-    // 同一数据库可重复 start/stop（GUI 服务端角色开关路径）
+    // repeated start/stop on the same database (GUI server-role toggle path)
     let db_path = temp_db_path("restart");
     for round in 0..2 {
         let server = NodeServer::start_with(

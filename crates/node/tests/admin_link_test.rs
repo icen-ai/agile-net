@@ -1,5 +1,5 @@
-//! P1.6 管理版接入链接集成测试：
-//! admin_console 标记 → console-ticket 签发 → admin-bootstrap 换取管理会话 → scope 三档强制。
+//! P1.6 admin-capable connect link integration tests:
+//! admin_console flag → console-ticket issuance → admin-bootstrap admin session → 3-tier scope enforcement.
 
 use agile_net_node::api::{ApiState, NodeRuntime, create_app};
 use agile_net_node::auth::jwt::JwtService;
@@ -87,7 +87,7 @@ async fn admin_token(app: &Router) -> String {
     body["data"]["access_token"].as_str().unwrap().to_string()
 }
 
-/// 建组 + 建账号（可选管理权限），返回 (account_id, password, connect_url)。
+/// Create group + account (optional admin grant); returns (account_id, password, connect_url).
 async fn create_account(
     app: &Router,
     admin_token: &str,
@@ -143,7 +143,7 @@ async fn admin_link_full_flow() {
     let (app, db) = test_app().await;
     let token = admin_token(&app).await;
 
-    // 1. 创建管理版账号 → connect_url 带 &admin=1，签发落审计
+    // 1. Create admin-capable account → connect_url carries &admin=1, issuance audited
     let (_id, pw, url) = create_account(&app, &token, "alice", true).await;
     assert!(url.contains("&admin=1"), "管理版链接应带 admin 标记: {url}");
     let has_issue_audit = {
@@ -166,13 +166,13 @@ async fn admin_link_full_flow() {
         "签发管理链接应落 account.issue_admin_link 审计"
     );
 
-    // 2. 客户端配置响应带 admin_console 标记
+    // 2. Client config response carries admin_console flag
     let ctoken = client_login(&app, "alice", &pw).await;
     let (s, b) = req(&app, "GET", "/api/v1/client/config", Some(&ctoken), None).await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(b["data"]["admin_console"].as_bool(), Some(true));
 
-    // 3. 申请控制台票据 → bootstrap 换取管理会话
+    // 3. Request console ticket → bootstrap exchanges for admin session
     let (s, b) = req(
         &app,
         "POST",
@@ -200,7 +200,7 @@ async fn admin_link_full_flow() {
     assert_eq!(b["data"]["scope"].as_str(), Some("full"));
     let admin_jwt = b["data"]["access_token"].as_str().unwrap().to_string();
 
-    // 4. 换得的管理会话可访问管理接口
+    // 4. Exchanged admin session can call admin endpoints
     let (s, _) = req(
         &app,
         "GET",
@@ -211,7 +211,7 @@ async fn admin_link_full_flow() {
     .await;
     assert_eq!(s, StatusCode::OK);
 
-    // 5. 票据一次性：再次使用被拒绝
+    // 5. Ticket is single-use: reuse rejected
     let (s, _) = req(
         &app,
         "POST",
@@ -224,7 +224,7 @@ async fn admin_link_full_flow() {
     .await;
     assert_eq!(s, StatusCode::UNAUTHORIZED);
 
-    // 6. 换取审计归因：operator 区分链接身份
+    // 6. Exchange audit attribution: operator identifies link identity
     let (_, b) = req(
         &app,
         "GET",
@@ -241,7 +241,7 @@ async fn admin_link_full_flow() {
         "console_access 审计应归因管理链接持有者: {items:?}"
     );
 
-    // 7. 收回管理权限（禁用 admin_console）→ 不再签发票据
+    // 7. Revoke admin grant (disable admin_console) → no more tickets
     let acc = db.get_account_by_username("alice").unwrap().unwrap().0;
     db.update_account_full(&acc.id, None, None, None, Some(false))
         .unwrap();
@@ -278,7 +278,7 @@ async fn non_admin_account_cannot_get_ticket() {
     .await;
     assert_eq!(s, StatusCode::FORBIDDEN);
 
-    // 伪造票据必然失败（哈希不落库即不存在）
+    // Forged ticket must fail (no hash in DB = does not exist)
     let (s, _) = req(
         &app,
         "POST",
@@ -297,7 +297,7 @@ async fn scope_enforcement_three_tiers() {
     let (app, db) = test_app().await;
     let token = admin_token(&app).await;
 
-    // 构造三档票据（relay kind，subject 标识中继来源）
+    // Build tickets for all 3 tiers (relay kind, subject identifies relay source)
     let mut seq = 10u8;
     for (scope, can_read, can_rule_write, can_account_write) in [
         ("ro", true, false, false),
@@ -356,7 +356,7 @@ async fn scope_enforcement_three_tiers() {
             "{scope} group write: {s}"
         );
 
-        // relay 换取落审计 admin.session_via_relay
+        // relay exchange lands in audit as admin.session_via_relay
         let (_, b) = req(
             &app,
             "GET",
@@ -381,7 +381,7 @@ async fn update_account_grant_and_revoke_admin() {
     let token = admin_token(&app).await;
     let (id, pw, _url) = create_account(&app, &token, "carol", false).await;
 
-    // 授予管理权限 → 签发审计
+    // Grant admin → issuance audited
     let (s, _) = req(
         &app,
         "PUT",
@@ -404,7 +404,7 @@ async fn update_account_grant_and_revoke_admin() {
     .await;
     assert_eq!(s, StatusCode::OK, "授予后应可签发票据");
 
-    // 收回管理权限 → 票据签发被拒
+    // Revoke admin → ticket issuance rejected
     let (s, _) = req(
         &app,
         "PUT",

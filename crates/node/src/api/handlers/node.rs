@@ -1,4 +1,4 @@
-//! Node 状态/统计/日志/设置 API Handlers（对应 docs/api/node.md）
+//! Node status/stats/logs/settings API handlers (see docs/api/node.md)
 
 use super::audit;
 use crate::api::extractors::{AdminAuth, ClientIp};
@@ -16,8 +16,8 @@ use serde::Deserialize;
 use serde_json::json;
 
 pub async fn status(AdminAuth(_): AdminAuth, State(state): State<ApiState>) -> Response {
-    // 概览所需读取合并为一次阻塞任务（名称/规则数/账号统计/24h 流量序列；
-    // node_traffic_24h 为小时聚合查询，查询失败回落空序列不阻断 status）
+    // Merge overview reads into one blocking task (name/rule count/account stats/24h traffic series;
+    // node_traffic_24h is an hourly aggregate query; on failure fall back to an empty series, never block status)
     let (node_name, rule_count, accounts_total, accounts_disabled, traffic_24h) = state
         .db_call(|db| {
             let node_name = db
@@ -70,7 +70,7 @@ pub async fn status(AdminAuth(_): AdminAuth, State(state): State<ApiState>) -> R
         None => (json!({ "enabled": false }), 0),
     };
 
-    // 扇出（多目标：地址 + 逐条状态；数据源为 ConnectorManager）
+    // Fan-out (multi-target: address + per-link state; data source is ConnectorManager)
     let connectors_json: Vec<serde_json::Value> = state
         .runtime
         .connector_manager
@@ -84,7 +84,7 @@ pub async fn status(AdminAuth(_): AdminAuth, State(state): State<ApiState>) -> R
         })
         .collect();
 
-    // 可管理上游（握手 v2 发现；脱敏：不含票据）
+    // Manageable upstreams (handshake v2 discovery; sanitized: no tickets)
     let manageable_json: Vec<serde_json::Value> = state
         .runtime
         .manageable
@@ -99,8 +99,8 @@ pub async fn status(AdminAuth(_): AdminAuth, State(state): State<ApiState>) -> R
         })
         .collect();
 
-    // 客户端角色代理槽位（GUI 宿主写入的真实状态）优先；
-    // 槽位空（纯 anet-svc）维持节点角色 proxy_listen 旧行为（无 mode 字段）
+    // Client-role proxy slot (real state written by the GUI host) takes precedence;
+    // an empty slot (pure anet-svc) keeps the legacy node-role proxy_listen behavior (no mode field)
     let client_proxy = state.runtime.client_proxy_slot.load();
     let proxy_json = match &**client_proxy {
         Some(info) => json!({
@@ -122,7 +122,7 @@ pub async fn status(AdminAuth(_): AdminAuth, State(state): State<ApiState>) -> R
         },
     };
 
-    // 扇出逐条流量（当前会话实时累计；断连 connector 为 0，历史见 traffic_24h）
+    // Per-connector fan-out traffic (live counters of the current session; disconnected connectors read 0, history in traffic_24h)
     let fanout_traffic: Vec<serde_json::Value> = state
         .runtime
         .connector_manager
@@ -137,7 +137,7 @@ pub async fn status(AdminAuth(_): AdminAuth, State(state): State<ApiState>) -> R
         })
         .collect();
 
-    // 中继途径（实时快照：汇总 + 起始端→结束端途径对；本节点可见的相邻两跳）
+    // Relay transit (live snapshot: totals + origin->terminus pairs; the two adjacent hops visible to this node)
     let (t_up, t_down, t_pairs) = state.runtime.transit_meter.snapshot();
     let transit_json = json!({
         "bytes_up": t_up,
@@ -174,19 +174,20 @@ pub async fn status(AdminAuth(_): AdminAuth, State(state): State<ApiState>) -> R
     }))
 }
 
-/// traffic_24h 空序列（DB 异常时回落，保持契约字段结构完整）。
+/// Empty traffic_24h series (fallback on DB errors, keeps the contract fields intact).
 fn empty_traffic_24h() -> serde_json::Value {
     json!({"fanin": [], "fanout": [], "transit": []})
 }
 
-/// 系统资源占用（跨平台 sysinfo）。
-/// System 进程级缓存复用：每次新建实例无历史差分，CPU 使用率恒为 0 语义不准，
-/// 且 15s 概览轮询反复构造浪费；refresh 集合保持最小（内存 + 本进程），不扩大。
+/// System resource usage (cross-platform sysinfo).
+/// Process-level cached System instance: a fresh instance has no history delta, so CPU usage
+/// reads a meaningless 0, and rebuilding per 15s overview poll is wasteful; the refresh set
+/// stays minimal (memory + this process), do not expand.
 fn system_stats() -> serde_json::Value {
     use std::sync::{Mutex, OnceLock};
     use sysinfo::System;
     static SYS: OnceLock<Mutex<System>> = OnceLock::new();
-    // 锁中毒不阻断 status：取回内部数据继续用
+    // Lock poisoning must not block status: recover the inner data and keep going
     let mut sys = SYS
         .get_or_init(|| Mutex::new(System::new()))
         .lock()
@@ -376,7 +377,7 @@ pub struct KickRequest {
     pub node_id: String,
 }
 
-/// 强制断开指定下游节点（被踢节点的重连由其对端退避策略控制）。
+/// Force-disconnect a downstream node (the kicked peer's reconnect is governed by its own backoff policy).
 pub async fn kick_peer(
     AdminAuth(claims): AdminAuth,
     State(state): State<ApiState>,
@@ -410,7 +411,7 @@ pub async fn kick_peer(
     }
 }
 
-/// Prometheus 格式指标导出（admin 认证）。
+/// Prometheus-format metrics export (admin auth).
 pub async fn metrics(AdminAuth(_): AdminAuth, State(state): State<ApiState>) -> Response {
     let mut out = String::new();
     let uptime = state.runtime.uptime_secs();
@@ -485,16 +486,17 @@ pub async fn metrics(AdminAuth(_): AdminAuth, State(state): State<ApiState>) -> 
         .into_response()
 }
 
-/// WebSocket 实时事件流（节点/客户端上下线 + 30s 统计快照）。
+/// WebSocket live event stream (node/client online-offline + 30s stats snapshot).
 ///
-/// 浏览器 WebSocket 无法设置请求头，为避免 token 进入访问日志/浏览器历史，
-/// 采用**升级后首条消息认证**：客户端连接后立即发送 access_token（5s 超时），
-/// 服务端校验 admin 角色与 scope 档位（fail-closed）后才推送事件。
+/// Browser WebSockets cannot set request headers; to keep the token out of access logs
+/// and browser history, auth uses the **first message after upgrade**: the client sends its
+/// access_token immediately on connect (5s timeout); the server verifies admin role and
+/// scope tier (fail-closed) before pushing events.
 pub async fn events_ws(State(state): State<ApiState>, ws: WebSocketUpgrade) -> Response {
     ws.on_upgrade(move |socket| handle_ws(socket, state))
 }
 
-/// 首条消息等待认证（超时或未通过即关闭）。
+/// Wait for the first-message auth (close on timeout or failure).
 async fn ws_authenticate(socket: &mut WebSocket, state: &ApiState) -> bool {
     use axum::extract::ws::Message;
     let msg = tokio::time::timeout(std::time::Duration::from_secs(5), socket.recv()).await;
@@ -516,9 +518,9 @@ async fn ws_authenticate(socket: &mut WebSocket, state: &ApiState) -> bool {
 async fn handle_ws(mut socket: WebSocket, state: ApiState) {
     use agile_net_core::relay::listener::PeerEvent;
 
-    // 首条消息认证（token 不经 URL，避免落入访问日志/浏览器历史）
+    // First-message auth (token never goes through the URL, keeping it out of access logs/browser history)
     if !ws_authenticate(&mut socket, &state).await {
-        return; // drop 即关闭连接
+        return; // drop closes the connection
     }
 
     let mut event_rx = state

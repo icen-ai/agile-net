@@ -1,26 +1,26 @@
-//! 设置同步（Netcatty 式版本化存档）：WebDAV / S3 兼容存储 / 手动导入导出文件。
+//! Settings sync (Netcatty-style versioned archive): WebDAV / S3-compatible storage / manual file import-export.
 //!
-//! - 同步内容 = 本机配置全部：`gui-settings.json`（sub_scripts 覆写脚本链即存于此文件，
-//!   无独立脚本文件）、`gui-custom-rules.json`、`subscriptions.json`
-//! - 安全过滤：subscriptions.json 的 mihomo 控制面 `secret` 为本机随机值（跨设备无意义），
-//!   上传时剔除；恢复时保留本机原 secret。`web-auth.json`（管理面密码哈希）永不同步
-//! - 存档 JSON：app/kind/version/device/created_at + enc（none|aes256gcm）+ payload
-//!   （明文=对象；加密=b64 密文字符串）。加密：PBKDF2-HMAC-SHA256（100k 迭代，存档随机
-//!   16B salt）→ AES-256-GCM；key 输入 = "agile-net-sync:v1:" + PIN
-//! - PIN：4 位数字（用户明确要求的混淆级加密）或留空不加密。**PIN 不落盘**，
-//!   sync-config.json 的 pin_set 仅为 UI 提示（不存 PIN 就无法校验「是不是同一个 PIN」）
-//! - 版本号单调递增：上传 = max(远端版本, 本地版本)+1；比对供前端区分 newer/same/older
-//! - 状态落 `~/.agile-net/sync-state.json`（0600），通道配置落 `sync-config.json`（0600）
-//! - 审计 gui.sync_config / gui.sync_upload / gui.sync_restore（绝不落明文与密文内容）
+//! - Synced content = all local config: `gui-settings.json` (the sub_scripts override script chain
+//!   lives in this file; no separate script file), `gui-custom-rules.json`, `subscriptions.json`
+//! - Security filter: the mihomo control plane `secret` in subscriptions.json is a per-device random value
+//!   (meaningless across devices): stripped on upload; local original secret kept on restore. `web-auth.json` (admin password hash) never syncs
+//! - Archive JSON: app/kind/version/device/created_at + enc (none|aes256gcm) + payload
+//!   (plaintext = object; encrypted = b64 ciphertext string). Encryption: PBKDF2-HMAC-SHA256 (100k iterations, random
+//!   16B salt per archive) -> AES-256-GCM; key input = "agile-net-sync:v1:" + PIN
+//! - PIN: 4 digits (obfuscation-grade encryption explicitly requested by users) or empty for no encryption. **PIN is never persisted**;
+//!   pin_set in sync-config.json is only a UI hint (without storing the PIN we cannot check "is it the same PIN")
+//! - Version is monotonic: upload = max(remote version, local version)+1; comparison lets the frontend tell newer/same/older
+//! - State goes to `~/.agile-net/sync-state.json` (0600), channel config to `sync-config.json` (0600)
+//! - Audit gui.sync_config / gui.sync_upload / gui.sync_restore (never records plaintext or ciphertext content)
 
 use agile_net_node::db::sha256_hex;
 use serde::{Deserialize, Serialize};
 
 use crate::roles;
 
-/// 远端存档文件名（WebDAV 目录 / S3 prefix 下的固定键）
+/// Remote archive file name (fixed key under the WebDAV directory / S3 prefix)
 const ARCHIVE_NAME: &str = "agile-net-sync.json";
-/// 同步的配置文件白名单（仅这些文件进出存档；web-auth.json 等敏感文件不在列）
+/// Whitelist of synced config files (only these enter/leave the archive; sensitive files like web-auth.json are excluded)
 const SYNCED_FILES: [&str; 3] = [
     "gui-settings.json",
     "gui-custom-rules.json",
@@ -34,7 +34,7 @@ fn now_ts() -> u64 {
         .as_secs()
 }
 
-/// 设备名（无 hostname crate，取环境变量 COMPUTERNAME/HOSTNAME）
+/// Device name (no hostname crate; read env var COMPUTERNAME/HOSTNAME)
 fn device_name() -> String {
     std::env::var("COMPUTERNAME")
         .or_else(|_| std::env::var("HOSTNAME"))
@@ -44,7 +44,7 @@ fn device_name() -> String {
         .unwrap_or_else(|| "unknown-device".into())
 }
 
-// ==================== 配置与状态（0600 落盘） ====================
+// ==================== Config and state (0600 on disk) ====================
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -65,7 +65,7 @@ pub struct S3Config {
     pub prefix: String,
 }
 
-/// 同步通道配置（sync-config.json，0600）。PIN 不在其中（永不落盘）。
+/// Sync channel config (sync-config.json, 0600). PIN is not in it (never persisted).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SyncConfig {
@@ -73,11 +73,11 @@ pub struct SyncConfig {
     pub target: String,
     pub webdav: WebdavConfig,
     pub s3: S3Config,
-    /// 仅作 UI 提示「用户设过 PIN」（PIN 本身不落盘，无法校验一致性）
+    /// UI hint only that "the user has set a PIN" (the PIN itself is never persisted, so consistency cannot be checked)
     pub pin_set: bool,
 }
 
-/// set_sync_config 入参（结构与 SyncConfig 相同；pass/sk 传空串 = 保留原值）
+/// set_sync_config input (same shape as SyncConfig; empty pass/sk = keep existing value)
 pub type SyncConfigInput = SyncConfig;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -97,7 +97,7 @@ fn state_path() -> std::path::PathBuf {
     roles::data_dir().join("sync-state.json")
 }
 
-/// 写私有文件（0600；配置含凭据、状态含版本元数据）
+/// Write a private file (0600; config holds credentials, state holds version metadata)
 fn write_private(path: &std::path::Path, data: &str) -> Result<(), String> {
     std::fs::write(path, data).map_err(|e| e.to_string())?;
     #[cfg(unix)]
@@ -140,7 +140,7 @@ fn save_state(st: &SyncState) -> Result<(), String> {
     )
 }
 
-/// 回显掩码：只回最后 2 位（空串原样）
+/// Mask for display echo: keep only the last 2 chars (empty string stays as-is)
 fn mask_secret(s: &str) -> String {
     if s.is_empty() {
         return String::new();
@@ -156,7 +156,7 @@ fn mask_secret(s: &str) -> String {
     format!("**{tail}")
 }
 
-// ==================== 存档格式 ====================
+// ==================== Archive format ====================
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -172,11 +172,11 @@ struct Archive {
     salt: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     nonce: String,
-    /// 明文 = 对象；加密 = b64 密文字符串
+    /// Plaintext = object; encrypted = b64 ciphertext string
     payload: serde_json::Value,
 }
 
-/// PIN 校验：空（不加密）或正好 4 位数字，其他 Err
+/// PIN validation: empty (no encryption) or exactly 4 digits; anything else errs
 fn validate_pin(pin: &str) -> Result<(), String> {
     if pin.is_empty() {
         return Ok(());
@@ -188,7 +188,7 @@ fn validate_pin(pin: &str) -> Result<(), String> {
     }
 }
 
-/// PBKDF2-HMAC-SHA256（100k 迭代）派生 AES-256 密钥；输入 "agile-net-sync:v1:" + PIN
+/// Derive the AES-256 key via PBKDF2-HMAC-SHA256 (100k iterations); input "agile-net-sync:v1:" + PIN
 fn derive_key(pin: &str, salt: &[u8]) -> [u8; 32] {
     let mut out = [0u8; 32];
     ring::pbkdf2::derive(
@@ -240,7 +240,7 @@ fn b64d(s: &str) -> Result<Vec<u8>, String> {
         .map_err(|_| "存档内容损坏（base64 解码失败）".to_string())
 }
 
-/// 构建存档字节：payload 为明文对象（pin 空）或 AES-256-GCM 密文 b64（pin 非空）
+/// Build archive bytes: payload is a plaintext object (empty pin) or AES-256-GCM ciphertext b64 (non-empty pin)
 fn build_archive(
     version: u64,
     device: &str,
@@ -277,7 +277,7 @@ fn build_archive(
     serde_json::to_vec_pretty(&a).map_err(|e| e.to_string())
 }
 
-/// 校验 app/kind 并按需解密，取出明文 payload 对象
+/// Validate app/kind, decrypt if needed, and return the plaintext payload object
 fn extract_payload(a: &Archive, pin: &str) -> Result<serde_json::Value, String> {
     if a.app != "agile-net" || a.kind != "sync-archive" {
         return Err("不是 AgileNet 同步存档".into());
@@ -309,9 +309,9 @@ fn extract_payload(a: &Archive, pin: &str) -> Result<serde_json::Value, String> 
     }
 }
 
-// ==================== payload 收集与恢复 ====================
+// ==================== Payload collection and restore ====================
 
-/// 安全过滤：subscriptions.json 剔除本机随机的 mihomo 控制面 secret（跨设备无意义）
+/// Security filter: strip the per-device random mihomo control plane secret from subscriptions.json (meaningless across devices)
 fn strip_local_secrets(name: &str, mut v: serde_json::Value) -> serde_json::Value {
     if name == "subscriptions.json" {
         if let Some(obj) = v.as_object_mut() {
@@ -321,7 +321,7 @@ fn strip_local_secrets(name: &str, mut v: serde_json::Value) -> serde_json::Valu
     v
 }
 
-/// 恢复合并：subscriptions.json 保留本机原 secret（若存在），其余照存档写回
+/// Restore merge: subscriptions.json keeps the local original secret (if any); everything else is written back as archived
 fn restore_value(
     name: &str,
     mut archived: serde_json::Value,
@@ -341,7 +341,7 @@ fn restore_value(
     archived
 }
 
-/// 收集本机配置为 payload 明文对象（缺文件/坏 JSON 跳过）
+/// Collect local config into the plaintext payload object (missing files / bad JSON are skipped)
 fn collect_payload() -> serde_json::Value {
     let dir = roles::data_dir();
     let mut files = serde_json::Map::new();
@@ -360,8 +360,8 @@ fn collect_payload() -> serde_json::Value {
     })
 }
 
-/// 将存档 payload 写回本机配置目录：先备份现有配置到 backup-pre-restore-<ts>/，
-/// 再按白名单逐个写回。返回实际写回的文件名列表。
+/// Write the archive payload back to the local config dir: back up existing config to backup-pre-restore-<ts>/ first,
+/// then write back file by file per the whitelist. Returns the list of files actually written.
 fn apply_payload(payload: &serde_json::Value) -> Result<Vec<String>, String> {
     let files = payload["files"]
         .as_object()
@@ -402,7 +402,7 @@ fn apply_payload(payload: &serde_json::Value) -> Result<Vec<String>, String> {
     Ok(written)
 }
 
-/// 版本比对（远端 vs 本地 state 版本）
+/// Version comparison (remote vs local state version)
 fn relation_of(remote: u64, local: u64) -> &'static str {
     if remote > local {
         "newer"
@@ -413,7 +413,7 @@ fn relation_of(remote: u64, local: u64) -> &'static str {
     }
 }
 
-// ==================== 同步通道（fetch/put） ====================
+// ==================== Sync channels (fetch/put) ====================
 
 enum SyncTarget {
     Webdav(WebdavConfig),
@@ -430,7 +430,7 @@ impl SyncTarget {
         }
     }
 
-    /// 拉取远端存档字节；不存在返回 None
+    /// Fetch remote archive bytes; returns None if it does not exist
     async fn fetch(&self) -> Result<Option<Vec<u8>>, String> {
         match self {
             Self::Webdav(c) => webdav_fetch(c).await,
@@ -443,7 +443,7 @@ impl SyncTarget {
         }
     }
 
-    /// 上传存档字节
+    /// Upload archive bytes
     async fn put(&self, bytes: &[u8]) -> Result<(), String> {
         match self {
             Self::Webdav(c) => webdav_put(c, bytes).await,
@@ -461,7 +461,7 @@ impl SyncTarget {
     }
 }
 
-/// 从持久化配置解析同步通道（未配置/不完整 → 友好中文 Err）
+/// Resolve the sync channel from persisted config (unconfigured/incomplete -> friendly Chinese error)
 fn resolve_target(cfg: &SyncConfig) -> Result<SyncTarget, String> {
     match cfg.target.as_str() {
         "webdav" => {
@@ -498,7 +498,7 @@ fn http_client() -> Result<reqwest::Client, String> {
 
 // ---------- WebDAV ----------
 
-/// WebDAV 存档 URL：地址结尾有无 / 都归一
+/// WebDAV archive URL: normalize whether the base URL ends with / or not
 fn webdav_archive_url(url: &str) -> String {
     format!("{}/{ARCHIVE_NAME}", url.trim_end_matches('/'))
 }
@@ -552,9 +552,9 @@ async fn webdav_put(c: &WebdavConfig, bytes: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
-// ---------- S3 兼容存储（path-style + SigV4） ----------
+// ---------- S3-compatible storage (path-style + SigV4) ----------
 
-/// SigV4 URI 编码（unreserved 字符保留；斜杠按参数决定是否编码）
+/// SigV4 URI encoding (unreserved chars kept; slash encoded depending on the flag)
 fn uri_encode(s: &str, encode_slash: bool) -> String {
     let mut out = String::new();
     for b in s.bytes() {
@@ -581,8 +581,8 @@ fn hmac_sha256(key: &[u8], data: &[u8]) -> [u8; 32] {
     out
 }
 
-/// Unix 秒 → (x-amz-date "YYYYMMDDTHHMMSSZ", 日期 "YYYYMMDD")；
-/// 不引 chrono：civil-from-days（Howard Hinnant 算法）换算公历
+/// Unix seconds -> (x-amz-date "YYYYMMDDTHHMMSSZ", date "YYYYMMDD");
+/// no chrono: civil-from-days (Howard Hinnant algorithm) for the Gregorian conversion
 fn amz_dates(ts: u64) -> (String, String) {
     let days = (ts / 86400) as i64;
     let secs = ts % 86400;
@@ -604,7 +604,7 @@ fn amz_dates(ts: u64) -> (String, String) {
     )
 }
 
-/// SigV4 签名密钥派生链：HMAC("AWS4"+sk, date) → region → service → "aws4_request"
+/// SigV4 signing key derivation chain: HMAC("AWS4"+sk, date) -> region -> service -> "aws4_request"
 fn sigv4_signing_key(sk: &str, date: &str, region: &str, service: &str) -> [u8; 32] {
     let k_date = hmac_sha256(format!("AWS4{sk}").as_bytes(), date.as_bytes());
     let k_region = hmac_sha256(&k_date, region.as_bytes());
@@ -612,7 +612,7 @@ fn sigv4_signing_key(sk: &str, date: &str, region: &str, service: &str) -> [u8; 
     hmac_sha256(&k_service, b"aws4_request")
 }
 
-/// SigV4 签名参数（收敛 sigv4_authorization 入参；service 固定 s3）
+/// SigV4 signing parameters (bundles sigv4_authorization inputs; service is fixed to s3)
 struct SigV4Params<'a> {
     method: &'a str,
     canonical_uri: &'a str,
@@ -624,9 +624,9 @@ struct SigV4Params<'a> {
     payload_hash: &'a str,
 }
 
-/// AWS SigV4 Authorization 头（service=s3；只签 host;x-amz-content-sha256;x-amz-date 三头）
+/// AWS SigV4 Authorization header (service=s3; signs only the three headers host;x-amz-content-sha256;x-amz-date)
 fn sigv4_authorization(p: &SigV4Params<'_>) -> String {
-    // 字段全为 &str（Copy），解构复制后沿用原排版
+    // All fields are &str (Copy); destructure-copy and keep the original layout
     let SigV4Params {
         method,
         canonical_uri,
@@ -656,16 +656,16 @@ fn sigv4_authorization(p: &SigV4Params<'_>) -> String {
 }
 
 struct S3Url {
-    /// 实际请求 URL
+    /// Actual request URL
     url: String,
-    /// 签名用 host（含端口）
+    /// Host for signing (including port)
     host: String,
-    /// 签名用 canonical URI（段编码）
+    /// Canonical URI for signing (segment-encoded)
     canonical_uri: String,
 }
 
-/// path-style URL：`{scheme}://{endpoint}/{bucket}/{prefix}agile-net-sync.json`
-/// （endpoint 有无 scheme 都处理，默认 https；兼容 MinIO/B2/Cloudflare R2）
+/// path-style URL: `{scheme}://{endpoint}/{bucket}/{prefix}agile-net-sync.json`
+/// (endpoint handled with or without scheme, default https; compatible with MinIO/B2/Cloudflare R2)
 fn s3_url(c: &S3Config) -> S3Url {
     let e = c.endpoint.trim().trim_end_matches('/');
     let (scheme, host) = if let Some(r) = e.strip_prefix("https://") {
@@ -687,7 +687,7 @@ fn s3_url(c: &S3Config) -> S3Url {
     }
 }
 
-/// 发 SigV4 签名请求（region 空默认 "auto"）
+/// Send a SigV4-signed request (empty region defaults to "auto")
 async fn s3_request(
     c: &S3Config,
     method: reqwest::Method,
@@ -724,7 +724,7 @@ async fn s3_request(
         .map_err(|e| format!("无法连接 S3 端点：{e}"))
 }
 
-/// S3 错误统一翻译（404 → Ok(None) 由调用方区分；403 给排查提示）
+/// Uniform S3 error translation (404 -> Ok(None) is distinguished by the caller; 403 gets troubleshooting hints)
 async fn s3_error(resp: reqwest::Response, action: &str) -> String {
     let status = resp.status();
     let body: String = resp
@@ -765,9 +765,9 @@ async fn s3_put(c: &S3Config, bytes: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
-// ==================== 上传 / 检查 / 恢复 主流程 ====================
+// ==================== Upload / check / restore main flows ====================
 
-/// 上传：先取远端版本（不存在/不可解析 = 0，覆盖式上传），新版本 = max(远端, 本地)+1
+/// Upload: fetch the remote version first (missing/unparseable = 0, overwrite-style upload); new version = max(remote, local)+1
 async fn upload_inner(target: &SyncTarget, pin: &str) -> Result<SyncStatus, String> {
     validate_pin(pin)?;
     let state = load_state();
@@ -788,7 +788,7 @@ async fn upload_inner(target: &SyncTarget, pin: &str) -> Result<SyncStatus, Stri
         last_device: device.clone(),
         last_restore_at: state.last_restore_at,
     })?;
-    // pin_set 仅为 UI 提示：上传用过 PIN 即记 true
+    // pin_set is only a UI hint: record true once an upload used a PIN
     if !pin.is_empty() {
         let mut cfg = load_config();
         if !cfg.pin_set {
@@ -809,7 +809,7 @@ async fn upload_inner(target: &SyncTarget, pin: &str) -> Result<SyncStatus, Stri
     })
 }
 
-/// 检查：只解析存档头比对版本（不解密）；远端加密但 PIN 空 → relation="need-pin"
+/// Check: parse only the archive header to compare versions (no decryption); remote encrypted but PIN empty -> relation="need-pin"
 async fn check_inner(cfg: &SyncConfig, pin: &str) -> Result<SyncStatus, String> {
     validate_pin(pin)?;
     let state = load_state();
@@ -846,8 +846,8 @@ async fn check_inner(cfg: &SyncConfig, pin: &str) -> Result<SyncStatus, String> 
     })
 }
 
-/// 恢复：取远端→解密→备份现有配置→写回→落 state→延迟重启（IPC 响应先送达前端）。
-/// 版本关系（newer/same/older）不在命令层拦截，由前端经 sync_check 先行提示、用户确认后调用。
+/// Restore: fetch remote -> decrypt -> back up existing config -> write back -> save state -> delayed restart (IPC response reaches the frontend first).
+/// The version relation (newer/same/older) is not blocked at the command layer; the frontend prompts first via sync_check and the user confirms before calling.
 async fn restore_inner(
     app: &tauri::AppHandle,
     target: &SyncTarget,
@@ -873,7 +873,7 @@ async fn restore_inner(
         "gui.sync_restore",
         serde_json::json!({"version": archive.version, "device": archive.device, "target": target.kind()}),
     );
-    // 配置多为启动期读取，恢复后整体重启生效；延迟触发让响应先回前端（need_restart 供其提示）
+    // Config is mostly read at startup, so a full restart applies the restore; the delayed trigger lets the response reach the frontend first (need_restart lets it prompt)
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -886,9 +886,9 @@ async fn restore_inner(
     })
 }
 
-// ==================== Tauri 命令 ====================
+// ==================== Tauri commands ====================
 
-/// get_sync_config 返回体：掩码版通道配置 + 版本状态
+/// get_sync_config response: masked channel config + version state
 #[derive(Debug, Clone, Serialize)]
 pub struct SyncConfigView {
     pub target: String,
@@ -908,7 +908,7 @@ pub struct SyncConfigView {
     pub last_restore_at: u64,
 }
 
-/// sync_check / sync_upload 返回体
+/// sync_check / sync_upload response
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct SyncStatus {
     pub remote_version: u64,
@@ -919,7 +919,7 @@ pub struct SyncStatus {
     pub relation: String,
 }
 
-/// sync_restore / sync_import 返回体
+/// sync_restore / sync_import response
 #[derive(Debug, Clone, Serialize)]
 pub struct RestoreResult {
     pub version: u64,
@@ -950,7 +950,7 @@ pub async fn get_sync_config() -> Result<SyncConfigView, String> {
     })
 }
 
-/// 保存通道配置：pass/sk 传空串 = 保留原值；审计不落任何明文
+/// Save channel config: empty pass/sk = keep existing value; audit never records any plaintext
 #[tauri::command]
 pub async fn set_sync_config(cfg: SyncConfigInput) -> Result<(), String> {
     if !matches!(cfg.target.as_str(), "none" | "webdav" | "s3") {
@@ -994,7 +994,7 @@ pub async fn sync_restore(app: tauri::AppHandle, pin: String) -> Result<RestoreR
     restore_inner(&app, &target, &pin).await
 }
 
-/// 手动导出：存档写本地文件（版本同样 +1，语义与上传一致）
+/// Manual export: write the archive to a local file (version still +1, same semantics as upload)
 #[tauri::command]
 pub async fn sync_export(path: String, pin: String) -> Result<SyncStatus, String> {
     if path.trim().is_empty() {
@@ -1003,7 +1003,7 @@ pub async fn sync_export(path: String, pin: String) -> Result<SyncStatus, String
     upload_inner(&SyncTarget::File(path), &pin).await
 }
 
-/// 手动导入：从本地存档文件恢复（恢复后自动重启，同 sync_restore）
+/// Manual import: restore from a local archive file (auto-restart after restore, same as sync_restore)
 #[tauri::command]
 pub async fn sync_import(app: tauri::AppHandle, path: String, pin: String) -> Result<RestoreResult, String> {
     if path.trim().is_empty() {
@@ -1049,7 +1049,7 @@ mod tests {
         assert!(a.payload.is_object());
         let p = extract_payload(&a, "").unwrap();
         assert_eq!(p, sample_payload());
-        // 明文存档带 PIN 也能读（PIN 被忽略）
+        // Plaintext archive also reads with a PIN (the PIN is ignored)
         assert!(extract_payload(&a, "1234").is_ok());
     }
 
@@ -1060,15 +1060,15 @@ mod tests {
         assert_eq!(a.enc, "aes256gcm");
         assert!(!a.salt.is_empty() && !a.nonce.is_empty());
         assert!(a.payload.is_string());
-        // 密文不可见明文内容
+        // Ciphertext exposes no plaintext content
         assert!(!String::from_utf8_lossy(&bytes).contains("gui-settings"));
-        // 正确 PIN 还原
+        // Correct PIN restores
         let p = extract_payload(&a, "0821").unwrap();
         assert_eq!(p, sample_payload());
-        // 空 PIN：提示输入
+        // Empty PIN: prompts for input
         let e = extract_payload(&a, "").unwrap_err();
         assert!(e.contains("PIN"), "{e}");
-        // 错 PIN：GCM 校验失败 → 统一话术
+        // Wrong PIN: GCM verification fails -> unified message
         let e = extract_payload(&a, "0822").unwrap_err();
         assert_eq!(e, "PIN 错误或存档损坏");
     }
@@ -1092,9 +1092,9 @@ mod tests {
 
     #[test]
     fn sigv4_flow_matches_aws_official_vector() {
-        // AWS 官方「完整 SigV4 签名流程」示例（IAM docs，AKIAIOSFODNN7EXAMPLE）：
-        // 官方最终签名 5d672d79…。签名机制与 S3 完全相同（service 为参数），
-        // 用本模块原语（sha256_hex/hmac_sha256/hex + sigv4_signing_key）完整走一遍。
+        // AWS official "complete SigV4 signing flow" example (IAM docs, AKIAIOSFODNN7EXAMPLE):
+        // official final signature 5d672d79.... The signing mechanism is identical to S3 (service is a parameter);
+        // run it end to end with this module's primitives (sha256_hex/hmac_sha256/hex + sigv4_signing_key).
         let empty = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
         let canonical_request = format!(
             "GET\n/\nAction=ListUsers&Version=2010-05-08\n\
@@ -1117,9 +1117,9 @@ mod tests {
             hex(&hmac_sha256(&k, string_to_sign.as_bytes())),
             "5d672d79c15b13162d9279b0855cfba6789a8edb4c82c400e06b5924a6f2b5d7"
         );
-        // 另锚定 S3 文档 GET Object 示例的规范请求哈希（7344ae5b…，含 range 头）：
-        // 验证 sha256_hex 与本模块规范请求排版约定（该示例印刷签名 f0e8bdb8… 与其自身
-        // string-to-sign 不一致，属 AWS 文档勘误，不作为断言目标）
+        // Also anchor the canonical-request hash of the S3 docs GET Object example (7344ae5b..., with range header):
+        // verifies sha256_hex and this module's canonical-request layout (that example's printed signature f0e8bdb8...
+        // disagrees with its own string-to-sign, an AWS docs erratum, so it is not an assertion target)
         let s3_cr = format!(
             "GET\n/test.txt\n\n\
              host:examplebucket.s3.amazonaws.com\n\
@@ -1136,8 +1136,8 @@ mod tests {
 
     #[test]
     fn sigv4_authorization_fixed_vector() {
-        // 本实现三头签名（host;x-amz-content-sha256;x-amz-date）固定输入输出；
-        // 期望值已经独立 HMAC-SHA256 实现（Python hmac/hashlib）交叉验证一致
+        // This implementation's three-header signing (host;x-amz-content-sha256;x-amz-date) with fixed input/output;
+        // the expected value was cross-verified with an independent HMAC-SHA256 implementation (Python hmac/hashlib)
         let auth = sigv4_authorization(&SigV4Params {
             method: "GET",
             canonical_uri: "/test.txt",
@@ -1189,7 +1189,7 @@ Signature=d5cdd2e19642573e9f29f12a994baa76d72bd3f34e99e4ec7b52ff0f7899681e"
         assert_eq!(u.url, "https://minio.example.com:9000/backups/anet/agile-net-sync.json");
         assert_eq!(u.host, "minio.example.com:9000");
         assert_eq!(u.canonical_uri, "/backups/anet/agile-net-sync.json");
-        // 无 scheme 默认 https
+        // No scheme defaults to https
         let c2 = S3Config {
             endpoint: "s3.us-west-004.backblazeb2.com".into(),
             bucket: "b".into(),
@@ -1204,7 +1204,7 @@ Signature=d5cdd2e19642573e9f29f12a994baa76d72bd3f34e99e4ec7b52ff0f7899681e"
         let out = strip_local_secrets("subscriptions.json", sub);
         assert!(out.get("secret").is_none());
         assert_eq!(out["subscriptions"][0]["name"], "s");
-        // 其他文件不动
+        // Other files untouched
         let settings = serde_json::json!({"secret": "keep", "client": true});
         let out2 = strip_local_secrets("gui-settings.json", settings);
         assert_eq!(out2["secret"], "keep");
@@ -1217,7 +1217,7 @@ Signature=d5cdd2e19642573e9f29f12a994baa76d72bd3f34e99e4ec7b52ff0f7899681e"
         let merged = restore_value("subscriptions.json", archived, Some(local));
         assert_eq!(merged["secret"], "local-secret");
         assert_eq!(merged["subscriptions"][0]["name"], "s");
-        // 本机无 secret 时不凭空添加
+        // Do not add a secret out of thin air when the local one is absent
         let merged2 = restore_value(
             "subscriptions.json",
             serde_json::json!({"subscriptions": []}),

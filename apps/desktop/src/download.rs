@@ -1,15 +1,15 @@
-//! 制品下载管理器（mihomo 内核 / wintun.dll）：统一下载 UX。
+//! Artifact download manager (mihomo kernel / wintun.dll): unified download UX.
 //!
-//! - 状态机 idle / downloading{artifact,mirror,downloaded,total?} / done / failed{artifact,reason}，
-//!   AppState 持有，前端轮询 `dl_state` 命令渲染进度卡（与现有轮询风格一致，不用 Tauri 事件）
-//! - 开启流程不再当场下载：制品缺失时调用方 `start()` 后台流式下载并以
-//!   NEED_DOWNLOAD 提示前端，完成后前端自动重试原开启动作
-//! - 完整性由 subscription.rs 的 SHA-256 钉死保证；下载包校验失败拒绝落盘
-//!   （篡改审计 gui.kernel_tamper / gui.wintun_tamper，同原 ensure_* 策略）
-//! - 手动安装：本地文件按制品分流（包对钉 / 裸二进制不可对钉 / wintun.dll 对 dll 钉），
-//!   钉值不符须用户显式确认（allow_mismatch=true 才落盘），全程审计 gui.dl_manual_install
-//! - 审计：gui.dl_start / gui.dl_done（含镜像）/ gui.dl_failed（含原因）/ gui.dl_manual_install；
-//!   严禁记录文件内容
+//! - State machine idle / downloading{artifact,mirror,downloaded,total?} / done / failed{artifact,reason},
+//!   held by AppState; frontend polls `dl_state` to render the progress card (no Tauri events)
+//! - Enable flow no longer downloads inline: on missing artifact the caller `start()`s a background
+//!   streaming download and hints the frontend with NEED_DOWNLOAD, which auto-retries the enable action
+//! - Integrity pinned by SHA-256 in subscription.rs; failed packages are refused (tamper audit
+//!   gui.kernel_tamper / gui.wintun_tamper, same as the old ensure_* policy)
+//! - Manual install: local file routed by artifact (package pinned / bare binary unpinnable / wintun.dll
+//!   dll-pinned); mismatch needs explicit confirmation (allow_mismatch=true); audited gui.dl_manual_install
+//! - Audit: gui.dl_start / gui.dl_done (with mirror) / gui.dl_failed (with reason) / gui.dl_manual_install;
+//!   never log file contents
 
 use agile_net_node::db::sha256_hex;
 use serde::Serialize;
@@ -19,13 +19,13 @@ use std::sync::{Arc, Mutex};
 use crate::roles;
 use crate::subscription as sub;
 
-/// 制品类型（dl_start / dl_install_manual 命令参数，小写串）
+/// Artifact kind (dl_start / dl_install_manual command arg, lowercase string)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Artifact {
-    /// 订阅内核（mihomo）
+    /// Subscription kernel (mihomo)
     Kernel,
-    /// TUN 模式虚拟网卡驱动
+    /// Virtual NIC driver for TUN mode
     Wintun,
 }
 
@@ -46,7 +46,7 @@ impl Artifact {
     }
 }
 
-/// 下载状态机（dl_state 命令返回体；serde tag=phase）
+/// Download state machine (dl_state command return body; serde tag=phase)
 #[derive(Debug, Clone, Default, Serialize)]
 #[serde(tag = "phase", rename_all = "lowercase")]
 pub enum DlState {
@@ -54,10 +54,10 @@ pub enum DlState {
     Idle,
     Downloading {
         artifact: String,
-        /// 命中镜像（如 "直连 github.com" / "本地代理 ghfast.top"）
+        /// Mirror hit (e.g. direct github.com / local proxy ghfast.top)
         mirror: String,
         downloaded: u64,
-        /// content-length 缺失时为 None（前端只显示已下载字节）
+        /// None when content-length is missing (frontend shows only downloaded bytes)
         total: Option<u64>,
     },
     Done {
@@ -69,12 +69,12 @@ pub enum DlState {
     },
 }
 
-/// 手动安装结果（dl_install_manual 命令返回体；serde tag=result）
+/// Manual install result (dl_install_manual command return body; serde tag=result)
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum ManualInstallResult {
     Installed { artifact: String },
-    /// 哈希与钉值不符（或裸二进制无法对钉）：前端弹确认框，用户确认后带 allow_mismatch 重调
+    /// Hash differs from the pin (or bare binary cannot be pinned): frontend confirms, then recalls with allow_mismatch
     HashMismatch {
         artifact: String,
         actual_hash: String,
@@ -82,17 +82,17 @@ pub enum ManualInstallResult {
     },
 }
 
-/// 手动安装内部结果（含审计字段；installed 时 mismatch=true 表示用户确认强装）
+/// Internal manual-install outcome (with audit fields; mismatch=true on installed means user-confirmed force install)
 #[derive(Debug)]
 pub(crate) struct ManualOutcome {
     pub result: ManualInstallResult,
     pub actual_hash: String,
-    /// 文件形态：包 / 二进制 / dll（审计用）
+    /// File shape: package / binary / dll (for audit)
     pub kind: &'static str,
     pub mismatch: bool,
 }
 
-/// 下载管理器：单任务槽（同时只允许一个制品在下载；同制品 start 幂等）。
+/// Download manager: single task slot (only one artifact downloads at a time; start is idempotent per artifact).
 #[derive(Default)]
 pub struct DownloadManager {
     state: Arc<Mutex<DlState>>,
@@ -104,7 +104,7 @@ impl DownloadManager {
         self.state.lock().unwrap().clone()
     }
 
-    /// 开始后台下载（同制品下载中幂等 Ok；异制品下载中报错；done/failed 后可重新开始）。
+    /// Start background download (idempotent Ok if same artifact is downloading; error if another is; may restart after done/failed).
     pub fn start(&self, artifact: Artifact) -> Result<(), String> {
         if let DlState::Downloading { artifact: a, .. } = &*self.state.lock().unwrap() {
             if a == artifact.name() {
@@ -116,7 +116,7 @@ impl DownloadManager {
         self.spawn_task(artifact, run_download(artifact, self.state.clone()))
     }
 
-    /// 任务装配（与生产/测试共用的状态机迁移唯一路径）：终态迁移 + 完成/失败审计 + 自清任务槽。
+    /// Task assembly (the single state-machine transition path shared by prod/tests): terminal transition + done/failed audit + slot self-clear.
     fn spawn_task(
         &self,
         artifact: Artifact,
@@ -162,7 +162,7 @@ impl DownloadManager {
         Ok(())
     }
 
-    /// 取消下载：中止任务回 idle（部分字节随任务丢弃，不落盘）。
+    /// Cancel download: abort the task back to idle (partial bytes are dropped with the task, never persisted).
     pub fn cancel(&self) {
         if let Some(h) = self.task.lock().unwrap().take() {
             h.abort();
@@ -172,8 +172,8 @@ impl DownloadManager {
     }
 }
 
-/// 手动安装本地制品文件（钉值校验；不符时由前端确认后带 allow_mismatch 重调）。
-/// 自由函数（不依赖管理器实例），命令层可放进 spawn_blocking 执行。
+/// Manually install a local artifact file (pin-verified; on mismatch the frontend confirms and recalls with allow_mismatch).
+/// Free function (no manager instance); the command layer may run it inside spawn_blocking.
 pub(crate) fn install_manual(
     artifact: Artifact,
     path: &Path,
@@ -202,10 +202,10 @@ pub(crate) fn install_manual(
     Ok(out.result)
 }
 
-// ==================== 下载执行（流式 + 钉值校验 + 原子落盘） ====================
+// ==================== Download execution (streaming + pin verify + atomic persist) ====================
 
-/// 后台下载全流程：流式下载（进度写入共享状态）→ 钉值 SHA-256 校验 → 解压落盘。
-/// 返回命中镜像（审计 gui.dl_done 用）；篡改校验失败在此审计（gui.kernel_tamper / gui.wintun_tamper）。
+/// Full background download flow: streaming download (progress written to shared state) -> pin SHA-256 verify -> extract and persist.
+/// Returns the mirror hit (for gui.dl_done audit); tamper-check failures are audited here (gui.kernel_tamper / gui.wintun_tamper).
 pub(crate) async fn run_download(
     artifact: Artifact,
     state: Arc<Mutex<DlState>>,
@@ -255,9 +255,9 @@ pub(crate) async fn run_download(
     }
 }
 
-/// 流式下载：沿用原 download_bytes 候选顺序（每 URL 先直连后本地代理 57890），
-/// 每 ~64KB 经 report 汇报（mirror, downloaded, total）；content-length 缺失 total=None。
-/// 返回（完整字节，命中镜像描述）。
+/// Streaming download: keeps the original download_bytes candidate order (per URL: direct first, then local proxy 57890),
+/// reports (mirror, downloaded, total) every ~64KB; total=None when content-length is missing.
+/// Returns (full bytes, mirror description hit).
 async fn download_stream(
     urls: &[String],
     report: &impl Fn(&str, u64, Option<u64>),
@@ -303,7 +303,7 @@ async fn download_stream(
                         }
                     }
                     if broken {
-                        continue; // 同一 URL 换下一通道（直连→本地代理）
+                        continue; // same URL, try next channel (direct -> local proxy)
                     }
                     report(&mirror, buf.len() as u64, total);
                     return Ok((buf, mirror));
@@ -316,7 +316,7 @@ async fn download_stream(
     Err(last_err)
 }
 
-/// URL 主机段（镜像展示用；解析失败原样返回）
+/// URL host part (for mirror display; returned as-is when parsing fails)
 fn url_host(url: &str) -> &str {
     match url.find("://") {
         Some(i) => {
@@ -330,7 +330,7 @@ fn url_host(url: &str) -> &str {
     }
 }
 
-/// 钉值校验：相符 Ok；不符 Err(实际哈希)（调用方决定篡改审计/手动确认分支）
+/// Pin check: Ok on match; Err(actual hash) on mismatch (caller decides tamper-audit / manual-confirm branch)
 fn verify_pin(bytes: &[u8], expect: &str) -> Result<(), String> {
     let actual = sha256_hex(bytes);
     if actual != expect {
@@ -339,7 +339,7 @@ fn verify_pin(bytes: &[u8], expect: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// 内核包解压（按魔数分流 zip/gz），返回包内 inner 条目内容。
+/// Extract kernel package (zip/gz routed by magic bytes), returns the inner entry content.
 fn extract_pkg(bytes: &[u8], inner: &str) -> Result<Vec<u8>, String> {
     if bytes.starts_with(b"PK\x03\x04") {
         let reader = std::io::Cursor::new(bytes);
@@ -360,7 +360,7 @@ fn extract_pkg(bytes: &[u8], inner: &str) -> Result<Vec<u8>, String> {
     }
 }
 
-/// 从 wintun zip 中解出 amd64/wintun.dll。
+/// Extract amd64/wintun.dll from the wintun zip.
 fn extract_wintun_dll(bytes: &[u8]) -> Result<Vec<u8>, String> {
     let reader = std::io::Cursor::new(bytes);
     let mut zip = zip::ZipArchive::new(reader).map_err(|e| e.to_string())?;
@@ -379,7 +379,7 @@ fn extract_wintun_dll(bytes: &[u8]) -> Result<Vec<u8>, String> {
     Ok(buf)
 }
 
-/// 原子落盘：临时文件 + 改名（沿用 *.download 临时名约定）；executable 时 unix 置 0755。
+/// Atomic persist: temp file + rename (keeps the *.download temp-name convention); chmod 0755 on unix when executable.
 fn atomic_write(dest: &Path, bytes: &[u8], executable: bool) -> Result<(), String> {
     let dir = dest.parent().ok_or("目标路径无父目录")?;
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
@@ -400,9 +400,9 @@ fn atomic_write(dest: &Path, bytes: &[u8], executable: bool) -> Result<(), Strin
     Ok(())
 }
 
-// ==================== 手动安装（本地文件 → 钉值校验 → 落盘） ====================
+// ==================== Manual install (local file -> pin verify -> persist) ====================
 
-/// 手动安装所用钉值集合（生产取自 subscription.rs 钉死常量；测试注入自有钉值）。
+/// Pin set for manual install (production reads pinned constants from subscription.rs; tests inject their own pins).
 pub(crate) struct ManualPins {
     pub kernel_sha: String,
     pub kernel_inner: String,
@@ -427,7 +427,7 @@ impl ManualPins {
     }
 }
 
-/// 读本地文件（256MB 上限，防误传巨型文件）
+/// Read local file (256MB cap, guards against huge files passed by mistake)
 fn read_file_capped(path: &Path) -> Result<Vec<u8>, String> {
     let meta = std::fs::metadata(path).map_err(|e| format!("无法读取文件: {e}"))?;
     if meta.len() > 256 * 1024 * 1024 {
@@ -436,7 +436,7 @@ fn read_file_capped(path: &Path) -> Result<Vec<u8>, String> {
     std::fs::read(path).map_err(|e| format!("无法读取文件: {e}"))
 }
 
-/// 哈希不符结果（实际哈希入 result 与审计字段，避免调用处重复计算）
+/// Hash-mismatch outcome (actual hash goes into both result and audit fields, avoiding recompute at call sites)
 fn mismatch_outcome(
     artifact: Artifact,
     actual_hash: &str,
@@ -455,7 +455,7 @@ fn mismatch_outcome(
     }
 }
 
-/// 安装成功结果（mismatch=true 表示用户确认强装）
+/// Install-success outcome (mismatch=true means user-confirmed force install)
 fn installed_outcome(artifact: Artifact, actual_hash: String, kind: &'static str, mismatch: bool) -> ManualOutcome {
     ManualOutcome {
         result: ManualInstallResult::Installed {
@@ -467,7 +467,7 @@ fn installed_outcome(artifact: Artifact, actual_hash: String, kind: &'static str
     }
 }
 
-/// 手动安装分流（纯函数：不审计、不碰全局状态；目标路径由调用方注入便于测试隔离）。
+/// Manual-install routing (pure function: no audit, no global state; target paths injected by caller for test isolation).
 pub(crate) fn install_manual_at(
     artifact: Artifact,
     path: &Path,
@@ -490,18 +490,18 @@ pub(crate) fn install_manual_at(
     let is_gz = bytes.starts_with(&[0x1f, 0x8b]);
     match artifact {
         Artifact::Kernel => {
-            // 包（魔数或扩展名判定）→ 对包钉；其余视为裸二进制 → 无法对钉
+            // Package (by magic bytes or extension) -> check against package pin; anything else is a bare binary -> cannot be pinned
             if is_zip || is_gz || ext == "zip" || ext == "gz" {
                 let mismatch = verify_pin(&bytes, &pins.kernel_sha).is_err();
                 if mismatch && !allow_mismatch {
                     return Ok(mismatch_outcome(artifact, &actual_hash, &pins.kernel_version, "包"));
                 }
-                // 钉值相符直接装；不符时须用户显式确认（allow_mismatch）才走到这
+                // Pin match installs directly; mismatch only reaches here after explicit user confirmation (allow_mismatch)
                 let inner = extract_pkg(&bytes, &pins.kernel_inner)?;
                 atomic_write(kernel_bin, &inner, true)?;
                 Ok(installed_outcome(artifact, actual_hash, "包", mismatch))
             } else {
-                // 裸二进制：钉的是包哈希，无法对钉——须用户显式确认
+                // Bare binary: the pin covers the package hash and cannot be checked -- requires explicit user confirmation
                 if !allow_mismatch {
                     return Ok(mismatch_outcome(artifact, &actual_hash, &pins.kernel_version, "二进制"));
                 }
@@ -511,7 +511,7 @@ pub(crate) fn install_manual_at(
         }
         Artifact::Wintun => {
             if is_zip || ext == "zip" {
-                // zip 包 → 对整包钉后解出 amd64/wintun.dll
+                // zip package -> verify whole-package pin, then extract amd64/wintun.dll
                 let mismatch = verify_pin(&bytes, &pins.wintun_zip_sha).is_err();
                 if mismatch && !allow_mismatch {
                     return Ok(mismatch_outcome(artifact, &actual_hash, &pins.wintun_version, "包"));
@@ -520,7 +520,7 @@ pub(crate) fn install_manual_at(
                 atomic_write(wintun_dll, &dll, false)?;
                 Ok(installed_outcome(artifact, actual_hash, "包", mismatch))
             } else {
-                // 裸 wintun.dll → 对 dll 本体钉（与本地候选复用同一钉）
+                // bare wintun.dll -> pin the dll itself (shares the same pin as local candidates)
                 let mismatch = verify_pin(&bytes, &pins.wintun_dll_sha).is_err();
                 if mismatch && !allow_mismatch {
                     return Ok(mismatch_outcome(artifact, &actual_hash, &pins.wintun_version, "dll"));
@@ -537,7 +537,7 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    /// 进度报告收集槽（(已下载, 总量?) 序列）
+    /// Progress report sink (sequence of (downloaded, total?))
     type Reports = Arc<Mutex<Vec<(u64, Option<u64>)>>>;
 
     fn tempdir(tag: &str) -> PathBuf {
@@ -560,7 +560,7 @@ mod tests {
         }
     }
 
-    /// 造一个 zip 包（单条目 Stored）
+    /// Build a zip package (single Stored entry)
     fn make_zip(entry: &str, content: &[u8]) -> Vec<u8> {
         let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
         let opt = zip::write::SimpleFileOptions::default()
@@ -576,9 +576,9 @@ mod tests {
         p
     }
 
-    // ---------- 流式下载进度 ----------
+    // ---------- Streaming download progress ----------
 
-    /// mock HTTP 服务：分块喂 body（块间隔 30ms 促使多次 chunk），断言进度单调累计且字节一致
+    /// Mock HTTP server: feeds the body in chunks (30ms apart to force multiple chunks); asserts cumulative monotone progress and byte equality
     #[tokio::test]
     async fn stream_download_reports_cumulative_progress() {
         let chunks: Vec<Vec<u8>> = vec![vec![1u8; 100_000], vec![2u8; 100_000], vec![3u8; 50_000]];
@@ -620,7 +620,7 @@ mod tests {
         let reps = reports.lock().unwrap().clone();
         assert!(reps.len() >= 2, "至少有起始与结束进度: {reps:?}");
         assert_eq!(reps[0], (0, Some(total as u64)));
-        // 单调不减且以总量收尾（content-length 已知 → total 恒 Some）
+        // Monotone non-decreasing, ending at total (content-length known -> total always Some)
         for w in reps.windows(2) {
             assert!(w[1].0 >= w[0].0, "进度单调不减: {reps:?}");
             assert_eq!(w[1].1, Some(total as u64));
@@ -628,7 +628,7 @@ mod tests {
         assert_eq!(reps.last().unwrap().0, total as u64);
     }
 
-    /// content-length 缺失（chunked 编码）→ total=None，只累计已下载字节
+    /// content-length missing (chunked encoding) -> total=None, only downloaded bytes accumulate
     #[tokio::test]
     async fn stream_download_without_content_length() {
         let payload = b"hello-chunked-world".to_vec();
@@ -668,7 +668,7 @@ mod tests {
         assert_eq!(reps.last().unwrap().0, n as u64);
     }
 
-    /// 全部 URL 失败 → Err（含最后一次错误）
+    /// All URLs fail -> Err (contains the last error)
     #[tokio::test]
     async fn stream_download_all_mirrors_fail() {
         let err = download_stream(
@@ -680,9 +680,9 @@ mod tests {
         assert!(!err.is_empty());
     }
 
-    // ---------- 状态机迁移 ----------
+    // ---------- State machine transitions ----------
 
-    /// idle → downloading → done；任务槽自清，可再次 start
+    /// idle -> downloading -> done; task slot self-clears, start works again
     #[tokio::test]
     async fn state_machine_done_transition() {
         let dm = DownloadManager::default();
@@ -690,7 +690,7 @@ mod tests {
         dm.spawn_task(Artifact::Kernel, async { Ok("直连 example.com".into()) })
             .unwrap();
         assert!(matches!(dm.state(), DlState::Downloading { .. }));
-        // 等任务收尾
+        // wait for the task to finish
         for _ in 0..50 {
             if matches!(dm.state(), DlState::Done { .. }) {
                 break;
@@ -702,7 +702,7 @@ mod tests {
             other => panic!("应为 done: {other:?}"),
         }
         assert!(dm.task.lock().unwrap().is_none(), "任务槽须自清");
-        // done 后可再次开始
+        // can start again after done
         dm.spawn_task(Artifact::Wintun, async { Err("网络不可达".into()) })
             .unwrap();
         for _ in 0..50 {
@@ -720,7 +720,7 @@ mod tests {
         }
     }
 
-    /// 下载中取消 → idle；挂起任务被中止
+    /// Cancel mid-download -> idle; pending task is aborted
     #[tokio::test]
     async fn state_machine_cancel_returns_idle() {
         let dm = DownloadManager::default();
@@ -735,9 +735,9 @@ mod tests {
         assert!(dm.task.lock().unwrap().is_none());
     }
 
-    // ---------- 手动安装：kernel 三分支 ----------
+    // ---------- Manual install: kernel three branches ----------
 
-    /// kernel zip 对钉成功 → installed，落盘内容为包内二进制
+    /// kernel zip pin match -> installed; persisted content is the in-package binary
     #[test]
     fn manual_kernel_zip_pin_match_installs() {
         let dir = tempdir("kzip-ok");
@@ -754,7 +754,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// kernel zip 钉值不符：默认返回 hash_mismatch；allow_mismatch 强装落盘
+    /// kernel zip pin mismatch: returns hash_mismatch by default; allow_mismatch force-installs and persists
     #[test]
     fn manual_kernel_zip_mismatch_then_override() {
         let dir = tempdir("kzip-mm");
@@ -777,7 +777,7 @@ mod tests {
             other => panic!("应为 hash_mismatch: {other:?}"),
         }
         assert!(!bin.exists(), "未确认前不得落盘");
-        // 用户确认强装
+        // user confirms force install
         let out = install_manual_at(Artifact::Kernel, &src, true, &pins, &bin, &dir.join("wintun.dll"))
             .unwrap();
         assert!(matches!(out.result, ManualInstallResult::Installed { .. }));
@@ -786,7 +786,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// kernel 裸二进制：无法对钉 → hash_mismatch；确认后原样落盘
+    /// kernel bare binary: cannot be pinned -> hash_mismatch; persisted as-is after confirmation
     #[test]
     fn manual_kernel_bare_exe_requires_confirmation() {
         let dir = tempdir("kexe");
@@ -804,9 +804,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    // ---------- 手动安装：wintun ----------
+    // ---------- Manual install: wintun ----------
 
-    /// wintun 裸 dll 对钉成功 / 不符返回 mismatch
+    /// wintun bare dll pin match / mismatch returns mismatch
     #[test]
     fn manual_wintun_dll_pin_match_and_mismatch() {
         let dir = tempdir("wdll");
@@ -820,7 +820,7 @@ mod tests {
         assert!(matches!(out.result, ManualInstallResult::Installed { .. }));
         assert!(!out.mismatch);
         assert_eq!(std::fs::read(&dest).unwrap(), dll_bytes);
-        // 钉值不符 → mismatch（未确认不落盘）
+        // pin mismatch -> mismatch (nothing persisted before confirmation)
         pins.wintun_dll_sha = "0".repeat(64);
         let dest2 = dir.join("out2").join("wintun.dll");
         let out = install_manual_at(Artifact::Wintun, &src, false, &pins, &dir.join("mihomo.exe"), &dest2)
@@ -830,7 +830,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// wintun zip 对钉成功 → 解出 amd64/wintun.dll 落盘
+    /// wintun zip pin match -> extracts amd64/wintun.dll and persists it
     #[test]
     fn manual_wintun_zip_pin_match_extracts() {
         let dir = tempdir("wzip");
@@ -846,7 +846,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// 路径不存在 → Err
+    /// Missing path -> Err
     #[test]
     fn manual_install_missing_file_errors() {
         let dir = tempdir("missing");
@@ -864,19 +864,19 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    // ---------- 解压/工具 ----------
+    // ---------- Extraction / helpers ----------
 
     #[test]
     fn extract_pkg_zip_and_gz() {
         let zip_bytes = make_zip("inner.exe", b"zip-content");
         assert_eq!(extract_pkg(&zip_bytes, "inner.exe").unwrap(), b"zip-content");
-        // gz 魔数分支
+        // gz magic-bytes branch
         let mut enc =
             flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
         std::io::Write::write_all(&mut enc, b"gz-content").unwrap();
         let gz = enc.finish().unwrap();
         assert_eq!(extract_pkg(&gz, "ignored").unwrap(), b"gz-content");
-        // 非包格式
+        // non-package format
         assert!(extract_pkg(b"plain-bytes", "x").is_err());
     }
 
@@ -893,7 +893,7 @@ mod tests {
         let dest = dir.join("sub").join("f.bin");
         atomic_write(&dest, b"abc", false).unwrap();
         assert_eq!(std::fs::read(&dest).unwrap(), b"abc");
-        // 临时文件不残留
+        // no temp file left behind
         assert!(!dir.join("sub").join("f.bin.download").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }

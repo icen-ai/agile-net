@@ -1,32 +1,34 @@
-//! 对端收敛原语 (PeerAcl)
+//! Peer traffic restriction primitive (PeerAcl)
 //!
-//! 收敛语义：对端隧道来的流量，目标命中该对端的允许集合才放行，否则拒绝。
-//! 调用方以 `Option<Arc<PeerAcl>>` 持有——`None` = 不收敛（放行一切）。
+//! Restriction semantics: traffic from a peer's tunnel is allowed only when its target
+//! hits that peer's allow set, otherwise rejected.
+//! Callers hold an `Option<Arc<PeerAcl>>` — `None` = unrestricted (allow everything).
 
 use crate::proxy::router::ProxyRouter;
 use std::sync::Arc;
 
-/// 对端访问收敛表：内部持有可热替换的 `ProxyRouter`（命中即允许）。
+/// Peer access restriction table: holds a hot-swappable `ProxyRouter` (hit = allow).
 ///
-/// 组规则变更时由控制面调用 `update` 整体换入新路由表，数据面零停机生效。
+/// On group rule changes the control plane calls `update` to swap in a whole new
+/// routing table; the data plane picks it up with zero downtime.
 pub struct PeerAcl {
     router: arc_swap::ArcSwap<ProxyRouter>,
 }
 
 impl PeerAcl {
-    /// 以给定路由表创建收敛表（路由命中 = 允许）。
+    /// Create a restriction table from the given routing table (route hit = allow).
     pub fn new(router: ProxyRouter) -> Self {
         Self {
             router: arc_swap::ArcSwap::from_pointee(router),
         }
     }
 
-    /// 目标是否被允许（命中任意非默认路由即放行）。
+    /// Whether the target is allowed (any non-default route hit passes).
     pub fn allowed(&self, target: &str) -> bool {
         self.router.load().matches(target)
     }
 
-    /// 热替换收敛规则。
+    /// Hot-swap the restriction rules.
     pub fn update(&self, router: ProxyRouter) {
         self.router.store(Arc::new(router));
     }
@@ -71,7 +73,7 @@ mod tests {
         acl.update(router);
 
         assert!(acl.allowed("172.16.0.1:80"));
-        // 旧规则随整体替换失效
+        // old rules lapse with the wholesale swap
         assert!(!acl.allowed("10.12.1.1:8080"));
     }
 }

@@ -1,4 +1,4 @@
-//! Rules API Handlers（对应 docs/api/rules.md）
+//! Rules API handlers (see docs/api/rules.md)
 
 use crate::api::extractors::{AdminAuth, ClientIp};
 use crate::api::{ApiState, codes, err, ok, ok_created};
@@ -57,7 +57,7 @@ pub struct RuleInput {
     pub remark: String,
 }
 
-/// 校验规则输入（返回规范化后的值）。
+/// Validate rule input (returns the normalized value).
 fn validate_rule_input(input: &RuleInput) -> Result<String, String> {
     let value = input.value.trim().to_string();
     match input.rule_type.as_str() {
@@ -74,7 +74,7 @@ fn validate_rule_input(input: &RuleInput) -> Result<String, String> {
             {
                 return Err(format!("invalid host: {value}"));
             }
-            // 域名格式粗校验（允许 *. 前缀通配）
+            // Loose hostname format check (allows the *. wildcard prefix)
             let bare = value.trim_start_matches("*.");
             if bare.is_empty()
                 || !bare
@@ -116,7 +116,7 @@ pub async fn create_rule(
         );
     }
 
-    // 创建 + 配置版本递增合并为一次阻塞任务
+    // Create + config version bump merged into one blocking task
     let (rule_type, resolve, remark) = (req.rule_type.clone(), req.resolve, req.remark.clone());
     match state
         .db_call(move |db| {
@@ -202,7 +202,7 @@ pub async fn update_rule(
         }
     }
 
-    // 更新 + 配置版本递增合并为一次阻塞任务
+    // Update + config version bump merged into one blocking task
     let (rid, value, remark) = (id.clone(), req.value.clone(), req.remark.clone());
     let resolve = req.resolve;
     if let Err(e) = state
@@ -260,7 +260,7 @@ pub async fn delete_rule(
             .into_response();
     }
 
-    // 删除 + 配置版本递增合并为一次阻塞任务
+    // Delete + config version bump merged into one blocking task
     let force = q.force;
     let aid = id.clone();
     match state
@@ -314,7 +314,7 @@ pub async fn batch_import(
         );
     }
 
-    // error 模式：预检全部（一次阻塞任务，返回首个冲突项）
+    // error mode: pre-check everything (one blocking task, returns the first conflict)
     if req.on_conflict == "error" {
         let probes: Vec<(String, String)> = req
             .rules
@@ -345,7 +345,7 @@ pub async fn batch_import(
         }
     }
 
-    // 整批导入合并为一次阻塞任务（最多 500 条，逐条 spawn 开销反而更大）
+    // Whole batch import merged into one blocking task (up to 500 entries; per-entry spawn would cost more)
     let (rules_in, on_conflict) = (req.rules, req.on_conflict.clone());
     let batch = state
         .db_call(move |db| {
@@ -365,7 +365,7 @@ pub async fn batch_import(
                 if db.rule_exists(&r.rule_type, &value).unwrap_or(false) {
                     match on_conflict.as_str() {
                         "overwrite" => {
-                            // 找到既有记录并更新 remark/resolve
+                            // Find the existing record and update remark/resolve
                             let (items, _) = db
                                 .list_rules(1, 100, Some(&r.rule_type), Some(&value))
                                 .unwrap_or_default();

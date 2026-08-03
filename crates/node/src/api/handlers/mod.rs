@@ -1,4 +1,4 @@
-//! Handlers 集合
+//! Handler collection
 
 pub mod accounts;
 pub mod admins;
@@ -15,7 +15,7 @@ pub mod tool;
 use crate::api::ApiState;
 use crate::auth::jwt::Claims;
 
-/// 审计日志记录（敏感操作统一调用；DB 写经 db_call 卸载，不阻塞 worker）。
+/// Audit log recording (single entry point for sensitive ops; DB write offloaded via db_call, never blocks a worker).
 pub(crate) async fn audit(
     state: &ApiState,
     claims: &Claims,

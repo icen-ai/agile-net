@@ -1,24 +1,24 @@
-//! 系统代理托管：把系统代理指向本地代理端口，关闭时还原快照；
-//! 冲突巡检——系统代理被第三方改动时可检出并一键收回（诊断核心）。
+//! System proxy management: point the system proxy at the local proxy port and restore the snapshot on disable;
+//! conflict inspection — detect third-party changes to the system proxy and reclaim it with one click (doctor core).
 //!
-//! - Windows：HKCU Internet Settings（ProxyEnable/ProxyServer）+ InternetSetOption 即时生效
-//! - macOS：networksetup 逐网络服务设置 web/secure/socks 代理，快照逐服务还原
+//! - Windows: HKCU Internet Settings (ProxyEnable/ProxyServer) + InternetSetOption for immediate effect
+//! - macOS: networksetup sets web/secure/socks proxies per network service, snapshot restores per service
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 use crate::roles;
 
-/// 托管状态（前端轮询展示）。
+/// Managed state (polled by the frontend for display).
 #[derive(Debug, Clone, Serialize)]
 pub struct SysProxyStatus {
-    /// 托管开关是否开启
+    /// Whether management is enabled
     pub managed: bool,
-    /// 冲突：系统当前值 ≠ 我们设置的期望值（被第三方修改或代理端口已变）
+    /// Conflict: current system value != our expected value (modified by a third party, or proxy port changed)
     pub conflict: bool,
-    /// 期望值（127.0.0.1:端口；未托管为空）
+    /// Expected value (127.0.0.1:port; empty when unmanaged)
     pub expected: String,
-    /// 系统当前值（原始字串；未启用系统代理为空）
+    /// Current system value (raw string; empty when system proxy is disabled)
     pub current: String,
 }
 
@@ -26,12 +26,12 @@ fn snapshot_path() -> PathBuf {
     roles::data_dir().join("sysproxy-snapshot.json")
 }
 
-/// 开启托管前的系统代理快照（关闭时还原）。
+/// Snapshot of the system proxy taken before enabling management (restored on disable).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Snapshot {
-    /// Windows：先前的 ProxyServer（未启用为 None）
+    /// Windows: previous ProxyServer (None when it was disabled)
     previous: Option<String>,
-    /// macOS：逐服务快照（service, kind, enabled, server, port）
+    /// macOS: per-service snapshot (service, kind, enabled, server, port)
     #[serde(default)]
     services: Vec<ServiceSnapshot>,
 }
@@ -45,7 +45,7 @@ struct ServiceSnapshot {
     port: u16,
 }
 
-// ==================== 平台实现 ====================
+// ==================== Platform implementations ====================
 
 #[cfg(windows)]
 mod imp {
@@ -59,7 +59,7 @@ mod imp {
             .map_err(|e| e.to_string())
     }
 
-    /// 当前系统代理（启用则 Some(server)）。
+    /// Current system proxy (Some(server) when enabled).
     pub fn get() -> Result<Option<String>, String> {
         let k = key()?;
         let enabled: u32 = k.get_value("ProxyEnable").unwrap_or(0);
@@ -70,7 +70,7 @@ mod imp {
         Ok(Some(server))
     }
 
-    /// 通知系统设置变更（不通知则运行中的应用不感知）。
+    /// Notify the system of settings changes (running apps won't notice otherwise).
     fn notify() {
         use windows_sys::Win32::Networking::WinInet::{
             INTERNET_OPTION_REFRESH, INTERNET_OPTION_SETTINGS_CHANGED, InternetSetOptionW,
@@ -153,7 +153,7 @@ mod imp {
             .collect())
     }
 
-    /// 解析 get*proxy 输出：(enabled, server, port)
+    /// Parse get*proxy output: (enabled, server, port)
     fn parse_get(out: &str) -> (bool, String, u16) {
         let mut enabled = false;
         let mut server = String::new();
@@ -171,7 +171,7 @@ mod imp {
         (enabled, server, port)
     }
 
-    /// 当前系统代理（任一服务启用 web/secure/socks 代理则返回首个命中 server:port）。
+    /// Current system proxy (returns the first hit server:port if any service has web/secure/socks proxy enabled).
     pub fn get() -> Result<Option<String>, String> {
         for svc in services()? {
             for (_, get_arg, _) in KINDS {
@@ -269,10 +269,10 @@ mod imp {
     }
 }
 
-// ==================== 对外语义 ====================
+// ==================== Public semantics ====================
 
-/// 开启托管：快照（仅首次，重复调用不覆盖原快照）→ 指向本地代理端口。
-/// 幂等：代理重启/端口变化时重复 engage 安全，还原始终回到首次开启前的状态。
+/// Enable management: snapshot (first call only; repeat calls never overwrite the original snapshot) -> point to the local proxy port.
+/// Idempotent: safe to re-engage after proxy restart/port change; restore always returns to the pre-first-engage state.
 pub fn engage(server: &str) -> Result<(), String> {
     if !snapshot_path().exists() {
         imp::take_snapshot()?;
@@ -282,8 +282,8 @@ pub fn engage(server: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// 启动清理：存在未还原快照说明上次异常退出（进程被杀/崩溃）可能遗留
-/// 系统代理指向已死端口，按快照还原；无快照则未曾托管，不碰系统设置。
+/// Startup cleanup: an unrestored snapshot means the last run exited abnormally (process killed/crashed)
+/// and may have left the system proxy pointing at a dead port — restore from the snapshot; no snapshot means never managed, leave system settings untouched.
 pub fn cleanup_if_pending() -> Result<(), String> {
     if snapshot_path().exists() {
         disengage()?;
@@ -291,7 +291,7 @@ pub fn cleanup_if_pending() -> Result<(), String> {
     Ok(())
 }
 
-/// 关闭托管：还原快照（无快照则直接关闭系统代理）。
+/// Disable management: restore the snapshot (or just disable the system proxy if none exists).
 pub fn disengage() -> Result<(), String> {
     if snapshot_path().exists() {
         imp::restore()?;
@@ -302,7 +302,7 @@ pub fn disengage() -> Result<(), String> {
     Ok(())
 }
 
-/// 巡检：返回托管状态与冲突判定。
+/// Inspect: return managed state and conflict determination.
 pub fn inspect(managed: bool, expected: &str) -> Result<SysProxyStatus, String> {
     let current = imp::get()?.unwrap_or_default();
     let conflict = managed && current != expected;
@@ -314,7 +314,7 @@ pub fn inspect(managed: bool, expected: &str) -> Result<SysProxyStatus, String> 
     })
 }
 
-/// 收回：把系统代理重写为期望值。
+/// Reclaim: rewrite the system proxy to the expected value.
 pub fn reclaim(server: &str) -> Result<(), String> {
     imp::set(server)?;
     roles::audit("gui.sysproxy_reclaim", serde_json::json!({"server": server}));

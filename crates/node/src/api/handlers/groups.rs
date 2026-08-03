@@ -1,4 +1,4 @@
-//! Groups API Handlers（对应 docs/api/groups.md）
+//! Groups API handlers (see docs/api/groups.md)
 
 use super::audit;
 use crate::api::extractors::{AdminAuth, ClientIp};
@@ -50,7 +50,7 @@ pub async fn get_group(
     State(state): State<ApiState>,
     Path(id): Path<String>,
 ) -> Response {
-    // 组 + 名下规则 + 名下账号合并为一次阻塞任务
+    // Group + its rules + its accounts merged into one blocking task
     let gid = id.clone();
     let result = state
         .db_call(move |db| {
@@ -91,13 +91,13 @@ pub async fn get_group(
     }))
 }
 
-/// 组详情：名下挂载的三类身份清单（账号 + 扇入令牌 + 扇出对端，各含 id 与名称字段）。
+/// Group detail: the three kinds of identities mounted under it (accounts + fan-in tokens + fan-out peers, each with id and name fields).
 pub async fn get_group_detail(
     AdminAuth(_): AdminAuth,
     State(state): State<ApiState>,
     Path(id): Path<String>,
 ) -> Response {
-    // 组存在性 + 三类身份清单合并为一次阻塞任务
+    // Group existence + the three identity lists merged into one blocking task
     let gid = id.clone();
     let result = state
         .db_call(move |db| {
@@ -188,7 +188,7 @@ pub async fn create_group(
             "group name already exists",
         );
     }
-    // 校验 rule_ids 存在（整批一次阻塞任务，返回首个缺失项）
+    // Validate rule_ids exist (whole batch in one blocking task, returns the first missing one)
     let rule_ids = req.rule_ids.clone();
     let missing = state
         .db_call(move |db| {
@@ -312,7 +312,7 @@ pub struct SetGroupRulesRequest {
     pub rule_ids: Vec<String>,
 }
 
-/// 全量设置权限组关联的规则。
+/// Replace the full set of rules attached to a group.
 pub async fn set_group_rules(
     AdminAuth(claims): AdminAuth,
     State(state): State<ApiState>,
@@ -336,7 +336,7 @@ pub async fn set_group_rules(
             "too many rule_ids",
         );
     }
-    // 校验 + 全量设置 + 版本递增合并为一次阻塞任务
+    // Validate + full replace + version bump merged into one blocking task
     let (gid, rule_ids) = (id.clone(), req.rule_ids.clone());
     let result = state
         .db_call(move |db| {

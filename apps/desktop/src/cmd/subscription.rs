@@ -1,17 +1,17 @@
-//! 从 lib.rs 拆分：订阅代理（mihomo sidecar）/ 制品下载 / 覆写脚本（纯搬运，零逻辑变更）
+//! Split out of lib.rs: subscription proxy (mihomo sidecar) / artifact download / override scripts (pure move, zero logic changes)
 
 use crate::tun::{self, Elevation};
 use crate::{custom_rules, download, map_err, roles, sub_script, subscription, AppState};
 use serde::Serialize;
 use tauri::{Manager, State};
 
-// ==================== 订阅代理（mihomo sidecar） ====================
+// ==================== Subscription proxy (mihomo sidecar) ====================
 
-/// 当前生效的回落地址（统一出口为派生语义，无用户开关：订阅内核开 = 未命中走订阅出口）：
-/// - TUN 模式：订阅出口优先（TUN mihomo socks 入站 57893→AGILE-SUB，无 FlClash 也能出网）；
-///   无激活订阅时回落外部上游（§2.4），异常值宁可无回落也不成环
-/// - 非 TUN：订阅角色开 + 内核运行 → 回落到内核 mixed（57892）
-/// - 其余：无回落（未命中直连）
+/// Currently effective fallback address (unified egress is derived, no user toggle: subscription kernel on = misses via subscription egress):
+/// - TUN mode: subscription egress first (TUN mihomo socks inbound 57893→AGILE-SUB, works without FlClash);
+///   with no active subscription fall back to the external upstream (§2.4); for bad values prefer no fallback over a loop
+/// - Non-TUN: subscription role on + kernel running → fall back to kernel mixed (57892)
+/// - Otherwise: no fallback (misses go direct)
 pub(crate) async fn effective_fallback(state: &State<'_, AppState>) -> Option<std::net::SocketAddr> {
     let (sub, tun_mode, upstream_raw) = {
         let r = state.roles.lock().await;
@@ -37,7 +37,7 @@ pub(crate) async fn effective_fallback(state: &State<'_, AppState>) -> Option<st
     }
 }
 
-/// 应用回落上游（记地址不记凭据；变化时审计 gui.fallback_change）
+/// Apply fallback upstream (remember address only, no credentials; audit gui.fallback_change on change)
 pub(crate) async fn apply_proxy_fallback(state: &State<'_, AppState>) {
     let addr = effective_fallback(state).await;
     let mut last = state.last_fallback.lock().await;
@@ -57,8 +57,8 @@ pub(crate) async fn list_subscriptions() -> Result<Vec<subscription::Subscriptio
     Ok(subscription::list_subscriptions())
 }
 
-/// 安装订阅内核：开始后台下载（流式进度经 dl_state 轮询展示，完成自动校验落盘）。
-/// 内核运行中禁止重装（Windows 文件锁会让落盘失败）。
+/// Install the subscription kernel: start a background download (streamed progress polled via dl_state, verified and written to disk on completion).
+/// Reinstall is forbidden while the kernel is running (Windows file locks would fail the write).
 #[tauri::command]
 pub(crate) async fn install_kernel(state: State<'_, AppState>) -> Result<(), String> {
     if state.kernel.running().await {
@@ -67,15 +67,15 @@ pub(crate) async fn install_kernel(state: State<'_, AppState>) -> Result<(), Str
     state.dl.start(download::Artifact::Kernel)
 }
 
-// ==================== 制品下载管理（mihomo 内核 / wintun.dll） ====================
+// ==================== Artifact download management (mihomo kernel / wintun.dll) ====================
 
-/// 下载状态机快照（前端 2s 轮询渲染下载卡）
+/// Download state machine snapshot (frontend polls every 2s to render the download card)
 #[tauri::command]
 pub(crate) async fn dl_state(state: State<'_, AppState>) -> Result<download::DlState, String> {
     Ok(state.dl.state())
 }
 
-/// 开始/重试下载（同制品下载中幂等）
+/// Start/retry download (idempotent while the same artifact is downloading)
 #[tauri::command]
 pub(crate) async fn dl_start(state: State<'_, AppState>, artifact: String) -> Result<(), String> {
     let artifact = download::Artifact::parse(&artifact)?;
@@ -85,15 +85,15 @@ pub(crate) async fn dl_start(state: State<'_, AppState>, artifact: String) -> Re
     state.dl.start(artifact)
 }
 
-/// 取消下载（回 idle；前端同时放弃「完成后自动重试」）
+/// Cancel download (back to idle; frontend also drops "auto-retry on completion")
 #[tauri::command]
 pub(crate) async fn dl_cancel(state: State<'_, AppState>) -> Result<(), String> {
     state.dl.cancel();
     Ok(())
 }
 
-/// 手动安装本地制品文件：钉值校验通过才落盘；
-/// 不符返回 hash_mismatch（前端弹确认框明示风险），用户确认后带 allow_mismatch=true 重调强装。
+/// Manually install a local artifact file: written to disk only after pinned-hash verification passes;
+/// on mismatch returns hash_mismatch (frontend shows a risk confirmation), then the user re-calls with allow_mismatch=true to force install.
 #[tauri::command]
 pub(crate) async fn dl_install_manual(
     state: State<'_, AppState>,
@@ -114,7 +114,7 @@ pub(crate) async fn dl_install_manual(
         .map_err(map_err)?
 }
 
-/// 激活/停用订阅功能入口（侧栏「订阅/代理」可见性；停用即停机并关角色）。
+/// Enable/disable the subscription feature (sidebar "Subscription/Proxy" visibility; disabling stops the kernel and turns off the role).
 #[tauri::command]
 pub(crate) async fn activate_subscription_feature(
     state: State<'_, AppState>,
@@ -145,7 +145,7 @@ pub(crate) async fn activate_subscription_feature(
     Ok(())
 }
 
-/// 单选激活订阅；角色开启中即重启内核加载新激活项。
+/// Activate a single subscription; if the role is on, restart the kernel to load the newly active one.
 #[tauri::command]
 pub(crate) async fn set_active_subscription(
     state: State<'_, AppState>,
@@ -160,7 +160,7 @@ pub(crate) async fn set_active_subscription(
     Ok(sub)
 }
 
-/// 添加订阅（先拉取校验）；角色开启中且新订阅为激活项时重启内核。
+/// Add a subscription (fetched and validated first); restart the kernel if the role is on and the new subscription is active.
 #[tauri::command]
 pub(crate) async fn add_subscription(
     state: State<'_, AppState>,
@@ -178,9 +178,9 @@ pub(crate) async fn add_subscription(
     Ok(sub)
 }
 
-/// 导入本地 YAML 订阅：校验路径（存在/yaml 扩展名/≤5MB）→ 读取内容走与 URL 订阅
-/// 相同的嗅探入库路径（subscription::add_local_subscription，provider 渲染为 type: file）。
-/// 名称取文件名去扩展名；角色开启中且新订阅为激活项时重启内核。
+/// Import a local YAML subscription: validate path (exists / yaml extension / ≤5MB) → read content through the same
+/// sniff-and-store path as URL subscriptions (subscription::add_local_subscription, provider rendered as type: file).
+/// Name is the file name without extension; restart the kernel if the role is on and the new subscription is active.
 #[tauri::command]
 pub(crate) async fn import_local_subscription(
     state: State<'_, AppState>,
@@ -217,7 +217,7 @@ pub(crate) async fn import_local_subscription(
     Ok(sub)
 }
 
-/// 删除订阅；角色开启中即重启内核（清空则停机）。
+/// Remove a subscription; if the role is on, restart the kernel (stop it if none remain).
 #[tauri::command]
 pub(crate) async fn remove_subscription(state: State<'_, AppState>, id: String) -> Result<(), String> {
     subscription::remove_subscription(&id)?;
@@ -241,14 +241,14 @@ pub(crate) async fn subscription_status(state: State<'_, AppState>) -> Result<su
     Ok(state.kernel.status().await)
 }
 
-/// 代理组与节点：内核在运行返回实时数据并落缓存；
-/// 内核未运行回落到最近缓存（cached 标记），代理页只读展示节点情况
+/// Proxy groups and nodes: when the kernel is running, return live data and update the cache;
+/// otherwise fall back to the latest cache (cached flag); the proxy page shows nodes read-only
 #[tauri::command]
 pub(crate) async fn proxy_groups() -> Result<serde_json::Value, String> {
     let live = match subscription::kernel_api().await {
         Ok(api) => match api.proxies().await {
             Ok(mut v) => {
-                // 并入 provider 节点协议/历史（/proxies 全局表不含 provider 节点）
+                // Merge in provider node protocol/history (the /proxies global table excludes provider nodes)
                 if let Ok(pv) = api.provider_proxies().await {
                     subscription::merge_provider_details(&mut v, &pv);
                 }
@@ -272,22 +272,22 @@ pub(crate) async fn select_proxy(group: String, name: String) -> Result<(), Stri
     subscription::kernel_api().await?.select(&group, &name).await
 }
 
-/// 组测速：provider 节点只能经 /group/{group}/delay 测（内核并发一次测全组），
-/// 返回 name → ms（超时节点已被剔除）。
+/// Group latency test: provider nodes can only be tested via /group/{group}/delay (kernel tests the whole group concurrently in one pass),
+/// returns name → ms (timed-out nodes already filtered out).
 #[tauri::command]
 pub(crate) async fn test_delay(group: String) -> Result<std::collections::HashMap<String, u32>, String> {
     subscription::kernel_api().await?.group_delay(&group).await
 }
 
-/// 节点测速结果（sub_test_group 返回体；delay=0 表示超时/失败）
+/// Node latency result (sub_test_group response body; delay=0 means timeout/failure)
 #[derive(Debug, Clone, Serialize)]
 pub struct NodeDelay {
     pub name: String,
     pub delay: u32,
 }
 
-/// 节点批量测速（节点页「每日选妃」）：HTTPS 204 探测、3000ms 超时；
-/// 失败/超时节点 delay 归一为 0 并排尾，有效延迟升序返回。
+/// Batch node latency test (node page "daily pick"): HTTPS 204 probe, 3000ms timeout;
+/// failed/timed-out nodes get delay normalized to 0 and sorted last; valid latencies returned ascending.
 #[tauri::command]
 pub(crate) async fn sub_test_group(state: State<'_, AppState>, group: String) -> Result<Vec<NodeDelay>, String> {
     if !state.kernel.running().await {
@@ -304,24 +304,24 @@ pub(crate) async fn sub_test_group(state: State<'_, AppState>, group: String) ->
     Ok(v)
 }
 
-/// 订阅内核流量快照（/traffic WS 累计；内核停止即清零）。
+/// Subscription kernel traffic snapshot (accumulated over /traffic WS; cleared when the kernel stops).
 #[tauri::command]
 pub(crate) async fn sub_traffic(state: State<'_, AppState>) -> Result<subscription::TrafficSnapshot, String> {
     Ok(state.kernel.traffic())
 }
 
-// ==================== 订阅内核连接/日志采集（/connections、/logs WS） ====================
+// ==================== Subscription kernel connection/log collection (/connections, /logs WS) ====================
 
-/// 连接快照返回体（sub_connections 契约）
+/// Connection snapshot response body (sub_connections contract)
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct ConnectionsView {
-    /// 活跃连接（up_rate/down_rate 为快照差分速率）
+    /// Active connections (up_rate/down_rate are snapshot-diff rates)
     pub active: Vec<subscription::ConnectionInfo>,
-    /// 最近已关闭（新的在前，上限 300）
+    /// Recently closed (newest first, capped at 300)
     pub closed: Vec<subscription::ConnectionInfo>,
 }
 
-/// 连接快照：活跃 + 最近已关闭；内核未运行返回空集而非报错。
+/// Connection snapshot: active + recently closed; returns an empty set instead of an error when the kernel is not running.
 #[tauri::command]
 pub(crate) async fn sub_connections(state: State<'_, AppState>) -> Result<ConnectionsView, String> {
     if !state.kernel.running().await {
@@ -331,7 +331,7 @@ pub(crate) async fn sub_connections(state: State<'_, AppState>) -> Result<Connec
     Ok(ConnectionsView { active, closed })
 }
 
-/// 内核日志（旧→新排列，上限 500；前端倒序展示自行处理；内核未运行返回空集）。
+/// Kernel logs (oldest→newest, capped at 500; frontend handles reverse display itself; empty set when kernel is not running).
 #[tauri::command]
 pub(crate) async fn sub_logs(state: State<'_, AppState>) -> Result<Vec<subscription::LogEntry>, String> {
     if !state.kernel.running().await {
@@ -340,7 +340,7 @@ pub(crate) async fn sub_logs(state: State<'_, AppState>) -> Result<Vec<subscript
     Ok(state.kernel.logs())
 }
 
-/// 规则命中聚合（count 降序 top 100；内核未运行返回空集）。
+/// Rule hit aggregation (top 100 by count descending; empty set when kernel is not running).
 #[tauri::command]
 pub(crate) async fn sub_rule_hits(state: State<'_, AppState>) -> Result<Vec<subscription::RuleHit>, String> {
     if !state.kernel.running().await {
@@ -349,7 +349,7 @@ pub(crate) async fn sub_rule_hits(state: State<'_, AppState>) -> Result<Vec<subs
     Ok(state.kernel.rule_hits())
 }
 
-/// 关闭单条连接（DELETE /connections/{id}）。
+/// Close a single connection (DELETE /connections/{id}).
 #[tauri::command]
 pub(crate) async fn sub_close_connection(id: String) -> Result<(), String> {
     if id.is_empty() || id.chars().any(|c| c == '/' || c.is_whitespace()) {
@@ -358,15 +358,15 @@ pub(crate) async fn sub_close_connection(id: String) -> Result<(), String> {
     subscription::kernel_api().await?.close_connection(&id).await
 }
 
-/// 清空内核日志与规则命中缓冲（连接态不动）。
+/// Clear kernel logs and rule-hit buffers (connection state untouched).
 #[tauri::command]
 pub(crate) async fn sub_clear_logs(state: State<'_, AppState>) -> Result<(), String> {
     state.kernel.clear_logs();
     Ok(())
 }
 
-/// 一键加规则：把主机加入自定义规则（target=direct 直连放行 / subscription 经订阅出口）。
-/// host 自动去 scheme/端口/路径并校验；同主机规则已存在时幂等返回成功。
+/// One-click add rule: add the host to custom rules (target=direct for direct allow / subscription via the subscription egress).
+/// host is auto-stripped of scheme/port/path and validated; idempotent success if a rule for the same host already exists.
 #[tauri::command]
 pub(crate) async fn sub_add_rule_for_host(
     state: State<'_, AppState>,
@@ -379,7 +379,7 @@ pub(crate) async fn sub_add_rule_for_host(
         _ => return Err("target 参数须为 direct（直连放行）或 subscription（经订阅出口）".into()),
     };
     let host = custom_rules::normalize_host(&host)?;
-    // 幂等：同 pattern 规则已存在即视为成功（不改动既有规则的出口取向）
+    // Idempotent: an existing rule with the same pattern counts as success (does not change the existing rule's egress)
     let exists = custom_rules::snapshot()
         .bypass
         .iter()
@@ -395,9 +395,9 @@ pub(crate) async fn sub_add_rule_for_host(
     Ok(())
 }
 
-// ==================== 订阅覆写脚本 / 出站模式 ====================
+// ==================== Subscription override scripts / outbound mode ====================
 
-/// 脚本变更后内核在运行即重启加载新配置（与激活订阅同一热更路径：重写配置 + 重启）。
+/// After a script change, restart the running kernel to load the new config (same hot-reload path as activating a subscription: rewrite config + restart).
 pub(crate) async fn reload_kernel_if_running(state: &State<'_, AppState>) -> Result<(), String> {
     if state.roles.lock().await.subscription {
         state.kernel.stop().await;
@@ -412,7 +412,7 @@ pub(crate) async fn list_sub_scripts(state: State<'_, AppState>) -> Result<Vec<r
     Ok(state.roles.lock().await.sub_scripts.clone())
 }
 
-/// 新建脚本（默认启用，追加到链尾）；内核运行中即重启生效。
+/// Create a script (enabled by default, appended to the end of the chain); restart takes effect if the kernel is running.
 #[tauri::command]
 pub(crate) async fn add_sub_script(
     state: State<'_, AppState>,
@@ -444,7 +444,7 @@ pub(crate) async fn add_sub_script(
     Ok(sc)
 }
 
-/// 更新脚本名称/代码；内核运行中即重启生效。
+/// Update script name/code; restart takes effect if the kernel is running.
 #[tauri::command]
 pub(crate) async fn update_sub_script(
     state: State<'_, AppState>,
@@ -507,7 +507,7 @@ pub(crate) async fn set_sub_script_enabled(
     reload_kernel_if_running(&state).await
 }
 
-/// 拖拽排序：ids 为全量脚本 id 的目标顺序（须为现有 id 的排列）。
+/// Drag reorder: ids is the target order of all script ids (must be a permutation of existing ids).
 #[tauri::command]
 pub(crate) async fn reorder_sub_scripts(state: State<'_, AppState>, ids: Vec<String>) -> Result<(), String> {
     {
@@ -532,15 +532,15 @@ pub(crate) async fn reorder_sub_scripts(state: State<'_, AppState>, ids: Vec<Str
     reload_kernel_if_running(&state).await
 }
 
-/// 试跑：对当前订阅配置（含现有启用脚本管线结果）执行一次，返回摘要或错误。
+/// Dry run: execute once against the current subscription config (including the existing enabled-script pipeline result), returning a summary or error.
 #[tauri::command]
 pub(crate) async fn test_sub_script(state: State<'_, AppState>, code: String) -> Result<String, String> {
     let (mode, scripts) = {
         let r = state.roles.lock().await;
         (r.sub_mode.clone(), r.sub_scripts.clone())
     };
-    // 与生产同管线：基础 render（非 TUN；脚本不作用于 TUN 骨架，既定决策）→
-    // 启用脚本链（失败跳过）→ 试跑代码（错误透出）
+    // Same pipeline as production: base render (non-TUN; scripts do not apply to the TUN skeleton, established decision) →
+    // enabled script chain (failures skipped) → dry-run code (errors surfaced)
     let store = subscription::current_store();
     let base = subscription::render_config(&store, &mode, false);
     let (effective, _) = sub_script::apply_scripts(&base, &scripts);
@@ -564,9 +564,9 @@ pub(crate) async fn test_sub_script(state: State<'_, AppState>, code: String) ->
     ))
 }
 
-/// 启动时恢复订阅内核（上次退出时订阅角色处于开启状态）。
-/// TUN 模式持久化恢复（§2.2 提权重启后自动恢复开启）：补 wintun → 启动内核（TUN 骨架）
-/// → 数据面/系统代理副作用（拨测结果进状态槽，前端灵动岛告警）。
+/// Restore the subscription kernel at startup (subscription role was on at last exit).
+/// Persisted TUN mode restore (§2.2 auto-restore after elevated restart): ensure wintun → start kernel (TUN skeleton)
+/// → data-plane/system-proxy side effects (probe results go into the state slot, frontend Dynamic Island alert).
 pub(crate) async fn restore_subscription_role(app: &tauri::AppHandle) {
     let state = app.state::<AppState>();
     let (sub_on, tun_mode) = {
@@ -580,7 +580,7 @@ pub(crate) async fn restore_subscription_role(app: &tauri::AppHandle) {
         tracing::warn!("subscription role was enabled but no subscription exists — keeping kernel stopped");
         return;
     }
-    // 内核缺失：后台下载（不再阻塞恢复流程；完成后用户重开订阅角色即生效）
+    // Kernel missing: background download (no longer blocks the restore flow; user re-enables the subscription role after it completes)
     if !subscription::kernel_bin_exists() {
         if let Err(e) = state.dl.start(download::Artifact::Kernel) {
             tracing::error!(error = %e, "failed to start kernel download on restore");
@@ -589,7 +589,7 @@ pub(crate) async fn restore_subscription_role(app: &tauri::AppHandle) {
         }
         return;
     }
-    // 提权重启后被用户取消（UAC 拒绝）或权限已丢失：放弃 TUN 改普通模式恢复，不影响使用
+    // Elevated restart cancelled by the user (UAC denied) or elevation lost: abandon TUN and restore in normal mode, usage unaffected
     let mut tun_mode = tun_mode;
     if tun_mode && !tun::SystemElevation.is_admin() {
         tracing::warn!("persisted TUN mode but process is not elevated — abandoning TUN, restore as normal mode");
@@ -598,7 +598,7 @@ pub(crate) async fn restore_subscription_role(app: &tauri::AppHandle) {
     }
     if tun_mode {
         if let Err(e) = subscription::ensure_wintun().await {
-            // wintun 缺失：后台下载（完成后用户重开 TUN 即可）；其它错误同样只放弃 TUN，不阻断普通模式恢复
+            // wintun missing: background download (user re-enables TUN after it completes); other errors likewise only abandon TUN, not blocking normal-mode restore
             if e.starts_with(subscription::NEED_DOWNLOAD_PREFIX) {
                 let _ = state.dl.start(download::Artifact::Wintun);
                 crate::abandon_tun(&state, "wintun 组件未安装，已转为后台下载").await;
@@ -621,7 +621,7 @@ pub(crate) async fn restore_subscription_role(app: &tauri::AppHandle) {
         }
         Err(e) => {
             if tun_mode {
-                // TUN 配置启动失败：放弃 TUN 再以普通模式重试一次
+                // TUN config start failed: abandon TUN and retry once in normal mode
                 tracing::error!(error = %e, "failed to restore kernel with TUN, retrying normal mode");
                 crate::abandon_tun(&state, &format!("启动失败（{e}）")).await;
                 match state.kernel.start().await {

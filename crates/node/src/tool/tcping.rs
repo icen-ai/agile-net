@@ -1,7 +1,8 @@
-//! tcping / scan — TCP connect 探测核心（P0，零新增依赖）。
+//! tcping / scan — TCP connect probe core (P0, zero new dependencies).
 //!
-//! 实现要点：tokio `TcpStream::connect` + 计时；tcping 多次探测输出 min/avg/max；
-//! scan 为并发受限的 tcping 循环，只输出开放端口 + 常见服务名猜测。
+//! Implementation: tokio `TcpStream::connect` + timing; tcping runs multiple probes and prints
+//! min/avg/max; scan is a concurrency-limited tcping loop that prints only open ports plus a
+//! common service-name guess.
 
 use super::ToolOutcome;
 use serde::Serialize;
@@ -10,7 +11,7 @@ use std::time::{Duration, Instant};
 use tokio::net::TcpStream;
 use tokio::sync::Semaphore;
 
-/// 单次 TCP 连接探测的结构化结果（tcping/scan/diag 复用）。
+/// Structured result of a single TCP connect probe (reused by tcping/scan/diag).
 #[derive(Debug, Clone, Serialize)]
 pub struct TcpProbe {
     pub host: String,
@@ -20,7 +21,7 @@ pub struct TcpProbe {
     pub error: Option<String>,
 }
 
-/// 单次 TCP connect 探测核心（tcping/scan/diag 共用）。
+/// Single TCP connect probe core (shared by tcping/scan/diag).
 pub async fn probe(host: &str, port: u16, timeout: Duration) -> TcpProbe {
     let started = Instant::now();
     let result = tokio::time::timeout(timeout, TcpStream::connect((host, port))).await;
@@ -50,7 +51,7 @@ pub async fn probe(host: &str, port: u16, timeout: Duration) -> TcpProbe {
     }
 }
 
-/// `anet tool tcping <host> <port>`：多次探测，输出逐次结果与 min/avg/max。
+/// `anet tool tcping <host> <port>`: run multiple probes, print per-probe results and min/avg/max.
 pub async fn tcping(host: &str, port: u16, count: u32, timeout: Duration) -> ToolOutcome {
     let count = count.max(1);
     let mut probes = Vec::with_capacity(count as usize);
@@ -70,7 +71,7 @@ pub async fn tcping(host: &str, port: u16, count: u32, timeout: Duration) -> Too
         (Some(min), Some(avg), Some(max))
     };
 
-    // 人类可读输出：逐次结果 + ping 风格统计
+    // Human-readable output: per-probe results + ping-style statistics
     let mut human = format!(
         "正在探测 {host}:{port}（{count} 次，超时 {}s）...",
         timeout.as_secs()
@@ -124,7 +125,7 @@ pub async fn tcping(host: &str, port: u16, count: u32, timeout: Duration) -> Too
     }
 }
 
-/// `anet tool scan <host> <port-range>`：并发受限的 connect 扫描（复用 [`probe`]）。
+/// `anet tool scan <host> <port-range>`: concurrency-limited connect scan (reuses [`probe`]).
 pub async fn scan(
     host: &str,
     start: u16,
@@ -135,7 +136,7 @@ pub async fn scan(
     let sem = Arc::new(Semaphore::new(concurrency.max(1) as usize));
     let mut set = tokio::task::JoinSet::new();
     for port in start..=end {
-        // 信号量背压：在途任务数受 concurrency 限制
+        // Semaphore backpressure: in-flight tasks are capped by concurrency
         let permit = match sem.clone().acquire_owned().await {
             Ok(p) => p,
             Err(_) => break,
@@ -203,7 +204,7 @@ pub async fn scan(
     }
 }
 
-/// 常见端口服务名猜测（仅供扫端口时参考，非指纹识别）。
+/// Service-name guess for common ports (reference only, not fingerprinting).
 fn service_name(port: u16) -> &'static str {
     match port {
         21 => "ftp",
@@ -242,7 +243,7 @@ fn service_name(port: u16) -> &'static str {
         9200 => "elasticsearch",
         11211 => "memcached",
         27017 => "mongodb",
-        // AgileNet 默认端口（见 AGENTS.md 端口规范）
+        // AgileNet default ports (see the port conventions in AGENTS.md)
         54430 => "anet-relay",
         57890 => "anet-proxy",
         59090 => "anet-api",
@@ -255,14 +256,14 @@ mod tests {
     use super::*;
     use tokio::net::TcpListener;
 
-    /// 起临时 listener，返回其端口（listener 随调用方持有）。
+    /// Start a temporary listener and return its port (listener owned by the caller).
     async fn bind_listener() -> (TcpListener, u16) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         (listener, port)
     }
 
-    /// 绑定后立即释放端口，拿到一个确定关闭的回环端口。
+    /// Bind then immediately release, yielding a loopback port that is definitely closed.
     async fn closed_port() -> u16 {
         let (listener, port) = bind_listener().await;
         drop(listener);
@@ -315,7 +316,7 @@ mod tests {
     #[tokio::test]
     async fn scan_finds_open_port() {
         let (_listener, port) = bind_listener().await;
-        // 单端口范围：不受并行测试临时 listener 干扰
+        // Single-port range: immune to temporary listeners from parallel tests
         let out = scan("127.0.0.1", port, port, 8, Duration::from_secs(2)).await;
         assert!(out.success);
         assert_eq!(out.exit_code, 0);
@@ -329,8 +330,8 @@ mod tests {
     #[tokio::test]
     async fn scan_range_counts_and_covers_open_port() {
         let (_listener, port) = bind_listener().await;
-        // 多端口范围：只断言扫描计数与目标端口必在开放清单（listener 存活期间），
-        // 不断言其它端口状态（回环相邻端口可能被并行测试/系统占用）
+        // Multi-port range: only assert the scan count and that the target port is listed open (listener alive);
+        // no assertions on other ports (adjacent loopback ports may be taken by parallel tests/the system)
         let start = port.saturating_sub(2).max(1);
         let end = port.saturating_add(2);
         let out = scan("127.0.0.1", start, end, 8, Duration::from_secs(2)).await;
@@ -343,7 +344,7 @@ mod tests {
     #[tokio::test]
     async fn scan_fails_when_nothing_open() {
         let port = closed_port().await;
-        // 单端口扫描一个已关闭端口
+        // Single-port scan of a closed port
         let out = scan("127.0.0.1", port, port, 4, Duration::from_secs(1)).await;
         assert!(!out.success);
         assert_eq!(out.exit_code, 1);
@@ -354,7 +355,7 @@ mod tests {
     #[tokio::test]
     async fn scan_respects_zero_concurrency() {
         let (_listener, port) = bind_listener().await;
-        // concurrency=0 防御性钳制为 1，不应挂死
+        // concurrency=0 is defensively clamped to 1; must not hang
         let out = scan("127.0.0.1", port, port, 0, Duration::from_secs(2)).await;
         assert!(out.success);
     }

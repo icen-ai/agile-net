@@ -1,22 +1,22 @@
-//! 订阅覆写脚本引擎（QuickJS 沙箱）：render_config 产物交给 mihomo 前按序执行用户 JS。
+//! Subscription override script engine (QuickJS sandbox): runs user JS in order on render_config output before handing it to mihomo.
 //!
-//! - 管线：YAML → serde_json::Value → 依序调用每个启用脚本的 `main(config)` → YAML
-//! - 沙箱：每脚本独立 Runtime/Context（rquickjs 嵌入式 QuickJS，无外部运行时）；
-//!   内存 32MB / 栈 1MB / 执行 2s 中断（interrupt handler）
-//! - 容错：脚本异常 / 缺少 main / 返回非对象 → 跳过该脚本继续后续，
-//!   记审计 `gui.sub_script_error`（脚本名 + 错误摘要，不落脚本全文）
+//! - Pipeline: YAML → serde_json::Value → call each enabled script's `main(config)` in order → YAML
+//! - Sandbox: one Runtime/Context per script (rquickjs embedded QuickJS, no external runtime);
+//!   32MB memory / 1MB stack / 2s execution interrupt (interrupt handler)
+//! - Fault tolerance: script exception / missing main / non-object return → skip that script and continue,
+//!   auditing `gui.sub_script_error` (script name + error summary, never the full script body)
 
 use crate::roles::{self, SubScript};
 
-/// 单脚本执行时限（interrupt handler 轮询到达即中断）
+/// Per-script execution time limit (interrupt handler fires when reached)
 const SCRIPT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
-/// 沙箱内存上限
+/// Sandbox memory limit
 const MEMORY_LIMIT: usize = 32 * 1024 * 1024;
-/// 沙箱栈上限
+/// Sandbox stack limit
 const STACK_LIMIT: usize = 1024 * 1024;
 
-/// 拼装单次 eval 程序：用户代码 + 尾部队列（取 main 并调用、JSON 进出、返回类型校验）。
-/// config 以 JS 字符串字面量注入（JSON.parse 还原），结果经 JSON.stringify 取回。
+/// Build the one-shot eval program: user code + trailing wrapper (fetch and call main, JSON in/out, return type check).
+/// config is injected as a JS string literal (restored via JSON.parse); the result is retrieved via JSON.stringify.
 fn build_program(code: &str, cfg_json: &str) -> String {
     let cfg_lit = serde_json::to_string(cfg_json).unwrap_or_else(|_| "\"{}\"".into());
     format!(
@@ -24,7 +24,7 @@ fn build_program(code: &str, cfg_json: &str) -> String {
     )
 }
 
-/// 错误摘要：取首行并截断（审计/灵动岛展示用，不含脚本全文）
+/// Error summary: first line, truncated (for audit / dynamic-island display; never the full script body)
 fn summarize(err: &str) -> String {
     let first = err.lines().next().unwrap_or(err).trim();
     const MAX: usize = 200;
@@ -37,8 +37,8 @@ fn summarize(err: &str) -> String {
     }
 }
 
-/// 在一次性 QuickJS 沙箱中执行单个脚本：eval 用户代码后调用 main(config)，
-/// 返回新配置。任何异常（语法/运行时/超时/缺 main/返回非对象）均为 Err。
+/// Run a single script in a one-shot QuickJS sandbox: eval user code, then call main(config) and return
+/// the new config. Any failure (syntax/runtime/timeout/missing main/non-object return) is an Err.
 pub fn run_script(code: &str, cfg: &serde_json::Value) -> Result<serde_json::Value, String> {
     let cfg_json = serde_json::to_string(cfg).map_err(|e| e.to_string())?;
     let rt = rquickjs::Runtime::new().map_err(|e| format!("脚本引擎初始化失败: {e}"))?;
@@ -62,15 +62,15 @@ pub fn run_script(code: &str, cfg: &serde_json::Value) -> Result<serde_json::Val
     serde_json::from_str(&out).map_err(|e| format!("脚本返回结果无法解析: {e}"))
 }
 
-/// 对 YAML 配置文本执行启用脚本链（Vec 顺序）。任一脚本失败：跳过、记审计
-/// gui.sub_script_error（脚本名 + 摘要）、继续后续脚本。
-/// 返回 (最终 YAML, 失败摘要[(脚本名, 错误)])；无启用脚本或配置解析失败时原样返回。
+/// Run the enabled script chain (Vec order) on YAML config text. Any script failure: skip it, audit
+/// gui.sub_script_error (script name + summary), and continue with the rest.
+/// Returns (final YAML, failure summaries [(script name, error)]); returns input verbatim when no script is enabled or config parsing fails.
 pub fn apply_scripts(yaml: &str, scripts: &[SubScript]) -> (String, Vec<(String, String)>) {
     let mut fails = Vec::new();
     if !scripts.iter().any(|s| s.enabled) {
         return (yaml.to_string(), fails);
     }
-    // render_config 为自家产物，解析失败属内部错误：原样放行（保守不破坏内核启动）
+    // render_config output is our own; a parse failure is an internal error: pass through verbatim (conservative, do not break kernel startup)
     let Ok(mut cfg) = serde_yaml::from_str::<serde_json::Value>(yaml) else {
         return (yaml.to_string(), fails);
     };
@@ -92,7 +92,7 @@ pub fn apply_scripts(yaml: &str, scripts: &[SubScript]) -> (String, Vec<(String,
     }
 }
 
-/// 试跑：对给定 YAML 配置执行一段代码（不跳过错误），返回新配置。
+/// Test run: execute a code snippet against the given YAML config (errors not skipped); returns the new config.
 pub fn test_run(code: &str, yaml: &str) -> Result<serde_json::Value, String> {
     let cfg: serde_json::Value =
         serde_yaml::from_str(yaml).map_err(|e| format!("当前配置解析失败: {e}"))?;
@@ -121,7 +121,7 @@ mod tests {
         })
     }
 
-    /// 用户示例脚本：push 代理 + unshift 规则
+    /// User example script: push a proxy + unshift a rule
     const USER_SCRIPT: &str = r#"
 const main = (config) => {
   config.proxies = config.proxies || [];
@@ -158,7 +158,7 @@ const main = (config) => {
         assert!(fails.is_empty());
         let cfg: serde_json::Value = serde_yaml::from_str(&out).unwrap();
         assert_eq!(cfg["rules"][0], "AFTER");
-        // 反序执行结果不同（mark 先跑时首条不是 FIRST）
+        // Reversed order yields a different result (when mark runs first, the head rule is not FIRST)
         let (out2, _) = apply_scripts(&yaml, &[mark, prepend]);
         let cfg2: serde_json::Value = serde_yaml::from_str(&out2).unwrap();
         assert_eq!(cfg2["rules"][0], "FIRST");
@@ -222,7 +222,7 @@ const main = (config) => {
         let yaml = serde_yaml::to_string(&base_cfg()).unwrap();
         let out = test_run(USER_SCRIPT, &yaml).unwrap();
         assert_eq!(out["proxies"].as_array().unwrap().len(), 2);
-        // 试跑错误直接透出（不跳过）
+        // Test-run errors propagate directly (not skipped)
         assert!(test_run("const main = () => { throw new Error('x'); };", &yaml).is_err());
     }
 

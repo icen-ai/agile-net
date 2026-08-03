@@ -1,11 +1,14 @@
-//! Node TUI 控制台（企业级终端管理界面）
+//! Node TUI console (terminal management UI)
 //!
-//! 数据源：`tui::source`——默认经 `anet login` 会话走节点 API（写操作落审计，与管理端一致）；
-//! API 不可达/无会话/`--offline` 时降级数据库直连**只读**兜底（状态栏明示降级原因）。
+//! Data source: `tui::source` — by default goes through the node API via the `anet login`
+//! session (writes are audited, same as the admin UI); when the API is unreachable / no
+//! session / `--offline`, degrades to a direct **read-only** DB fallback (the status bar
+//! shows the degradation reason).
 //!
-//! 页签：概览 / 规则 / 权限组 / 账号 / 令牌 / 扇出 / 审计
-//! 操作：Tab/←→ 切换页签，↑↓ 选择行，r 刷新，e 启用/禁用账号（API 模式），
-//!       n 生成 Relay Token（API 模式），d 删除选中行（y 确认，API 模式），q 退出。
+//! Tabs: Dashboard / Rules / Groups / Accounts / Tokens / Fan-out / Audit
+//! Keys: Tab/arrows switch tabs, up/down select a row, r refresh, e enable/disable an
+//!       account (API mode), n mint a Relay Token (API mode), d delete the selected row
+//!       (y to confirm, API mode), q quit.
 
 pub mod source;
 
@@ -24,14 +27,14 @@ use ratatui::{
     widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState, Tabs},
 };
 
-/// TUI 启动参数（`anet tui`）。
+/// TUI startup options (`anet tui`).
 #[derive(Debug, Clone, Default)]
 pub struct TuiOptions {
-    /// 强制数据库直连只读模式
+    /// Force direct-DB read-only mode
     pub offline: bool,
-    /// 数据库路径（--offline 或 API 降级时使用）
+    /// Database path (used with --offline or on API degradation)
     pub db_path: String,
-    /// 节点 API 覆盖地址（默认取会话）
+    /// Node API override address (defaults to the session's)
     pub api: Option<String>,
 }
 
@@ -99,7 +102,7 @@ pub struct TuiApp {
     pub audit_logs: Vec<AuditRow>,
     pub table_state: TableState,
     pub status_msg: String,
-    /// 等待删除确认的目标行
+    /// Target row awaiting delete confirmation
     pub pending_delete: bool,
 }
 
@@ -168,7 +171,7 @@ impl TuiApp {
     }
 
     pub fn handle_key(&mut self, code: KeyCode) {
-        // 删除确认模式
+        // delete-confirmation mode
         if self.pending_delete {
             match code {
                 KeyCode::Char('y') | KeyCode::Char('Y') => {
@@ -265,7 +268,7 @@ impl TuiApp {
         }
         match self.source.create_token("created via TUI") {
             Ok(token) => {
-                // 明文令牌仅在此显示一次
+                // plaintext token is shown only this once
                 self.status_msg = format!("新 Token（仅此一次显示）: {token}");
                 self.refresh();
             }
@@ -325,7 +328,7 @@ impl TuiApp {
             ])
             .split(f.area());
 
-        // 页签栏
+        // tab bar
         let titles: Vec<_> = Tab::ALL.iter().map(|t| t.title()).collect();
         let tabs = Tabs::new(titles)
             .select(self.current_tab.index())
@@ -342,7 +345,7 @@ impl TuiApp {
             );
         f.render_widget(tabs, chunks[0]);
 
-        // 主内容
+        // main content
         match self.current_tab {
             Tab::Dashboard => self.render_dashboard(f, chunks[1]),
             Tab::Rules => self.render_rules(f, chunks[1]),
@@ -353,7 +356,7 @@ impl TuiApp {
             Tab::Audit => self.render_audit(f, chunks[1]),
         }
 
-        // 状态栏（数据源标签常驻：模式与降级原因一目了然）
+        // status bar (data-source label pinned: mode and degradation reason at a glance)
         let footer = Paragraph::new(format!(
             "{} | {} | [Tab]切换 [↑↓]选择 [r]刷新 [e]启停 [n]令牌 [d]删除 [q]退出",
             self.source.label(),
@@ -537,7 +540,7 @@ impl TuiApp {
             .connectors
             .iter()
             .map(|c| {
-                // 禁用优先展示；DB 只读模式无运行时状态（"-"）
+                // disabled takes display priority; DB read-only mode has no runtime state ("-")
                 let status = if !c.enabled {
                     "已禁用".into()
                 } else if c.state.is_empty() {
@@ -607,7 +610,7 @@ impl TuiApp {
     }
 }
 
-/// 运行 TUI 交互式循环（API 优先，数据库直连兜底只读）。
+/// Run the TUI interactive loop (API first, direct-DB read-only fallback).
 pub fn run_tui(opts: TuiOptions) -> Result<()> {
     let outcome = source::connect(opts.api, opts.offline, &opts.db_path)
         .map_err(|e| Error::Other(e.to_string()))?;

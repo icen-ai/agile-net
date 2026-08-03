@@ -1,23 +1,23 @@
-//! 三路角色开关（客户端 / 服务端 / Web 远程面）与内嵌节点管理。
+//! Three-way role toggles (client / server / Web remote UI) and embedded node management.
 //!
-//! - 角色状态持久化于 `~/.agile-net/gui-settings.json`
-//! - 内嵌节点数据（SQLite / 证书）位于 `~/.agile-net/embedded-node/`，
-//!   默认端口避让本地独立节点（API 59290）与 Docker 演示链宿主机映射（59290）→ API 59293 / Relay 54431
-//! - 开关变更与 Web 面暴露变更写入 `~/.agile-net/gui-audit.jsonl`（审计）
-//! - Web 远程面管理密码以 argon2id 哈希存于 `~/.agile-net/web-auth.json`
+//! - Role state is persisted to `~/.agile-net/gui-settings.json`
+//! - Embedded node data (SQLite / certs) lives in `~/.agile-net/embedded-node/`;
+//!   default ports avoid the local standalone node (API 59290) and the Docker demo chain host mapping (59290) → API 59293 / Relay 54431
+//! - Toggle changes and Web UI exposure changes are appended to `~/.agile-net/gui-audit.jsonl` (audit)
+//! - Web remote UI admin password is stored as an argon2id hash in `~/.agile-net/web-auth.json`
 
 use agile_net_core::config::node::{ApiConfig, ListenerConfig};
 use agile_net_core::config::NodeConfig;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-/// 内嵌节点默认监听（避让独立节点 59090 / 54430 与 Docker 演示链宿主机映射 59290）
+/// Embedded node default listen addr (avoids standalone node 59090 / 54430 and Docker demo chain host mapping 59290)
 pub const EMBEDDED_API_ADDR: &str = "127.0.0.1:59293";
 pub const EMBEDDED_RELAY_ADDR: &str = "0.0.0.0:54431";
-/// Web 远程面默认监听（仅 loopback）
+/// Web remote UI default listen addr (loopback only)
 pub const DEFAULT_WEB_LISTEN: &str = "127.0.0.1:59291";
 
-/// 订阅覆写脚本（QuickJS 沙箱执行；Vec 顺序即执行顺序，order 与下标同步冗余存储）
+/// Subscription override script (runs in a QuickJS sandbox; Vec order is execution order, `order` stored redundantly in sync with the index)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubScript {
     pub id: String,
@@ -31,47 +31,47 @@ pub struct SubScript {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RoleSettings {
-    /// 开关A：客户端角色（连上游、本地代理、路由组合）
+    /// Toggle A: client role (upstream connections, local proxy, route composition)
     pub client: bool,
-    /// 开关B：服务端角色（内嵌完整节点）
+    /// Toggle B: server role (embedded full node)
     pub server: bool,
-    /// 开关C：Web 远程面（管理 UI 经 HTTP 暴露）
+    /// Toggle C: Web remote UI (admin UI exposed over HTTP)
     pub web: bool,
-    /// Web 面监听地址（127.0.0.1 / LAN，显式可配）
+    /// Web UI listen address (127.0.0.1 / LAN, explicitly configurable)
     #[serde(default = "default_web_listen")]
     pub web_listen: String,
-    /// 开关D：订阅代理角色（mihomo sidecar，anet-gui 独享附加服务）
+    /// Toggle D: subscription proxy role (mihomo sidecar, anet-gui-exclusive add-on service)
     #[serde(default)]
     pub subscription: bool,
-    /// 订阅功能已安装激活（侧栏「订阅/代理」入口可见；安装内核成功后由用户显式激活）
+    /// Subscription feature installed and activated (sidebar "Subscription/Proxy" entry visible; explicitly activated by the user after kernel install succeeds)
     #[serde(default)]
     pub subscription_feature: bool,
-    /// 系统代理托管（指向本地代理端口；关闭时还原快照；默认开——多数人即开即用，
-    /// 仅监听端口的本地代理模式面向需要手动配置应用的用户）
+    /// System proxy management (points at the local proxy port; restores the snapshot when disabled; on by default — works out of the box for most users;
+    /// the listen-only local proxy mode targets users who configure apps manually)
     #[serde(default = "default_true")]
     pub system_proxy: bool,
-    /// 订阅出站模式（rule|global|direct，写入 mihomo mode）
+    /// Subscription outbound mode (rule|global|direct, written to mihomo mode)
     #[serde(default = "default_sub_mode")]
     pub sub_mode: String,
-    /// 订阅覆写脚本链（render_config 产物交给 mihomo 前依序执行；Vec 顺序 = 执行顺序）
+    /// Subscription override script chain (run in order on render_config output before handing to mihomo; Vec order = execution order)
     #[serde(default)]
     pub sub_scripts: Vec<SubScript>,
-    /// TUN 模式（docs/plan/tun.md P1：mihomo TUN 接管，anet 在前 FlClash 在后；需管理员）
+    /// TUN mode (docs/plan/tun.md P1: mihomo TUN takes over, anet in front, FlClash behind; requires admin)
     #[serde(default)]
     pub tun_mode: bool,
-    /// TUN 模式外部上游（anet 未命中规则的流量回落目标，默认 FlClash mixed 入站）
+    /// TUN mode external upstream (fallback target for traffic matching no anet rule; defaults to FlClash mixed inbound)
     #[serde(default = "default_external_upstream")]
     pub external_upstream: String,
-    /// 系统代理锁定（硬核模式）：视同托管，巡检发现被改即自动收回（无需 TUN）
+    /// System proxy lock (hardcore mode): treated as managed; auto-reclaimed when inspection finds it changed (no TUN needed)
     #[serde(default)]
     pub sysproxy_lock: bool,
-    /// 悬浮球窗口（仅桌面；开启即常驻右下角小球）
+    /// Floating ball window (desktop only; when on, a small ball stays at the bottom-right corner)
     #[serde(default)]
     pub float_ball: bool,
-    /// 悬浮球气泡通知开关（false 时 float_ball_notify 命令与既有桥接点均不再 emit）
+    /// Floating ball bubble notification toggle (when false, the float_ball_notify command and existing bridge points no longer emit)
     #[serde(default = "default_true")]
     pub notify_float_ball: bool,
-    /// 性能模式（前端据此关模糊/动画；后端仅持久化存取）
+    /// Performance mode (frontend disables blur/animations based on this; backend only persists it)
     #[serde(default)]
     pub reduce_effects: bool,
 }
@@ -88,21 +88,21 @@ pub fn default_sub_mode() -> String {
     "rule".to_string()
 }
 
-/// 出站模式合法值校验（rule|global|direct）
+/// Outbound mode validity check (rule|global|direct)
 pub fn valid_sub_mode(mode: &str) -> bool {
     matches!(mode, "rule" | "global" | "direct")
 }
 
-/// TUN 外部上游默认值（FlClash mixed 入站）
+/// TUN external upstream default (FlClash mixed inbound)
 pub const DEFAULT_EXTERNAL_UPSTREAM: &str = "127.0.0.1:7890";
 
 fn default_external_upstream() -> String {
     DEFAULT_EXTERNAL_UPSTREAM.to_string()
 }
 
-/// TUN 回落目标合法性校验（tun.md §2.5 硬约束）：
-/// - 必须 loopback——非回环目标会被 mihomo TUN 重捕获（MATCH→57890→回落→再次被捕获）形成死环
-/// - 严禁指向本地代理 57890 / 内核 mixed 57892 / 控制面 59292（端口号与 subscription::MIHOMO_* 保持一致）
+/// TUN fallback target validity check (tun.md §2.5 hard constraint):
+/// - Must be loopback — a non-loopback target gets re-captured by mihomo TUN (MATCH→57890→fallback→captured again), forming a dead loop
+/// - Must never point at local proxy 57890 / kernel mixed 57892 / control plane 59292 (port numbers stay in sync with subscription::MIHOMO_*)
 pub fn validate_external_upstream(addr: &str) -> Result<std::net::SocketAddr, String> {
     let sa: std::net::SocketAddr = addr
         .trim()
@@ -176,7 +176,7 @@ impl RoleSettings {
         let Some(raw) = std::fs::read_to_string(settings_path()).ok() else {
             return Self::default();
         };
-        // 旧版 server_connector(s) 字段随 serde 忽略键直接丢弃（扇出已入库管理，不再自存配置）
+        // Legacy server_connector(s) fields are dropped via serde's ignored keys (fan-out is now managed in the DB, no longer self-stored)
         serde_json::from_str(&raw).unwrap_or_default()
     }
 
@@ -188,15 +188,15 @@ impl RoleSettings {
     }
 }
 
-/// 本机用户名（审计归因用）
+/// Local machine username (for audit attribution)
 fn local_user() -> String {
     std::env::var("USERNAME")
         .or_else(|_| std::env::var("USER"))
         .unwrap_or_else(|_| "unknown".into())
 }
 
-/// GUI 侧审计：JSONL 追加（gui.role_toggle / web.exposure_change）。
-/// 严禁记录密码/Token 明文。
+/// GUI-side audit: JSONL append (gui.role_toggle / web.exposure_change).
+/// Never record password/token plaintext.
 pub fn audit(action: &str, detail: serde_json::Value) {
     let dir = data_dir();
     if std::fs::create_dir_all(&dir).is_err() {
@@ -222,23 +222,23 @@ pub fn audit(action: &str, detail: serde_json::Value) {
     }
 }
 
-// ==================== 事件中心（gui-audit.jsonl 尾部倒读） ====================
+// ==================== Event center (tail-read of gui-audit.jsonl) ====================
 
-/// 事件中心单条事件（recent_events 命令返回体）
+/// Single event-center event (return body of the recent_events command)
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct GuiEvent {
-    /// Unix 秒
+    /// Unix seconds
     pub ts: u64,
-    /// 事件类别（白名单：role_toggle/kernel/sysproxy/custom_rule/sub_script/doctor/install/uninstall/connector/sync）
+    /// Event kind (whitelist: role_toggle/kernel/sysproxy/custom_rule/sub_script/doctor/install/uninstall/connector/sync)
     pub kind: String,
-    /// 人类可读描述（由白名单字段拼装，绝不回显原始 detail，天然过滤敏感字段）
+    /// Human-readable description (assembled from whitelisted fields; never echoes the raw detail, so sensitive fields are filtered out by construction)
     pub detail: String,
 }
 
-/// 审计 action → 事件类别白名单映射（未列入的 action 跳过）：
-/// - role_toggle：三路角色 / 订阅角色 / TUN / 悬浮球 / 全局总开关等用户可感知开关
-/// - kernel：订阅内核生命周期、内核完整性、订阅增删更/激活、出站模式
-/// - install：内核 / wintun 下载与手动安装
+/// Audit action → event kind whitelist mapping (actions not listed are skipped):
+/// - role_toggle: user-visible toggles — three-way roles / subscription role / TUN / floating ball / global power switch
+/// - kernel: subscription kernel lifecycle, kernel integrity, subscription add/remove/update/activate, outbound mode
+/// - install: kernel / wintun download and manual install
 fn event_kind(action: &str) -> Option<&'static str> {
     Some(match action {
         "gui.role_toggle"
@@ -280,8 +280,8 @@ fn event_kind(action: &str) -> Option<&'static str> {
     })
 }
 
-/// detail JSON → 人类可读描述。只取用白名单字段（名称/开关/地址等），
-/// 绝不整体回显原始 JSON——审计虽不落密码/Token 明文，此处仍做结构性过滤。
+/// detail JSON → human-readable description. Only whitelisted fields (name/toggle/address etc.) are used;
+/// the raw JSON is never echoed wholesale — although audit never stores password/token plaintext, structural filtering is still applied here.
 fn human_detail(action: &str, d: &serde_json::Value) -> String {
     let s = |k: &str| d[k].as_str().unwrap_or_default();
     let b = |k: &str| d[k].as_bool().unwrap_or(false);
@@ -373,7 +373,7 @@ fn human_detail(action: &str, d: &serde_json::Value) -> String {
     }
 }
 
-/// 解析 JSONL 文本尾部事件（新的在前，最多 limit 条；跳过未白名单 action 与坏行）。
+/// Parse events from the tail of JSONL text (newest first, at most limit entries; skips non-whitelisted actions and bad lines).
 fn parse_events(text: &str, limit: usize) -> Vec<GuiEvent> {
     let mut out = Vec::new();
     for line in text.lines().rev() {
@@ -394,8 +394,8 @@ fn parse_events(text: &str, limit: usize) -> Vec<GuiEvent> {
     out
 }
 
-/// 事件中心数据源：从 gui-audit.jsonl 尾部倒读（至多 256KB，丢弃跨边界残行），
-/// 取最新 limit 条白名单事件（新的在前）。文件不存在返回空 Vec。
+/// Event center data source: tail-reads gui-audit.jsonl (at most 256KB, dropping the partial line across the boundary),
+/// returns the newest limit whitelisted events (newest first). Returns an empty Vec if the file does not exist.
 pub fn recent_events(limit: usize) -> Vec<GuiEvent> {
     const TAIL_MAX: u64 = 256 * 1024;
     let Ok(mut f) = std::fs::File::open(audit_path()) else {
@@ -412,7 +412,7 @@ pub fn recent_events(limit: usize) -> Vec<GuiEvent> {
         return Vec::new();
     }
     let text = String::from_utf8_lossy(&buf);
-    // 非头部起读时首行是残行，丢弃
+    // When not reading from the start, the first line is a partial line; drop it
     let text = match start {
         0 => text.into_owned(),
         _ => text.split_once('\n').map(|(_, rest)| rest.to_string()).unwrap_or_default(),
@@ -420,8 +420,8 @@ pub fn recent_events(limit: usize) -> Vec<GuiEvent> {
     parse_events(&text, limit)
 }
 
-/// 构建内嵌节点配置（默认端口避让本地独立节点与 Docker 演示链）。
-/// 扇出连接不再自 TOML 生成：以 SQLite connector 表为唯一事实来源（管理面 CRUD + 热操作）。
+/// Build the embedded node config (default ports avoid the local standalone node and the Docker demo chain).
+/// Fan-out connections are no longer generated from TOML: the SQLite connector table is the single source of truth (admin UI CRUD + hot operations).
 pub fn build_embedded_config() -> NodeConfig {
     let dir = embedded_dir();
     let certs = dir.join("certs");
@@ -448,28 +448,28 @@ pub fn build_embedded_config() -> NodeConfig {
     }
 }
 
-/// 打开内嵌节点数据库（运行中与未运行均可用；WAL 支持多句柄）。
+/// Open the embedded node database (usable whether the node is running or not; WAL supports multiple handles).
 pub fn open_embedded_db() -> Result<agile_net_node::db::Database, String> {
     let dir = embedded_dir();
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     agile_net_node::db::Database::open(embedded_db_path()).map_err(|e| e.to_string())
 }
 
-/// Web 远程面是否已设管理密码。
+/// Whether the Web remote UI admin password is set.
 pub fn has_web_password() -> bool {
     web_auth_path().exists()
 }
 
-/// 设置 Web 远程面管理密码（argon2id 哈希落盘，0600）。
+/// Set the Web remote UI admin password (argon2id hash on disk, mode 0600).
 pub fn set_web_password(password: &str) -> Result<(), String> {
-    // 与服务端管理员密码策略同一实现（node 端导出）；错误文案中文化
+    // Same implementation as the server admin password policy (exported by the node side); error message localized to Chinese
     if agile_net_node::api::handlers::auth::validate_password_strength(password).is_err() {
         return Err("管理密码至少 10 位，且须同时包含大小写字母与数字".into());
     }
     let hash = agile_net_node::db::hash_password(password).map_err(|e| e.to_string())?;
     let dir = data_dir();
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    // 保留既有 JWT 密钥（改密不吊销既有会话）
+    // Keep the existing JWT secret (changing the password does not revoke existing sessions)
     let secret = read_web_auth()["jwt_secret"]
         .as_str()
         .map(|s| s.to_string())
@@ -498,7 +498,7 @@ fn write_web_auth(password_hash: &str, jwt_secret: &str) -> Result<(), String> {
 }
 
 fn generate_secret() -> String {
-    // 256 位随机密钥（两个 UUIDv4，源自操作系统 CSPRNG）
+    // 256-bit random secret (two UUIDv4s, from the OS CSPRNG)
     format!(
         "{}{}",
         uuid::Uuid::new_v4().simple(),
@@ -506,7 +506,7 @@ fn generate_secret() -> String {
     )
 }
 
-/// 校验 Web 远程面管理密码。
+/// Verify the Web remote UI admin password.
 pub fn verify_web_password(password: &str) -> bool {
     let v = read_web_auth();
     let Some(hash) = v["password_hash"].as_str() else {
@@ -515,7 +515,7 @@ pub fn verify_web_password(password: &str) -> bool {
     agile_net_node::db::verify_password(password, hash).unwrap_or(false)
 }
 
-/// 桌面端 Web 鉴权实现（注入 agile-net-client 管理面 Web API）。
+/// Desktop Web auth implementation (injected into the agile-net-client admin Web API).
 pub struct DesktopWebAuth;
 
 impl agile_net_client::api::ClientWebAuth for DesktopWebAuth {
@@ -536,7 +536,7 @@ impl agile_net_client::api::ClientWebAuth for DesktopWebAuth {
         if let Some(s) = v["jwt_secret"].as_str() {
             return s.to_string();
         }
-        // 旧格式（仅密码哈希）懒升级：补写密钥
+        // Lazy upgrade of the old format (password hash only): backfill the secret
         let secret = generate_secret();
         if let Some(hash) = v["password_hash"].as_str() {
             let _ = write_web_auth(hash, &secret);
@@ -555,7 +555,7 @@ mod tests {
 
     #[test]
     fn settings_default_sub_mode_and_scripts() {
-        // 旧版配置无新字段：serde default 兜底
+        // Legacy config without the new fields: serde defaults cover them
         let v: RoleSettings = serde_json::from_str(
             r#"{"client":true,"server":false,"web":false}"#,
         )
@@ -582,7 +582,7 @@ mod tests {
         assert!(back.sub_scripts[0].enabled);
         assert!(!back.sub_scripts[1].enabled);
         assert_eq!(back.sub_scripts[1].order, 1);
-        // 缺省 enabled/order 字段的旧脚本数据：enabled 默认 true、order 默认 0
+        // Legacy script data missing enabled/order fields: enabled defaults to true, order to 0
         let legacy: SubScript =
             serde_json::from_str(r#"{"id":"x","name":"n","code":"c"}"#).unwrap();
         assert!(legacy.enabled);
@@ -591,14 +591,14 @@ mod tests {
 
     #[test]
     fn settings_default_notify_and_reduce_effects() {
-        // 旧版配置无新字段：serde default 兜底（通知默认开、性能模式默认关）
+        // Legacy config without the new fields: serde defaults cover them (notify on, performance mode off)
         let v: RoleSettings = serde_json::from_str(
             r#"{"client":true,"server":false,"web":false}"#,
         )
         .unwrap();
         assert!(v.notify_float_ball);
         assert!(!v.reduce_effects);
-        // 持久化往返
+        // Persistence roundtrip
         let v = RoleSettings {
             notify_float_ball: false,
             reduce_effects: true,
@@ -613,24 +613,24 @@ mod tests {
     #[test]
     fn parse_events_filters_and_orders() {
         let text = concat!(
-            // 非白名单 action：跳过
+            // Non-whitelisted action: skipped
             r#"{"ts":1,"action":"gui.dl_internal","user":"u","detail":{}}"#,
             "\n",
-            // 坏行：跳过
+            // Bad line: skipped
             "{not-json}\n",
-            // 白名单：角色开关
+            // Whitelisted: role toggle
             r#"{"ts":2,"action":"gui.role_toggle","user":"u","detail":{"role":"client","on":false}}"#,
             "\n",
-            // 白名单：内核
+            // Whitelisted: kernel
             r#"{"ts":3,"action":"gui.kernel_start","user":"u","detail":{}}"#,
             "\n",
-            // 含敏感样式字段：detail 由白名单字段拼装，不回显原始 JSON
+            // Contains sensitive-looking fields: detail is assembled from whitelisted fields, raw JSON not echoed
             r#"{"ts":4,"action":"gui.sysproxy_engage","user":"u","detail":{"server":"127.0.0.1:57890","token":"psk_secret"}}"#,
             "\n",
         );
         let ev = parse_events(text, 50);
         assert_eq!(ev.len(), 3);
-        // 新的在前
+        // Newest first
         assert_eq!(ev[0].ts, 4);
         assert_eq!(ev[0].kind, "sysproxy");
         assert_eq!(ev[0].detail, "系统代理已接管（127.0.0.1:57890）");
@@ -672,7 +672,7 @@ mod tests {
         ] {
             assert_eq!(event_kind(action), Some(kind), "{action}");
         }
-        // 未白名单的一律跳过
+        // Non-whitelisted actions are all skipped
         for action in ["gui.fallback_change", "admin.console_access", "gui.dl_cancel_x", ""] {
             assert!(event_kind(action).is_none(), "{action}");
         }
@@ -689,14 +689,14 @@ mod tests {
 
     #[test]
     fn settings_default_tun_fields() {
-        // 旧版配置无 TUN 字段：serde default 兜底
+        // Legacy config without TUN fields: serde defaults cover them
         let v: RoleSettings = serde_json::from_str(
             r#"{"client":true,"server":false,"web":false}"#,
         )
         .unwrap();
         assert!(!v.tun_mode);
         assert_eq!(v.external_upstream, DEFAULT_EXTERNAL_UPSTREAM);
-        // 持久化往返
+        // Persistence roundtrip
         let v = RoleSettings {
             tun_mode: true,
             external_upstream: "127.0.0.1:7897".into(),
@@ -710,21 +710,21 @@ mod tests {
 
     #[test]
     fn external_upstream_validation() {
-        // 合法：回环 + 非保留端口
+        // Valid: loopback + non-reserved port
         assert_eq!(
             validate_external_upstream("127.0.0.1:7890").unwrap().to_string(),
             "127.0.0.1:7890"
         );
         assert!(validate_external_upstream("[::1]:7890").unwrap().ip().is_loopback());
-        // 严禁回指本机端口（57890 本地代理 / 57892 内核 mixed / 59292 控制面）
+        // Must never point back at local ports (57890 local proxy / 57892 kernel mixed / 59292 control plane)
         for p in [57890, 57892, 59292] {
             let addr = format!("127.0.0.1:{p}");
             assert!(validate_external_upstream(&addr).is_err(), "{addr} 应被拒绝");
         }
-        // 非回环目标（会被 TUN 重捕获成环）
+        // Non-loopback targets (would be re-captured by TUN into a loop)
         assert!(validate_external_upstream("192.168.1.5:7890").is_err());
         assert!(validate_external_upstream("10.0.0.2:1080").is_err());
-        // 非法格式 / 非法端口
+        // Invalid format / invalid port
         assert!(validate_external_upstream("not-an-addr").is_err());
         assert!(validate_external_upstream("127.0.0.1").is_err());
         assert!(validate_external_upstream("127.0.0.1:0").is_err());

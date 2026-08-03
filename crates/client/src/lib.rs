@@ -1,19 +1,19 @@
-//! AgileNet Client 核心引擎
+//! AgileNet Client core engine
 //!
-//! 完整数据面实现：
-//! 1. 登录节点 API（access + refresh + tunnel_token）
-//! 2. 拉取路由配置并建立 ClientTunnel（TLS 1.3 + tunnel_token 数据面认证）
-//! 3. 多节点路由合并 + 本地 SOCKS5/HTTP 代理入站
-//! 4. 长轮询配置热更新 + 心跳上报 + 断线自动重连
-//! 5. resolve 规则自动维护系统 hosts（可选）
+//! Full data plane implementation:
+//! 1. Log in to the node API (access + refresh + tunnel_token)
+//! 2. Pull route config and establish ClientTunnel (TLS 1.3 + tunnel_token data plane auth)
+//! 3. Multi-node route merging + local SOCKS5/HTTP proxy inbound
+//! 4. Long-poll config hot reload + heartbeat report + auto reconnect
+//! 5. Optional system hosts maintenance from resolve rules
 //!
-//! 模块划分：
-//! - `client`：多节点引擎（连接生命周期/合并路由/后台任务/本地代理入站）
-//! - `credential`：凭据存储（OS keyring 优先，0600 文件回退，旧明文自动迁移）
-//! - `config_cache`：节点配置离线缓存
-//! - `connect_url`：agilenet://connect 接入链接解析与生成
-//! - `custom_rules`：自定义规则（GUI 放行 / hosts 映射）
-//! - `hosts`：系统 hosts 文件管理
+//! Modules:
+//! - `client`: multi-node engine (connection lifecycle / route merging / background tasks / local proxy inbound)
+//! - `credential`: credential store (OS keyring preferred, 0600 file fallback, legacy plaintext auto-migration)
+//! - `config_cache`: offline node config cache
+//! - `connect_url`: agilenet://connect URL parse & generate
+//! - `custom_rules`: custom rules (GUI bypass / hosts mapping)
+//! - `hosts`: system hosts file management
 
 use std::path::PathBuf;
 

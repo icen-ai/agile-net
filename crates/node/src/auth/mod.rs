@@ -1,3 +1,3 @@
-//! 认证与授权模块
+//! Authentication and authorization module.
 
 pub mod jwt;

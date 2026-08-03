@@ -1,6 +1,6 @@
-//! M3 里程碑 Proxy 路由集成测试
+//! M3 milestone proxy routing integration tests
 //!
-//! 包含 AT-M3-01 ~ AT-M3-07 完整测试套件
+//! Full AT-M3-01 ~ AT-M3-07 test suite
 
 use agile_net_core::error::Result;
 use agile_net_core::proxy::inbound::ProxyInbound;
@@ -20,7 +20,7 @@ fn get_free_addr() -> SocketAddr {
     addr
 }
 
-/// AT-M3-03：CIDR 路由匹配
+/// AT-M3-03: CIDR route matching
 #[test]
 fn cidr_routing() {
     let mut router = ProxyRouter::new();
@@ -42,7 +42,7 @@ fn cidr_routing() {
     assert_eq!(router.resolve_ip("8.8.8.8"), None);
 }
 
-/// AT-M3-04：HOST 路由匹配
+/// AT-M3-04: HOST route matching
 #[test]
 fn host_routing() {
     let mut router = ProxyRouter::new();
@@ -60,7 +60,7 @@ fn host_routing() {
     assert_eq!(router.resolve_host("google.com"), None);
 }
 
-/// AT-M3-05：最长前缀匹配
+/// AT-M3-05: longest prefix match
 #[test]
 fn longest_prefix_match() {
     let mut router = ProxyRouter::new();
@@ -81,35 +81,35 @@ fn longest_prefix_match() {
     );
 }
 
-/// AT-M3-06：路由表热更新
+/// AT-M3-06: route table hot reload
 #[tokio::test]
 async fn hot_reload_router() {
     let router = Arc::new(ArcSwap::from_pointee(ProxyRouter::new()));
 
-    // 初始无规则
+    // no rules initially
     assert_eq!(router.load().resolve_ip("10.12.1.1"), None);
 
-    // 热更新
+    // hot reload
     let mut new_router = ProxyRouter::new();
     new_router
         .add_cidr("10.12.0.0/16", Outbound::tunnel("tunnel-b"))
         .unwrap();
     router.store(Arc::new(new_router));
 
-    // 立即生效
+    // takes effect immediately
     assert_eq!(
         router.load().resolve_ip("10.12.1.1"),
         Some(&Outbound::tunnel("tunnel-b"))
     );
 }
 
-/// AT-M3-01：SOCKS5 入站与 DIRECT 转发
+/// AT-M3-01: SOCKS5 inbound with DIRECT forwarding
 #[tokio::test]
 async fn socks5_proxy_works() -> Result<()> {
     let target_addr = get_free_addr();
     let proxy_addr = get_free_addr();
 
-    // 1. 启动 Echo 服务
+    // 1. start echo service
     let listener = TcpListener::bind(target_addr).await?;
     tokio::spawn(async move {
         while let Ok((mut stream, _)) = listener.accept().await {
@@ -120,7 +120,7 @@ async fn socks5_proxy_works() -> Result<()> {
         }
     });
 
-    // 2. 启动 ProxyInbound
+    // 2. start ProxyInbound
     let router = Arc::new(ArcSwap::from_pointee(ProxyRouter::new()));
     let inbound = ProxyInbound::new(proxy_addr, router);
     tokio::spawn(async move {
@@ -129,7 +129,7 @@ async fn socks5_proxy_works() -> Result<()> {
 
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    // 3. SOCKS5 客户端连接
+    // 3. SOCKS5 client connects
     let mut client = tokio::net::TcpStream::connect(proxy_addr).await?;
 
     // SOCKS5 Greeting: VER=0x05, NMETHODS=1, METHOD=0x00
@@ -153,7 +153,7 @@ async fn socks5_proxy_works() -> Result<()> {
     client.read_exact(&mut req_resp).await?;
     assert_eq!(req_resp[1], 0x00); // SUCCESS
 
-    // 4. 数据交互
+    // 4. data exchange
     client.write_all(b"socks5-test").await?;
     let mut buf = [0u8; 64];
     let n = client.read(&mut buf).await?;
@@ -162,13 +162,13 @@ async fn socks5_proxy_works() -> Result<()> {
     Ok(())
 }
 
-/// AT-M3-02：HTTP CONNECT 入站
+/// AT-M3-02: HTTP CONNECT inbound
 #[tokio::test]
 async fn http_connect_proxy_works() -> Result<()> {
     let target_addr = get_free_addr();
     let proxy_addr = get_free_addr();
 
-    // 1. 启动 Echo 服务
+    // 1. start echo service
     let listener = TcpListener::bind(target_addr).await?;
     tokio::spawn(async move {
         while let Ok((mut stream, _)) = listener.accept().await {
@@ -179,7 +179,7 @@ async fn http_connect_proxy_works() -> Result<()> {
         }
     });
 
-    // 2. 启动 ProxyInbound
+    // 2. start ProxyInbound
     let router = Arc::new(ArcSwap::from_pointee(ProxyRouter::new()));
     let inbound = ProxyInbound::new(proxy_addr, router);
     tokio::spawn(async move {
@@ -188,7 +188,7 @@ async fn http_connect_proxy_works() -> Result<()> {
 
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    // 3. HTTP CONNECT 客户端连接
+    // 3. HTTP CONNECT client connects
     let mut client = tokio::net::TcpStream::connect(proxy_addr).await?;
     let req = format!("CONNECT {target_addr} HTTP/1.1\r\nHost: {target_addr}\r\n\r\n");
     client.write_all(req.as_bytes()).await?;
@@ -198,7 +198,7 @@ async fn http_connect_proxy_works() -> Result<()> {
     let resp_str = String::from_utf8_lossy(&resp_buf[..n]);
     assert!(resp_str.contains("200 Connection Established"));
 
-    // 4. 数据交互
+    // 4. data exchange
     client.write_all(b"http-test").await?;
     let mut buf = [0u8; 64];
     let n_data = client.read(&mut buf).await?;
@@ -207,13 +207,13 @@ async fn http_connect_proxy_works() -> Result<()> {
     Ok(())
 }
 
-/// AT-M3-07：自动探测 SOCKS5 / HTTP 协议
+/// AT-M3-07: auto-detect SOCKS5 / HTTP protocol
 #[tokio::test]
 async fn auto_detect_protocol() -> Result<()> {
     let target_addr = get_free_addr();
     let proxy_addr = get_free_addr();
 
-    // 启动 Echo 服务
+    // start echo service
     let listener = TcpListener::bind(target_addr).await?;
     tokio::spawn(async move {
         while let Ok((mut stream, _)) = listener.accept().await {
@@ -232,14 +232,14 @@ async fn auto_detect_protocol() -> Result<()> {
 
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    // 1. 同一端口，验证 SOCKS5 握手 OK
+    // 1. same port: verify SOCKS5 handshake OK
     let mut s_client = tokio::net::TcpStream::connect(proxy_addr).await?;
     s_client.write_all(&[0x05, 0x01, 0x00]).await?;
     let mut s_resp = [0u8; 2];
     s_client.read_exact(&mut s_resp).await?;
     assert_eq!(s_resp, [0x05, 0x00]);
 
-    // 2. 同一端口，验证 HTTP CONNECT 握手 OK
+    // 2. same port: verify HTTP CONNECT handshake OK
     let mut h_client = tokio::net::TcpStream::connect(proxy_addr).await?;
     let req = format!("CONNECT {target_addr} HTTP/1.1\r\n\r\n");
     h_client.write_all(req.as_bytes()).await?;

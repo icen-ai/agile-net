@@ -1,6 +1,6 @@
-/* AgileNet 共享设计 token（唯一权威来源，AGENTS.md §6）
-   桌面端 <link> 引入；管理端经 include_str! 服务于 /ui/tokens.css。
-   新增/修改 token 必须同步登记 docs/architecture/ui-design.md；严禁在各端另起同名 token。 */
+/* AgileNet shared design tokens (single source of truth, AGENTS.md §6).
+   Desktop loads via <link>; admin UI serves it embedded via include_str! at /ui/tokens.css.
+   New/changed tokens must be registered in docs/architecture/ui-design.md; never redefine tokens per-end. */
 :root {
   --bg: #EDEDED; --bg2: #F4F4F4; --panel: #F8F8F8; --panel2: #FFFFFF;
   --border: #DCDFE3; --border2: #C9CDD3;
@@ -8,7 +8,7 @@
   --accent: #3C3F43; --accent2: #2E3237; --accent-fg: #FCFCFC;
   --accent-bg: rgba(60,63,67,.05); --ring-bg: rgba(60,63,67,.14);
   --link: #2E3237; --ring: #2E3237;
-  /* 语义色 = macOS 红绿灯基准（填充/圆点/进度/开关）；文本级用加深变体保对比度 */
+  /* Semantic colors = macOS traffic-light baseline (fill/dot/progress/toggle); text level uses darker variants for contrast */
   --ok: #61C555; --warn: #F6BE50; --danger: #ED6A5F;
   --ok-text: #3E8E2E; --warn-text: #9A7414; --danger-text: #CE3F34;
   --ok-bg: rgba(97,197,85,.14); --warn-bg: rgba(246,190,80,.20); --danger-bg: rgba(237,106,95,.12);
@@ -16,38 +16,38 @@
   --chip: #F1F1F1; --hover: #E2E2E2;
   --row-border: #E7E8EA;
   --radius: 12px;
-  /* 阴影层级：1 卡片 / 2 弹层·菜单（卡片 hover 也升到此级）/ 3 模态；深色同层级加深 + 玻璃边框发光补偿 */
+  /* Shadow levels: 1 card / 2 popover·menu (card hover also raises to this) / 3 modal; dark theme deepens same levels + glass border glow compensation */
   --shadow-1: 0 1px 2px rgba(0,0,0,.045), 0 2px 6px rgba(0,0,0,.045);
   --shadow-2: 0 4px 12px rgba(0,0,0,.08), 0 12px 32px rgba(0,0,0,.12);
   --shadow-3: 0 2px 8px rgba(0,0,0,.06), 0 12px 40px rgba(0,0,0,.14);
-  /* 玻璃拟态（须配合 backdrop-filter blur 使用，浮层边缘发光感） */
+  /* Glassmorphism (requires backdrop-filter blur; glowing edge on overlays) */
   --glass-bg: rgba(252,252,252,.78); --glass-border: rgba(0,0,0,.08);
-  /* info 语义（日志级别用；主题无蓝，取低饱和钢蓝） */
+  /* info semantics (log levels; theme has no blue, use low-saturation steel blue) */
   --info: #5484BC; --info-text: #3E6A9E; --info-bg: rgba(84,132,188,.14);
-  /* 表格：粘性表头底 / 行 hover / 极淡斑马纹 */
+  /* Table: sticky header bg / row hover / faint zebra striping */
   --tbl-head-bg: #F1F1F1; --tbl-row-hover: rgba(0,0,0,.03); --tbl-row-alt: rgba(0,0,0,.015);
-  /* 日志级别文本色（logv 行字 + 左侧色条，深浅两套均保对比度） */
+  /* Log level text colors (logv row text + left color bar; contrast kept in both themes) */
   --log-debug: #686B72; --log-info: #3E6A9E; --log-warn: #9A7414; --log-error: #CE3F34;
-  /* 主操作渐变（克制：仅侧栏激活胶囊等大激活面） */
+  /* Primary action gradient (restrained: only large active surfaces like the sidebar active pill) */
   --accent-grad: linear-gradient(180deg, #45484D, #2E3237);
-  /* 模态遮罩（配 backdrop-filter blur(8px)） */
+  /* Modal mask (pairs with backdrop-filter blur(8px)) */
   --mask: rgba(0,0,0,.46);
-  /* 开关旋钮（深浅恒白） */
+  /* Toggle knob (always white in both themes) */
   --toggle-knob: #FFFFFF;
-  /* 动效时长梯度（--dur 180ms 保留于 style.css；reduced-motion 全局关闭） */
+  /* Motion duration scale (--dur 180ms stays in style.css; reduced-motion disables globally) */
   --dur-fast: 120ms; --dur-slow: 320ms;
-  /* 图表（agchart）：网格线 / 速率双色（上行绿·下行钢蓝；深色降饱和提亮变体） */
+  /* Charts (agchart): grid line / rate pair (up green · down steel blue; dark theme uses desaturated brightened variants) */
   --chart-grid: rgba(0,0,0,.09); --chart-up: #61C555; --chart-down: #5484BC;
-  /* 延迟三档语义文字色（.lat 徽标；bg 变体为胶囊底） */
+  /* Latency three-tier semantic text colors (.lat badge; bg variants are pill backgrounds) */
   --lat-good: #3E8E2E; --lat-mid: #9A7414; --lat-bad: #CE3F34;
   --lat-good-bg: rgba(97,197,85,.14); --lat-mid-bg: rgba(246,190,80,.20); --lat-bad-bg: rgba(237,106,95,.12);
-  /* 中控台大开关（power-btn 运行态：呼吸环色 + 外发光光晕） */
+  /* Dashboard power button (running state: breathing ring color + outer glow) */
   --power-ring: rgba(60,63,67,.35); --power-glow: rgba(60,63,67,.28);
-  /* 骨架屏（.skel 底色 + 扫光色） */
+  /* Skeleton screen (.skel base color + shine color) */
   --skel-bg: rgba(0,0,0,.06); --skel-shine: rgba(255,255,255,.65);
-  /* Liquid Glass 顶部高光（inset 0 1px 0：nav-item.active / ctx-menu / modal） */
+  /* Liquid Glass top highlight (inset 0 1px 0: nav-item.active / ctx-menu / modal) */
   --glass-hi: rgba(255,255,255,.5);
-  /* Beta 徽章/实验卡渐变（将付费能力标记；badge-beta / beta-card 描边共用） */
+  /* Beta badge/experiment card gradient (marks paid capabilities; shared by badge-beta / beta-card borders) */
   --beta-grad: linear-gradient(135deg, #6E7FF3, #A55CF5);
 }
 html[data-theme="dark"] {
@@ -73,13 +73,13 @@ html[data-theme="dark"] {
   --accent-grad: linear-gradient(180deg, #F5F5F5, #DFDFDF);
   --mask: rgba(0,0,0,.58);
   --toggle-knob: #FFFFFF;
-  /* 深色变体：网格线 10% 白；速率双色降饱和提亮（对标深底可读性） */
+  /* Dark variant: 10% white grid; rate pair desaturated and brightened (readability on dark bg) */
   --chart-grid: rgba(255,255,255,.10); --chart-up: #74CE8A; --chart-down: #8FB6DE;
   --lat-good: #5FCF65; --lat-mid: #F8CE52; --lat-bad: #F96057;
   --lat-good-bg: rgba(95,207,101,.14); --lat-mid-bg: rgba(248,206,82,.16); --lat-bad-bg: rgba(249,96,87,.14);
   --power-ring: rgba(238,238,238,.40); --power-glow: rgba(238,238,238,.22);
   --skel-bg: rgba(255,255,255,.07); --skel-shine: rgba(255,255,255,.14);
   --glass-hi: rgba(255,255,255,.06);
-  /* 深色变体：亮度略升保对比 */
+  /* Dark variant: slightly brighter for contrast */
   --beta-grad: linear-gradient(135deg, #8490FF, #B66FFF);
 }

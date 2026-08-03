@@ -1,8 +1,10 @@
-//! TUI 数据源：API 优先（写操作走服务端审计，功能与管理端一致），数据库直连兜底（只读）。
+//! TUI data source: API first (writes go through server-side audit, same capabilities as the
+//! admin UI), direct-DB read-only fallback.
 //!
-//! - 默认：读 `anet login` 会话连节点 API；健康检查失败/无会话自动降级 DB 只读并明示
-//! - `--offline`：强制 DB 只读（节点未启动/损坏时的兜底查看）
-//! - API 调用在 TUI 专属 current-thread runtime 上 block_on（TUI 主循环保持同步）
+//! - Default: read the `anet login` session and talk to the node API; on health-check failure
+//!   or missing session, automatically degrade to DB read-only and say so
+//! - `--offline`: force DB read-only (fallback viewer when the node is down/broken)
+//! - API calls block_on a TUI-private current-thread runtime (the TUI main loop stays sync)
 
 use anyhow::{Result, anyhow};
 use serde_json::Value;
@@ -10,7 +12,7 @@ use serde_json::Value;
 use crate::cli::AnetClient;
 use crate::db::Database;
 
-// ==================== 行模型（渲染层与数据源解耦） ====================
+// ==================== Row models (decouples rendering from data source) ====================
 
 #[derive(Default, Clone)]
 pub struct RuleRow {
@@ -48,7 +50,7 @@ pub struct TokenRow {
     pub prefix: String,
     pub expose: bool,
     pub scope: String,
-    /// 收敛权限组名（"-" = 不收敛）
+    /// ACL group name ("-" = unrestricted)
     pub group_name: String,
     pub remark: String,
     pub last_used: String,
@@ -60,10 +62,10 @@ pub struct ConnectorRow {
     pub id: String,
     pub name: String,
     pub upstream_addr: String,
-    /// 收敛权限组名（"-" = 不收敛）
+    /// ACL group name ("-" = unrestricted)
     pub group_name: String,
     pub enabled: bool,
-    /// 实时状态（connected/connecting/reconnecting/disconnected）；DB 只读模式无运行时，置空
+    /// Live state (connected/connecting/reconnecting/disconnected); empty in DB read-only mode (no runtime)
     pub state: String,
     pub remark: String,
 }
@@ -82,11 +84,11 @@ pub struct DashboardRow {
     pub name: String,
     pub version: String,
     pub config_version: u64,
-    /// 追加信息行（label, value）
+    /// Extra info rows (label, value)
     pub extra: Vec<(String, String)>,
 }
 
-// ==================== 数据源 ====================
+// ==================== Data source ====================
 
 pub struct ApiSource {
     client: AnetClient,
@@ -111,7 +113,7 @@ impl Source {
         }
     }
 
-    // ---------- 读取 ----------
+    // ---------- Reads ----------
 
     pub fn dashboard(&mut self) -> Result<DashboardRow> {
         match self {
@@ -123,7 +125,7 @@ impl Source {
                 Ok(DashboardRow {
                     name: d["node_name"].as_str().unwrap_or("-").into(),
                     version: format!("v{}", d["version"].as_str().unwrap_or("-")),
-                    config_version: d["uptime"].as_u64().unwrap_or(0), // 复用位：API 无配置版本，附运行秒数于 extra
+                    config_version: d["uptime"].as_u64().unwrap_or(0), // reuse slot: the API has no config version; uptime seconds go to extra
                     extra: vec![
                         ("运行时长".into(), format!("{}s", d["uptime"].as_u64().unwrap_or(0))),
                         (
@@ -336,7 +338,7 @@ impl Source {
     pub fn connectors(&mut self) -> Result<Vec<ConnectorRow>> {
         match self {
             Source::Api(s) => {
-                // 列表项由服务端合并 ConnectorManager 实时状态（state 字段）
+                // list items carry ConnectorManager live state merged server-side (state field)
                 let d = s.call("GET", "/api/v1/admin/connectors", None)?;
                 Ok(d["items"]
                     .as_array()
@@ -403,7 +405,7 @@ impl Source {
         }
     }
 
-    // ---------- 写操作（仅 API 模式；DB 只读由调用方先判 readonly） ----------
+    // ---------- Writes (API mode only; DB read-only is gated by the caller via readonly) ----------
 
     pub fn set_account_enabled(&mut self, id: &str, enabled: bool) -> Result<()> {
         match self {
@@ -419,7 +421,7 @@ impl Source {
         }
     }
 
-    /// 返回明文令牌（仅此一次可见）。
+    /// Returns the plaintext token (visible only this once).
     pub fn create_token(&mut self, remark: &str) -> Result<String> {
         match self {
             Source::Api(s) => {
@@ -488,15 +490,15 @@ impl ApiSource {
     }
 }
 
-// ==================== 连接决策 ====================
+// ==================== Connection decision ====================
 
 pub struct ConnectOutcome {
     pub source: Source,
-    /// 降级说明（进入 DB 模式的原因；API 模式为 None）
+    /// Degradation note (why DB mode was entered; None in API mode)
     pub degraded_note: Option<String>,
 }
 
-/// 连接数据源：API 优先（需 `anet login` 会话），失败降级 DB 只读。
+/// Connect the data source: API first (needs an `anet login` session), degrades to DB read-only on failure.
 pub fn connect(api_override: Option<String>, offline: bool, db_path: &str) -> Result<ConnectOutcome> {
     let open_db = |note: Option<String>| -> Result<ConnectOutcome> {
         Ok(ConnectOutcome {
@@ -515,7 +517,7 @@ pub fn connect(api_override: Option<String>, offline: bool, db_path: &str) -> Re
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    // 健康检查：节点不在线/会话失效 → 降级只读
+    // health check: node offline / session expired -> degrade to read-only
     let healthy = rt
         .block_on(client.api("GET", "/api/v1/admin/node/status", None))
         .is_ok();
@@ -557,7 +559,7 @@ mod tests {
     #[test]
     fn unreachable_api_degrades_to_db() {
         let db = tmp_db("degrade");
-        // 死端口（9 = discard）：有会话则健康检查失败降级；无会话同样降级
+        // dead port (9 = discard): with a session the health check fails and degrades; without one it degrades too
         let out = connect(Some("http://127.0.0.1:9".into()), false, &db).unwrap();
         assert!(out.source.readonly());
         assert!(out.degraded_note.is_some());
@@ -588,7 +590,7 @@ mod tests {
 
         let tokens = src.tokens().unwrap();
         assert_eq!(tokens.len(), 2);
-        // 同秒创建 created_at 相同，不按位置断言
+        // created within the same second share created_at; do not assert by position
         let group_of = |prefix: &str| {
             tokens
                 .iter()
@@ -596,13 +598,13 @@ mod tests {
                 .map(|t| t.group_name.clone())
         };
         assert_eq!(group_of("tun_t1").as_deref(), Some("G1"));
-        assert_eq!(group_of("tun_t2").as_deref(), Some("-")); // 不收敛
+        assert_eq!(group_of("tun_t2").as_deref(), Some("-")); // unrestricted
 
         let conns = src.connectors().unwrap();
         assert_eq!(conns.len(), 1);
         assert_eq!(conns[0].name, "peer-a");
         assert_eq!(conns[0].group_name, "G1");
         assert!(conns[0].enabled);
-        assert!(conns[0].state.is_empty()); // DB 只读无运行时状态
+        assert!(conns[0].state.is_empty()); // DB read-only has no runtime state
     }
 }

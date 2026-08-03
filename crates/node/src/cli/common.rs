@@ -1,4 +1,4 @@
-//! 跨命令域共享设施：会话持久化、API 客户端、表格/JSON 输出、ID 前缀解析与共用参数结构。
+//! Shared facilities across command domains: session persistence, API client, table/JSON output, ID prefix resolution, and common arg structs.
 
 use anyhow::{Result, anyhow, bail};
 use clap::Args;
@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::path::PathBuf;
 
-// ---------- 共用参数 ----------
+// ---------- Common args ----------
 
 #[derive(Args, Debug)]
 pub struct ListArgs {
@@ -35,7 +35,7 @@ pub struct IdOnlyArgs {
     pub id: String,
 }
 
-// ==================== 会话管理 ====================
+// ==================== Session management ====================
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session {
@@ -81,7 +81,7 @@ impl Session {
     }
 }
 
-// ==================== API 客户端 ====================
+// ==================== API client ====================
 
 pub struct AnetClient {
     http: reqwest::Client,
@@ -144,7 +144,7 @@ impl AnetClient {
         Ok(())
     }
 
-    /// 调用 API 并解包统一响应体（401 自动刷新重试一次）。
+    /// Call the API and unwrap the unified response envelope (auto-refresh and retry once on 401).
     pub async fn api(&mut self, method: &str, path: &str, body: Option<Value>) -> Result<Value> {
         let mut resp = self.raw(method, path, body.as_ref()).await?;
         if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
@@ -167,7 +167,7 @@ impl AnetClient {
     }
 }
 
-// ==================== 输出 ====================
+// ==================== Output ====================
 
 pub(crate) fn print_json(v: &Value) {
     println!("{}", serde_json::to_string_pretty(v).unwrap());
@@ -221,7 +221,7 @@ fn pad(s: &str, width: usize) -> String {
     }
 }
 
-/// 逗号分隔列表解析（trim + 忽略空段），advertise 等用。
+/// Parse a comma-separated list (trim + drop empty segments), used by advertise etc.
 pub(crate) fn split_csv(s: &str) -> Vec<String> {
     s.split(',')
         .map(|p| p.trim())
@@ -230,8 +230,8 @@ pub(crate) fn split_csv(s: &str) -> Vec<String> {
         .collect()
 }
 
-/// ID 前缀解析：列表接口拉取并匹配前缀唯一项。
-/// 同时支持按 name/username 精确匹配（如 `--group 开发组`）。
+/// ID prefix resolution: fetch from the list endpoint and match a unique prefix.
+/// Also supports exact match by name/username (e.g. `--group dev-team`).
 pub(crate) async fn resolve_id(
     client: &mut AnetClient,
     list_path: &str,

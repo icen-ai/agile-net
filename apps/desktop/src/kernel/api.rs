@@ -1,9 +1,9 @@
-//! 从 subscription.rs 拆分：REST 控制面客户端（纯搬运，零逻辑变更）
+//! Split from subscription.rs: REST control plane client (pure move, zero logic change)
 
 use super::config::MIHOMO_CTRL_PORT;
 use super::store::load_store;
 
-// ==================== REST 控制面（loopback + secret） ====================
+// ==================== REST control plane (loopback + secret) ====================
 
 pub struct KernelApi {
     client: reqwest::Client,
@@ -38,7 +38,7 @@ impl KernelApi {
         v["version"].as_str().map(|s| s.to_string()).ok_or_else(|| "版本解析失败".into())
     }
 
-    /// 全量代理与组信息（原样透传 mihomo JSON）
+    /// Full proxies and groups info (mihomo JSON passed through verbatim)
     pub async fn proxies(&self) -> Result<serde_json::Value, String> {
         self.req(reqwest::Method::GET, "/proxies")
             .send()
@@ -49,7 +49,7 @@ impl KernelApi {
             .map_err(|e| e.to_string())
     }
 
-    /// 选择组内节点
+    /// Select a node within a group
     pub async fn select(&self, group: &str, name: &str) -> Result<(), String> {
         let resp = self
             .req(reqwest::Method::PUT, &format!("/proxies/{group}"))
@@ -64,9 +64,9 @@ impl KernelApi {
         }
     }
 
-    /// 组延迟（name → ms）：provider 节点不注册进全局 /proxies，单节点
-    /// `/proxies/{name}/delay` 恒 404，必须走 `/group/{group}/delay`（内核并发测全组，
-    /// 失败节点记为 timeout 值，此处过滤剔除）。
+    /// Group delays (name → ms): provider nodes are not registered in global /proxies, so per-node
+    /// `/proxies/{name}/delay` always 404s; must use `/group/{group}/delay` (the kernel probes the whole
+    /// group concurrently, failed nodes report the timeout value and are filtered out here).
     pub async fn group_delay(
         &self,
         group: &str,
@@ -78,8 +78,8 @@ impl KernelApi {
         Ok(raw.into_iter().filter(|(_, d)| *d < TIMEOUT_MS).collect())
     }
 
-    /// 组测速（「每日选妃」：HTTPS 204 探测，不剔除失败节点）：
-    /// 失败/超时节点（mihomo 记为 timeout 值）延迟归一为 0。
+    /// Group speed test ("daily pick": HTTPS 204 probe, failed nodes kept):
+    /// failed/timed-out nodes (mihomo reports the timeout value) get delay normalized to 0.
     pub async fn group_delay_all(
         &self,
         group: &str,
@@ -94,7 +94,7 @@ impl KernelApi {
             .collect())
     }
 
-    /// 组测速原始请求：name → ms 全量（失败节点记 timeout 值，不做归一/过滤）。
+    /// Raw group speed test request: full name → ms map (failed nodes report the timeout value; no normalization/filtering).
     async fn group_delay_raw(
         &self,
         group: &str,
@@ -118,7 +118,7 @@ impl KernelApi {
             .collect())
     }
 
-    /// provider 节点明细（type/history；provider 节点不在全局 /proxies 注册表）
+    /// Provider node details (type/history; provider nodes are not in the global /proxies registry)
     pub async fn provider_proxies(&self) -> Result<serde_json::Value, String> {
         self.req(reqwest::Method::GET, "/providers/proxies")
             .send()
@@ -129,7 +129,7 @@ impl KernelApi {
             .map_err(|e| e.to_string())
     }
 
-    /// 触发订阅（provider）手动刷新（单 provider 恒名 main，见 render_config）
+    /// Trigger a manual subscription (provider) refresh (single provider always named main, see render_config)
     pub async fn update_provider(&self) -> Result<(), String> {
         let resp = self
             .req(reqwest::Method::PUT, "/providers/proxies/main")
@@ -143,7 +143,7 @@ impl KernelApi {
         }
     }
 
-    /// 出站模式热切（PATCH /configs，mihomo 支持 mode 热更新，无需重启内核）
+    /// Hot-switch outbound mode (PATCH /configs; mihomo supports hot mode updates, no kernel restart needed)
     pub async fn set_mode(&self, mode: &str) -> Result<(), String> {
         let resp = self
             .req(reqwest::Method::PATCH, "/configs")
@@ -158,7 +158,7 @@ impl KernelApi {
         }
     }
 
-    /// 关闭单条连接（DELETE /connections/{id}；mihomo 204 无体）
+    /// Close a single connection (DELETE /connections/{id}; mihomo returns 204 with no body)
     pub async fn close_connection(&self, id: &str) -> Result<(), String> {
         let resp = self
             .req(reqwest::Method::DELETE, &format!("/connections/{id}"))
@@ -172,7 +172,7 @@ impl KernelApi {
         }
     }
 
-    /// 当前生效配置（GET /configs；E2E 断言 TUN 骨架已加载用）
+    /// Current effective config (GET /configs; used by E2E to assert the TUN skeleton is loaded)
     #[cfg(test)]
     pub async fn configs(&self) -> Result<serde_json::Value, String> {
         self.req(reqwest::Method::GET, "/configs")
@@ -185,7 +185,7 @@ impl KernelApi {
     }
 }
 
-/// 以当前持久化 secret 构建控制面客户端。
+/// Build a control plane client with the currently persisted secret.
 pub async fn kernel_api() -> Result<KernelApi, String> {
     let store = load_store();
     if store.secret.is_empty() {

@@ -1,29 +1,29 @@
-//! listen / portof / portsof — socket 枚举（P1，netstat2 + sysinfo 富化进程信息）。
+//! listen / portof / portsof — socket enumeration (P1, netstat2 + sysinfo for richer process info).
 //!
-//! 权限：读全量进程 socket 需 root 或 CAP_NET_ADMIN；权限受限时只显示本用户进程，
-//! 输出中标注「权限受限，列表可能不完整」。
+//! Permissions: reading all processes' sockets requires root or CAP_NET_ADMIN; when restricted
+//! only the current user's processes are shown, and the output notes "permission limited, list may be incomplete".
 
 use super::ToolOutcome;
 use serde::Serialize;
 
-/// 单条 socket 的结构化结果（listen/portof/portsof/killport 共用数据源）。
+/// Structured result for a single socket (shared data source for listen/portof/portsof/killport).
 #[derive(Debug, Clone, Serialize)]
 pub struct SocketInfo {
-    /// 协议："tcp" | "udp"
+    /// Protocol: "tcp" | "udp"
     pub proto: String,
-    /// 本地地址（"addr:port"）
+    /// Local address ("addr:port")
     pub local: String,
-    /// 对端地址（监听态为 None）
+    /// Remote address (None for listening sockets)
     pub remote: Option<String>,
-    /// 状态（LISTEN / ESTABLISHED ...；UDP 为 None）
+    /// State (LISTEN / ESTABLISHED ...; None for UDP)
     pub state: Option<String>,
-    /// 所属进程 PID（无权限时为 None）
+    /// Owning process PID (None without permission)
     pub pid: Option<u32>,
-    /// 所属进程名（无权限时为 None）
+    /// Owning process name (None without permission)
     pub process: Option<String>,
 }
 
-/// socket 枚举核心（listen/portof/portsof/killport 共用）。
+/// Socket enumeration core (shared by listen/portof/portsof/killport).
 pub fn sockets() -> Result<Vec<SocketInfo>, String> {
     use netstat2::{
         get_sockets_info, AddressFamilyFlags, ProtocolFlags, ProtocolSocketInfo, TcpState,
@@ -34,7 +34,7 @@ pub fn sockets() -> Result<Vec<SocketInfo>, String> {
     let proto = ProtocolFlags::TCP | ProtocolFlags::UDP;
     let infos = get_sockets_info(af, proto).map_err(|e| format!("枚举 socket 失败: {e}"))?;
 
-    // 进程名富化：收集全部关联 PID 一次刷新，避免逐 socket 查询
+    // Process-name enrichment: collect all associated PIDs and refresh once, avoiding per-socket queries
     let mut pids: Vec<Pid> = infos
         .iter()
         .flat_map(|si| si.associated_pids.iter().map(|&p| Pid::from_u32(p)))
@@ -49,7 +49,7 @@ pub fn sockets() -> Result<Vec<SocketInfo>, String> {
         .map(|si| {
             let (proto, local, remote, state) = match si.protocol_socket_info {
                 ProtocolSocketInfo::Tcp(t) => {
-                    // 监听态无对端，按 SocketInfo 约定置 None
+                    // Listening sockets have no remote; per SocketInfo convention set None
                     let remote = (t.state != TcpState::Listen)
                         .then(|| format!("{}:{}", t.remote_addr, t.remote_port));
                     (
@@ -66,7 +66,7 @@ pub fn sockets() -> Result<Vec<SocketInfo>, String> {
                     None,
                 ),
             };
-            // 同一 socket 可能关联多个 PID（fork 共享），取第一个展示
+            // A socket may map to multiple PIDs (shared via fork); display the first
             let pid = si.associated_pids.first().copied();
             let process = pid
                 .and_then(|p| sys.process(Pid::from_u32(p)))
@@ -84,7 +84,7 @@ pub fn sockets() -> Result<Vec<SocketInfo>, String> {
     Ok(out)
 }
 
-/// `anet tool listen`（等同 netstat -tunlp / ss -tulnp）；proto 过滤 "tcp"/"udp"。
+/// `anet tool listen` (equivalent to netstat -tunlp / ss -tulnp); proto filters "tcp"/"udp".
 pub fn listen(proto: Option<&str>) -> ToolOutcome {
     let socks = match sockets() {
         Ok(s) => s,
@@ -121,7 +121,7 @@ pub fn listen(proto: Option<&str>) -> ToolOutcome {
     )
 }
 
-/// `anet tool portof <port>`（等同 lsof -i:<port>）。
+/// `anet tool portof <port>` (equivalent to lsof -i:<port>).
 pub fn portof(port: u16) -> ToolOutcome {
     let socks = match sockets() {
         Ok(s) => s,
@@ -155,7 +155,7 @@ pub fn portof(port: u16) -> ToolOutcome {
     )
 }
 
-/// `anet tool portsof <pid>`（等同 lsof -i | grep <pid>）。
+/// `anet tool portsof <pid>` (equivalent to lsof -i | grep <pid>).
 pub fn portsof(pid: u32) -> ToolOutcome {
     let socks = match sockets() {
         Ok(s) => s,
@@ -185,23 +185,23 @@ pub fn portsof(pid: u32) -> ToolOutcome {
     )
 }
 
-/// 权限受限提示（human 输出追加）。
+/// Permission-limited notice (appended to human output).
 const LIMITED_NOTE: &str = "\n注意：权限受限，列表可能不完整（读全量进程 socket 需 root 或 CAP_NET_ADMIN）";
 
-/// 权限受限启发式：存在无 PID 关联的活动 socket（TIME_WAIT 本身无属主，除外），
-/// 说明只能看到本用户进程的 fd（需 root 或 CAP_NET_ADMIN 才能读全量）。
+/// Permission-limited heuristic: an active socket with no associated PID (except TIME_WAIT,
+/// which has no owner) means only the current user's fds are visible (root or CAP_NET_ADMIN reads all).
 fn permission_limited(socks: &[SocketInfo]) -> bool {
     socks
         .iter()
         .any(|s| s.pid.is_none() && s.state.as_deref() != Some("TIME_WAIT"))
 }
 
-/// 从 "addr:port" 取本地端口（IPv6 形如 "::1:80"，取最后一段）。
+/// Extract the local port from "addr:port" (IPv6 looks like "::1:80"; take the last segment).
 fn local_port(s: &SocketInfo) -> Option<u16> {
     s.local.rsplit_once(':').and_then(|(_, p)| p.parse().ok())
 }
 
-/// 从对端地址取端口。
+/// Extract the port from the remote address.
 fn remote_port(s: &SocketInfo) -> Option<u16> {
     s.remote
         .as_deref()
@@ -209,7 +209,7 @@ fn remote_port(s: &SocketInfo) -> Option<u16> {
         .and_then(|(_, p)| p.parse().ok())
 }
 
-/// 渲染对齐表格（listen/portof/portsof 共用 human 输出）。
+/// Render an aligned table (shared human output for listen/portof/portsof).
 fn render_table(socks: &[SocketInfo]) -> String {
     let wl = socks.iter().map(|s| s.local.len()).max().unwrap_or(5).max(5);
     let wr = socks
@@ -251,7 +251,7 @@ mod tests {
     use super::*;
     use std::net::{TcpListener, UdpSocket};
 
-    /// 临时 TCP listener 应被 sockets() 枚举到，且归属当前进程。
+    /// A temporary TCP listener should be enumerated by sockets() and owned by the current process.
     #[test]
     fn sockets_finds_tcp_listener() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -269,7 +269,7 @@ mod tests {
         assert!(hit.process.is_some());
     }
 
-    /// 临时 UDP socket 应被枚举到（UDP 无状态、无对端）。
+    /// A temporary UDP socket should be enumerated (UDP has no state, no remote).
     #[test]
     fn sockets_finds_udp_socket() {
         let udp = UdpSocket::bind("127.0.0.1:0").unwrap();
@@ -280,7 +280,7 @@ mod tests {
         }));
     }
 
-    /// portof 通/断两路：绑定中可找到（exit 0），释放后找不到（exit 1）。
+    /// portof both ways: found while bound (exit 0), not found after release (exit 1).
     #[test]
     fn portof_hit_and_miss() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -297,7 +297,7 @@ mod tests {
         assert!(miss.human.contains("未发现"));
     }
 
-    /// portsof 应能找到当前进程持有的临时 listener。
+    /// portsof should find the temporary listener held by the current process.
     #[test]
     fn portsof_finds_self() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -307,7 +307,7 @@ mod tests {
         assert!(out.human.contains(&port.to_string()));
     }
 
-    /// 不存在的 PID 应得到 fail（exit 1）。
+    /// A nonexistent PID should yield fail (exit 1).
     #[test]
     fn portsof_missing_pid() {
         let out = portsof(u32::MAX);
@@ -315,7 +315,7 @@ mod tests {
         assert_eq!(out.exit_code, 1);
     }
 
-    /// listen proto 过滤：tcp 含临时 listener，udp 过滤结果中不含该端口。
+    /// listen proto filter: tcp includes the temporary listener, udp results exclude that port.
     #[test]
     fn listen_proto_filter() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();

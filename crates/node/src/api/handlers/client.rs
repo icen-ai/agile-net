@@ -1,6 +1,6 @@
-//! Client API Handlers（对应 docs/api/config.md）
+//! Client API handlers (see docs/api/config.md)
 //!
-//! 客户端登录后拉取路由配置（支持长轮询），并通过心跳上报在线状态与流量。
+//! After login the client pulls its routing config (long-polling supported) and reports online status and traffic via heartbeat.
 
 use crate::api::extractors::ClientAuth;
 use crate::api::{ApiState, codes, err, ok};
@@ -13,10 +13,10 @@ use axum::{
 use serde::Deserialize;
 use serde_json::json;
 
-/// 长轮询超时（秒）
+/// Long-poll timeout (seconds)
 const LONG_POLL_TIMEOUT_SECS: u64 = 30;
 
-/// 单次心跳上报流量的合理上限（1 TiB，防恶意刷统计）。
+/// Sanity cap for per-heartbeat reported traffic (1 TiB, anti-stat-pumping).
 const MAX_HEARTBEAT_BYTES: i64 = 1 << 40;
 
 #[derive(Deserialize)]
@@ -34,7 +34,7 @@ pub async fn get_config(
     let client_version = q.version.unwrap_or(0);
 
     if q.wait {
-        // 长轮询：等待配置版本超过客户端版本，超时返回 304
+        // Long-poll: wait until the config version exceeds the client's, return 304 on timeout
         let deadline =
             std::time::Instant::now() + std::time::Duration::from_secs(LONG_POLL_TIMEOUT_SECS);
         loop {
@@ -56,7 +56,7 @@ pub async fn get_config(
 }
 
 async fn build_config_response(state: &ApiState, account_id: &str) -> Response {
-    // 配置组装所需读取合并为一次阻塞任务（版本/节点名/规则/管理位）
+    // Merge all config-assembly reads into one blocking task (version/node name/rules/admin flag)
     let aid = account_id.to_string();
     let (version, node_name, rules, admin_console) = state
         .db_call(move |db| {
@@ -92,8 +92,8 @@ async fn build_config_response(state: &ApiState, account_id: &str) -> Response {
 
     let (server, port) = state.public_tunnel_endpoint().await;
 
-    // 可管理上游自动发现（握手 v2）：仅管理版账号下发；
-    // 票据经 console-ticket 端点按需取用，不随配置广播
+    // Manageable upstream auto-discovery (handshake v2): only sent to admin-console accounts;
+    // tickets are fetched on demand via the console-ticket endpoint, not broadcast with config
     let manageable: Vec<serde_json::Value> = if admin_console {
         state
             .runtime
@@ -148,7 +148,7 @@ pub async fn heartbeat(
 ) -> Response {
     let account_id = &claims.sub;
 
-    // 账号被禁用/删除时强制下线
+    // Force-disconnect when the account is disabled/deleted
     let aid = account_id.clone();
     let account = match state.db_call(move |db| db.get_account(&aid)).await {
         Ok(Some(a)) => a,
@@ -170,8 +170,8 @@ pub async fn heartbeat(
         }));
     }
 
-    // bytes_tx/rx 为自上次心跳以来的增量（心跳间隔 60s），按小时聚合入库；
-    // 在线触达 + 流量入库 + 版本读取合并为一次阻塞任务
+    // bytes_tx/rx are deltas since the last heartbeat (60s interval), aggregated hourly into DB;
+    // online touch + traffic insert + version read merged into one blocking task
     let delta_tx = req.bytes_tx.clamp(0, MAX_HEARTBEAT_BYTES);
     let delta_rx = req.bytes_rx.clamp(0, MAX_HEARTBEAT_BYTES);
     let traffic = (delta_tx > 0 || delta_rx > 0)
@@ -195,13 +195,13 @@ pub async fn heartbeat(
 
 use axum::response::IntoResponse;
 
-/// 控制台引导票据签发（管理版接入链接持有者专用）。
+/// Console bootstrap ticket issuance (admin-link holders only).
 ///
-/// 仅当账号被授予「管理此节点」权限（admin_console）时签发；
-/// 票据 10 分钟一次性，凭它在 /api/v1/auth/admin-bootstrap 换取管理会话。
+/// Issued only when the account is granted the "manage this node" permission (admin_console);
+/// the ticket is one-time and valid 10 minutes, redeemed at /api/v1/auth/admin-bootstrap for an admin session.
 #[derive(Deserialize)]
 pub struct ConsoleTicketRequest {
-    /// 上游节点名（可管理上游；缺省为本节点自身）
+    /// Upstream node name (manageable upstream; default = this node itself)
     #[serde(default)]
     pub upstream: Option<String>,
 }
@@ -230,7 +230,7 @@ pub async fn console_ticket(
         );
     }
 
-    // 上游目标：返回握手 v2 发现的当前票据与端点（中继令牌换取，scoped）
+    // Upstream target: return the current ticket and endpoint discovered by handshake v2 (redeemed via relay token, scoped)
     if let Some(upstream) = body.and_then(|b| b.upstream.clone()) {
         let Some(offer) = state.runtime.manageable.get(&upstream).map(|o| o.clone()) else {
             return err(

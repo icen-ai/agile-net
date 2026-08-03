@@ -1,6 +1,6 @@
-//! Proxy 本地代理模块
+//! Local proxy module
 //!
-//! SOCKS5/HTTP 入站 + CIDR/HOST 路由 + 出站策略。
+//! SOCKS5/HTTP inbound + CIDR/HOST routing + outbound policy.
 
 pub mod inbound;
 pub mod outbound;

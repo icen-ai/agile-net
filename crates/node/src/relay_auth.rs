@@ -1,10 +1,12 @@
-//! Relay 数据面 Token 校验器（桥接数据库与 core::relay::listener）
+//! Relay data-plane token validator (bridges the database and core::relay::listener).
 //!
-//! - 节点认证：relay_token 表（SHA-256 哈希比对）；令牌带「暴露控制面」标记时
-//!   签发管理引导票据并随 AuthOk 下发控制端点（握手 v2）；令牌挂收敛组时
-//!   装载组对应的 `PeerAcl`（扇入对端流量按组规则收敛）
-//! - 客户端认证：account.tunnel_token_hash（SHA-256），并装载权限组规则作为 ACL；
-//!   「管理此节点」账号隐式放开本机 loopback API 与可管理上游端点
+//! - Node auth: relay_token table (SHA-256 hash match); a token flagged to expose
+//!   the control plane gets an admin bootstrap ticket plus the control endpoint sent
+//!   with AuthOk (handshake v2); a token bound to a group mounts the group's
+//!   `PeerAcl` (fan-in peer traffic restricted by group rules)
+//! - Client auth: account.tunnel_token_hash (SHA-256), with group rules loaded as ACL;
+//!   "manage this node" accounts implicitly open the local loopback API and
+//!   manageable fan-out endpoints
 
 use crate::db::{Database, sha256_hex};
 use crate::service::acl::PeerAclRegistry;
@@ -12,23 +14,24 @@ use agile_net_core::proto::message::{AuthKind, AuthRequest, ControlOffer};
 use agile_net_core::relay::listener::{AuthIdentity, TokenValidator};
 use std::sync::Arc;
 
-/// 可管理上游注册表：上游节点名 → 控制端点（握手 v2 发现，connector 同步任务维护）。
+/// Manageable fan-out registry: upstream node name → control endpoint (handshake v2 discovery, maintained by the connector sync task).
 pub type ManageableRegistry = Arc<dashmap::DashMap<String, ControlOffer>>;
 
-/// 管理引导票据参数：TTL 7 天、限 10000 次。
+/// Admin bootstrap ticket parameters: TTL 7 days, max 10000 uses.
 ///
-/// 安全边界等同中继令牌本身：psk 持有者随时可重连换新票，TTL 仅约束泄露窗口；
-/// 吊销令牌 + 踢会话即全线回收（refresh token 可单独吊销）。
+/// Security boundary equals the relay token itself: a psk holder can reconnect
+/// for a fresh ticket anytime; TTL only bounds the leak window. Revoking the
+/// token and kicking sessions recovers everything (refresh tokens revocable separately).
 const RELAY_TICKET_TTL_SECS: i64 = 7 * 24 * 3600;
 const RELAY_TICKET_MAX_USES: i32 = 10000;
 
 pub struct DbTokenValidator {
     db: Database,
-    /// 本节点管理 API 端点（public_host, api_port），NodeServer 装配后回填
+    /// This node's admin API endpoint (public_host, api_port), backfilled after NodeServer assembly.
     control_api: Arc<arc_swap::ArcSwapOption<(String, u16)>>,
-    /// 可管理上游注册表（隐式 ACL 用；无 connector 时恒空）
+    /// Manageable fan-out registry (for implicit ACL; always empty without connectors).
     manageable: ManageableRegistry,
-    /// 对端收敛注册表（relay_token.group_id → PeerAcl；None 组 = 不收敛）
+    /// Peer ACL registry (relay_token.group_id → PeerAcl; None group = unrestricted).
     acl: Arc<PeerAclRegistry>,
 }
 
@@ -42,25 +45,25 @@ impl DbTokenValidator {
         }
     }
 
-    /// 回填本节点管理 API 端点（握手 v2 下发内容）。
+    /// Backfill this node's admin API endpoint (handshake v2 payload).
     pub fn with_control_api(mut self, slot: Arc<arc_swap::ArcSwapOption<(String, u16)>>) -> Self {
         self.control_api = slot;
         self
     }
 
-    /// 注入可管理上游注册表（admin_console 账号隐式 ACL 用）。
+    /// Inject the manageable fan-out registry (for admin_console account implicit ACL).
     pub fn with_manageable(mut self, registry: ManageableRegistry) -> Self {
         self.manageable = registry;
         self
     }
 
-    /// 注入对端收敛注册表（扇入 token 挂组收敛用）。
+    /// Inject the peer ACL registry (fan-in token group restriction).
     pub fn with_acl_registry(mut self, registry: Arc<PeerAclRegistry>) -> Self {
         self.acl = registry;
         self
     }
 
-    /// 本节点显示名（下发给下游的可管理节点卡片）。
+    /// This node's display name (manageable node card sent to fan-in endpoints).
     fn node_name(&self) -> String {
         self.db
             .get_config("node_name")
@@ -78,7 +81,7 @@ impl TokenValidator for DbTokenValidator {
                 if !self.db.check_relay_token(&token_hash).ok()? {
                     return None;
                 }
-                // 握手 v2：令牌带暴露标记 → 签发管理引导票据 + 下发控制端点
+                // Handshake v2: token flagged to expose → mint admin bootstrap ticket + send control endpoint.
                 let control = match self.db.get_relay_token_control(&token_hash) {
                     Ok(Some((prefix, true, scope))) => {
                         let (host, port) = self.control_api.load_full().map(|a| (*a).clone())?;
@@ -114,8 +117,8 @@ impl TokenValidator for DbTokenValidator {
                     }
                     _ => None,
                 };
-                // 扇入收敛：令牌挂载的权限组 → 共享 PeerAcl（None = 不收敛，放行一切）。
-                // 查询失败/令牌竞态删除均 fail-closed（认证拒绝）。
+                // Fan-in restriction: token's bound group → shared PeerAcl (None = unrestricted, allow all).
+                // Query failure / token deleted mid-race both fail closed (auth rejected).
                 let acl = match self.db.get_relay_token_group(&token_hash) {
                     Ok(Some(group_id)) => self.acl.handle(group_id.as_deref()),
                     Ok(None) => return None,
@@ -133,11 +136,11 @@ impl TokenValidator for DbTokenValidator {
                 if !account.enabled {
                     return None;
                 }
-                // 装载该账号权限组的全部规则作为数据面 ACL
+                // Load all rules of the account's group as the data-plane ACL.
                 let rules = self.db.rules_of_account(&account.id).ok()?;
                 let mut acl: Vec<String> = rules.into_iter().map(|r| r.value).collect();
-                // 「管理此节点」权限：隐式放开节点自身 loopback API 与可管理上游端点
-                // （收回权限后下次隧道认证即失去通路，对应「收回规则即失去管理通路」）
+                // "Manage this node" permission: implicitly open the node's own loopback API
+                // and manageable fan-out endpoints (revoking it drops the path on next tunnel auth).
                 if account.admin_console {
                     acl.push("127.0.0.1/32".to_string());
                     for item in self.manageable.iter() {
@@ -157,7 +160,7 @@ impl TokenValidator for DbTokenValidator {
     }
 }
 
-/// 主机名/IP → ACL 规则字面值（IP 给 /32，域名给精确主机）。
+/// Hostname/IP → ACL rule literal (/32 for IPs, exact host for domains).
 fn acl_rule_for_host(host: &str) -> String {
     if host.parse::<std::net::IpAddr>().is_ok() {
         format!("{host}/32")
@@ -180,7 +183,7 @@ mod tests {
         }
     }
 
-    /// 建组并挂一条 CIDR 规则，返回组 id
+    /// Create a group with one CIDR rule attached, return group id.
     fn mk_group_with_rule(db: &Database, name: &str, cidr: &str) -> String {
         let gid = db.create_group(name, "").unwrap().id;
         let rid = db.create_rule("ip-cidr", cidr, false, "").unwrap().id;

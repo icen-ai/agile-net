@@ -1,4 +1,4 @@
-//! 从 db/mod.rs 拆分：rule/group/group_rule 表（纯搬运，零逻辑变更）
+//! Split from db/mod.rs: rule/group/group_rule tables (pure move, no logic change)
 
 use super::models::*;
 use super::pool::{Database, db_err, now_rfc3339};
@@ -145,7 +145,7 @@ impl Database {
         Ok(())
     }
 
-    /// 引用该规则的权限组名称列表
+    /// Names of groups referencing this rule
     pub fn rule_referencing_groups(&self, rule_id: &str) -> Result<Vec<String>> {
         let conn = self.conn();
         let mut stmt = conn
@@ -174,7 +174,7 @@ impl Database {
         Ok(())
     }
 
-    /// 查询某权限组关联的全部规则
+    /// List all rules bound to a group
     pub fn rules_of_group(&self, group_id: &str) -> Result<Vec<RuleRecord>> {
         let conn = self.conn();
         let mut stmt = conn
@@ -204,7 +204,7 @@ impl Database {
         Ok(items)
     }
 
-    /// 查询某账号（经其权限组）可访问的全部规则
+    /// List all rules reachable by an account (via its group)
     pub fn rules_of_account(&self, account_id: &str) -> Result<Vec<RuleRecord>> {
         let conn = self.conn();
         let mut stmt = conn
@@ -339,7 +339,7 @@ impl Database {
         Ok(())
     }
 
-    /// 全量设置权限组关联的规则
+    /// Replace all rules bound to a group
     pub fn set_group_rules(&self, group_id: &str, rule_ids: &[String]) -> Result<()> {
         let conn = self.conn();
         conn.execute(

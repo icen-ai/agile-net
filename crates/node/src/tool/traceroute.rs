@@ -1,11 +1,12 @@
-//! traceroute — ICMP 逐跳 TTL 探测（P2，主路径 + 权限指引）。
+//! traceroute — ICMP hop-by-hop TTL probing (P2, main path + permission guidance).
 //!
-//! 主路径：ICMP echo 逐跳 TTL 探测（需 raw socket 权限，同 ping）。
-//! 实现决策：Linux ping（DGRAM）socket 收不到 ICMP TimeExceeded（错误只进
-//! errqueue，读不到跳地址），因此固定走 SOCK_RAW——Unix 用 libc 直接建套接字
-//! （TTL 走 setsockopt），Windows 用 surge-ping AsyncSocket（DGRAM 不受支持会
-//! 自动回落 RAW，TTL 走 Config）。按设计文档 §2 的许可，不做 TCP 降级，无权限
-//! 时输出明确指引：「需要 root/CAP_NET_RAW，可 `sudo setcap cap_net_raw+ep anet-svc`」。
+//! Main path: ICMP echo with per-hop TTL (requires raw-socket permission, same as ping).
+//! Implementation decision: Linux ping (DGRAM) sockets cannot receive ICMP TimeExceeded
+//! (the error only lands in errqueue, so the hop address is unreadable), so we always use
+//! SOCK_RAW — Unix builds the socket via libc directly (TTL via setsockopt), Windows uses
+//! surge-ping AsyncSocket (unsupported DGRAM automatically falls back to RAW, TTL via Config).
+//! Per the design doc §2 license there is no TCP fallback; without permission a clear
+//! guidance is printed: "root/CAP_NET_RAW required, e.g. `sudo setcap cap_net_raw+ep anet-svc`".
 
 use super::ToolOutcome;
 use serde::Serialize;
@@ -13,10 +14,11 @@ use std::io;
 use std::net::{IpAddr, SocketAddr};
 use std::time::{Duration, Instant};
 
-/// ICMP echo 负载（仅作填充）。
+/// ICMP echo payload (padding only).
 const ECHO_PAYLOAD: &[u8] = b"anet-tool-traceroute";
 
-/// 权限受限时的操作指引（human 输出与 trace_inner 错误串共用，diag 依赖该串）。
+/// Actionable guidance when permission is restricted (shared by human output and the trace_inner
+/// error string; diag depends on that string).
 #[cfg(unix)]
 const PRIV_HINT: &str =
     "需要 root 或 CAP_NET_RAW 权限：可执行 `sudo setcap cap_net_raw+ep anet-svc`，或改用 root 运行";
@@ -25,22 +27,22 @@ const PRIV_HINT: &str = "请以管理员身份运行（Windows 下逐跳 TTL 探
 #[cfg(not(any(unix, windows)))]
 const PRIV_HINT: &str = "需要 raw socket 权限（root / CAP_NET_RAW）";
 
-/// 单跳的结构化结果（traceroute/diag 复用）。
+/// Structured result for a single hop (shared by traceroute/diag).
 #[derive(Debug, Clone, Serialize)]
 pub struct Hop {
     pub ttl: u8,
-    /// 该跳地址（超时为 None）
+    /// Hop address (None on timeout)
     pub addr: Option<String>,
     pub rtt_ms: Option<f64>,
 }
 
-/// traceroute 核心（traceroute/diag 复用）：返回逐跳列表或错误描述（含权限指引）。
+/// traceroute core (shared by traceroute/diag): returns the hop list or an error description (with permission guidance).
 pub async fn trace_inner(host: &str, max_hops: u8, timeout: Duration) -> Result<Vec<Hop>, String> {
     let target = resolve_host(host).await?;
     Ok(trace_resolved(target, max_hops, timeout).await?.0)
 }
 
-/// `anet tool traceroute <host>`（等同 tracert/traceroute）。
+/// `anet tool traceroute <host>` (equivalent to tracert/traceroute).
 pub async fn trace(host: &str, max_hops: u8, timeout: Duration) -> ToolOutcome {
     let target = match resolve_host(host).await {
         Ok(t) => t,
@@ -96,7 +98,7 @@ pub async fn trace(host: &str, max_hops: u8, timeout: Duration) -> ToolOutcome {
     }
 }
 
-/// 主机解析：IP 字面量直连，域名走系统解析（优先 IPv4）。
+/// Host resolution: IP literals are used directly, domains go through the system resolver (IPv4 preferred).
 async fn resolve_host(host: &str) -> Result<IpAddr, String> {
     if let Ok(ip) = host.parse::<IpAddr>() {
         return Ok(ip);
@@ -114,7 +116,7 @@ async fn resolve_host(host: &str) -> Result<IpAddr, String> {
     v6.ok_or_else(|| format!("无法解析主机 {host}：无可用地址"))
 }
 
-/// 对已解析地址逐跳探测；返回跳表与是否到达目标。
+/// Probe hop by hop against an already-resolved address; returns the hop list and whether the target was reached.
 async fn trace_resolved(
     target: IpAddr,
     max_hops: u8,
@@ -132,8 +134,8 @@ async fn trace_resolved(
     Ok((hops, false))
 }
 
-/// 单跳探测：发一个 TTL=ttl 的 echo（seq=ttl），等待匹配应答直到 timeout。
-/// 返回 (Hop, 是否到达目标)；单跳超时/recv 错误均为正常输出而非 Err。
+/// Single-hop probe: send one echo with TTL=ttl (seq=ttl) and wait for a matching reply until timeout.
+/// Returns (Hop, reached-target?); per-hop timeout/recv errors are normal output, not Err.
 async fn probe_hop(
     target: IpAddr,
     ttl: u8,
@@ -160,9 +162,9 @@ async fn probe_hop(
                     if let Some(kind) = parse_reply(target, &buf[..n], ident, seq) {
                         return Some((src.ip(), kind));
                     }
-                    // 非本探测的应答（本机其它 ICMP 流量），继续等
+                    // Reply not belonging to this probe (other local ICMP traffic); keep waiting
                 }
-                // raw socket 上本机即返的 ICMP 错误可能以 recv 错误形式出现，按无回应处理
+                // ICMP errors returned locally on a raw socket may surface as recv errors; treat as no reply
                 Err(_) => return None,
             }
         }
@@ -192,23 +194,23 @@ async fn probe_hop(
     }
 }
 
-// ==================== ICMP 传输层（按平台分派） ====================
+// ==================== ICMP transport layer (per-platform dispatch) ====================
 
-/// 逐跳探测用的 ICMP 传输：统一 send_to/recv_from 语义。
+/// ICMP transport for hop probing: unified send_to/recv_from semantics.
 enum Transport {
-    /// Unix：libc 直接建 SOCK_RAW（TTL 走 setsockopt，不依赖 ping socket）
+    /// Unix: SOCK_RAW via libc directly (TTL via setsockopt, no ping socket involved)
     #[cfg(unix)]
     Unix(tokio::net::UdpSocket),
-    /// Windows：surge-ping AsyncSocket（TTL 走 Config）
+    /// Windows: surge-ping AsyncSocket (TTL via Config)
     #[cfg(windows)]
     Surge(surge_ping::AsyncSocket),
-    /// 其它平台占位（open_transport 直接报错，不会走到）
+    /// Placeholder for other platforms (open_transport errors out first; never reached)
     #[cfg(not(any(unix, windows)))]
     Unsupported,
 }
 
 impl Transport {
-    /// buf 取 &mut 仅为兼容 surge-ping AsyncSocket 的签名（其内部并不修改内容）。
+    /// buf is &mut only to match the surge-ping AsyncSocket signature (its internals never modify the content).
     async fn send_to(&self, buf: &mut [u8], target: &SocketAddr) -> io::Result<usize> {
         match self {
             #[cfg(unix)]
@@ -232,8 +234,8 @@ impl Transport {
     }
 }
 
-/// 打开面向 target 的 ICMP raw 套接字（ttl 为本跳 TTL）。
-/// 无权限时返回带操作指引的错误串（diag 依赖该串向用户传达降级信息）。
+/// Open an ICMP raw socket towards target (ttl is this hop's TTL).
+/// Without permission, returns an error string with actionable guidance (diag relies on it to inform the user).
 #[cfg(unix)]
 fn open_transport(target: IpAddr, ttl: u8) -> Result<Transport, String> {
     use std::os::unix::io::FromRawFd;
@@ -242,13 +244,13 @@ fn open_transport(target: IpAddr, ttl: u8) -> Result<Transport, String> {
         IpAddr::V4(_) => (libc::AF_INET, libc::IPPROTO_ICMP),
         IpAddr::V6(_) => (libc::AF_INET6, libc::IPPROTO_ICMPV6),
     };
-    // traceroute 必须收到 ICMP TimeExceeded；Linux ping（DGRAM）socket 只回传
-    // echo reply，因此固定走 SOCK_RAW（权限要求与 ping 主路径相同）
+    // traceroute must receive ICMP TimeExceeded; Linux ping (DGRAM) sockets only deliver
+    // echo replies, so we always use SOCK_RAW (same permission requirement as the ping main path)
     let fd = unsafe { libc::socket(domain, libc::SOCK_RAW, proto) };
     if fd < 0 {
         return Err(socket_open_hint(io::Error::last_os_error()));
     }
-    // 立即包成 std UdpSocket 持有所有权，此后任一路径退出都会自动 close
+    // Immediately wrap into a std UdpSocket for ownership; every exit path then closes automatically
     let std_sock = unsafe { std::net::UdpSocket::from_raw_fd(fd) };
     let (level, opt) = match target {
         IpAddr::V4(_) => (libc::IPPROTO_IP, libc::IP_TTL),
@@ -278,7 +280,7 @@ fn open_transport(target: IpAddr, ttl: u8) -> Result<Transport, String> {
     Ok(Transport::Unix(sock))
 }
 
-/// Windows：经 surge-ping 建套接字（DGRAM 不受支持自动回落 RAW；TTL 走 Config）。
+/// Windows: build the socket via surge-ping (unsupported DGRAM automatically falls back to RAW; TTL via Config).
 #[cfg(windows)]
 fn open_transport(target: IpAddr, ttl: u8) -> Result<Transport, String> {
     let kind = match target {
@@ -294,14 +296,14 @@ fn open_transport(target: IpAddr, ttl: u8) -> Result<Transport, String> {
         .map_err(socket_open_hint)
 }
 
-/// 其它平台：如实报不支持。
+/// Other platforms: honestly report unsupported.
 #[cfg(not(any(unix, windows)))]
 fn open_transport(_target: IpAddr, _ttl: u8) -> Result<Transport, String> {
     Err(format!("当前平台暂不支持 ICMP 逐跳探测（{PRIV_HINT}）"))
 }
 
-/// 建套接字失败的统一文案：权限类错误附操作指引（Linux EPERM /
-/// Windows WSAEACCES 均映射 PermissionDenied）。
+/// Unified wording for socket-creation failures: permission errors get actionable guidance
+/// (Linux EPERM / Windows WSAEACCES both map to PermissionDenied).
 fn socket_open_hint(err: io::Error) -> String {
     if err.kind() == io::ErrorKind::PermissionDenied {
         format!("无 ICMP raw socket 权限（{err}）。{PRIV_HINT}")
@@ -310,12 +312,12 @@ fn socket_open_hint(err: io::Error) -> String {
     }
 }
 
-// ==================== ICMP 报文构造与解析（纯函数，便于单测） ====================
+// ==================== ICMP packet build & parse (pure functions, unit-testable) ====================
 
-/// ICMPv4 回显请求报文（含校验和；raw socket 下内核只补 IP 头）。
+/// ICMPv4 echo request packet (with checksum; the kernel only fills in the IP header on raw sockets).
 fn build_echo_v4(ident: u16, seq: u16, payload: &[u8]) -> Vec<u8> {
     let mut buf = Vec::with_capacity(8 + payload.len());
-    buf.extend_from_slice(&[8, 0, 0, 0]); // type=8 echo request，code=0，校验和占位
+    buf.extend_from_slice(&[8, 0, 0, 0]); // type=8 echo request, code=0, checksum placeholder
     buf.extend_from_slice(&ident.to_be_bytes());
     buf.extend_from_slice(&seq.to_be_bytes());
     buf.extend_from_slice(payload);
@@ -324,17 +326,17 @@ fn build_echo_v4(ident: u16, seq: u16, payload: &[u8]) -> Vec<u8> {
     buf
 }
 
-/// ICMPv6 回显请求报文（校验和按 RFC 3542 由内核填充，置 0 即可）。
+/// ICMPv6 echo request packet (checksum is filled by the kernel per RFC 3542; leave 0).
 fn build_echo_v6(ident: u16, seq: u16, payload: &[u8]) -> Vec<u8> {
     let mut buf = Vec::with_capacity(8 + payload.len());
-    buf.extend_from_slice(&[128, 0, 0, 0]); // type=128 echo request，code=0
+    buf.extend_from_slice(&[128, 0, 0, 0]); // type=128 echo request, code=0
     buf.extend_from_slice(&ident.to_be_bytes());
     buf.extend_from_slice(&seq.to_be_bytes());
     buf.extend_from_slice(payload);
     buf
 }
 
-/// RFC 1071 互联网校验和。
+/// RFC 1071 internet checksum.
 fn internet_checksum(data: &[u8]) -> u16 {
     let mut sum: u32 = 0;
     let mut chunks = data.chunks_exact(2);
@@ -350,23 +352,24 @@ fn internet_checksum(data: &[u8]) -> u16 {
     !(sum as u16)
 }
 
-/// 大端读取 u16（越界返回 None）。
+/// Big-endian u16 read (None on out of bounds).
 fn be16(b: &[u8], off: usize) -> Option<u16> {
     Some(u16::from_be_bytes([*b.get(off)?, *b.get(off + 1)?]))
 }
 
-/// 与本探测匹配的应答类型。
+/// Reply types that match this probe.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ReplyKind {
-    /// 目标回显应答（到达）
+    /// Target echo reply (reached)
     EchoReply,
-    /// 中间跳 TTL 超时（路径画像）
+    /// Intermediate-hop TTL expiry (path profile)
     TimeExceeded,
-    /// 目的不可达（源即目标时视同到达，如目标不回 echo 但回不可达）
+    /// Destination unreachable (counts as reached when the source is the target, e.g. target replies unreachable instead of echo)
     DestUnreach,
 }
 
-/// 解析收到的报文：仅认匹配本探测 ident/seq 的应答，其余（别进程的 ICMP 等）忽略。
+/// Parse a received packet: only accept replies matching this probe's ident/seq; ignore everything else
+/// (other processes' ICMP, etc.).
 fn parse_reply(target: IpAddr, buf: &[u8], ident: u16, seq: u16) -> Option<ReplyKind> {
     match target {
         IpAddr::V4(_) => parse_reply_v4(buf, ident, seq),
@@ -374,21 +377,21 @@ fn parse_reply(target: IpAddr, buf: &[u8], ident: u16, seq: u16) -> Option<Reply
     }
 }
 
-/// IPv4：raw socket 收到的报文自带 IP 头。
+/// IPv4: packets received on a raw socket carry the IP header.
 fn parse_reply_v4(buf: &[u8], ident: u16, seq: u16) -> Option<ReplyKind> {
     let ihl = usize::from(buf.first()? & 0x0f) * 4;
     let icmp = buf.get(ihl..)?;
     match *icmp.first()? {
-        // echo reply：ident/seq 就在本包
+        // echo reply: ident/seq are in this very packet
         0 if be16(icmp, 4) == Some(ident) && be16(icmp, 6) == Some(seq) => {
             Some(ReplyKind::EchoReply)
         }
-        // time exceeded / dest unreach：ident/seq 在载荷内嵌的原始报文里
+        // time exceeded / dest unreach: ident/seq live in the original packet embedded in the payload
         t @ (11 | 3) => {
             let inner = icmp.get(8..)?;
             let inner_ihl = usize::from(inner.first()? & 0x0f) * 4;
             let inner_echo = inner.get(inner_ihl..)?;
-            // 内嵌须为 echo request，且 ident/seq 与本探测一致
+            // The embedded packet must be an echo request whose ident/seq match this probe
             if inner_echo.first() == Some(&8)
                 && be16(inner_echo, 4) == Some(ident)
                 && be16(inner_echo, 6) == Some(seq)
@@ -406,14 +409,14 @@ fn parse_reply_v4(buf: &[u8], ident: u16, seq: u16) -> Option<ReplyKind> {
     }
 }
 
-/// IPv6：raw ICMPv6 socket 收到的报文不含 IPv6 头（RFC 3542）。
+/// IPv6: packets received on a raw ICMPv6 socket carry no IPv6 header (RFC 3542).
 fn parse_reply_v6(buf: &[u8], ident: u16, seq: u16) -> Option<ReplyKind> {
     match *buf.first()? {
         // echo reply
         129 if be16(buf, 4) == Some(ident) && be16(buf, 6) == Some(seq) => {
             Some(ReplyKind::EchoReply)
         }
-        // time exceeded(3) / dest unreach(1)：内嵌 IPv6 定长 40 字节头 + 原始 echo
+        // time exceeded(3) / dest unreach(1): embedded IPv6 fixed 40-byte header + original echo
         t @ (3 | 1) => {
             let inner_echo = buf.get(8 + 40..)?;
             if inner_echo.first() == Some(&128)
@@ -438,9 +441,9 @@ mod tests {
     use super::*;
     use std::net::{Ipv4Addr, Ipv6Addr};
 
-    // ---------- 报文构造与解析（纯函数，无网络无权限依赖） ----------
+    // ---------- Packet build & parse (pure functions, no network or permission needed) ----------
 
-    /// v4 echo 报文字段正确，且全包校验和自洽（含校验和整体求和为 0）
+    /// v4 echo packet fields are correct and the checksum is self-consistent (whole packet sums to 0)
     #[test]
     fn build_echo_v4_fields_and_checksum() {
         let pkt = build_echo_v4(0x1234, 5, b"abcdefgh");
@@ -452,7 +455,7 @@ mod tests {
         assert_eq!(internet_checksum(&pkt), 0, "含校验和整体求和应为 0");
     }
 
-    /// v6 echo 报文字段正确（校验和留 0 由内核填充）
+    /// v6 echo packet fields are correct (checksum left 0 for the kernel)
     #[test]
     fn build_echo_v6_fields() {
         let pkt = build_echo_v6(0xabcd, 9, b"xy");
@@ -463,7 +466,7 @@ mod tests {
         assert_eq!(&pkt[8..], b"xy");
     }
 
-    /// 构造测试用 IPv4 头（仅版本/IHL=0x45 与解析相关）
+    /// Build a test IPv4 header (only version/IHL=0x45 matters to the parser)
     fn ipv4_header() -> Vec<u8> {
         let mut h = vec![0x45, 0, 0, 0, 0, 0, 0, 0, 64, 1, 0, 0];
         h.extend_from_slice(&[10, 0, 0, 1]); // src
@@ -471,12 +474,12 @@ mod tests {
         h
     }
 
-    /// 解析 v4 echo reply：ident/seq 匹配才认
+    /// Parse v4 echo reply: accepted only on ident/seq match
     #[test]
     fn parse_v4_echo_reply() {
         let mut buf = ipv4_header();
         buf.extend_from_slice(&build_echo_v4(0x1234, 7, b"p"));
-        buf[20] = 0; // type 改为 echo reply
+        buf[20] = 0; // change type to echo reply
         assert_eq!(
             parse_reply_v4(&buf, 0x1234, 7),
             Some(ReplyKind::EchoReply)
@@ -485,13 +488,13 @@ mod tests {
         assert_eq!(parse_reply_v4(&buf, 0x9999, 7), None, "ident 不匹配");
     }
 
-    /// 解析 v4 time exceeded：ident/seq 取自内嵌原始报文
+    /// Parse v4 time exceeded: ident/seq come from the embedded original packet
     #[test]
     fn parse_v4_time_exceeded() {
         let mut buf = ipv4_header();
         buf.extend_from_slice(&[11, 0, 0, 0, 0, 0, 0, 0]); // type=11 + unused
-        buf.extend_from_slice(&ipv4_header()); // 内嵌原始 IP 头
-        buf.extend_from_slice(&build_echo_v4(0x1234, 3, b"p")); // 内嵌原始 echo
+        buf.extend_from_slice(&ipv4_header()); // embedded original IP header
+        buf.extend_from_slice(&build_echo_v4(0x1234, 3, b"p")); // embedded original echo
         assert_eq!(
             parse_reply_v4(&buf, 0x1234, 3),
             Some(ReplyKind::TimeExceeded)
@@ -499,7 +502,7 @@ mod tests {
         assert_eq!(parse_reply_v4(&buf, 0x1234, 4), None);
     }
 
-    /// 解析 v4 dest unreach（源为目标时视同到达）
+    /// Parse v4 dest unreach (counts as reached when the source is the target)
     #[test]
     fn parse_v4_dest_unreach() {
         let mut buf = ipv4_header();
@@ -512,7 +515,7 @@ mod tests {
         );
     }
 
-    /// 解析 v6 echo reply / time exceeded
+    /// Parse v6 echo reply / time exceeded
     #[test]
     fn parse_v6_replies() {
         let mut reply = build_echo_v6(0xabcd, 2, b"p");
@@ -524,7 +527,7 @@ mod tests {
         assert_eq!(parse_reply_v6(&reply, 0xabcd, 1), None);
 
         let mut te = vec![3, 0, 0, 0, 0, 0, 0, 0]; // time exceeded
-        te.extend_from_slice(&[0u8; 40]); // 内嵌 IPv6 定长头
+        te.extend_from_slice(&[0u8; 40]); // embedded IPv6 fixed header
         te.extend_from_slice(&build_echo_v6(0xabcd, 2, b"p"));
         assert_eq!(
             parse_reply_v6(&te, 0xabcd, 2),
@@ -533,7 +536,7 @@ mod tests {
         assert_eq!(parse_reply_v6(&te, 0xabcd, 3), None);
     }
 
-    /// 截断/畸形报文不 panic，一律 None
+    /// Truncated/malformed packets never panic; always None
     #[test]
     fn parse_malformed_none() {
         for buf in [&[][..], &[0x45][..], &[0x45, 0, 0][..], &[0x60, 0][..]] {
@@ -542,9 +545,9 @@ mod tests {
         }
     }
 
-    // ---------- 权限指引文案（确定性断言，diag 依赖错误串） ----------
+    // ---------- Permission-guidance wording (deterministic assertions; diag depends on the error string) ----------
 
-    /// 权限类错误必须渲染操作指引（diag 依赖该串向用户传达降级信息）
+    /// Permission errors must render actionable guidance (diag relies on this string to inform the user)
     #[test]
     fn permission_error_hint() {
         let err = io::Error::new(io::ErrorKind::PermissionDenied, "operation not permitted");
@@ -556,7 +559,7 @@ mod tests {
         assert!(msg.contains("管理员"), "{msg}");
     }
 
-    /// 非权限类错误不附权限指引
+    /// Non-permission errors carry no permission guidance
     #[test]
     fn non_permission_error_plain() {
         let err = io::Error::new(io::ErrorKind::AddrNotAvailable, "x");
@@ -564,9 +567,9 @@ mod tests {
         assert!(!msg.contains("setcap"), "{msg}");
     }
 
-    // ---------- 解析与回环链路（只打本机回环，不依赖外网） ----------
+    // ---------- Resolution and loopback chain (loopback only, no external network) ----------
 
-    /// 主机解析：字面量直连，localhost 走系统解析且必为回环
+    /// Host resolution: literals are used directly; localhost resolves via the system resolver and must be loopback
     #[tokio::test]
     async fn resolve_host_literal_and_localhost() {
         assert_eq!(
@@ -581,8 +584,9 @@ mod tests {
         assert!(lh.is_loopback(), "localhost -> {lh}");
     }
 
-    /// trace_inner 打回环：有权限时结构断言（逐跳 ttl 递增、addr/rtt 成对、
-    /// 回环回应必为 127.0.0.1 一跳直达）；无权限时必须给权限指引而非 panic
+    /// trace_inner on loopback: with permission, assert the structure (ttl increments per hop, addr/rtt
+    /// come in pairs, a loopback reply must be 127.0.0.1 one hop away); without permission it must
+    /// produce permission guidance, not panic
     #[tokio::test]
     async fn trace_inner_loopback() {
         match trace_inner("127.0.0.1", 5, Duration::from_millis(500)).await {
@@ -599,7 +603,7 @@ mod tests {
                 }
             }
             Err(e) => {
-                // CI 无特权路径：必须输出权限指引
+                // CI unprivileged path: permission guidance is required
                 assert!(
                     e.contains("权限") || e.contains("CAP_NET_RAW") || e.contains("管理员"),
                     "unexpected error: {e}"
@@ -608,8 +612,8 @@ mod tests {
         }
     }
 
-    /// trace 输出契约：human/json 均显式标注 mode=icmp；成功 exit 0，
-    /// 失败 exit 1 且 human 必含权限指引或「未到达目标」的如实说明
+    /// trace output contract: human/json both explicitly mark mode=icmp; success → exit 0,
+    /// failure → exit 1 and human must contain permission guidance or an honest "target not reached" note
     #[tokio::test]
     async fn trace_outcome_contract() {
         let outcome = trace("127.0.0.1", 3, Duration::from_millis(500)).await;

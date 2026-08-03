@@ -1,4 +1,4 @@
-//! 管理员管理（`anet admin ...`）。
+//! Administrator management (`anet admin ...`).
 
 use anyhow::{Context as _, Result};
 use clap::{Args, Subcommand};

@@ -1,23 +1,23 @@
-//! JWT 认证（Access + Refresh 双 Token）
+//! JWT authentication (Access + Refresh dual tokens)
 //!
-//! 安全要点：
-//! - HS256 密钥在节点首次启动时生成并持久化到 node_config（绝不硬编码）
-//! - access_token：admin 15min / client 1h
-//! - refresh_token：admin 7d / client 30d，jti 哈希落库，支持吊销与轮换
-//! - tunnel_token：仅 client，数据面认证用，随登录/刷新轮换
+//! Security notes:
+//! - HS256 secret generated at first node startup and persisted in node_config (never hardcoded)
+//! - access_token: admin 15min / client 1h
+//! - refresh_token: admin 7d / client 30d; jti hash stored in DB, supports revocation and rotation
+//! - tunnel_token: client only, for data-plane auth; rotated on login/refresh
 
 use crate::db::{Database, generate_secret_hex, generate_tunnel_token, sha256_hex};
 use agile_net_core::error::{Error, Result};
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use serde::{Deserialize, Serialize};
 
-/// admin access token 有效期（秒）
+/// admin access token TTL (seconds)
 pub const ADMIN_ACCESS_TTL: i64 = 15 * 60;
-/// client access token 有效期（秒）
+/// client access token TTL (seconds)
 pub const CLIENT_ACCESS_TTL: i64 = 60 * 60;
-/// admin refresh token 有效期（秒）
+/// admin refresh token TTL (seconds)
 pub const ADMIN_REFRESH_TTL: i64 = 7 * 24 * 3600;
-/// client refresh token 有效期（秒）
+/// client refresh token TTL (seconds)
 pub const CLIENT_REFRESH_TTL: i64 = 30 * 24 * 3600;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -30,7 +30,7 @@ pub struct Claims {
     pub jti: String,
     /// "access" | "refresh"
     pub typ: String,
-    /// 管理面授权档位：ro（只读）/ rules（只读+规则写）/ full（全权）。既有 token 缺省 full。
+    /// Control-plane scope tier: ro (read-only) / rules (read + rule write) / full. Existing tokens default to full.
     #[serde(default = "default_scope")]
     pub scope: String,
 }
@@ -39,23 +39,23 @@ fn default_scope() -> String {
     "full".into()
 }
 
-/// 登录/刷新签发的令牌集合
+/// Token set issued on login/refresh
 pub struct IssuedTokens {
     pub access_token: String,
     pub refresh_token: String,
-    /// 仅 client 角色
+    /// client role only
     pub tunnel_token: Option<String>,
     pub expires_in: i64,
 }
 
-/// JWT 服务：密钥从数据库装载（不存在则生成）。
+/// JWT service: secret loaded from the database (generated if absent).
 pub struct JwtService {
     secret: String,
     db: Database,
 }
 
 impl JwtService {
-    /// 从数据库装载或生成密钥
+    /// Load the secret from the database, or generate and persist one.
     pub fn load_or_create(db: Database) -> Result<Self> {
         let secret = match db.get_config("jwt_secret")? {
             Some(s) if !s.is_empty() => s,
@@ -68,12 +68,12 @@ impl JwtService {
         Ok(Self { secret, db })
     }
 
-    /// 签发 access + refresh（client 同时轮换 tunnel_token），scope 默认 full。
+    /// Issue access + refresh (client also rotates tunnel_token); scope defaults to full.
     pub fn issue(&self, subject: &str, username: &str, role: &str) -> Result<IssuedTokens> {
         self.issue_with_scope(subject, username, role, "full")
     }
 
-    /// 签发 access + refresh（指定管理面 scope 档位）。
+    /// Issue access + refresh with an explicit control-plane scope tier.
     pub fn issue_with_scope(
         &self,
         subject: &str,
@@ -90,13 +90,13 @@ impl JwtService {
         let (refresh_token, jti) =
             self.sign_refresh(subject, username, role, refresh_ttl, scope)?;
 
-        // refresh jti 哈希落库（可吊销）
+        // persist refresh jti hash (revocable)
         let expires_at = (chrono::Utc::now() + chrono::Duration::seconds(refresh_ttl))
             .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
         self.db
             .store_refresh_token(&sha256_hex(jti.as_bytes()), subject, role, &expires_at)?;
 
-        // client 角色：轮换 tunnel_token
+        // client role: rotate tunnel_token
         let tunnel_token = if role == "client" {
             let t = generate_tunnel_token();
             self.db
@@ -114,7 +114,7 @@ impl JwtService {
         })
     }
 
-    /// 用 refresh_token 换新 access_token（并轮换 refresh_token 本身）。
+    /// Exchange a refresh_token for a new access_token (rotating the refresh_token itself).
     pub fn refresh(&self, refresh_token: &str) -> Result<(Claims, IssuedTokens)> {
         let claims = self.verify(refresh_token)?;
         if claims.typ != "refresh" {
@@ -124,14 +124,14 @@ impl JwtService {
         if !self.db.is_refresh_token_valid(&jti_hash)? {
             return Err(Error::Auth("refresh token revoked or expired".into()));
         }
-        // 轮换：吊销旧 jti（scope 随会话保留）
+        // rotate: revoke the old jti (scope carries over with the session)
         self.db.revoke_refresh_token(&jti_hash)?;
         let issued =
             self.issue_with_scope(&claims.sub, &claims.username, &claims.role, &claims.scope)?;
         Ok((claims, issued))
     }
 
-    /// 吊销 refresh_token（登出）。
+    /// Revoke a refresh_token (logout).
     pub fn revoke(&self, refresh_token: &str) -> Result<()> {
         if let Ok(claims) = self.verify(refresh_token) {
             self.db
@@ -140,12 +140,12 @@ impl JwtService {
         Ok(())
     }
 
-    /// 吊销某主体全部 refresh token。
+    /// Revoke all refresh tokens of a subject.
     pub fn revoke_all(&self, subject: &str) -> Result<()> {
         self.db.revoke_all_refresh_tokens(subject)
     }
 
-    /// 验证 token 并返回 Claims。
+    /// Verify a token and return its Claims.
     pub fn verify(&self, token: &str) -> Result<Claims> {
         let mut validation = Validation::default();
         validation.validate_exp = true;

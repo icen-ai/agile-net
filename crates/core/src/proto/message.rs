@@ -1,29 +1,29 @@
-//! 控制消息定义（帧 payload 的结构化数据）
+//! Control message definitions (structured data in frame payloads)
 
 use serde::{Deserialize, Serialize};
 
-/// 认证主体类型。
+/// Auth principal type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AuthKind {
-    /// 下游节点（PSK token 认证）
+    /// Fan-out endpoint (PSK token auth)
     Node,
-    /// 客户端账号（tunnel_token 认证）
+    /// Client account (tunnel_token auth)
     Client,
 }
 
-/// Auth 帧 payload：connector / client 发给 listener。
+/// Auth frame payload: connector / client -> listener.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthRequest {
     pub node_id: String,
     pub token: String,
-    /// 认证主体类型，默认为节点（兼容旧实现）
+    /// Auth principal type; defaults to node (backwards compatible)
     #[serde(default = "default_kind")]
     pub kind: AuthKind,
-    /// 节点通告的可服务网段/域名（仅 kind = Node 有效）
+    /// CIDRs/domains the node advertises as servable (only for kind = Node)
     #[serde(default)]
     pub advertise: Vec<String>,
-    /// 协议版本号，便于后续协商
+    /// Protocol version, for future negotiation
     #[serde(default = "default_version")]
     pub version: u32,
 }
@@ -36,24 +36,26 @@ fn default_version() -> u32 {
     1
 }
 
-/// 握手 v2：上游在 AuthOk 中向暴露控制面的下游下发的管理端点。
+/// Handshake v2: admin endpoint the fan-in side sends in AuthOk to a fan-out
+/// endpoint that exposes its control plane.
 ///
-/// 安全边界：票据安全等同中继令牌本身（psK 持有者随时可重连换新票），
-/// TTL 仅约束泄露窗口；吊销令牌 + 踢会话即全线回收。
+/// Security boundary: a ticket is only as safe as the relay token itself (a PSK
+/// holder can reconnect anytime for a fresh one); the TTL only bounds the leak
+/// window. Revoking the token + kicking the session retracts everything.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ControlOffer {
     pub exposed: bool,
-    /// 上游 API 主机（public_host；缺省时下游以 connector 配置的上游地址代替）
+    /// Fan-in API host (public_host; if absent the fan-out side falls back to the connector's configured address)
     #[serde(default)]
     pub api_host: Option<String>,
-    /// 上游管理 API 端口
+    /// Fan-in admin API port
     pub api_port: u16,
-    /// 上游节点显示名（可管理节点自动发现）
+    /// Fan-in node display name (manageable-node auto-discovery)
     #[serde(default)]
     pub node_name: String,
-    /// 管理引导票据（/api/v1/auth/admin-bootstrap 换取 scoped 管理会话）
+    /// Admin bootstrap ticket (redeemed at /api/v1/auth/admin-bootstrap for a scoped admin session)
     pub ticket: String,
-    /// 管理授权档位：ro / rules / full
+    /// Admin scope tier: ro / rules / full
     #[serde(default = "default_control_scope")]
     pub scope: String,
 }
@@ -62,26 +64,27 @@ fn default_control_scope() -> String {
     "full".into()
 }
 
-/// 当前协议版本（v2：per-channel 窗口流控；AuthOk 可选 control 扩展向后兼容）。
+/// Current protocol version (v2: per-channel window flow control; the optional
+/// AuthOk control extension is backwards compatible).
 pub const PROTOCOL_VERSION: u32 = 2;
 
-/// 支持 per-channel 窗口流控的最低协议版本。
+/// Minimum protocol version supporting per-channel window flow control.
 pub const PROTOCOL_VERSION_FLOW_CONTROL: u32 = 2;
 
-/// Open 帧 payload：listener 发给 connector，要求打开到目标的数据通道。
+/// Open frame payload: listener -> connector, asking to open a data channel to the target.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpenChannel {
     pub target_addr: String,
     pub target_port: u16,
 }
 
-/// OpenFail 帧 payload。
+/// OpenFail frame payload.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpenFailed {
     pub reason: String,
 }
 
-/// 控制消息枚举，方便统一处理。
+/// Control message enum for uniform handling.
 #[derive(Debug, Clone)]
 pub enum ControlMessage {
     Auth(AuthRequest),

@@ -1,4 +1,4 @@
-//! 客户端账号管理（`anet account ...`）。
+//! Client account management (`anet account ...`).
 
 use anyhow::Result;
 use clap::{Args, Subcommand};

@@ -1,4 +1,4 @@
-//! 权限组管理（`anet group ...`）。
+//! Group management (`anet group ...`).
 
 use anyhow::Result;
 use clap::{Args, Subcommand};

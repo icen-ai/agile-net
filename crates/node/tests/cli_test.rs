@@ -1,4 +1,4 @@
-//! CLI 命令解析与集成测试
+//! CLI command parsing and integration tests
 
 use agile_net_node::cli::{Cli, Commands, ConnectorSub, RuleSub, TokenSub};
 use clap::Parser;
@@ -133,7 +133,7 @@ fn cli_rule_delete_force_parsing() {
     }
 }
 
-/// CLI 登录 → 全命令链路（对真实节点 API）
+/// CLI login → full command chain (against a live node API)
 #[tokio::test]
 async fn cli_full_workflow_against_live_api() {
     use agile_net_node::api::{ApiState, NodeRuntime, create_app};
@@ -144,7 +144,7 @@ async fn cli_full_workflow_against_live_api() {
     use std::sync::Arc;
     use std::time::Instant;
 
-    // 启动真实 API
+    // Start a real API
     let db = Database::in_memory().unwrap();
     db.create_admin("admin", &hash_password("AdminPass123").unwrap())
         .unwrap();
@@ -169,7 +169,7 @@ async fn cli_full_workflow_against_live_api() {
         let _ = axum::serve(listener, app).await;
     });
 
-    // 登录（写临时 session）
+    // Login (writes temp session)
     let tmp = std::env::temp_dir().join(format!("anet-test-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&tmp).unwrap();
     unsafe { std::env::set_var("USERPROFILE", &tmp) };
@@ -189,7 +189,7 @@ async fn cli_full_workflow_against_live_api() {
     .await
     .unwrap();
 
-    // 新建规则
+    // Add rule
     agile_net_node::cli::run_cli(Cli::parse_from([
         "anet",
         "rule",
@@ -202,7 +202,7 @@ async fn cli_full_workflow_against_live_api() {
     .await
     .unwrap();
 
-    // 新建组 + 账号
+    // Add group + account
     agile_net_node::cli::run_cli(Cli::parse_from(["anet", "group", "add", "--name", "cli组"]))
         .await
         .unwrap();
@@ -218,7 +218,7 @@ async fn cli_full_workflow_against_live_api() {
     .await
     .unwrap();
 
-    // 验证数据落库
+    // Verify data landed in DB
     let (rules, total) = db.list_rules(1, 20, None, Some("10.99")).unwrap();
     assert_eq!(total, 1);
     assert_eq!(rules[0].value, "10.99.0.0/16");
@@ -232,7 +232,7 @@ async fn cli_full_workflow_against_live_api() {
     .unwrap();
     assert_eq!(db.list_relay_tokens().unwrap().len(), 1);
 
-    // token --group 收敛挂组
+    // token --group scoped to group
     agile_net_node::cli::run_cli(Cli::parse_from([
         "anet", "token", "add", "--remark", "收敛令牌", "--group", "cli组",
     ]))
@@ -243,7 +243,7 @@ async fn cli_full_workflow_against_live_api() {
     let scoped = tokens.iter().find(|t| t.remark == "收敛令牌").unwrap();
     let gid = scoped.group_id.clone().expect("令牌应挂组");
 
-    // connector 全链路（add/list/update/disable/enable/remove；上游不可达仅热装配失败，不阻断）
+    // connector full chain (add/list/update/disable/enable/remove; unreachable upstream only fails hot-load, does not block)
     agile_net_node::cli::run_cli(Cli::parse_from([
         "anet",
         "connector",
@@ -271,7 +271,7 @@ async fn cli_full_workflow_against_live_api() {
         .await
         .unwrap();
 
-    // 更新：缺省参数保留原值（组/地址不变），token 留空 = 保留
+    // Update: omitted args keep old values (group/addr unchanged), empty token = keep
     agile_net_node::cli::run_cli(Cli::parse_from([
         "anet", "connector", "update", "上海机房", "--remark", "更新备注",
     ]))

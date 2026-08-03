@@ -1,9 +1,9 @@
-//! fwstatus / fwcheck — 防火墙探测提示（P3，shell out 探测，不重实现规则解析）。
+//! fwstatus / fwcheck — firewall probe hints (P3, shell-out probing; no rule-parsing reimplementation).
 //!
-//! 依次探测 firewall-cmd / iptables / nft / Windows netsh advfirewall，
-//! 哪个存在用哪个；全部不存在时如实输出「未检测到支持的防火墙工具」并建议人工排查。
-//! iptables/nftables/firewalld 三套体系规则差异过大，超出边际成本原则，
-//! 本模块只做探测提示，绝不解析防火墙规则（见 docs/todo/cli-tool.md §2 P3）。
+//! Probes firewall-cmd / iptables / nft / Windows netsh advfirewall in order, using the first one found;
+//! when none exist it honestly reports "no supported firewall tool detected" and suggests manual checks.
+//! The iptables/nftables/firewalld rule systems differ too much (marginal-cost principle), so this module
+//! only probes and hints, and never parses firewall rules (see docs/todo/cli-tool.md §2 P3).
 
 use super::ToolOutcome;
 use serde_json::json;
@@ -11,37 +11,37 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-/// 工具探测优先级：依次探测，首个存在者为主用工具。
+/// Tool probe priority: probe in order; the first one found is the primary tool.
 const PROBE_ORDER: &[&str] = &["firewall-cmd", "iptables", "nft", "netsh"];
 
-/// 检测到的防火墙工具。
+/// A detected firewall tool.
 #[derive(Debug, Clone)]
 struct FwTool {
-    /// 工具名（firewall-cmd / iptables / nft / netsh）
+    /// Tool name (firewall-cmd / iptables / nft / netsh)
     name: &'static str,
-    /// 在 PATH 中解析到的完整路径（后续按完整路径执行，不再依赖 PATH 查找）
+    /// Full path resolved from PATH (executed by full path later, no further PATH lookups)
     path: PathBuf,
 }
 
-/// 单工具的只读状态探测结果。
+/// Read-only status probe result for a single tool.
 #[derive(Debug, Clone)]
 struct ToolStatus {
-    /// 实际执行的状态命令（展示用）
+    /// The status command actually executed (for display)
     command: String,
-    /// 状态命令是否成功执行（权限不足/服务未运行时为 false）
+    /// Whether the status command ran successfully (false on insufficient permission / service not running)
     accessible: bool,
-    /// 状态摘要（firewalld 运行态、规则输出行数或本地化摘录）
+    /// Status summary (firewalld run state, rule-output line count, or a localized excerpt)
     detail: String,
-    /// 附加提示（权限受限、服务未运行等）
+    /// Extra hint (permission restricted, service not running, etc.)
     hint: Option<String>,
 }
 
-/// `anet tool fwstatus`：防火墙状态概览。
+/// `anet tool fwstatus`: firewall status overview.
 pub fn fwstatus() -> ToolOutcome {
     fwstatus_inner(None)
 }
 
-/// fwstatus 实现（path_env 供测试注入 PATH）。
+/// fwstatus implementation (path_env lets tests inject PATH).
 fn fwstatus_inner(path_env: Option<&OsStr>) -> ToolOutcome {
     let tools = detect_tools(path_env);
     let Some(primary) = tools.first() else {
@@ -101,12 +101,12 @@ fn fwstatus_inner(path_env: Option<&OsStr>) -> ToolOutcome {
     )
 }
 
-/// `anet tool fwcheck <port>`：探测指定端口的放行状态（探测提示级别）。
+/// `anet tool fwcheck <port>`: probe the allow status of a port (probe-hint level).
 pub fn fwcheck(port: u16) -> ToolOutcome {
     fwcheck_inner(port, None)
 }
 
-/// fwcheck 实现（path_env 供测试注入 PATH）。
+/// fwcheck implementation (path_env lets tests inject PATH).
 fn fwcheck_inner(port: u16, path_env: Option<&OsStr>) -> ToolOutcome {
     let tools = detect_tools(path_env);
     let Some(primary) = tools.first() else {
@@ -154,7 +154,7 @@ fn fwcheck_inner(port: u16, path_env: Option<&OsStr>) -> ToolOutcome {
         "detail": detail,
         "hints": hints,
     });
-    // open 才可确认可达（exit 0）；closed/unknown 均 exit 1，由 verdict 区分
+    // Only "open" confirms reachability (exit 0); closed/unknown both exit 1, distinguished by verdict
     if verdict == "open" {
         ToolOutcome::ok(human.trim_end(), json)
     } else {
@@ -162,9 +162,9 @@ fn fwcheck_inner(port: u16, path_env: Option<&OsStr>) -> ToolOutcome {
     }
 }
 
-// ==================== 工具探测（shell out） ====================
+// ==================== Tool detection (shell out) ====================
 
-/// 按优先级探测 PATH 中的防火墙工具（返回全部命中，首个为主用）。
+/// Probe PATH for firewall tools in priority order (returns all hits; the first is primary).
 fn detect_tools(path_env: Option<&OsStr>) -> Vec<FwTool> {
     PROBE_ORDER
         .iter()
@@ -172,14 +172,14 @@ fn detect_tools(path_env: Option<&OsStr>) -> Vec<FwTool> {
         .collect()
 }
 
-/// 在 PATH（可注入）中查找可执行文件，返回完整路径。
+/// Find an executable in PATH (injectable), returning its full path.
 fn find_on_path(prog: &str, path_env: Option<&OsStr>) -> Option<PathBuf> {
     let path_var = match path_env {
         Some(p) => p.to_os_string(),
         None => std::env::var_os("PATH")?,
     };
     for dir in std::env::split_paths(&path_var) {
-        // Windows 可执行文件带扩展名（PATHEXT 常见子集即可）
+        // Windows executables carry extensions (a common PATHEXT subset suffices)
         #[cfg(windows)]
         let candidates = [
             format!("{prog}.exe"),
@@ -199,7 +199,7 @@ fn find_on_path(prog: &str, path_env: Option<&OsStr>) -> Option<PathBuf> {
     None
 }
 
-/// 是否可执行文件（unix 校验执行位）。
+/// Whether the path is an executable file (unix checks the exec bit).
 #[cfg(unix)]
 fn is_executable(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
@@ -208,36 +208,36 @@ fn is_executable(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// 是否可执行文件（Windows 无执行位，存在即可）。
+/// Whether the path is an executable file (Windows has no exec bit; existence suffices).
 #[cfg(windows)]
 fn is_executable(path: &Path) -> bool {
     path.is_file()
 }
 
-/// 执行命令并捕获输出（spawn 失败返回 Err 描述，绝不 panic）。
+/// Run a command and capture output (spawn failure returns an Err description; never panics).
 fn run_capture(prog: &Path, args: &[&str]) -> Result<Output, String> {
     let mut cmd = Command::new(prog);
     cmd.args(args);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        // CREATE_NO_WINDOW：避免 GUI 场景弹出控制台黑窗
+        // CREATE_NO_WINDOW: avoid popping up a console window in GUI scenarios
         cmd.creation_flags(0x08000000);
     }
     cmd.output()
         .map_err(|e| format!("执行 {} 失败: {e}", prog.display()))
 }
 
-// ==================== 状态/端口探测 ====================
+// ==================== Status/port probing ====================
 
-/// 对主用工具执行只读状态命令（各工具一句，不解析规则）。
+/// Run one read-only status command per tool (no rule parsing).
 fn probe_status(tool: &FwTool) -> ToolStatus {
     match tool.name {
         "firewall-cmd" => {
             let command = "firewall-cmd --state".to_string();
             match run_capture(&tool.path, &["--state"]) {
                 Ok(o) => {
-                    // --state 输出 running / not running（未运行时退出码也非 0，按文本判）
+                    // --state prints running / not running (exit code is also non-zero when not running; judge by text)
                     let text = String::from_utf8_lossy(&o.stdout).trim().to_string();
                     if text == "running" || text == "not running" {
                         ToolStatus {
@@ -273,7 +273,7 @@ fn probe_status(tool: &FwTool) -> ToolStatus {
                 Ok(o) if o.status.success() => ToolStatus {
                     command,
                     accessible: true,
-                    // 输出随系统语言本地化，不解析 ON/OFF，原样摘录
+                    // Output is localized per system language; do not parse ON/OFF, excerpt verbatim
                     detail: excerpt(&String::from_utf8_lossy(&o.stdout), 8),
                     hint: None,
                 },
@@ -295,7 +295,7 @@ fn probe_status(tool: &FwTool) -> ToolStatus {
     }
 }
 
-/// iptables / nft 共用：只读列出规则，成功仅报行数（不解析内容）。
+/// Shared by iptables / nft: list rules read-only; on success report only the line count (content not parsed).
 fn rule_table_status(tool: &FwTool, args: &[&str], command: &str, noun: &str) -> ToolStatus {
     match run_capture(&tool.path, args) {
         Ok(o) if o.status.success() => {
@@ -322,8 +322,8 @@ fn rule_table_status(tool: &FwTool, args: &[&str], command: &str, noun: &str) ->
     }
 }
 
-/// 端口放行探测：firewalld 可直接查询；其余工具不解析规则，只给人工排查命令。
-/// 返回 (verdict: open/closed/unknown, 结论, 提示清单)。
+/// Port-allowance probe: firewalld can be queried directly; other tools get manual-check commands instead of rule parsing.
+/// Returns (verdict: open/closed/unknown, conclusion, hint list).
 fn check_port(tool: &FwTool, port: u16) -> (&'static str, String, Vec<String>) {
     match tool.name {
         "firewall-cmd" => check_port_firewalld(tool, port),
@@ -355,7 +355,7 @@ fn check_port(tool: &FwTool, port: u16) -> (&'static str, String, Vec<String>) {
     }
 }
 
-/// firewalld 端口探测：--query-port 是直接查询接口（非规则解析），仅查 TCP。
+/// firewalld port probe: --query-port is a direct query interface (not rule parsing), TCP only.
 fn check_port_firewalld(tool: &FwTool, port: u16) -> (&'static str, String, Vec<String>) {
     let running = run_capture(&tool.path, &["--state"])
         .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "running")
@@ -393,9 +393,9 @@ fn check_port_firewalld(tool: &FwTool, port: u16) -> (&'static str, String, Vec<
     }
 }
 
-// ==================== 输出辅助 ====================
+// ==================== Output helpers ====================
 
-/// 「未检测到」统一文案。
+/// Unified "not detected" wording.
 fn no_tool_line() -> String {
     format!(
         "未检测到支持的防火墙工具（已依次探测: {}）",
@@ -403,7 +403,7 @@ fn no_tool_line() -> String {
     )
 }
 
-/// 无防火墙工具时的人工排查建议（human/json 共用）。
+/// Manual-check advice when no firewall tool exists (shared by human/json).
 fn manual_hints() -> Vec<String> {
     vec![
         "Linux: 确认 firewalld / iptables / nftables 是否安装（国产化裁剪系统可能均未预装）".into(),
@@ -412,7 +412,7 @@ fn manual_hints() -> Vec<String> {
     ]
 }
 
-/// 人工排查建议的 human 渲染。
+/// Human rendering of the manual-check advice.
 fn manual_advice() -> String {
     let mut out = String::from("建议人工排查:\n");
     for h in manual_hints() {
@@ -421,7 +421,7 @@ fn manual_advice() -> String {
     out.trim_end().to_string()
 }
 
-/// 多行摘录统一缩进两个空格（human 输出用）。
+/// Indent a multi-line excerpt by two spaces (for human output).
 fn indent(text: &str) -> String {
     let mut out = String::new();
     for line in text.lines() {
@@ -432,7 +432,7 @@ fn indent(text: &str) -> String {
     out
 }
 
-/// 摘录前 N 个非空行（本地化输出原样保留，不解析）。
+/// Excerpt the first N non-empty lines (localized output kept verbatim, not parsed).
 fn excerpt(text: &str, max_lines: usize) -> String {
     text.lines()
         .map(str::trim)
@@ -442,7 +442,7 @@ fn excerpt(text: &str, max_lines: usize) -> String {
         .join("\n")
 }
 
-/// 失败输出的单行摘要（优先 stderr，截断 160 字符）。
+/// One-line summary of failed output (stderr preferred, truncated to 160 chars).
 fn summarize_output(out: &Output) -> String {
     let stderr = String::from_utf8_lossy(&out.stderr);
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -465,7 +465,7 @@ fn summarize_output(out: &Output) -> String {
 mod tests {
     use super::*;
 
-    /// 唯一临时目录（测试结束 best-effort 清理）。
+    /// Unique temp directory (best-effort cleanup at test end).
     fn temp_dir(tag: &str) -> PathBuf {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -476,7 +476,7 @@ mod tests {
         dir
     }
 
-    /// 假 firewall-cmd：--state 输出 running；--query-port=8080/tcp 放行，其余端口未放行。
+    /// Fake firewall-cmd: --state prints running; --query-port=8080/tcp allowed, all other ports denied.
     #[cfg(unix)]
     fn write_fake_firewall_cmd(dir: &Path) {
         use std::os::unix::fs::PermissionsExt;
@@ -486,15 +486,15 @@ mod tests {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 
-    /// 假 firewall-cmd（Windows .bat，由 std 经 cmd.exe 执行）。
-    /// 注意：std 调用批处理时参数一律加引号，用 %~1 去引号后再比较。
+    /// Fake firewall-cmd (Windows .bat, executed by std via cmd.exe).
+    /// Note: std always quotes arguments when invoking batch files; use %~1 to strip quotes before comparing.
     #[cfg(windows)]
     fn write_fake_firewall_cmd(dir: &Path) {
         let bat = "@echo off\r\nif \"%~1\"==\"--state\" (\r\n  echo running\r\n  exit /b 0\r\n)\r\nif \"%~1\"==\"--query-port=8080/tcp\" exit /b 0\r\nexit /b 1\r\n";
         std::fs::write(dir.join("firewall-cmd.bat"), bat).unwrap();
     }
 
-    /// 通用假可执行文件（内容随意，不会被执行）。
+    /// Generic fake executable (arbitrary content, never executed).
     #[cfg(unix)]
     fn write_fake_exe(dir: &Path, name: &str) {
         use std::os::unix::fs::PermissionsExt;
@@ -503,13 +503,13 @@ mod tests {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 
-    /// 通用假可执行文件（Windows .bat）。
+    /// Generic fake executable (Windows .bat).
     #[cfg(windows)]
     fn write_fake_exe(dir: &Path, name: &str) {
         std::fs::write(dir.join(format!("{name}.bat")), "@echo off\r\nexit /b 0\r\n").unwrap();
     }
 
-    /// 无防火墙工具环境：如实输出「未检测到」+ 人工排查建议（文档 §7 批次三验收）。
+    /// Environment with no firewall tool: honestly report "not detected" + manual-check advice (doc §7 batch-3 acceptance).
     #[test]
     fn no_tool_reported_honestly() {
         let dir = temp_dir("empty");
@@ -540,7 +540,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// 假 firewalld：状态 running，8080/tcp 放行、9090/tcp 未放行（通/断两路）。
+    /// Fake firewalld: state running, 8080/tcp allowed and 9090/tcp denied (both paths).
     #[test]
     fn fake_firewalld_status_and_port_query() {
         let dir = temp_dir("firewalld");
@@ -570,7 +570,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// 探测优先级：firewall-cmd 与 nft 同时存在时主用 firewall-cmd，nft 列为「同时检测到」。
+    /// Probe priority: with firewall-cmd and nft both present, firewall-cmd is primary and nft is listed as "also detected".
     #[test]
     fn priority_order_prefers_firewall_cmd() {
         let dir = temp_dir("prio");
@@ -588,7 +588,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// find_on_path：注入 PATH 可找到可执行文件，缺失时返回 None。
+    /// find_on_path: finds executables via injected PATH, returns None when missing.
     #[test]
     fn find_on_path_with_injected_path() {
         let dir = temp_dir("find");

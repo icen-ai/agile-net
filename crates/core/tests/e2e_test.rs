@@ -1,6 +1,6 @@
-//! M4 里程碑 端到端穿透 (E2E Tunnel) 集成测试
+//! M4 milestone end-to-end tunnel (E2E Tunnel) integration tests
 //!
-//! 包含 AT-M4-01 ~ AT-M4-07 完整集成测试套件
+//! Full AT-M4-01 ~ AT-M4-07 integration test suite
 
 use agile_net_core::error::Result;
 use agile_net_core::proxy::inbound::ProxyInbound;
@@ -21,7 +21,7 @@ fn get_free_addr() -> SocketAddr {
     addr
 }
 
-/// AT-M4-01：Client -> Node-A(公网 Relay Listener) -> Node-B(内网 Connector) -> 内网 Echo 目标全链路
+/// AT-M4-01: Client -> Node-A (public relay listener) -> Node-B (internal connector) -> internal echo target, full path
 #[tokio::test]
 async fn e2e_client_to_internal_echo() -> Result<()> {
     let echo_addr = get_free_addr();
@@ -29,7 +29,7 @@ async fn e2e_client_to_internal_echo() -> Result<()> {
     let proxy_addr = get_free_addr();
     let token = "e2e_secret_token";
 
-    // 1. 启动内网 Echo TCP 服务
+    // 1. start internal echo TCP service
     let echo_server = TcpListener::bind(echo_addr).await?;
     tokio::spawn(async move {
         while let Ok((mut stream, _)) = echo_server.accept().await {
@@ -47,7 +47,7 @@ async fn e2e_client_to_internal_echo() -> Result<()> {
         }
     });
 
-    // 2. 启动 Node-A (Relay Listener)
+    // 2. start Node-A (relay listener)
     let listener = Arc::new(RelayListener::new(relay_addr, token)?);
     let listener_clone = listener.clone();
     tokio::spawn(async move {
@@ -56,12 +56,12 @@ async fn e2e_client_to_internal_echo() -> Result<()> {
 
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    // 3. 启动 Node-B (Relay Connector 连入 Node-A)
+    // 3. start Node-B (relay connector into Node-A)
     let connector = RelayConnector::new(relay_addr, "node-b", token)?;
     connector.connect().await?;
     assert!(connector.is_connected());
 
-    // 4. 启动 Client (ProxyInbound 带路由配置指明 Echo IP -> Node-B)
+    // 4. start client (ProxyInbound with a route mapping echo IP -> Node-B)
     let mut router = ProxyRouter::new();
     let cidr_str = format!("{}/32", echo_addr.ip());
     router
@@ -78,7 +78,7 @@ async fn e2e_client_to_internal_echo() -> Result<()> {
 
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    // 5. 客户端连入 Client 的 SOCKS5 代理，发往 echo_addr
+    // 5. client connects to the client's SOCKS5 proxy, destined for echo_addr
     let mut client = tokio::net::TcpStream::connect(proxy_addr).await?;
     // SOCKS5 greeting
     client.write_all(&[0x05, 0x01, 0x00]).await?;
@@ -101,7 +101,7 @@ async fn e2e_client_to_internal_echo() -> Result<()> {
     client.read_exact(&mut req_resp).await?;
     assert_eq!(req_resp[1], 0x00); // SUCCESS
 
-    // 6. 发送数据，验证穿透响应
+    // 6. send data, verify the tunneled response
     client.write_all(b"e2e-tunnel-hello").await?;
     let mut buf = [0u8; 64];
     let n = client.read(&mut buf).await?;
@@ -110,7 +110,7 @@ async fn e2e_client_to_internal_echo() -> Result<()> {
     Ok(())
 }
 
-/// AT-M4-02：多节点路由隔离 (Node-B / Node-C 注册不同网段)
+/// AT-M4-02: multi-node routing isolation (Node-B / Node-C advertise different subnets)
 #[tokio::test]
 async fn multi_node_routing_isolation() -> Result<()> {
     let echo_b_addr = get_free_addr();
@@ -119,7 +119,7 @@ async fn multi_node_routing_isolation() -> Result<()> {
     let proxy_addr = get_free_addr();
     let token = "multi_node_token";
 
-    // 1. Echo B (返回 from-node-b)
+    // 1. Echo B (replies from-node-b)
     let echo_b = TcpListener::bind(echo_b_addr).await?;
     tokio::spawn(async move {
         while let Ok((mut stream, _)) = echo_b.accept().await {
@@ -132,7 +132,7 @@ async fn multi_node_routing_isolation() -> Result<()> {
         }
     });
 
-    // 2. Echo C (返回 from-node-c)
+    // 2. Echo C (replies from-node-c)
     let echo_c = TcpListener::bind(echo_c_addr).await?;
     tokio::spawn(async move {
         while let Ok((mut stream, _)) = echo_c.accept().await {
@@ -154,13 +154,13 @@ async fn multi_node_routing_isolation() -> Result<()> {
 
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    // 4. Node-B & Node-C 连入 Node-A
+    // 4. Node-B & Node-C connect into Node-A
     let conn_b = RelayConnector::new(relay_addr, "node-b", token)?;
     conn_b.connect().await?;
     let conn_c = RelayConnector::new(relay_addr, "node-c", token)?;
     conn_c.connect().await?;
 
-    // 5. Client 复合路由表：
+    // 5. client composite route table:
     let mut router = ProxyRouter::new();
     router
         .add_cidr(
@@ -184,7 +184,7 @@ async fn multi_node_routing_isolation() -> Result<()> {
 
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    // 6. 验证往 echo_b 查请求得到 from-node-b
+    // 6. verify a request to echo_b yields from-node-b
     let mut client1 = tokio::net::TcpStream::connect(proxy_addr).await?;
     client1.write_all(&[0x05, 0x01, 0x00]).await?;
     let mut r1 = [0u8; 2];

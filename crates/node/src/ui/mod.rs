@@ -1,14 +1,16 @@
-//! Web 管理后台单页应用 (Admin Web UI)：路由与内嵌服务。
+//! Admin Web UI single-page app: routing and embedded serving.
 //!
-//! - 文件布局：`crates/node/ui/`（index.html / app.js / style.css），经 `include_str!` 内嵌，
-//!   严禁再把界面代码写进 Rust 字符串（AGENTS.md §6）
-//! - 设计 token 唯一权威文件为 `apps/desktop/ui/tokens.css`，经 `/ui/tokens.css` 共享服务；
-//!   共享组件样式 `apps/desktop/ui/components.css` 同机制经 `/ui/components.css` 服务；
-//!   共享图表组件 `apps/desktop/ui/agchart.js` 同机制经 `/ui/agchart.js` 服务；
-//!   共享图标表 `apps/desktop/ui/icons.js` 同机制经 `/ui/icons.js` 服务；
-//!   共享基础工具 `apps/desktop/ui/agutil.js` 同机制经 `/ui/agutil.js` 服务
-//! - 安全响应头：CSP 放行桌面壳 iframe 内嵌（frame-ancestors 含 tauri 源）+ nosniff 等
-//! - 主窗内嵌时 `?embed=1`：SPA 隐藏自身侧栏与标题栏，导航/主题经 postMessage 由主窗驱动
+//! - File layout: `crates/node/ui/` (index.html / app.js / style.css), embedded via `include_str!`;
+//!   never write UI code into Rust strings again (AGENTS.md §6)
+//! - The single source of truth for design tokens is `apps/desktop/ui/tokens.css`, served shared at `/ui/tokens.css`;
+//!   shared component styles `apps/desktop/ui/components.css` served the same way at `/ui/components.css`;
+//!   shared chart component `apps/desktop/ui/agchart.js` served the same way at `/ui/agchart.js`;
+//!   shared icon table `apps/desktop/ui/icons.js` served the same way at `/ui/icons.js`;
+//!   shared base utilities `apps/desktop/ui/agutil.js` served the same way at `/ui/agutil.js`
+//! - Security response headers: CSP allows embedding in the desktop shell iframe
+//!   (frame-ancestors includes tauri origins) + nosniff etc.
+//! - `?embed=1` when embedded in the main window: the SPA hides its own sidebar and title bar;
+//!   navigation/theme are driven by the main window via postMessage
 
 use axum::{
     Router,
@@ -20,18 +22,24 @@ use axum::{
 const ADMIN_HTML: &str = include_str!("../../ui/index.html");
 const ADMIN_JS: &str = include_str!("../../ui/app.js");
 const ADMIN_CSS: &str = include_str!("../../ui/style.css");
-/// 共享设计 token（唯一权威文件在桌面端，AGENTS.md §6）
+/// Shared design tokens (single source of truth lives in the desktop app, AGENTS.md §6).
 const TOKENS_CSS: &str = include_str!("../../../../apps/desktop/ui/tokens.css");
-/// 共享组件样式（与 tokens.css 同机制沉淀在桌面端）
+/// Shared component styles (settled into the desktop app via the same mechanism as tokens.css).
 const COMPONENTS_CSS: &str = include_str!("../../../../apps/desktop/ui/components.css");
-/// 共享图表组件（首个共享 JS，同机制内嵌服务；桌面端直接 <script src>）
+/// Shared chart component (first shared JS, embedded the same way; desktop uses <script src> directly).
 const AGCHART_JS: &str = include_str!("../../../../apps/desktop/ui/agchart.js");
-/// 共享图标表（双端唯一来源，同机制内嵌服务；桌面端直接 <script src="icons.js">）
+/// Shared icon table (single source for both ends, embedded the same way; desktop uses <script src="icons.js">).
 const AGICONS_JS: &str = include_str!("../../../../apps/desktop/ui/icons.js");
-/// 共享基础工具（esc/ahelp/$ 等两端语义一致实现，同机制内嵌服务）
+/// Shared base utilities (esc/ahelp/$ with identical semantics on both ends, embedded the same way).
 const AGUTIL_JS: &str = include_str!("../../../../apps/desktop/ui/agutil.js");
+/// Shared i18n runtime (single source of the bilingual mechanism, embedded the same way).
+const AGI18N_JS: &str = include_str!("../../../../apps/desktop/ui/agi18n.js");
+/// Shared bilingual dictionary (single source for both ends, embedded the same way).
+const AGLANG_JS: &str = include_str!("../../../../apps/desktop/ui/aglang.js");
+/// Admin-end bilingual dictionary shard (embedded the same way as aglang.js; desktop dictionary shards live in apps/desktop/ui/lang/).
+const ADMIN_LANG_JS: &str = include_str!("../../../../apps/desktop/ui/lang/admin.js");
 
-/// 基础安全响应头（全部静态响应统一附加）。
+/// Base security response headers (attached to all static responses).
 fn base_headers(resp: &mut Response) {
     let headers = resp.headers_mut();
     headers.insert(
@@ -44,7 +52,7 @@ fn base_headers(resp: &mut Response) {
     );
 }
 
-/// 管理页面（frame-ancestors 放行自身与 Tauri 桌面壳 iframe 内嵌）
+/// Admin page (frame-ancestors allows self plus the Tauri desktop shell iframe).
 pub async fn admin_page_handler() -> impl IntoResponse {
     let mut resp = Html(ADMIN_HTML).into_response();
     base_headers(&mut resp);
@@ -104,6 +112,24 @@ async fn agutil_js_handler() -> impl IntoResponse {
     resp
 }
 
+async fn agi18n_js_handler() -> impl IntoResponse {
+    let mut resp = ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8")], AGI18N_JS).into_response();
+    base_headers(&mut resp);
+    resp
+}
+
+async fn aglang_js_handler() -> impl IntoResponse {
+    let mut resp = ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8")], AGLANG_JS).into_response();
+    base_headers(&mut resp);
+    resp
+}
+
+async fn admin_lang_js_handler() -> impl IntoResponse {
+    let mut resp = ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8")], ADMIN_LANG_JS).into_response();
+    base_headers(&mut resp);
+    resp
+}
+
 pub fn create_ui_router() -> Router {
     Router::new()
         .route("/", get(admin_page_handler))
@@ -115,4 +141,7 @@ pub fn create_ui_router() -> Router {
         .route("/ui/agchart.js", get(agchart_js_handler))
         .route("/ui/icons.js", get(agicons_js_handler))
         .route("/ui/agutil.js", get(agutil_js_handler))
+        .route("/ui/agi18n.js", get(agi18n_js_handler))
+        .route("/ui/aglang.js", get(aglang_js_handler))
+        .route("/ui/lang/admin.js", get(admin_lang_js_handler))
 }

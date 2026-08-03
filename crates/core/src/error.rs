@@ -1,8 +1,8 @@
-//! 统一错误类型
+//! Unified error type
 
 use thiserror::Error;
 
-/// AgileNet 核心库统一错误。
+/// Unified error for the AgileNet core library.
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("io: {0}")]

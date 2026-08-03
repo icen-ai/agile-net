@@ -1,5 +1,5 @@
-//! 节点二进制冒烟测试：以真实进程启动 agile-net-node（listener + API + env 种子），
-//! 验证 CryptoProvider 安装、env 预置、API 登录与 relay 数据面认证。
+//! Node binary smoke tests: launch agile-net-node as a real process (listener + API + env seed),
+//! verifying CryptoProvider installation, env presets, API login, and relay data-plane auth.
 
 use agile_net_core::relay::RelayConnector;
 use std::net::SocketAddr;
@@ -64,7 +64,7 @@ key_path = "{certs}/key.pem"
         .expect("spawn agile-net-node");
     let mut _guard = NodeGuard(child);
 
-    // 等待 API 就绪
+    // wait for the API to come up
     let client = reqwest::Client::new();
     let mut api_up = false;
     for _ in 0..60 {
@@ -76,7 +76,7 @@ key_path = "{certs}/key.pem"
             .await
             && r.status() == reqwest::StatusCode::UNAUTHORIZED
         {
-            api_up = true; // 401 说明 API 已在服务（只是未认证）
+            api_up = true; // 401 means the API is serving (just unauthenticated)
             break;
         }
         if _guard.0.try_wait().unwrap().is_some() {
@@ -86,7 +86,7 @@ key_path = "{certs}/key.pem"
     }
     assert!(api_up, "API 未在 30s 内就绪");
 
-    // 管理员登录（env 预置）
+    // admin login (env preset)
     let resp = client
         .post(format!("http://127.0.0.1:{api_port}/api/v1/auth/login"))
         .json(&serde_json::json!({"username":"admin","password":"SmokeTest123!"}))
@@ -95,7 +95,7 @@ key_path = "{certs}/key.pem"
         .unwrap();
     assert!(resp.status().is_success(), "env 预置管理员登录失败");
 
-    // relay 数据面认证（env 预置 token）
+    // relay data-plane auth (env preset token)
     let relay_addr: SocketAddr = format!("127.0.0.1:{relay_port}").parse().unwrap();
     let connector = RelayConnector::new(
         relay_addr,
@@ -106,7 +106,7 @@ key_path = "{certs}/key.pem"
     connector.connect().await.unwrap();
     assert!(connector.is_connected());
 
-    // 错误 token 被拒
+    // wrong token rejected
     let bad = RelayConnector::new(relay_addr, "smoke-evil", "psk_wrong").unwrap();
     assert!(bad.connect().await.is_err());
 
@@ -114,7 +114,7 @@ key_path = "{certs}/key.pem"
     let _ = std::fs::remove_dir_all(&tmp);
 }
 
-/// HTTPS API 冒烟：配置 tls_cert_path 后管理面以 HTTPS 提供
+/// HTTPS API smoke: with tls_cert_path configured, the admin plane serves HTTPS
 #[tokio::test]
 async fn node_binary_https_api() {
     let api_port = free_port();
@@ -122,7 +122,7 @@ async fn node_binary_https_api() {
     let tmp = std::env::temp_dir().join(format!("anet-smoke-https-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(tmp.join("certs")).unwrap();
 
-    // 生成 API 用自签证书
+    // generate a self-signed cert for the API
     let (certs, key) = agile_net_core::tunnel::tls::generate_self_signed("localhost").unwrap();
     let cert_path = tmp.join("certs/api-cert.pem");
     let key_path = tmp.join("certs/api-key.pem");
@@ -165,7 +165,7 @@ key_path = "{certs}/relay-key.pem"
         .expect("spawn agile-net-node");
     let mut _guard = NodeGuard(child);
 
-    // 接受自签证书的 reqwest 客户端
+    // reqwest client accepting self-signed certs
     let client = reqwest::Client::builder()
         .danger_accept_invalid_certs(true)
         .build()

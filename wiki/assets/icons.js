@@ -1,6 +1,6 @@
 'use strict';
-/* Lucide 内联 SVG 图标（仅收录用到的图标；无构建链下等价于 tree-shaking）。
-   用法：静态 HTML 写 <i data-ic="zap" data-sz="15"></i>，动态 JS 调 AgIcon('zap', 15)。 */
+/* Lucide inline SVG icons (only used icons are included; tree-shaking equivalent without a build chain).
+   Usage: static HTML <i data-ic="zap" data-sz="15"></i>, dynamic JS AgIcon('zap', 15). */
 (function () {
   const ICONS = {
     'zap': '<path d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z"/>',

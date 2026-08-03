@@ -1,4 +1,4 @@
-//! Client 集成测试：登录 → 配置拉取 → 隧道数据面 → 代理转发全链路
+//! Client integration tests: login → config pull → tunnel data plane → proxy forwarding, end to end
 
 use agile_net_client::{
     AgileNetClient, ConnectParams, Credential, CredentialStore, HostsManager, NodeStatus,
@@ -23,12 +23,12 @@ fn get_free_addr() -> SocketAddr {
     addr
 }
 
-/// 启动全栈测试节点：API（HTTP）+ Relay Listener（TLS 数据面）。
-/// 预置：admin、权限组（绑定 127.0.0.0/8 规则）、账号 user1/TestPass123
+/// Start a full-stack test node: API (HTTP) + Relay Listener (TLS data plane).
+/// Pre-seeded: admin, a group (bound to the 127.0.0.0/8 rule), account user1/TestPass123
 async fn start_full_node() -> (String, SocketAddr, SocketAddr) {
     let db = Database::in_memory().unwrap();
 
-    // 数据：规则 + 组 + 账号
+    // Data: rule + group + account
     let rule = db
         .create_rule("ip-cidr", "127.0.0.0/8", false, "loopback")
         .unwrap();
@@ -44,7 +44,7 @@ async fn start_full_node() -> (String, SocketAddr, SocketAddr) {
     db.create_admin("admin", &hash_password("AdminPass123").unwrap())
         .unwrap();
 
-    // Relay 数据面
+    // Relay data plane
     let relay_addr = get_free_addr();
     let (server_config, _) = TlsConfigBuilder::new().build_server().unwrap();
     let tls_acceptor = tokio_rustls::TlsAcceptor::from(server_config);
@@ -59,7 +59,7 @@ async fn start_full_node() -> (String, SocketAddr, SocketAddr) {
         let _ = l.start().await;
     });
 
-    // API 面（先绑定拿到端口，再构建状态）
+    // API plane (bind first to get the port, then build the state)
     let api_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let api_addr = api_listener.local_addr().unwrap();
 
@@ -116,7 +116,7 @@ async fn start_echo_server(addr: SocketAddr) {
     });
 }
 
-/// 连接节点并拉取配置与规则
+/// Connect to the node and pull config and rules
 #[tokio::test]
 async fn client_connect_and_pull_config() {
     let (node_addr, _, _) = start_full_node().await;
@@ -144,7 +144,7 @@ async fn client_connect_and_pull_config() {
     assert_eq!(client.node_status(&state.node_id), NodeStatus::Disconnected);
 }
 
-/// 全链路：本地 SOCKS5 → 隧道 → 节点 → Echo
+/// Full path: local SOCKS5 → tunnel → node → Echo
 #[tokio::test]
 async fn client_socks5_through_tunnel_to_echo() {
     let (node_addr, _, _) = start_full_node().await;
@@ -169,7 +169,7 @@ async fn client_socks5_through_tunnel_to_echo() {
     let proxy_port = client.proxy_port();
     assert!(proxy_port > 0);
 
-    // SOCKS5 握手
+    // SOCKS5 handshake
     let mut sock = tokio::net::TcpStream::connect(("127.0.0.1", proxy_port))
         .await
         .unwrap();
@@ -178,7 +178,7 @@ async fn client_socks5_through_tunnel_to_echo() {
     sock.read_exact(&mut resp).await.unwrap();
     assert_eq!(resp, [0x05, 0x00]);
 
-    // CONNECT 127.0.0.1:echo_port（命中 127.0.0.0/8 规则 → 隧道）
+    // CONNECT 127.0.0.1:echo_port (hits the 127.0.0.0/8 rule → tunnel)
     let mut req = vec![0x05, 0x01, 0x00, 0x01, 127, 0, 0, 1];
     req.extend_from_slice(&echo_addr.port().to_be_bytes());
     sock.write_all(&req).await.unwrap();
@@ -195,7 +195,7 @@ async fn client_socks5_through_tunnel_to_echo() {
     client.stop_proxy().await;
 }
 
-/// 禁用账号立即断开活跃隧道（P0-2 安全语义）
+/// Disabling an account immediately drops its active tunnel (P0-2 security semantics)
 #[tokio::test]
 async fn disable_account_kicks_active_tunnel() {
     let (node_addr, api_addr, _) = start_full_node().await;
@@ -214,7 +214,7 @@ async fn disable_account_kicks_active_tunnel() {
         .unwrap();
     assert_eq!(client.node_status(&state.node_id), NodeStatus::Connected);
 
-    // 管理员登录并禁用该账号
+    // Admin login and disable the account
     let http = reqwest::Client::new();
     let login = http
         .post(format!("http://{api_addr}/api/v1/auth/login"))
@@ -228,7 +228,7 @@ async fn disable_account_kicks_active_tunnel() {
         .unwrap()
         .to_string();
 
-    // 找到账号 ID（admin 列表）
+    // Find the account ID (admin list)
     let list = http
         .get(format!("http://{api_addr}/api/v1/admin/accounts"))
         .bearer_auth(&admin_token)
@@ -241,7 +241,7 @@ async fn disable_account_kicks_active_tunnel() {
         .unwrap()
         .to_string();
 
-    // 禁用
+    // Disable
     let resp = http
         .put(format!(
             "http://{api_addr}/api/v1/admin/accounts/{account_id}"
@@ -253,7 +253,7 @@ async fn disable_account_kicks_active_tunnel() {
         .unwrap();
     assert!(resp.status().is_success());
 
-    // 活跃隧道应立即被服务端断开
+    // The active tunnel must be dropped by the server immediately
     tokio::time::sleep(Duration::from_millis(800)).await;
     assert_ne!(
         client.node_status(&state.node_id),
@@ -262,7 +262,7 @@ async fn disable_account_kicks_active_tunnel() {
     );
 }
 
-/// 断开节点后路由动态移除
+/// Routes are removed dynamically after disconnecting a node
 #[tokio::test]
 async fn disconnect_removes_routes() {
     let (node_addr, _, _) = start_full_node().await;
@@ -289,7 +289,7 @@ async fn disconnect_removes_routes() {
     assert!(!router.matches_target("127.0.0.1"));
 }
 
-/// 配置离线缓存：保存/读取/删除
+/// Offline config cache: save/load/remove
 #[test]
 fn config_cache_roundtrip() {
     let dir = std::env::temp_dir().join(format!("agile-cache-test-{}", uuid::Uuid::new_v4()));
@@ -323,7 +323,7 @@ fn config_cache_roundtrip() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// 凭据持久化与读取（文件权限收紧）
+/// Credential persistence and read-back (tightened file permissions)
 #[tokio::test]
 async fn credentials_persist() {
     let store = CredentialStore::open_temp().unwrap();
@@ -357,7 +357,7 @@ async fn credentials_persist() {
     }
 }
 
-/// 代理引擎启停
+/// Proxy engine start/stop
 #[tokio::test]
 async fn proxy_engine_start_stop() {
     let client = AgileNetClient::new();
@@ -371,7 +371,7 @@ async fn proxy_engine_start_stop() {
     client.stop_proxy().await;
 }
 
-/// Hosts 管理：写入与清理 BEGIN/END 块
+/// Hosts management: write and clean up the BEGIN/END block
 #[test]
 fn hosts_manager_apply_and_cleanup() {
     let dir = std::env::temp_dir().join(format!("agile-hosts-test-{}", uuid::Uuid::new_v4()));
@@ -388,7 +388,7 @@ fn hosts_manager_apply_and_cleanup() {
     assert!(content.contains("127.0.0.1 git.internal"));
     assert!(content.contains("127.0.0.1 localhost"));
 
-    // 幂等更新
+    // Idempotent update
     mgr.apply(&["git.internal".to_string()]).unwrap();
     let content = std::fs::read_to_string(&hosts_path).unwrap();
     assert!(!content.contains("wiki.internal"));
@@ -400,7 +400,7 @@ fn hosts_manager_apply_and_cleanup() {
     assert!(content.contains("127.0.0.1 localhost"));
 }
 
-/// 多节点路由合并（纯路由层）
+/// Multi-node route merging (pure routing layer)
 #[tokio::test]
 async fn multi_node_route_merge() {
     let mut router = agile_net_core::proxy::router::ProxyRouter::new();

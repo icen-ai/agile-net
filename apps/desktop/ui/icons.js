@@ -1,9 +1,9 @@
 'use strict';
-/* Lucide 内联 SVG 图标共享表（双端唯一来源，AGENTS.md §6 组件沉淀）：
-   桌面端 <script src="icons.js"> 引入；管理端经 crates/node/src/ui/mod.rs 内嵌服务于 /ui/icons.js。
-   仅收录两端用到的图标（无构建链下等价于 tree-shaking，未引用的图标不打包）。
-   用法：静态 HTML 写 <i data-ic="zap" data-sz="15"></i>（DOMContentLoaded 自动水合），
-   动态 JS 调 AgIcon('zap', 15)；动态插入的 [data-ic] 占位可显式调 AgIconHydrate(root) 复跑。 */
+/* Lucide inline SVG icon shared table (single source for both ends, AGENTS.md §6 shared component layer):
+   desktop loads via <script src="icons.js">; admin UI serves it embedded via crates/node/src/ui/mod.rs at /ui/icons.js.
+   Only icons actually used by either end (equivalent to tree-shaking without a build chain; unreferenced icons ship nowhere).
+   Usage: static HTML writes <i data-ic="zap" data-sz="15"></i> (auto-hydrated on DOMContentLoaded);
+   dynamic JS calls AgIcon('zap', 15); dynamically inserted [data-ic] placeholders can be re-hydrated via AgIconHydrate(root). */
 (function () {
   const ICONS = {
     'home': '<path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/>',
@@ -53,7 +53,7 @@
     'pencil': '<path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/><path d="m15 5 4 4"/>',
     'stethoscope': '<path d="M4.8 2.3A.3.3 0 1 0 5 2H4a2 2 0 0 0-2 2v5a6 6 0 0 0 6 6a6 6 0 0 0 6-6V4a2 2 0 0 0-2-2h-1a.2.2 0 1 0 .3.3"/><path d="M8 15v1a6 6 0 0 0 6 6a6 6 0 0 0 6-6v-4"/><circle cx="20" cy="10" r="2"/>',
     'bell': '<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/>',
-    /* 管理端收录（crates/node/ui） */
+    /* admin-UI-only entries (crates/node/ui) */
     'sun': '<circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/>',
     'moon': '<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>',
     'log-out': '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" x2="9" y1="12" y2="12"/>',
@@ -64,7 +64,7 @@
     const s = size || 16;
     return '<svg class="ic" width="' + s + '" height="' + s + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + (ICONS[name] || '') + '</svg>';
   }
-  /* 静态 HTML 中的 <i data-ic="name" data-sz="n"> 占位水合为内联 SVG（幂等，可重复调用） */
+  /* Hydrate <i data-ic="name" data-sz="n"> placeholders in static HTML into inline SVG (idempotent, safe to re-run) */
   function AgIconHydrate(root) {
     (root || document).querySelectorAll('[data-ic]').forEach(el => {
       const span = document.createElement('span');
