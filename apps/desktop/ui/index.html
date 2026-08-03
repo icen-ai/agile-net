@@ -203,9 +203,9 @@
           <div class="dc-spark" id="d-fanin-spark" style="display:none"></div>
         </div>
 
-        <!-- 扇出：监听开关 + 连通数 + API/Relay 地址简述（点卡片进扇出页） -->
+        <!-- 扇出：监听开关 + 连通数 + API/Relay 地址简述（点卡片进扇出页；服务端角色属 Beta 实验区） -->
         <div class="dcard local-only" id="dc-fanout" data-goto="upstreams">
-          <div class="dc-head"><i data-ic="git-fork" data-sz="15"></i>扇出 <span id="d-server-badge"></span>
+          <div class="dc-head"><i data-ic="git-fork" data-sz="15"></i>扇出 <span class="badge-beta">Beta</span> <span id="d-server-badge"></span>
             <label class="switch dc-switch"><input type="checkbox" id="d-server"><span class="slider"></span></label>
           </div>
           <div class="dc-val" id="d-fanout-val">-</div>
@@ -265,19 +265,33 @@
         </div>
       </div>
 
-      <!-- 扇出监听（扇出能力本体）：内嵌完整端点 -->
+      <!-- 扇出监听（扇出能力本体）：内嵌完整端点 —— Beta 实验区（将付费能力，Beta 期间限时免费） -->
       <div data-agpanel="listen">
-        <div class="card">
+        <div class="card beta-card">
+          <div class="beta-head">
+            <span class="badge-beta">Beta</span>
+            <span class="beta-note">实验区 · Beta 期间限时免费，正式版将纳入付费计划</span>
+          </div>
           <div class="role-list">
             <div class="role-row">
-              <div class="role-info"><b>扇出监听 <span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip">内嵌完整端点（Relay / 账号 / 规则 / 审计），本机可作为转发机或留守管理端</span></span></b></div>
+              <div class="role-info"><b>扇出监听（服务端角色） <span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip">内嵌完整端点（Relay / 账号 / 规则 / 审计），本机可作为转发机或留守管理端</span></span></b></div>
               <label class="switch"><input type="checkbox" id="r-server"><span class="slider"></span></label>
             </div>
             <div id="server-panel" style="display:none">
               <div class="kv"><span class="k">管理 API</span><span class="mono" id="sv-api">-</span></div>
               <div class="kv"><span class="k">Relay 监听</span><span class="mono" id="sv-relay">-</span></div>
               <div class="row" style="margin-top:8px">
-                <button id="btn-open-console" class="ghost small"><i data-ic="external-link" data-sz="13"></i> 打开控制台</button>
+                <button id="btn-open-console" class="ghost small"><i data-ic="external-link" data-sz="13"></i> 打开控制台（账号 / Relay Token / 权限组）</button>
+              </div>
+            </div>
+            <div class="role-row beta-soon">
+              <div class="role-info"><b>Relay 接入凭据配额 · 带机量限制 <span class="badge-soon">敬请期待</span></b>
+                <span class="hint">按套餐限制单节点可签发的 Relay Token 数量与并发接入数（详见产品计划）</span>
+              </div>
+            </div>
+            <div class="role-row beta-soon">
+              <div class="role-info"><b>企业联邦对接（节点连节点） <span class="badge-soon">敬请期待</span></b>
+                <span class="hint">Site-to-Site 互联凭证，含带宽/并发/IP 白名单细粒度控制</span>
               </div>
             </div>
           </div>

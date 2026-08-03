@@ -47,6 +47,8 @@
   --skel-bg: rgba(0,0,0,.06); --skel-shine: rgba(255,255,255,.65);
   /* Liquid Glass 顶部高光（inset 0 1px 0：nav-item.active / ctx-menu / modal） */
   --glass-hi: rgba(255,255,255,.5);
+  /* Beta 徽章/实验卡渐变（将付费能力标记；badge-beta / beta-card 描边共用） */
+  --beta-grad: linear-gradient(135deg, #6E7FF3, #A55CF5);
 }
 html[data-theme="dark"] {
   --bg: #2A2828; --bg2: #2F2D2D; --panel: #312F2F; --panel2: #3A3838;
@@ -78,4 +80,6 @@ html[data-theme="dark"] {
   --power-ring: rgba(238,238,238,.40); --power-glow: rgba(238,238,238,.22);
   --skel-bg: rgba(255,255,255,.07); --skel-shine: rgba(255,255,255,.14);
   --glass-hi: rgba(255,255,255,.06);
+  /* 深色变体：亮度略升保对比 */
+  --beta-grad: linear-gradient(135deg, #8490FF, #B66FFF);
 }

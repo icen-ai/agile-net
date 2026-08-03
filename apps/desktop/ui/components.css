@@ -243,3 +243,16 @@ html.no-blur .ctx-menu, html.no-blur .float-menu, html.no-blur .bnav { -webkit-b
   .skel::after, .power-btn.on { animation: none; }
   .power-btn, .bnav-item { transition: none; }
 }
+
+/* ================= Beta 徽章与实验卡（将付费能力标记：服务端角色/Relay Token 管理） =================
+   .badge-beta：渐变胶囊 + 扫光微动效（reduced-motion 停）；.beta-card：渐变描边卡（双层背景实现） */
+.badge-beta { position: relative; display: inline-flex; align-items: center; padding: 1px 8px; border-radius: 999px; font-size: 10.5px; font-weight: 700; letter-spacing: .08em; color: var(--accent-fg, #fff); background: var(--beta-grad); box-shadow: 0 1px 5px rgba(124, 92, 245, .38); overflow: hidden; vertical-align: 1px; user-select: none; }
+html[data-theme="dark"] .badge-beta { color: rgba(255,255,255,.95); }
+.badge-beta::after { content: ""; position: absolute; inset: 0; background: linear-gradient(105deg, transparent 42%, rgba(255,255,255,.5) 50%, transparent 58%); transform: translateX(-110%); animation: beta-shine 3.4s ease-in-out infinite; pointer-events: none; }
+@keyframes beta-shine { 0%, 55% { transform: translateX(-110%); } 100% { transform: translateX(110%); } }
+.beta-card { border: 1px solid transparent; background: linear-gradient(var(--panel2), var(--panel2)) padding-box, var(--beta-grad) border-box; box-shadow: 0 4px 18px rgba(124, 92, 245, .10); }
+.beta-card .beta-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+.beta-card .beta-note { font-size: 11px; color: var(--dim2); }
+.beta-soon { opacity: .55; }
+.beta-soon .badge-soon { display: inline-flex; padding: 0 7px; border-radius: 999px; font-size: 10.5px; background: var(--chip); color: var(--dim2); user-select: none; }
+@media (prefers-reduced-motion: reduce) { .badge-beta::after { display: none; } }

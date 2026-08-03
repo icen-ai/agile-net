@@ -33,6 +33,7 @@ AgileNet 有三套用户界面：节点 Web 管理后台、节点 TUI 终端、�
 | `--lat-good` / `--lat-mid` / `--lat-bad`（+ `--lat-*-bg`） | `#3E8E2E` / `#9A7414` / `#CE3F34` | `#5FCF65` / `#F8CE52` / `#F96057` | 延迟三档语义文字色（与 ok/warn/danger 文字色同值，独立命名保语义；`-bg` 变体为 `.lat` 胶囊底，同 `--ok/warn/danger-bg` 值） |
 | `--power-ring` / `--power-glow` | `rgba(60,63,67,.35)` / `rgba(60,63,67,.28)` | `rgba(238,238,238,.40)` / `rgba(238,238,238,.22)` | power-btn 运行态：呼吸环色 + 外发光光晕 |
 | `--skel-bg` / `--skel-shine` | `rgba(0,0,0,.06)` / `rgba(255,255,255,.65)` | `rgba(255,255,255,.07)` / `rgba(255,255,255,.14)` | 骨架屏 `.skel` 底色 + 扫光色 |
+| `--beta-grad` | Beta 徽章/实验卡渐变（badge-beta / beta-card 描边） |
 | `--glass-hi` | `rgba(255,255,255,.5)` | `rgba(255,255,255,.06)` | Liquid Glass 静态顶部高光（`inset 0 1px 0`：nav-item.active / ctx-menu / modal） |
 
 - 圆角：卡片 12px（`--radius`），按钮/输入框 8px，徽标与胶囊 999px，上下文菜单 10px（菜单项 6px）
