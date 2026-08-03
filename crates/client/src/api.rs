@@ -50,6 +50,13 @@ pub struct SpaAssets {
     pub components_css: &'static str,
     /// 共享图表组件 JS（桌面 index.html 引用，缺失则 AgChart 未定义）
     pub agchart_js: &'static str,
+    /// app.js 域拆分六文件（桌面 index.html 按依赖顺序引用，缺失则 Web 远程面脚本 404 白屏）
+    pub app_core_js: &'static str,
+    pub app_views_js: &'static str,
+    pub app_subscription_js: &'static str,
+    pub app_hero_js: &'static str,
+    pub app_logs_js: &'static str,
+    pub app_settings_js: &'static str,
 }
 
 #[derive(Clone)]
@@ -177,6 +184,12 @@ fn spa_router(spa: SpaAssets) -> Router {
     let tokens_css = spa.tokens_css;
     let components_css = spa.components_css;
     let agchart_js = spa.agchart_js;
+    let app_core_js = spa.app_core_js;
+    let app_views_js = spa.app_views_js;
+    let app_subscription_js = spa.app_subscription_js;
+    let app_hero_js = spa.app_hero_js;
+    let app_logs_js = spa.app_logs_js;
+    let app_settings_js = spa.app_settings_js;
     Router::new()
         .route("/", get(move || serve(index, "text/html; charset=utf-8")))
         .route(
@@ -194,6 +207,30 @@ fn spa_router(spa: SpaAssets) -> Router {
         .route(
             "/agchart.js",
             get(move || serve(agchart_js, "text/javascript; charset=utf-8")),
+        )
+        .route(
+            "/app-core.js",
+            get(move || serve(app_core_js, "text/javascript; charset=utf-8")),
+        )
+        .route(
+            "/app-views.js",
+            get(move || serve(app_views_js, "text/javascript; charset=utf-8")),
+        )
+        .route(
+            "/app-subscription.js",
+            get(move || serve(app_subscription_js, "text/javascript; charset=utf-8")),
+        )
+        .route(
+            "/app-hero.js",
+            get(move || serve(app_hero_js, "text/javascript; charset=utf-8")),
+        )
+        .route(
+            "/app-logs.js",
+            get(move || serve(app_logs_js, "text/javascript; charset=utf-8")),
+        )
+        .route(
+            "/app-settings.js",
+            get(move || serve(app_settings_js, "text/javascript; charset=utf-8")),
         )
         .route(
             "/style.css",

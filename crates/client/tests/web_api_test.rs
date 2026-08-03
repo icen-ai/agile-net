@@ -311,6 +311,12 @@ async fn spa_assets_served() {
             app_js: "app",
             icons_js: "icons",
             agchart_js: "agchart",
+            app_core_js: "core",
+            app_views_js: "views",
+            app_subscription_js: "subscription",
+            app_hero_js: "hero",
+            app_logs_js: "logs",
+            app_settings_js: "settings",
             style_css: "css",
             tokens_css: "tokens",
             components_css: "components",
@@ -335,5 +341,17 @@ async fn spa_assets_served() {
     assert_eq!(r.text().await.unwrap(), "components");
     let r = http.get(format!("{base}/agchart.js")).send().await.unwrap();
     assert_eq!(r.text().await.unwrap(), "agchart");
+    let r = http
+        .get(format!("{base}/app-core.js"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.text().await.unwrap(), "core");
+    let r = http
+        .get(format!("{base}/app-settings.js"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.text().await.unwrap(), "settings");
     handle.stop().await;
 }
