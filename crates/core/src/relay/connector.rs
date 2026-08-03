@@ -29,7 +29,6 @@ use tokio_rustls::TlsConnector;
 use tracing::{debug, info, warn};
 
 /// 心跳基础间隔（实际为 25s + 0~10s 随机，模拟自然 HTTPS 行为）。
-const PING_BASE_SECS: u64 = 25;
 /// 心跳超时：超过该时间未收到对端任何帧则判定断线。
 const IDLE_TIMEOUT: Duration = Duration::from_secs(90);
 /// 重连退避上限。
@@ -267,6 +266,8 @@ impl RelayConnector {
     /// TLS 握手 + Auth 认证 + 启动会话维护任务。
     async fn handshake(&self) -> Result<Arc<MuxSession>> {
         let tcp_stream = TcpStream::connect(self.upstream_addr).await?;
+        // TCP 拟态+体验：浏览器 HTTPS 连接普遍 TCP_NODELAY（tokio 原生 API）
+        let _ = tcp_stream.set_nodelay(true);
         let server_name = rustls::pki_types::ServerName::try_from(self.sni_hostname.clone())
             .map_err(|e| Error::Tls(e.to_string()))?;
 
@@ -472,12 +473,15 @@ impl RelayConnector {
             self.state
                 .store(ConnectionState::Reconnecting as u8, Ordering::Relaxed);
 
-            // 指数退避 1s → 2s → 4s → ... → 60s，加 0~3s 抖动
+            // 指数退避 1s → 2s → 4s → ... → 60s，full jitter（tor 同款策略）：
+            // 在 [0, backoff] 内均匀采样——固定退避+小抖动的重连节奏可被审查方识别建模
             let backoff = Duration::from_secs(1)
                 .saturating_mul(1u32 << attempt.min(6))
                 .min(MAX_BACKOFF);
-            let jitter = Duration::from_millis((rand::random::<u64>() % 3000) as u64);
-            let delay = backoff + jitter;
+            // [500ms, backoff] 均匀采样
+            let delay = Duration::from_millis(
+                (rand::random::<u64>() % backoff.as_millis() as u64).max(500),
+            );
             info!(delay = ?delay, "reconnecting to upstream");
             attempt = attempt.saturating_add(1);
 
@@ -647,7 +651,9 @@ impl RelayConnector {
     }
 }
 
-/// 下一次心跳间隔：25s + 0~10s 随机抖动。
+/// 下一次心跳间隔：指数分布（均值 ~30s，钳 5~90s）。
+/// 定间隔+小抖动的规律心跳是流量分析的经典指纹；指数分布更贴近浏览器 keep-alive 的自然形态。
 fn next_ping_delay() -> Duration {
-    Duration::from_secs(PING_BASE_SECS + rand::random::<u64>() % 10)
+    let sample = -30.0 * (1.0 - rand::random::<f64>()).ln();
+    Duration::from_secs_f64(sample.clamp(5.0, 90.0))
 }

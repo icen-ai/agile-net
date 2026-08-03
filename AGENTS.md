@@ -55,7 +55,8 @@
    - JWT 密钥首启生成并持久化于 `node_config.jwt_secret`；refresh token jti 哈希落库，支持吊销轮换。
    - 数据面 token 比较必须常数时间（`constant_time_eq`）；认证失败按 IP 限流（20 次/分钟）并随机延迟惩罚。
    - 敏感操作须 `record_audit_log`（含 detail 与来源 IP），严禁记录任何密码/Token 明文；管理面新增事件见 `docs/plan/merge-gui-svc.md` §9。
-4. **端口规范**：
+4. **抗指纹拟态原则（relay 数据面）**：TLS 层必须像普通 HTTPS——ALPN 恒 `h2,http/1.1`；自签证书带仿真 O/C 字段且到期日随机；首帧非法的连接按 nginx 行为回 400（严禁发 AuthFail 自报家门）；TCP 设 `set_nodelay(true)`；心跳指数分布、重连 full jitter；数据分片长度随机扰动。新增传输层行为必须先过一遍「这像不像浏览器」。
+5. **端口规范**：
    - 默认端口一律 5 万段，规避 Clash 系常用端口：API `59090`、Relay listener `54430`、客户端代理 `57890`。
    - 与 Clash/FlClash 共存的组合配置见 `apps/README.md`。
 5. **前端约定（Web 后台 + 桌面/Android 共用前端，均无 Node 构建链）**：

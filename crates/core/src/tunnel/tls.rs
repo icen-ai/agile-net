@@ -96,11 +96,13 @@ impl TlsConfigBuilder {
                 generate_self_signed(&self.sni_hostname)?
             };
 
-        let server_config =
+        let mut server_config =
             rustls::ServerConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
                 .with_no_client_auth()
                 .with_single_cert(certs.clone(), key)
                 .map_err(|e| Error::Tls(e.to_string()))?;
+        // ALPN 拟态：真实浏览器 ClientHello 必带 h2/http1.1，空 ALPN 是最廉价的 DPI 单字段筛子
+        server_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
 
         Ok((Arc::new(server_config), certs))
     }
@@ -110,7 +112,7 @@ impl TlsConfigBuilder {
     /// 信任策略优先级：证书固定 (pinning) > 自定义 CA > 跳过验证（开发） > 系统 CA。
     pub fn build_client(&self) -> Result<Arc<rustls::ClientConfig>> {
         let _ = rustls::crypto::ring::default_provider().install_default();
-        let config = if let Some(fp) = &self.pinned_fingerprint {
+        let mut config = if let Some(fp) = &self.pinned_fingerprint {
             // 证书指纹固定：哈希比对 + rustls 原生签名校验，抗 MITM 且免分发证书文件
             let verifier = danger::PinnedFingerprintVerifier::new(fp)?;
             rustls::ClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
@@ -155,6 +157,8 @@ impl TlsConfigBuilder {
                 .with_no_client_auth()
         };
 
+        // ALPN 拟态（与服务端同列表；对端为旧版无 ALPN 时握手不受影响，向后兼容）
+        config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
         Ok(Arc::new(config))
     }
 
@@ -205,8 +209,19 @@ pub fn generate_self_signed(
     params
         .distinguished_name
         .push(rcgen::DnType::CommonName, hostname);
-    // 显式有效期 10 年（私有化部署长期固定证书）
-    params.not_after = rcgen::date_time_ymd(2036, 1, 1);
+    // Subject 拟态：空 O/C 字段是自建隧道的强指纹，仿真正常 CDN 证书
+    params
+        .distinguished_name
+        .push(rcgen::DnType::OrganizationName, "Cloudflare, Inc.");
+    params
+        .distinguished_name
+        .push(rcgen::DnType::CountryName, "US");
+    // 到期日随机化（2032-2038 随机年月）：全量节点统一 2036-01-01 是大规模扫描的关联特征；
+    // 已持久化的存量证书不受影响（load_or_generate 只在首次生成时走这里）
+    let year = (2032 + rand::random::<u32>() % 7) as i32;
+    let month = (1 + rand::random::<u32>() % 12) as u8;
+    let day = (1 + rand::random::<u32>() % 28) as u8;
+    params.not_after = rcgen::date_time_ymd(year, month, day);
 
     let key_pair = KeyPair::generate().map_err(|e| Error::Tls(format!("keygen: {e}")))?;
     let cert = params

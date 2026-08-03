@@ -355,6 +355,8 @@ impl RelayListener {
 
         loop {
             let (stream, peer_addr) = listener.accept().await?;
+            // TCP 拟态+体验：浏览器 HTTPS 连接普遍 TCP_NODELAY（tokio 原生 API，无需 socket2）
+            let _ = stream.set_nodelay(true);
 
             // 并发连接上限：超限直接丢弃
             let current = self.active_connections.fetch_add(1, Ordering::Relaxed) + 1;
@@ -478,22 +480,31 @@ impl RelayListener {
         let mut tls_stream = self.tls_acceptor.accept(stream).await?;
         debug!(peer = %peer_addr, "tls handshake completed");
 
-        let frame = Frame::read_from(&mut tls_stream).await?;
+        // 主动探测拟态：首帧读取失败/非 Auth/载荷非法，一律按 nginx 行为回 400 后关闭，
+        // 不发 AuthFail 私有帧自报家门；合法客户端的错误路径不受影响（AuthOk/AuthFail 帧照走）
+        let frame = match Frame::read_from(&mut tls_stream).await {
+            Ok(f) => f,
+            Err(e) => {
+                write_fake_http_400(&mut tls_stream).await;
+                return Err(Error::Io(e));
+            }
+        };
         if frame.frame_type != FrameType::Auth {
-            let _ = Frame::empty(FrameType::AuthFail, 0)
-                .write_to(&mut tls_stream)
-                .await;
+            write_fake_http_400(&mut tls_stream).await;
             return Err(Error::Protocol("expected Auth frame".into()));
         }
 
-        let auth_req: AuthRequest = serde_json::from_slice(&frame.payload)
-            .map_err(|e| Error::Protocol(format!("invalid auth payload: {e}")))?;
+        let auth_req: AuthRequest = match serde_json::from_slice(&frame.payload) {
+            Ok(r) => r,
+            Err(e) => {
+                write_fake_http_400(&mut tls_stream).await;
+                return Err(Error::Protocol(format!("invalid auth payload: {e}")));
+            }
+        };
 
         // 节点 ID 长度约束，防止异常数据
         if auth_req.node_id.is_empty() || auth_req.node_id.len() > 128 {
-            let _ = Frame::empty(FrameType::AuthFail, 0)
-                .write_to(&mut tls_stream)
-                .await;
+            write_fake_http_400(&mut tls_stream).await;
             return Err(Error::Protocol("invalid node_id".into()));
         }
 
@@ -876,4 +887,16 @@ pub fn build_acl_router(rules: &[String]) -> Arc<ProxyRouter> {
         }
     }
     Arc::new(router)
+}
+
+/// 主动探测拟态响应：仿真 nginx `400 Bad Request`（在 TLS 内，与真实 HTTPS 服务行为一致），
+/// 替代暴露私有协议的 AuthFail 帧。调用方负责关闭/丢弃连接；认证失败的限频与延迟惩罚不受影响。
+async fn write_fake_http_400<S>(stream: &mut S)
+where
+    S: tokio::io::AsyncWrite + Unpin,
+{
+    use tokio::io::AsyncWriteExt;
+    const RESP: &[u8] = b"HTTP/1.1 400 Bad Request\r\nServer: nginx\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+    let _ = stream.write_all(RESP).await;
+    let _ = stream.shutdown().await;
 }

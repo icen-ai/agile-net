@@ -167,7 +167,10 @@ impl AsyncWrite for MuxChannel {
         }
 
         // 1. 流控额度（v2）：额度不足时挂起，等待对端 WindowUpdate
-        let mut chunk_len = buf.len().min(DATA_CHUNK_SIZE);
+        // 分片长度加 0~2047B 随机扰动：定长 16KB 分片在 TLS record 长度分布上是私有 mux 的强指纹；
+        // 分片边界对协议语义透明（接收端按流重组），向后兼容
+        let mut chunk_len =
+            buf.len().min(DATA_CHUNK_SIZE - ((rand::random::<u64>() % 2048) as usize));
         if self.credit.is_some() {
             let credit = self.credit.clone().expect("checked");
             // 快速路径：直接尝试按量获取
