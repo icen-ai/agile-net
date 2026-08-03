@@ -130,3 +130,9 @@ cargo check --manifest-path apps/desktop/Cargo.toml
 
 `anet tool` 新增依赖：`netstat2` / `default-net` / `surge-ping`（均纯 Rust、无 C 依赖、musl 静态兼容，
 一律 `default-features = false` 起步；设计见 `docs/todo/cli-tool.md`，用户文档见 wiki「网络工具 anet tool」）。
+
+## 已知地雷 (Landmines)
+
+1. **Tauri CSP nonce 与 style 属性互斥**：Tauri 资产协议会给 `style-src` 注入 `nonce-*`，按 CSP3 规范 nonce 存在时 `'unsafe-inline'` 对 **style 属性**失效——全部 `style="display:none"` 弹窗同时弹出（黑屏风暴）。tauri.conf.json 已设 `dangerousDisableAssetCspModification: true`（关闭 Tauri 的 CSP 改写，按配置原样下发）。**严禁改回**；JS 侧 `el.style.x = ...` 属性赋值不受 CSP 影响可正常用。
+2. **悬浮球是原生分层窗**（apps/desktop/src/floatball.rs：WS_EX_LAYERED + GDI+ 画圆）：严禁改回 WebView 球（WebView2 透明合成/默认白底/DWM 隐形边框在部分机器整类失效）；菜单/气泡仍是 webview 小窗，定位源 floatball::rect 静态槽。
+3. **wintun 不可依赖网络下载**：download.wireguard.com 受限网络不可达，官方 0.14.1 dll 已内嵌（apps/desktop/wintun/wintun.dll，钉值校验）；升级须同步三处（dll 文件 / WINTUN_VERSION / WINTUN_DLL_SHA256）。

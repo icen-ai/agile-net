@@ -69,7 +69,10 @@ body { display: block; padding: 0; font-size: 13px; }
 .tp-empty { padding: 8px 10px; font-size: 12px; color: var(--dim2); }
 
 /* 连接摘要 */
-.tp-conns-head { display: flex; align-items: baseline; }
+.tp-conns-head { display: flex; align-items: baseline; cursor: pointer; border-radius: 6px; }
+.tp-conns-head:hover { background: var(--hover); }
+.tp-conns-head .chev { margin-left: 4px; display: inline-flex; transition: transform .15s; color: var(--dim2); }
+.tp-conns-head.open .chev { transform: rotate(180deg); }
 .tp-conns-head .cnt { margin-left: auto; font-size: 11px; color: var(--dim2); font-variant-numeric: tabular-nums; }
 .tp-conn { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-radius: 7px; font-size: 12px; color: var(--text); }
 .tp-conn .host { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -117,7 +120,7 @@ body { display: block; padding: 0; font-size: 13px; }
     <div class="tp-sec">代理组</div>
     <div id="tp-groups"></div>
 
-    <div class="tp-sec tp-conns-head">连接<span class="cnt" id="tp-conn-count"></span></div>
+    <div class="tp-sec tp-conns-head" id="tp-conns-head">连接<span class="cnt" id="tp-conn-count"></span><span class="chev"><i data-ic="chevron-down" data-sz="11"></i></span></div>
     <div id="tp-conns"></div>
   </div>
 

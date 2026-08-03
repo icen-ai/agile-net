@@ -77,18 +77,25 @@ function endDrag() {
   snapEdge();
 }
 
-/* 边缘吸附：贴近屏幕左右边缘 24px 内则吸附（无权限静默跳过；位置微调不属扩容） */
+/* 边缘吸附：贴近屏幕左右边缘 24px 内则吸附（无权限静默跳过）。
+   必须用 inner_*（可视区）：outer_* 在 Windows 含 DWM 隐形边框（72→170），
+   混用会把球算出屏外（真实事故：右缘吸附后球被裁掉一半）。 */
 async function snapEdge() {
   if (!TAURI || !TAURI.window) return;
   try {
     const w = win();
-    const [pos, size, sf] = await Promise.all([w.outerPosition(), w.outerSize(), w.scaleFactor()]);
-    const lx = pos.x / sf, bw = size.width / sf, sw = window.screen.width;
+    const [opos, ipos, isize, sf] = await Promise.all([
+      w.outerPosition(), w.innerPosition(), w.innerSize(), w.scaleFactor(),
+    ]);
+    const offX = opos.x - ipos.x; // 外框相对可视区的偏移（写回 outer 用）
+    const ixL = ipos.x / sf;      // 球可视区左上 x（逻辑）
+    const bwL = isize.width / sf; // 球可视区宽（逻辑，72）
+    const sw = window.screen.width;
     let tx = null;
-    if (lx <= 24) tx = 0;
-    else if (lx + bw >= sw - 24) tx = Math.max(0, sw - bw);
+    if (ixL <= 24) tx = 0;
+    else if (ixL + bwL >= sw - 24) tx = Math.max(0, sw - bwL);
     if (tx === null) return;
-    await w.setPosition(new TAURI.window.PhysicalPosition(Math.round(tx * sf), pos.y));
+    await w.setPosition(new TAURI.window.PhysicalPosition(Math.round(tx * sf + offX), opos.y));
   } catch (e) {}
 }
 
@@ -165,4 +172,6 @@ window.addEventListener('DOMContentLoaded', () => {
   document.addEventListener('visibilitychange', () => { document.hidden ? stopLoops() : startLoops(); });
   bindBall();
   startLoops();
+  // 初始位置校正一次：后端按 outer 框算落点，Windows 隐形边框会让可视区偏出屏外
+  snapEdge();
 });

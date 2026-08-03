@@ -41,4 +41,11 @@ window.addEventListener('DOMContentLoaded', () => {
       if (t) showText(t); // 空文本不刷新计时，避免空气泡顶掉在显内容
     }).catch(() => {});
   }
+  // 就绪后主动取待读文本（后端不再 emit 首条，杜绝首帧监听未挂丢事件 → 空气泡常驻）
+  invoke('float_bubble_take').then(t => {
+    if (t) showText(String(t));
+    else { try { TAURI.window.getCurrentWindow().close(); } catch (e) {} } // 无通知：立即自关
+  }).catch(() => {
+    try { TAURI.window.getCurrentWindow().close(); } catch (e) {}
+  });
 });

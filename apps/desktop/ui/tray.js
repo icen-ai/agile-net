@@ -22,6 +22,7 @@ const S = {
   kernel: false,                    // 订阅内核
   sigStatus: '', sigMode: '', sigGroups: '', sigConns: '',
   openGroup: null, lastGroups: null,  // 代理组展开态（组名，同时只展开一组）与最近一次组数据
+  openConns: false,                   // 连接摘要展开态（默认收起，点击标题展开）
   downSig: '', upSig: '',
   up60: [], down60: [],             // 60s 速率采样（B/s）
   chart: null,
@@ -148,8 +149,9 @@ function renderGroups(d) {
   ).join('');
 }
 
-/* 连接摘要：活跃数 + 最近 5 条（host + 链末节点名；字段做防御性解析） */
+/* 连接摘要：默认收起（仅标题行+活跃数，与代理组同款），点击标题展开最近 5 条 */
 function renderConns(d) {
+  S.lastConns = d;
   const active = (d && Array.isArray(d.active)) ? d.active : [];
   const rows = active.slice(-5).reverse().map(c => {
     const it = c || {};
@@ -159,16 +161,20 @@ function renderConns(d) {
     const chains = Array.isArray(it.chains) ? it.chains : (Array.isArray(it.chain) ? it.chain : []);
     return { host, end: chains.length ? String(chains[0]) : '' }; // mihomo chains[0] = 链末出口
   });
-  const sig = active.length + '|' + JSON.stringify(rows);
+  const sig = (S.openConns ? '1' : '0') + '|' + active.length + '|' + JSON.stringify(rows);
   if (sig === S.sigConns) return;
   S.sigConns = sig;
   $('tp-conn-count').textContent = '活跃 ' + active.length;
-  $('tp-conns').innerHTML = rows.length
-    ? rows.map(r =>
-        '<div class="tp-conn"><span class="host">' + esc(r.host) + '</span>' +
-        (r.end ? '<span class="via">' + esc(r.end) + '</span>' : '') + '</div>'
-      ).join('')
-    : '<div class="tp-empty">暂无活跃连接</div>';
+  const head = $('tp-conns-head');
+  if (head) head.classList.toggle('open', !!S.openConns);
+  $('tp-conns').innerHTML = !S.openConns
+    ? ''
+    : (rows.length
+      ? rows.map(r =>
+          '<div class="tp-conn"><span class="host">' + esc(r.host) + '</span>' +
+          (r.end ? '<span class="via">' + esc(r.end) + '</span>' : '') + '</div>'
+        ).join('')
+      : '<div class="tp-empty">暂无活跃连接</div>');
 }
 
 /* ---------------- 轮询调度：不可见暂停 ---------------- */
@@ -218,6 +224,12 @@ window.addEventListener('DOMContentLoaded', () => {
     if (!row) return;
     try { await invoke('select_proxy', { group: row.dataset.g, name: row.dataset.n }); } catch (err) {}
     slowTick();
+  });
+
+  // 连接摘要：标题行点击展开/收起（默认收起，立即重绘）
+  $('tp-conns-head').addEventListener('click', () => {
+    S.openConns = !S.openConns;
+    renderConns(S.lastConns);
   });
 
   // 底部操作行

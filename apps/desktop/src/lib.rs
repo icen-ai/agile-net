@@ -12,6 +12,8 @@ use std::sync::Arc;
 use tauri::{Manager, State};
 
 mod download;
+#[cfg(windows)]
+mod floatball;
 mod roles;
 mod subscription;
 mod sub_script;
@@ -585,6 +587,8 @@ fn theme_query(theme: &Option<String>) -> String {
 #[tauri::command]
 fn broadcast_theme(app: tauri::AppHandle, theme: String) -> Result<(), String> {
     use tauri::Emitter;
+    #[cfg(windows)]
+    floatball::set_dark(theme == "dark");
     app.emit("ag-theme", theme).map_err(map_err)
 }
 
@@ -2475,9 +2479,9 @@ fn tray_popup_position(anchor: (f64, f64), size: (f64, f64), area: (f64, f64, f6
     clamp_popup(anchor.0 - w / 2.0, y, w, h, area)
 }
 
-/// anchor 所在显示器的工作区（物理坐标 (left, top, right, bottom)）。
+/// anchor 所在显示器的工作区（物理坐标 (left, top, right, bottom)）与缩放因子。
 /// 取不到显示器信息时给一个足够大的区域（仅保证 clamp 后非负）。
-fn work_area_at(app: &tauri::AppHandle, x: f64, y: f64) -> (f64, f64, f64, f64) {
+fn work_area_at(app: &tauri::AppHandle, x: f64, y: f64) -> ((f64, f64, f64, f64), f64) {
     let monitor = app
         .monitor_from_point(x, y)
         .ok()
@@ -2489,13 +2493,16 @@ fn work_area_at(app: &tauri::AppHandle, x: f64, y: f64) -> (f64, f64, f64, f64) 
             let p = area.position;
             let s = area.size;
             (
-                p.x as f64,
-                p.y as f64,
-                p.x as f64 + s.width as f64,
-                p.y as f64 + s.height as f64,
+                (
+                    p.x as f64,
+                    p.y as f64,
+                    p.x as f64 + s.width as f64,
+                    p.y as f64 + s.height as f64,
+                ),
+                m.scale_factor(),
             )
         }
-        None => (0.0, 0.0, f64::MAX / 2.0, f64::MAX / 2.0),
+        None => ((0.0, 0.0, f64::MAX / 2.0, f64::MAX / 2.0), 1.0),
     }
 }
 
@@ -2523,10 +2530,19 @@ fn arm_blur_close(window: &tauri::WebviewWindow, close: bool) {
 /// 坐标全程物理坐标系：anchor 来自托盘事件（物理），工作区同样物理；
 /// builder 不设 position，build 后以物理坐标 set_position → show → set_focus，杜绝首击闪帧。
 fn toggle_tray_popup(app: &tauri::AppHandle, anchor: tauri::PhysicalPosition<f64>) {
+    // 托盘事件跑在主线程：work_area_at/monitor_from_point/is_visible 等 getter 均
+    // channel 阻塞式（等事件循环应答），主线程调用即自锁——整体移到工作线程。
+    let app = app.clone();
+    std::thread::spawn(move || {
+        toggle_tray_popup_inner(&app, anchor);
+    });
+}
+fn toggle_tray_popup_inner(app: &tauri::AppHandle, anchor: tauri::PhysicalPosition<f64>) {
     const W: f64 = 292.0;
     const H: f64 = 420.0;
-    let area = work_area_at(app, anchor.x, anchor.y);
-    let (x, y) = tray_popup_position((anchor.x, anchor.y), (W, H), area);
+    // 尺寸×缩放 = 物理像素：anchor/工作区均物理坐标，逻辑尺寸不换算会把弹窗放出屏外
+    let (area, scale) = work_area_at(app, anchor.x, anchor.y);
+    let (x, y) = tray_popup_position((anchor.x, anchor.y), (W * scale, H * scale), area);
     if let Some(w) = app.get_webview_window("tray-popup") {
         if w.is_visible().unwrap_or(false) {
             let _ = w.hide();
@@ -2577,13 +2593,21 @@ fn tray_quit(app: tauri::AppHandle) {
 
 // ==================== 悬浮球窗口（仅桌面） ====================
 
-/// 悬浮球锚点信息：球左上物理坐标 (x, y)、球高、球所在显示器工作区。球不存在返回 None。
-fn ball_anchor(app: &tauri::AppHandle) -> Option<(f64, f64, f64, (f64, f64, f64, f64))> {
+/// 悬浮球锚点信息：球体可视区左上物理坐标 (x, y)、球可视高、球所在显示器工作区与缩放因子。
+/// 用 inner_position/inner_size：outer_* 在 Windows 含 DWM 隐形边框（72→170），会算歪菜单位置。
+/// 球不存在返回 None。
+fn ball_anchor(app: &tauri::AppHandle) -> Option<(f64, f64, f64, (f64, f64, f64, f64), f64)> {
+    // Windows 原生球：位置由 floatball 静态槽提供（无 webview 窗口）
+    #[cfg(windows)]
+    if let Some((bx, by, bs)) = floatball::rect() {
+        let (area, scale) = work_area_at(app, bx as f64, by as f64);
+        return Some((bx as f64, by as f64, bs as f64, area, scale));
+    }
     let ball = app.get_webview_window("float-ball")?;
-    let pos = ball.outer_position().ok()?;
-    let size = ball.outer_size().ok()?;
-    let area = work_area_at(app, pos.x as f64, pos.y as f64);
-    Some((pos.x as f64, pos.y as f64, size.height as f64, area))
+    let pos = ball.inner_position().ok()?;
+    let size = ball.inner_size().ok()?;
+    let (area, scale) = work_area_at(app, pos.x as f64, pos.y as f64);
+    Some((pos.x as f64, pos.y as f64, size.height as f64, area, scale))
 }
 
 /// 悬浮球气泡通知（桥接既有告警点与 float_ball_notify 命令共用）：
@@ -2602,6 +2626,24 @@ fn float_notify(app: &tauri::AppHandle, text: impl Into<String>) {
         let _ = app.emit_to("float-bubble", "ag-bubble-text", text);
         return;
     }
+    // ball_anchor/build 等 channel 阻塞式调用：本函数可能被主线程上下文
+    // （sync 命令）调到，窗口操作整体丢工作线程，杜绝自锁。
+    let app = app.clone();
+    std::thread::spawn(move || {
+        float_notify_inner(&app, text);
+    });
+}
+/// 气泡待读文本：float_notify_inner 写入，float-bubble 页加载完成后经 float_bubble_take 取走。
+/// （替代原先的 emit + 600ms 补发：首帧 webview 未挂监听会丢事件，气泡空卡常驻）
+static BUBBLE_PENDING: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// float-bubble 页就绪后取待读文本（取走即清；None = 无通知，前端应立即自关窗口）。
+#[tauri::command]
+fn float_bubble_take() -> Option<String> {
+    BUBBLE_PENDING.lock().ok()?.take()
+}
+
+fn float_notify_inner(app: &tauri::AppHandle, text: String) {
     const W: f64 = 220.0;
     const H: f64 = 96.0;
     // 不透明卡片（气泡即卡片，不依赖 transparent；同源同窗扩容方案在 Windows 透明失效后废弃）
@@ -2622,24 +2664,33 @@ fn float_notify(app: &tauri::AppHandle, text: impl Into<String>) {
         return;
     };
     // 位置：球左边 10px、垂直与球居中，clamp 进球所在工作区
-    if let Some((bx, by, bh, area)) = ball_anchor(app) {
-        let (x, y) = clamp_popup(bx - W - 10.0, by + (bh - H) / 2.0, W, H, area);
+    if let Some((bx, by, bh, area, scale)) = ball_anchor(app) {
+        let (x, y) = clamp_popup(
+            bx - W * scale - 10.0,
+            by + (bh - H * scale) / 2.0,
+            W * scale,
+            H * scale,
+            area,
+        );
         let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
     }
+    // 文本落待读槽（若槽里有旧文本被覆盖：前端取最新一条即可），页面 ready 后自取
+    if let Ok(mut p) = BUBBLE_PENDING.lock() {
+        *p = Some(text);
+    }
     let _ = window.show();
-    // 首帧 webview 可能尚未挂事件监听：立即发一次 + 600ms 后补发一次（同文本重渲染无副作用，
-    // 前端 4s 自动关闭计时以实际收到文本起算）
-    let _ = app.emit_to("float-bubble", "ag-bubble-text", text.clone());
-    let handle = app.clone();
-    std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_millis(600));
-        let _ = handle.emit_to("float-bubble", "ag-bubble-text", text);
-    });
 }
 
 /// 创建悬浮球窗口（幂等）：72×72 无框透明常驻，默认定位主屏右下角偏移
 /// （取主屏方式与 normalize_window_geometry 一致）。
 #[cfg(desktop)]
+#[cfg(all(desktop, windows))]
+fn create_float_ball(app: &tauri::AppHandle) -> Result<(), String> {
+    // Windows：原生分层窗球（GDI+ 绘制，不经 WebView；透明/窗框/裁剪整类问题根绝）
+    floatball::create(app)
+}
+
+#[cfg(all(desktop, not(windows)))]
 fn create_float_ball(app: &tauri::AppHandle) -> Result<(), String> {
     const SIZE: f64 = 72.0;
     if app.get_webview_window("float-ball").is_some() {
@@ -2687,8 +2738,12 @@ async fn set_float_ball(
 ) -> Result<(), String> {
     if on {
         create_float_ball(&app)?;
-    } else if let Some(w) = app.get_webview_window("float-ball") {
-        let _ = w.close();
+    } else {
+        #[cfg(windows)]
+        floatball::destroy();
+        if let Some(w) = app.get_webview_window("float-ball") {
+            let _ = w.close();
+        }
     }
     {
         let mut roles = state.roles.lock().await;
@@ -2733,14 +2788,21 @@ fn float_ball_notify(app: tauri::AppHandle, text: String) -> Result<(), String> 
 
 /// 悬浮球右键菜单（独立小窗 float-menu；toggle 语义：已可见则关闭）。
 /// 不透明卡片（菜单本就该不透明，不依赖 transparent）；失焦自动关闭（延迟武装 400ms）。
+/// 必须 async：ball_anchor 的 outer_position/outer_size 是 channel 阻塞式调用，
+/// sync 命令跑在主线程会自锁（菜单弹不出 + 主窗卡死）。
 #[tauri::command]
-fn float_open_menu(app: tauri::AppHandle) -> Result<(), String> {
+async fn float_open_menu(app: tauri::AppHandle) -> Result<(), String> {
+    float_open_menu_impl(&app).await
+}
+
+/// 菜单打开/定位的共享实现（命令与原生悬浮球右键共用）。
+pub(crate) async fn float_open_menu_impl(app: &tauri::AppHandle) -> Result<(), String> {
     const W: f64 = 200.0;
     const H: f64 = 320.0; // 268 + 出站模式按钮组（规则/全局/直连）
     // 期望位：菜单右边距球左边 10px，底边对齐球底，clamp 进球所在工作区
     let position = |app: &tauri::AppHandle| -> Option<tauri::PhysicalPosition<i32>> {
-        let (bx, by, bh, area) = ball_anchor(app)?;
-        let (x, y) = clamp_popup(bx - W - 10.0, by + bh - H, W, H, area);
+        let (bx, by, bh, area, scale) = ball_anchor(app)?;
+        let (x, y) = clamp_popup(bx - W * scale - 10.0, by + bh - H * scale, W * scale, H * scale, area);
         Some(tauri::PhysicalPosition::new(x, y))
     };
     if let Some(w) = app.get_webview_window("float-menu") {
@@ -2756,7 +2818,7 @@ fn float_open_menu(app: tauri::AppHandle) -> Result<(), String> {
         return Ok(());
     }
     let window = tauri::WebviewWindowBuilder::new(
-        &app,
+        app,
         "float-menu",
         tauri::WebviewUrl::App("float-menu.html".into()),
     )
@@ -2841,6 +2903,7 @@ pub fn run() {
             set_float_ball,
             float_ball_notify,
             float_open_menu,
+            float_bubble_take,
             set_notify_float_ball,
             set_reduce_effects,
             run_doctor,
