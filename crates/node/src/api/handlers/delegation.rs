@@ -62,6 +62,10 @@ pub struct IssueRequest {
     /// advertised routes when absent (required once any referenced group is e2e_required)
     #[serde(default)]
     pub hint_map: Vec<HintEntry>,
+    /// Consumer mode: `dedicated` (专线, default) or `split` (分流 — the rule vocabulary is
+    /// delivered E2E-sealed on pull; requires at least one e2e_required group)
+    #[serde(default)]
+    pub mode: String,
 }
 
 #[derive(Deserialize)]
@@ -89,6 +93,10 @@ pub async fn issue_token(
     }
     if req.regs.iter().filter(|r| r.is_primary).count() != 1 {
         return err(StatusCode::BAD_REQUEST, codes::VALIDATION_FAILED, "容灾集合必须恰好一个主入口");
+    }
+    let mode = if req.mode.is_empty() { "dedicated" } else { req.mode.as_str() };
+    if mode != "dedicated" && mode != "split" {
+        return err(StatusCode::BAD_REQUEST, codes::VALIDATION_FAILED, "接入模式只能是 dedicated（专线）或 split（分流）");
     }
 
     // auto-derive the E2E hint from the primary connector's effective advertise set (manual
@@ -141,6 +149,15 @@ pub async fn issue_token(
         }];
     }
 
+    // split tier rides the E2E config channel — it requires at least one e2e_required group
+    if mode == "split" && hint_map.is_empty() {
+        return err(
+            StatusCode::BAD_REQUEST,
+            codes::VALIDATION_FAILED,
+            "分流档要求引用组含端到端加密组（规则经 E2E 通道下发）",
+        );
+    }
+
     let regs: Vec<(String, bool)> = req
         .regs
         .iter()
@@ -148,9 +165,10 @@ pub async fn issue_token(
         .collect();
     let label = req.label.trim().to_string();
     let group_ids = req.group_ids.clone();
+    let mode_owned = mode.to_string();
     let issued = state
         .db_call(move |db| {
-            delegation::issue_token(db, &label, &group_ids, &hint_map, &regs)
+            delegation::issue_token(db, &label, &group_ids, &hint_map, &regs, &mode_owned)
                 .map_err(|e| agile_net_core::error::Error::Other(e.to_string()))
         })
         .await;
@@ -231,7 +249,8 @@ fn build_share_url(
     let hint_map: Vec<agile_net_core::proto::message::HintEntry> =
         serde_json::from_str(&rec.hint_map).unwrap_or_default();
     let ehint = hint_map.first().map(|h| h.hint.as_str());
-    agile_net_core::link::build_delegate_url(&primary, &rec.label, plaintext, &entries, ehint)
+    let emode = (rec.mode == "split").then_some("split");
+    agile_net_core::link::build_delegate_url(&primary, &rec.label, plaintext, &entries, ehint, emode)
 }
 
 /// Render one token for the API (group names resolved, per-upstream state folded in).
@@ -277,6 +296,7 @@ fn token_json(
         "token_prefix": rec.token_prefix,
         "label": rec.label,
         "groups": groups,
+        "mode": rec.mode,
         "hint_map": serde_json::from_str::<Vec<HintEntry>>(&rec.hint_map).unwrap_or_default(),
         "regs": regs,
         "created_at": rec.created_at,

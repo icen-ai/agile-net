@@ -41,6 +41,11 @@ pub const CHAN_SALT_LEN: usize = 16;
 /// Max plaintext per AEAD record (keeps sealed blocks well under the mux 256KB data cap).
 pub const MAX_BLOCK: usize = 16 * 1024;
 
+/// Split-tier config fetch (federation P3): a delegated consumer opens this reserved target
+/// (E2E-sealed, port 0) to pull its token's effective rule vocabulary; the issuer answers
+/// locally (never dialed, never ACL-gated — the working key is the authorization).
+pub const DELEGATION_CONFIG_TARGET: &str = "__anet_delegation_config__";
+
 const NONCE_LEN: usize = 12;
 const TAG_LEN: usize = 16;
 const LEN_PREFIX: usize = 4;

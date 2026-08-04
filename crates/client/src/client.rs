@@ -58,6 +58,9 @@ pub struct ConnectParams {
     /// Federation P3: E2E routing hint (every Open sealed when set; empty/None = transparent)
     #[serde(default)]
     pub ehint: Option<String>,
+    /// Federation P3 consumer mode (`split` = E2E rule delivery; None = dedicated 专线)
+    #[serde(default)]
+    pub emode: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -753,7 +756,7 @@ impl AgileNetClient {
             manage_hosts: params.manage_hosts,
             params: params.clone(),
             access_token: Arc::new(ArcSwap::from_pointee(String::new())),
-            delegated: Some(opener),
+            delegated: Some(opener.clone()),
         };
         self.inner.nodes.insert(node_id.clone(), handle);
         self.inner
@@ -762,6 +765,10 @@ impl AgileNetClient {
             .unwrap_or_else(|e| e.into_inner())
             .push(node_id.clone());
         self.inner.rebuild_merged_router();
+
+        // split tier (federation P3): pull the token's rule vocabulary over the E2E config
+        // channel and swap routes from catch-all to selective (refetched after every failover)
+        maybe_spawn_split_fetch(&self.inner, &node_id, &params, &opener);
 
         info!(node = %node_id, "delegated credential connected");
         Ok(state)
@@ -1551,6 +1558,8 @@ fn spawn_delegated_supervisor(
                     set_delegated_status(&inner, &node_id, NodeStatus::Connected, Some(&entry));
                     info!(node = %node_id, entry = %entry, "delegated entry connected");
                     live = Some(t);
+                    // split tier: refetch the rule vocabulary on the fresh session
+                    maybe_spawn_split_fetch(&inner, &node_id, &params, &opener);
                 }
                 Err(e) => {
                     debug!(node = %node_id, entry = %entry, error = %e, "delegated entry connect failed");
@@ -1582,6 +1591,71 @@ fn set_delegated_status(
         if let Some(entry) = entry {
             n.state.current_entry = entry.to_string();
         }
+    }
+}
+
+/// Split-tier rule delivery (federation P3): when the credential carries `emode=split` and an
+/// E2E hint, pull the token's effective rule vocabulary over the E2E config channel (reserved
+/// target, answered by the issuer) and swap the node routes from catch-all to selective.
+/// Detached short task; any failure keeps the catch-all set (dedicated-tier behavior).
+fn maybe_spawn_split_fetch(
+    inner: &Arc<ClientInner>,
+    node_id: &str,
+    params: &ConnectParams,
+    opener: &Arc<DelegatedOpener>,
+) {
+    if params.emode.as_deref() != Some("split") || params.ehint.is_none() {
+        return;
+    }
+    let inner = inner.clone();
+    let node_id = node_id.to_string();
+    let opener = opener.clone();
+    tokio::spawn(async move {
+        match fetch_split_rules(&opener).await {
+            Ok(rules) if !rules.is_empty() => {
+                let n = rules.len();
+                if let Some(mut h) = inner.nodes.get_mut(&node_id) {
+                    h.state.rules = rules;
+                }
+                inner.rebuild_merged_router();
+                info!(node = %node_id, count = n, "split-tier rules applied");
+            }
+            Ok(_) => warn!(node = %node_id, "split-tier config empty — keeping catch-all routes"),
+            Err(e) => warn!(node = %node_id, error = %e, "split-tier config fetch failed — keeping catch-all routes"),
+        }
+    });
+}
+
+/// One config-channel roundtrip: open the reserved target (the opener seals it like any E2E
+/// Open), read the issuer's JSON answer to EOF, map rule strings to client rules.
+async fn fetch_split_rules(opener: &Arc<DelegatedOpener>) -> Result<Vec<ClientRule>> {
+    let fut = async {
+        let mut ch = opener
+            .open("", agile_net_core::relay::e2e::DELEGATION_CONFIG_TARGET, 0)
+            .await
+            .map_err(|e| anyhow!(e.to_string()))?;
+        let mut buf = Vec::new();
+        tokio::io::AsyncReadExt::read_to_end(&mut ch, &mut buf)
+            .await
+            .map_err(|e| anyhow!(e.to_string()))?;
+        let v: serde_json::Value = serde_json::from_slice(&buf)?;
+        let rules = v["rules"]
+            .as_array()
+            .ok_or_else(|| anyhow!("config answer missing the rules array"))?;
+        Ok(rules
+            .iter()
+            .filter_map(|r| r.as_str())
+            .map(|value| ClientRule {
+                id: String::new(),
+                rule_type: if value.contains('/') { "ip-cidr" } else { "host" }.into(),
+                value: value.to_string(),
+                resolve: false,
+            })
+            .collect::<Vec<_>>())
+    };
+    match tokio::time::timeout(std::time::Duration::from_secs(8), fut).await {
+        Ok(r) => r,
+        Err(_) => Err(anyhow!("config fetch timed out")),
     }
 }
 

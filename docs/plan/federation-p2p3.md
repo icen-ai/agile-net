@@ -297,3 +297,12 @@ ALTER TABLE "group" ADD COLUMN e2e_required INTEGER NOT NULL DEFAULT 0;
     再发布路由，既有）；语义即「上送组 = 资源邀约 = 路由声明」。上送组变更本就走重连重推，
     advertise 随之热更新，无新帧无新槽位。签发侧 hint 派生走同一并集
     （`connectors::effective_advertise_of`），保证 hint 恒落在对方路由表实际承载的集合内。
+13. **消费接入双档：专线（dedicated）/ 分流（split，2026-08-05 补充）**：偏差 6 的全量路由
+    模型正名「专线」——规则对委托方不可见、整机流量进隧道。新增分流档：链接携带
+    `emode=split`（缺省 = 专线，旧客户端忽略优雅降级为专线），A 侧连上后经 **E2E 配置通道**
+    （保留目标 `__anet_delegation_config__`，blob 内寻址、B 全程只见 hint）拉取令牌有效
+    词表（含不上送的 R1 细规则——E2E 密封下发，B 依旧盲），路由从全量换为词表；拉取失败
+    回退全量（专线行为恒安全）。C 侧 `DelegationHooks::delegation_rules(kid)` 本地应答
+    （有效密钥即授权，应答内容恒为令牌自身词表，无越权面）；C 改规则后 A 重连/故障切换即
+    刷新。分流档要求引用组含 e2e_required 组（签发 400 拦截）；DB v11
+    `delegated_token.mode` 落库（徽标展示与链接重建）。

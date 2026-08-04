@@ -90,6 +90,9 @@ function parse(url) {
       entryFps: entries.length ? entryFps : [p.fp || ''],
       // federation P3: E2E routing hint (delegated links; the client seals every Open when set)
       ehint: p.ehint || '',
+      // federation P3 consumer tier: 'split' = E2E rule delivery (route selectively);
+      // absent = dedicated 专线 (whole machine captured)
+      emode: p.emode || '',
     };
   }
   const sv = resolveServer(p, 54430);
@@ -130,6 +133,7 @@ function buildConnect(f) {
     params.push(['entryfp', entries.map(e => e.fp || '').join(',')]);
   }
   if (f.ehint) params.push(['ehint', f.ehint]);
+  if (f.emode === 'split') params.push(['emode', 'split']);
   return 'anet://connect?' + qs(params);
 }
 

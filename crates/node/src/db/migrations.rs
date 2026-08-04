@@ -261,6 +261,17 @@ const MIGRATIONS: &[(u32, &str, &str)] = &[
     ALTER TABLE "group" ADD COLUMN e2e_required INTEGER NOT NULL DEFAULT 0;
     "#,
     ),
+    (
+        11,
+        "delegated_token_mode",
+        r#"
+    -- Consumer mode of a delegated token (federation P3): 'dedicated' (专线 — the consumer's
+    -- whole machine is captured, the rule vocabulary stays hidden) or 'split' (分流 — the
+    -- vocabulary is delivered E2E-sealed on pull, the consumer routes selectively).
+    -- Display + link-rebuild metadata; enforcement paths are unchanged.
+    ALTER TABLE delegated_token ADD COLUMN mode TEXT NOT NULL DEFAULT 'dedicated';
+    "#,
+    ),
 ];
 
 impl Database {
@@ -603,8 +614,9 @@ mod tests {
             db.set_group_e2e_required("g-old", true).expect("free group can be marked");
 
             let tok = db
-                .create_delegated_token(&"ab".repeat(32), "psk_test01", "legacy-issue", "[]", "[]", "v1:AAAA:CCCC")
+                .create_delegated_token(&"ab".repeat(32), "psk_test01", "legacy-issue", "[]", "[]", "v1:AAAA:CCCC", "dedicated")
                 .expect("create delegated token");
+            assert_eq!(tok.mode, "dedicated");
             db.set_delegated_token_regs(&tok.id, &[("conn-old".to_string(), true)])
                 .expect("set regs on old connector");
             let regs = db.delegated_regs_of(&tok.id).unwrap();

@@ -1398,12 +1398,17 @@ async function loadDelegation() {
       const groups = (t.groups || []).map(g =>
         '<span class="badge b-info">' + esc(g.name) + '</span>' + (g.e2e_required ? ' <span class="badge b-warn">E2E</span>' : '')
       ).join(' ');
+      // tier badge: only meaningful on E2E tokens (split = rule delivery, dedicated = 专线)
+      const anyE2e = (t.groups || []).some(g => g.e2e_required);
+      const tierBadge = anyE2e
+        ? ' <span class="badge ' + (t.mode === 'split' ? 'b-info' : 'b-off') + '">' + (t.mode === 'split' ? T('deleg.modeSplit') : T('deleg.modeDedicated')) + '</span>'
+        : '';
       const regs = (t.regs || []).map(r =>
         '<div style="display:flex;align-items:center;gap:6px;padding:2px 0">' +
           (r.is_primary ? '<span class="badge b-ok">' + T('deleg.primaryBadge') + '</span>' : '') +
           '<span>' + esc(r.connector_name) + '</span>' + delegStateBadge(r.state) + '</div>'
       ).join('');
-      return '<tr><td><b>' + esc(t.label || t.token_prefix) + '</b><div class="mono" style="color:var(--dim2)">' + esc(t.token_prefix) + '</div></td>' +
+      return '<tr><td><b>' + esc(t.label || t.token_prefix) + '</b>' + tierBadge + '<div class="mono" style="color:var(--dim2)">' + esc(t.token_prefix) + '</div></td>' +
         '<td>' + (groups || '-') + '</td>' +
         '<td>' + (regs || '-') + '</td>' +
         '<td style="color:var(--dim);white-space:nowrap">' + esc((t.created_at || '').replace('T', ' ').replace(/\..*$/, '')) + '</td>' +
@@ -1452,6 +1457,12 @@ async function openIssueDelegation() {
     '<div id="di-primary" style="padding:2px 4px"></div>' +
     '<label style="margin-top:10px">' + T('term.group') + ' ' + ahelp(T('deleg.groupsHelp')) + '</label>' +
     '<div class="rule-check" style="max-height:130px">' + groupRows + '</div>' +
+    '<div id="di-mode-wrap" style="display:none">' +
+      '<label style="margin-top:10px">' + T('deleg.mode') + ' ' + ahelp(T('deleg.modeHelp')) + '</label>' +
+      '<div style="padding:2px 4px">' +
+        '<label class="chk" style="display:inline-flex;align-items:center;gap:5px;margin-right:14px"><input type="radio" name="di-mode" value="dedicated" checked> ' + T('deleg.modeDedicated') + '</label>' +
+        '<label class="chk" style="display:inline-flex;align-items:center;gap:5px"><input type="radio" name="di-mode" value="split"> ' + T('deleg.modeSplit') + '</label>' +
+      '</div></div>' +
     '<label style="margin-top:10px">' + T('common.remark') + '</label><input id="di-label" style="width:100%" placeholder="' + T('deleg.labelPh') + '">',
     [
       {label: T('common.cancel'), kind: 'ghost', fn: closeModal},
@@ -1461,11 +1472,13 @@ async function openIssueDelegation() {
         if (!targets.length) { toast(T('deleg.needTargets'), 'err'); return; }
         if (!groupIds.length) { toast(T('deleg.needGroups'), 'err'); return; }
         const primary = $('di-primary').dataset.value || targets[0];
+        const mode = (document.querySelector('input[name="di-mode"]:checked') || {}).value || 'dedicated';
         try {
           const d = await api('POST', '/api/v1/admin/delegation/tokens', {
             label: $('di-label').value.trim(),
             group_ids: groupIds,
             regs: targets.map(id => ({ connector_id: id, is_primary: id === primary })),
+            mode,
           });
           closeModal();
           openModal(T('deleg.issuedTitle'), shareCardHtml([]), []);
@@ -1493,6 +1506,15 @@ async function openIssueDelegation() {
     if (e.target && e.target.value) primaryBox.dataset.value = e.target.value;
   });
   syncPrimary();
+
+  // the access-mode choice only exists when an E2E group is checked (split rides the E2E channel)
+  const e2eIds = new Set((S.groups || []).filter(g => g.e2e_required).map(g => g.id));
+  function syncMode() {
+    const anyE2e = [...document.querySelectorAll('.di-group:checked')].some(c => e2eIds.has(c.value));
+    $('di-mode-wrap').style.display = anyE2e ? '' : 'none';
+  }
+  document.querySelectorAll('.di-group').forEach(c => c.addEventListener('change', syncMode));
+  syncMode();
 }
 function connectorFormHtml(c) {
   c = c || {};

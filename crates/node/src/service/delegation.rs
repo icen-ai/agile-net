@@ -19,9 +19,13 @@ pub fn issue_token(
     group_ids: &[String],
     hint_map: &[HintEntry],
     regs: &[(String, bool)],
+    mode: &str,
 ) -> Result<(DelegatedTokenRecord, String)> {
     if label.len() > 128 {
         bail!("备注过长（≤128 字符）");
+    }
+    if mode != "dedicated" && mode != "split" {
+        bail!("未知的接入模式: {mode}");
     }
     if regs.is_empty() {
         bail!("容灾集合不能为空（至少选择一个扇出上游）");
@@ -57,6 +61,7 @@ pub fn issue_token(
         &groups_json,
         &hint_json,
         &e2e_key_enc,
+        mode,
     )?;
     db.set_delegated_token_regs(&rec.id, regs)?;
     let rec = db.get_delegated_token(&rec.id)?.expect("just created");
@@ -139,6 +144,8 @@ pub fn e2e_key_of(db: &Database, rec: &DelegatedTokenRecord) -> Result<[u8; 32]>
 struct GroupEntry {
     /// Compiled rule set (route hit = allow)
     router: std::sync::Arc<agile_net_core::proxy::router::ProxyRouter>,
+    /// Raw rule strings (the split-tier delivery vocabulary)
+    rules: Vec<String>,
     e2e_required: bool,
 }
 
@@ -208,6 +215,7 @@ impl DelegationEngine {
                 g.name,
                 std::sync::Arc::new(GroupEntry {
                     router: agile_net_core::relay::build_acl_router(&rules),
+                    rules,
                     e2e_required: g.e2e_required,
                 }),
             );
@@ -260,6 +268,23 @@ impl agile_net_core::relay::DelegationHooks for DelegationEngine {
         }
         Ok(Some((payload, cipher)))
     }
+
+    fn delegation_rules(&self, kid: &str) -> Option<Vec<String>> {
+        let keys = self.keys.load();
+        let entry = keys.get(kid)?;
+        let groups = self.groups.load();
+        let mut out: Vec<String> = Vec::new();
+        for name in &entry.groups {
+            if let Some(g) = groups.get(name) {
+                for r in &g.rules {
+                    if !out.contains(r) {
+                        out.push(r.clone());
+                    }
+                }
+            }
+        }
+        Some(out)
+    }
 }
 
 #[cfg(test)]
@@ -282,7 +307,7 @@ mod tests {
         let gid = mk_group(&db, "git");
         let cid = mk_connector(&db, "up-1");
 
-        let (rec, plaintext) = issue_token(&db, "alice", std::slice::from_ref(&gid), &[], &[(cid.clone(), true)]).unwrap();
+        let (rec, plaintext) = issue_token(&db, "alice", std::slice::from_ref(&gid), &[], &[(cid.clone(), true)], "dedicated").unwrap();
         assert!(plaintext.starts_with("psk_"));
         assert_eq!(plaintext.len(), 4 + 48);
         assert_eq!(rec.token_prefix, plaintext[..8]);
@@ -305,15 +330,39 @@ mod tests {
         let cid = mk_connector(&db, "up-1");
 
         // empty disaster set
-        assert!(issue_token(&db, "a", &[gid.clone()], &[], &[]).is_err());
+        assert!(issue_token(&db, "a", &[gid.clone()], &[], &[], "dedicated").is_err());
         // no primary entry
-        assert!(issue_token(&db, "a", &[gid.clone()], &[], &[(cid.clone(), false)]).is_err());
+        assert!(issue_token(&db, "a", &[gid.clone()], &[], &[(cid.clone(), false)], "dedicated").is_err());
         // missing group
-        assert!(issue_token(&db, "a", &["no-such-group".into()], &[], &[(cid.clone(), true)]).is_err());
+        assert!(issue_token(&db, "a", &["no-such-group".into()], &[], &[(cid.clone(), true)], "dedicated").is_err());
         // missing connector
-        assert!(issue_token(&db, "a", &[gid.clone()], &[], &[("no-such-conn".into(), true)]).is_err());
+        assert!(issue_token(&db, "a", &[gid.clone()], &[], &[("no-such-conn".into(), true)], "dedicated").is_err());
         // oversized label
-        assert!(issue_token(&db, &"x".repeat(200), &[gid], &[], &[(cid, true)]).is_err());
+        assert!(issue_token(&db, &"x".repeat(200), &[gid], &[], &[(cid, true)], "dedicated").is_err());
+    }
+
+    #[test]
+    fn engine_delegation_rules_unions_token_vocabulary() {
+        let db = Database::in_memory().unwrap();
+        let g1 = mk_group(&db, "git");
+        let g2 = mk_group(&db, "ops");
+        let r1 = db.create_rule("ip-cidr", "10.12.0.0/16", false, "").unwrap().id;
+        let r2 = db.create_rule("host", "*.internal", false, "").unwrap().id;
+        db.set_group_rules(&g1, &[r1.clone(), r2]).unwrap();
+        db.set_group_rules(&g2, &[r1]).unwrap(); // same value bound to both groups -> dedup
+        let cid = mk_connector(&db, "up-1");
+        let (rec, _) = issue_token(&db, "alice", &[g1, g2], &[], &[(cid, true)], "dedicated").unwrap();
+
+        let engine = DelegationEngine::new();
+        engine.refresh_keys(&db);
+        engine.refresh_groups(&db);
+        use agile_net_core::relay::DelegationHooks;
+        let kid = agile_net_core::relay::e2e::kid_of(&rec.token_hash).to_string();
+        let rules = engine.delegation_rules(&kid).expect("known kid");
+        assert!(rules.contains(&"10.12.0.0/16".to_string()));
+        assert!(rules.contains(&"*.internal".to_string()));
+        assert_eq!(rules.len(), 2, "values deduped: {rules:?}");
+        assert!(engine.delegation_rules("deadbeef").is_none());
     }
 
     #[test]
@@ -322,7 +371,7 @@ mod tests {
         let g1 = mk_group(&db, "git");
         let g2 = mk_group(&db, "ops");
         let cid = mk_connector(&db, "up-1");
-        let (rec, _) = issue_token(&db, "alice", &[g1.clone(), g2.clone()], &[], &[(cid, true)]).unwrap();
+        let (rec, _) = issue_token(&db, "alice", &[g1.clone(), g2.clone()], &[], &[(cid, true)], "dedicated").unwrap();
 
         let msg = build_register_msg(&db, &rec);
         let CtrlMessage::TokenRegister { token_hash, label, groups, hint_map } = msg else {
@@ -347,7 +396,7 @@ mod tests {
         let db = Database::in_memory().unwrap();
         let gid = mk_group(&db, "git");
         let cid = mk_connector(&db, "up-1");
-        let (rec, _) = issue_token(&db, "alice", &[gid], &[], &[(cid, true)]).unwrap();
+        let (rec, _) = issue_token(&db, "alice", &[gid], &[], &[(cid, true)], "dedicated").unwrap();
 
         let revoked = revoke_token(&db, &rec.id).unwrap().expect("existed");
         assert_eq!(revoked.token_hash, rec.token_hash);
@@ -409,7 +458,7 @@ mod tests {
         let db = Database::in_memory().unwrap();
         let gid = mk_group(&db, "db-prod");
         let cid = mk_connector(&db, "up-1");
-        let (rec, plaintext) = issue_token(&db, "alice", &[gid], &[], &[(cid, true)]).unwrap();
+        let (rec, plaintext) = issue_token(&db, "alice", &[gid], &[], &[(cid, true)], "dedicated").unwrap();
 
         let engine = DelegationEngine::new();
         engine.refresh_keys(&db);

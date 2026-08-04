@@ -30,6 +30,7 @@
         "token_prefix": "psk_xxxx",
         "label": "alice 的笔记本",
         "groups": [{ "id": "uuid", "name": "git", "e2e_required": false }],
+        "mode": "dedicated",
         "hint_map": [{ "hint": "relay.internal", "groups": ["db-prod"] }],
         "regs": [
           {
@@ -66,7 +67,8 @@
     { "connector_id": "uuid", "is_primary": true },
     { "connector_id": "uuid", "is_primary": false }
   ],
-  "hint_map": []
+  "hint_map": [],
+  "mode": "split"
 }
 ```
 
@@ -77,6 +79,10 @@
   advertise 集**（手工 advertise ∪ 上送组规则，与上游路由表实际承载一致）推导单条路由词
   （CIDR → 网络号+1，`*.suffix` → `relay<suffix>`，具体主机 → 自身）；
   有效集为空时报错（无法生成可路由的词——请先为该扇出配置上送组或路由宣告）。
+- `mode`：可空，默认 `dedicated`（**专线**——委托方整机流量进隧道，词表对委托方不可见）。
+  `split`（**分流**）要求引用组含 `e2e_required` 组：链接携带 `emode=split`，委托方连上后
+  经 E2E 配置通道（保留目标 `__anet_delegation_config__`，中继只见路由词）拉取令牌有效
+  词表并改为选择性路由，拉取失败回退专线行为；签发端改规则后委托方重连即刷新。
 
 ### 响应 201
 

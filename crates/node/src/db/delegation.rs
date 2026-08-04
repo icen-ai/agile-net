@@ -13,7 +13,9 @@ use rusqlite::params;
 
 impl Database {
     /// Insert a delegated token (hash + prefix + encrypted E2E key prepared by the caller).
-    /// `groups_json` = JSON array of local group IDs; `hint_map_json` = JSON array of {hint, groups}.
+    /// `groups_json` = JSON array of local group IDs; `hint_map_json` = JSON array of {hint, groups};
+    /// `mode` = consumer mode (`dedicated` 专线 / `split` 分流).
+    #[allow(clippy::too_many_arguments)]
     pub fn create_delegated_token(
         &self,
         token_hash: &str,
@@ -22,14 +24,15 @@ impl Database {
         groups_json: &str,
         hint_map_json: &str,
         e2e_key_enc: &str,
+        mode: &str,
     ) -> Result<DelegatedTokenRecord> {
         let conn = self.conn();
         let id = uuid::Uuid::new_v4().to_string();
         let now = now_rfc3339();
         conn.execute(
-            "INSERT INTO delegated_token (id, token_hash, token_prefix, label, groups, hint_map, e2e_key_enc, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![id, token_hash, token_prefix, label, groups_json, hint_map_json, e2e_key_enc, now],
+            "INSERT INTO delegated_token (id, token_hash, token_prefix, label, groups, hint_map, e2e_key_enc, mode, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![id, token_hash, token_prefix, label, groups_json, hint_map_json, e2e_key_enc, mode, now],
         )
         .map_err(db_err)?;
         Ok(DelegatedTokenRecord {
@@ -40,6 +43,7 @@ impl Database {
             groups: groups_json.to_string(),
             hint_map: hint_map_json.to_string(),
             e2e_key_enc: e2e_key_enc.to_string(),
+            mode: mode.to_string(),
             created_at: now,
             regs: Vec::new(),
         })
@@ -50,7 +54,7 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn
             .prepare(
-                "SELECT id, token_hash, token_prefix, label, groups, hint_map, e2e_key_enc, created_at
+                "SELECT id, token_hash, token_prefix, label, groups, hint_map, e2e_key_enc, mode, created_at
                  FROM delegated_token ORDER BY created_at DESC",
             )
             .map_err(db_err)?;
@@ -73,7 +77,7 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn
             .prepare(
-                "SELECT id, token_hash, token_prefix, label, groups, hint_map, e2e_key_enc, created_at
+                "SELECT id, token_hash, token_prefix, label, groups, hint_map, e2e_key_enc, mode, created_at
                  FROM delegated_token WHERE id = ?1",
             )
             .map_err(db_err)?;
@@ -147,7 +151,7 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn
             .prepare(
-                "SELECT t.id, t.token_hash, t.token_prefix, t.label, t.groups, t.hint_map, t.e2e_key_enc, t.created_at
+                "SELECT t.id, t.token_hash, t.token_prefix, t.label, t.groups, t.hint_map, t.e2e_key_enc, t.mode, t.created_at
                  FROM delegated_token t
                  JOIN delegated_token_reg r ON r.token_id = t.id
                  WHERE r.connector_id = ?1
@@ -172,7 +176,7 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn
             .prepare(
-                "SELECT id, token_hash, token_prefix, label, groups, hint_map, e2e_key_enc, created_at
+                "SELECT id, token_hash, token_prefix, label, groups, hint_map, e2e_key_enc, mode, created_at
                  FROM delegated_token WHERE substr(token_hash, 1, 8) = ?1",
             )
             .map_err(db_err)?;
@@ -194,7 +198,8 @@ fn map_delegated_row(r: &rusqlite::Row) -> rusqlite::Result<DelegatedTokenRecord
         groups: r.get(4)?,
         hint_map: r.get(5)?,
         e2e_key_enc: r.get(6)?,
-        created_at: r.get(7)?,
+        mode: r.get(7)?,
+        created_at: r.get(8)?,
         regs: Vec::new(),
     })
 }
@@ -210,7 +215,7 @@ mod tests {
     }
 
     fn mk_token(db: &Database, hash: &str, label: &str) -> DelegatedTokenRecord {
-        db.create_delegated_token(hash, "psk_test01", label, "[\"g1\",\"g2\"]", "[{\"hint\":\"*.internal\",\"groups\":[\"git\"]}]", "v1:AAAA:BBBB")
+        db.create_delegated_token(hash, "psk_test01", label, "[\"g1\",\"g2\"]", "[{\"hint\":\"*.internal\",\"groups\":[\"git\"]}]", "v1:AAAA:BBBB", "split")
             .expect("create delegated token")
     }
 
@@ -225,6 +230,7 @@ mod tests {
         assert_eq!(got.token_hash, "ab".repeat(32));
         assert_eq!(got.groups, "[\"g1\",\"g2\"]");
         assert_eq!(got.e2e_key_enc, "v1:AAAA:BBBB");
+        assert_eq!(got.mode, "split");
 
         let list = db.list_delegated_tokens().unwrap();
         assert_eq!(list.len(), 1);

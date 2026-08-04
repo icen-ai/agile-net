@@ -42,6 +42,9 @@ pub struct ParsedConnect {
     /// Federation P3: E2E routing hint
     #[serde(default)]
     pub ehint: Option<String>,
+    /// Federation P3 consumer mode (`split` = E2E rule delivery; None = dedicated 专线)
+    #[serde(default)]
+    pub emode: Option<String>,
 }
 
 /// Parse an `anet://connect?...` URL (legacy `agilenet://` accepted).
@@ -62,6 +65,7 @@ pub fn parse_connect_url(url: &str) -> std::result::Result<ParsedConnect, String
         entries: link.entries,
         entry_fps: link.entry_fps,
         ehint: link.ehint,
+        emode: link.emode,
     })
 }
 
@@ -113,6 +117,7 @@ mod tests {
             entries: Vec::new(),
             entry_fps: Vec::new(),
             ehint: None,
+            emode: None,
         };
         let url = connect_url_of(&c);
         assert!(url.starts_with("anet://connect?"));

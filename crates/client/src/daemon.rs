@@ -74,6 +74,7 @@ pub async fn run(config_path: &str) -> Result<()> {
             entries: Vec::new(),
             entry_fps: Vec::new(),
             ehint: None,
+            emode: None,
         };
         match client.connect(params).await {
             Ok(state) => {

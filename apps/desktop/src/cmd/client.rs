@@ -22,6 +22,7 @@ pub(crate) async fn connect_node(state: State<'_, AppState>, input: ConnectInput
         entries: input.entries.clone(),
         entry_fps: input.entry_fps.clone(),
         ehint: input.ehint.clone(),
+        emode: input.emode.clone(),
     };
     let node_state = state.client.connect(params).await.map_err(map_err)?;
 
@@ -40,6 +41,7 @@ pub(crate) async fn connect_node(state: State<'_, AppState>, input: ConnectInput
                         entries: input.entries,
                         entry_fps: input.entry_fps,
                         ehint: input.ehint,
+                        emode: input.emode,
                     },
                 )
                 .await;

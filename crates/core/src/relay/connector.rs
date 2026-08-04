@@ -66,6 +66,14 @@ pub trait DelegationHooks: Send + Sync {
     /// unwrap); Ok(None) = unknown kid (transit role — forward the envelope verbatim);
     /// Err = forged/corrupt envelope (reject the Open).
     fn e2e_unwrap(&self, e2e: &E2eOpen) -> Result<Option<(E2eOpenPayload, ChannelCipher)>>;
+
+    /// Split-tier rule delivery (federation P3): the effective rule vocabulary of the token the
+    /// kid belongs to — answered to a config-fetch open (reserved target, E2E-sealed) so the
+    /// consumer routes selectively instead of capturing the whole machine. None = unknown kid
+    /// or feature unsupported (default).
+    fn delegation_rules(&self, _kid: &str) -> Option<Vec<String>> {
+        None
+    }
 }
 
 impl From<u8> for ConnectionState {
@@ -635,6 +643,24 @@ impl RelayConnector {
             match &open_req.e2e {
                 Some(env) => match hooks.e2e_unwrap(env) {
                     Ok(Some((payload, cipher))) => {
+                        // split-tier rule delivery: a config-fetch open is answered locally
+                        // with the token's effective rule vocabulary — E2E-sealed like any
+                        // payload, never dialed; the working key is the authorization (the
+                        // rules are the token's own), so no group-ACL gate applies here
+                        if payload.target_addr == crate::relay::e2e::DELEGATION_CONFIG_TARGET {
+                            let rules = hooks.delegation_rules(&env.kid).unwrap_or_default();
+                            mux.send_frame(Frame::empty(FrameType::OpenOk, req.channel_id))
+                                .await?;
+                            let channel = mux.accept_channel(req.channel_id);
+                            let mut stream = E2eStream::new(channel, cipher);
+                            let body = serde_json::to_vec(&serde_json::json!({ "rules": rules }))
+                                .map_err(|e| Error::Protocol(e.to_string()))?;
+                            use tokio::io::AsyncWriteExt;
+                            let _ = stream.write_all(&body).await;
+                            let _ = stream.shutdown().await;
+                            mux.close_channel(req.channel_id);
+                            return Ok(());
+                        }
                         // endpoint role: the sealed group set is enforced against *local* rules
                         // (the relay never saw the target nor the fine-grained rules)
                         let target = format!("{}:{}", payload.target_addr, payload.target_port);

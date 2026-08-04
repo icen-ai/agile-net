@@ -236,10 +236,18 @@ pub struct DelegatedTokenRecord {
     /// E2E channel master key ciphertext (`v1:nonce_b64:ct_b64`; same mechanism as connector tokens)
     #[serde(skip_serializing, default)]
     pub e2e_key_enc: String,
+    /// Consumer mode: `dedicated` (专线, default) or `split` (分流 — E2E rule delivery)
+    #[serde(default = "default_delegated_mode")]
+    pub mode: String,
     pub created_at: String,
     /// Disaster-set registration rows (one per upstream connector)
     #[serde(default)]
     pub regs: Vec<DelegatedTokenReg>,
+}
+
+/// Default consumer mode of a delegated token (the 专线 tier).
+fn default_delegated_mode() -> String {
+    "dedicated".to_string()
 }
 
 /// Disaster-set registration row: one upstream connector of a delegated token.

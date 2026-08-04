@@ -23,7 +23,11 @@ Admin UI → **Fan-out** → **Delegation** tab → **Issue Delegation**:
    client rotates through in check order.
 3. **Groups**: local groups the token may reach (multi-select). Groups with an `E2E` badge
    enforce end-to-end encryption.
-4. Add a label and generate — you get a full link (or a downloadable `.anet` credential
+4. **Access mode** (shown once an E2E group is checked): **Dedicated** — the consumer routes
+   its whole machine into the tunnel and never sees the rule vocabulary (dedicated-line use);
+   **Split** — the vocabulary is delivered E2E-sealed and only authorized targets enter the
+   tunnel, leaving daily traffic untouched. Either way the relay sees only the coarse hint.
+5. Add a label and generate — you get a full link (or a downloadable `.anet` credential
    file, optionally PIN-encrypted).
 
 Route advertisement needs no hand maintenance: a fan-out's pushed group rules are unioned

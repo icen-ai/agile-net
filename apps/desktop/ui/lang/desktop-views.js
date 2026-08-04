@@ -64,6 +64,8 @@ AgI18n.register({
   'views.reconnect': { zh: '重连', en: 'Reconnect' },
   'views.delegated-badge': { zh: '委托', en: 'Delegated' },
   'views.delegated-set': { zh: '容灾 {n} 入口', en: '{n} failover entries' },
+  'views.tier-dedicated': { zh: '专线', en: 'Dedicated' },
+  'views.tier-split': { zh: '分流', en: 'Split' },
   'views.connect': { zh: '连接', en: 'Connect' },
   'views.manage': { zh: '管理', en: 'Manage' },
   'views.unsaved': { zh: '未保存', en: 'Unsaved' },

@@ -34,6 +34,10 @@ pub struct Credential {
     /// Federation P3: E2E routing hint (every Open is sealed when set)
     #[serde(default)]
     pub ehint: Option<String>,
+    /// Federation P3 consumer mode: `split` = pull the rule vocabulary (E2E) and route
+    /// selectively; None = `dedicated` (专线 — whole machine captured)
+    #[serde(default)]
+    pub emode: Option<String>,
 }
 
 /// Service name in the OS keyring (shared by Windows Credential Manager / macOS Keychain).
@@ -257,6 +261,7 @@ mod tests {
             entries: Vec::new(),
             entry_fps: Vec::new(),
             ehint: None,
+            emode: None,
         }
     }
 
