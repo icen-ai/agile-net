@@ -163,16 +163,24 @@ ALTER TABLE "group" ADD COLUMN e2e_required INTEGER NOT NULL DEFAULT 0;
 
 - `e2e_key = HKDF-SHA256(ikm=token_plaintext, salt="anet/e2e/v1", info="")`（32B）。
 - Open 扩展：`E2eOpen { kid: String(token_hash 前 8 hex), hint: String, blob: String(base64) }`；
-  `blob = AES-256-GCM(key, nonce=0, json{target_addr, target_port, groups})`。
+  `blob = AES-256-GCM(e2e_key, nonce=0, json{target_addr, target_port, groups, chan_salt(16B 随机)})`。
   `kid` 供 C 在已签发令牌集中查密钥（B 只见哈希前缀，本就知道全哈希）。
-- 数据面：该信道后续 Data chunk 逐块 AEAD（nonce = `channel_id(4B) ‖ chunk_seq(8B)` 双向各自计数）。
+- **信道子密钥**：`chan_key = HKDF-SHA256(ikm=e2e_key, salt=chan_salt, info="chan")`——
+  chan_salt 由 A 逐信道随机生成（blob 内携带），**跨会话/跨信道 nonce 零重用**
+  （裸 `channel_id‖seq` 在重连后会撞 nonce，AES-GCM nonce 重用是灾难性的，此为硬性纪律①）。
+- 数据面：该信道后续 Data chunk 逐块 AEAD（chan_key，nonce = `direction(1B) ‖ chunk_seq(8B)`）。
+- **接收端严格序列校验**：乱序/重复 chunk 即弃即断（硬性纪律②——B 无法伪造新密文，
+  但可重放旧块造成 DB 级重复突变，收端必须 fail closed）。
 - 实现位置：客户端隧道 opener（e2e 包装）与 C 侧 connector `handle_open`（e2e 解包）之间新增
   `relay::e2e` 编解码层；mux/帧格式零改动（全部承载于 Open/Data payload）。
 
-### 4.2 B 侧盲转
+### 4.2 B 侧盲转与 C 侧 fail-close
 
 - E2E Open：B 校验会话令牌的 hint_map 覆盖 `hint`（B 代执法的词表边界，**只见粗规则**），
   按 hint 命中 advertised routes 转发给 C；blob 原样透传。B 对 E2E 会话只见「给 C」。
+- **C 侧 fail-close（硬性纪律③，堵配置降级）**：配置下发经 B 之手，B 可抹掉 e2e_required
+  标记诱使 A 明文直发；C 的 connector 对**命中本地 e2e_required 组规则的未加密 Open 一律拒绝**——
+  降级攻击退化为 DoS（可用性本是 B 的物理权力，容灾集合对冲），绝不退化为明文泄露。
 - 透明档与 E2E 并存：会话内逐 Open 决定（按目标命中的组是否 e2e_required）。
 
 ### 4.3 粗广告 + 本地细授权（R1 场景兑现）
@@ -197,6 +205,8 @@ ALTER TABLE "group" ADD COLUMN e2e_required INTEGER NOT NULL DEFAULT 0;
 `federation_p3_test.rs`：e2e_required 组挂委托令牌 → A 经 B 访问 R1（仅 C 本地规则）→
 可达；B 侧断言：转发记录只见 hint（无 R1 字样），B 代执法词表不含 R1；
 非 e2e 组目标保持透明档（B 代执法按上送规则生效）。
+**安全三纪律断言**：未加密 Open 命中 e2e_required 组 → C 拒绝（fail-close）；
+重放旧 chunk → 收端弃断（序列校验）；跨会话同 (channel,seq) 无 nonce 重用（子密钥盐隔离）。
 
 ---
 
@@ -205,9 +215,18 @@ ALTER TABLE "group" ADD COLUMN e2e_required INTEGER NOT NULL DEFAULT 0;
 - 委托令牌与 relay token 同强度（`psk_` + 48 位、哈希落库、明文仅签发时一次）；
   注册/吊销/认证失败沿用常量时间比较 + IP 限流 + 随机延迟（复用现有路径）。
 - B 的委托注册表是**易失状态**（内存）：无持久化泄露面；重启即清，C 重连重注册。
+- **E2E 三条硬性纪律**（详见 §4.1/§4.2，验收测试逐条覆盖）：
+  ① 每信道随机盐派生子密钥（跨会话 nonce 零重用）；
+  ② 接收端严格序列校验（乱序/重放即弃即断）；
+  ③ C 侧 fail-close（命中 e2e_required 组的未加密 Open 一律拒绝，堵 B 的配置降级）。
+- E2E 信道认证性：blob 只有 A/C 能解（密钥 = HKDF(令牌)），**解密成功即完成对信道来源的认证**，
+  无需额外签名。
 - 审计：C 侧 `delegation.issue/revoke`；B 侧 `delegation.register/revoke`（含 issuer）、
   `delegation.auth_fail`（按 IP 限流）、E2E 会话只记 hint，严禁记录 blob/明文/目标。
 - e2e_required 组挂载校验在组/账号/令牌/connector 四个写入口统一拦截（单点校验函数）。
+- 诚实天花板（文档化，不掩盖）：元数据/流量分析可见（非 Tor 目标）；
+  v1 无前向安全性（B 录流量 + 事后令牌泄露 → 历史可解，P3.5 Noise_NK 补齐）；
+  令牌即信任根（端点泄露 = 令牌能力全失，靠吊销 + PIN + 一次性 ticket 缓解）。
 
 ## 6. 实施切片（顺序；1–5 = 完整 P2，可独立交付）
 
