@@ -753,6 +753,26 @@ impl RelayListener {
             limiter,
         );
 
+        // same-identity re-auth kicks the stale session (tolerates restart flapping; the hijack
+        // boundary equals relay-token revocation — the token is the identity). The stale
+        // session's delegated registrations die with it (federation P2, session-scoped).
+        if let Some((_, old)) = self.peers.remove(&node_id) {
+            info!(node = %node_id, "duplicate node session: kicking the stale one");
+            old.mux.shutdown();
+            let stale: Vec<String> = self
+                .delegated
+                .iter()
+                .filter(|e| e.value().issuer == node_id)
+                .map(|e| e.key().clone())
+                .collect();
+            for hash in stale {
+                self.delegated.remove(&hash);
+                self.disconnect_client(&delegated_session_key(&hash));
+            }
+            let _ = self.events.send(PeerEvent::NodeDisconnected {
+                node_id: node_id.clone(),
+            });
+        }
         self.peers.insert(
             node_id.clone(),
             PeerSession {
@@ -808,20 +828,27 @@ impl RelayListener {
 
         let _ = reader_handle.await;
 
-        self.peers.remove(&node_id);
-        self.set_peer_routes(&node_id, Vec::new());
-        self.peer_groups.remove(&node_id);
-        // federation P2: delegated tokens die with their issuer session (revoke-by-disconnect);
-        // kick every delegated client session they had authenticated
-        let dead: Vec<String> = self
-            .delegated
-            .iter()
-            .filter(|e| e.value().issuer == node_id)
-            .map(|e| e.key().clone())
-            .collect();
-        for hash in dead {
-            self.delegated.remove(&hash);
-            self.disconnect_client(&delegated_session_key(&hash));
+        // cleanup ONLY if the registry still points at this session — a kicked stale session's
+        // exit path must not strip the fresh session's routes / pushed groups / registrations
+        if self
+            .peers
+            .remove_if(&node_id, |_, p| Arc::ptr_eq(&p.mux, &mux))
+            .is_some()
+        {
+            self.set_peer_routes(&node_id, Vec::new());
+            self.peer_groups.remove(&node_id);
+            // federation P2: delegated tokens die with their issuer session (revoke-by-disconnect);
+            // kick every delegated client session they had authenticated
+            let dead: Vec<String> = self
+                .delegated
+                .iter()
+                .filter(|e| e.value().issuer == node_id)
+                .map(|e| e.key().clone())
+                .collect();
+            for hash in dead {
+                self.delegated.remove(&hash);
+                self.disconnect_client(&delegated_session_key(&hash));
+            }
         }
         let _ = self.events.send(PeerEvent::NodeDisconnected {
             node_id: node_id.clone(),

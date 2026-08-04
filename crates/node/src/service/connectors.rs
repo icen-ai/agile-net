@@ -269,6 +269,23 @@ impl ConnectorManager {
         }
 
         let upstream = resolve_upstream(&rec.upstream_addr).await?;
+        // Same-upstream multi-links must not share one identity on the peer (same node_id
+        // sessions kick each other): force a `name#connector` suffix when another enabled
+        // connector points at the same upstream (federation P2 identity discipline)
+        let peer_node_id = {
+            let same_upstream = self
+                .db
+                .list_connectors()
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|c| c.enabled && c.id != rec.id && c.upstream_addr == rec.upstream_addr)
+                .count();
+            if same_upstream > 0 {
+                format!("{}#{}", self.node_id, rec.name)
+            } else {
+                self.node_id.clone()
+            }
+        };
         let mut tls_builder = TlsConfigBuilder::new().sni_hostname(&rec.sni_hostname);
         // cert verification priority matches core TlsConfigBuilder: fingerprint > pinned certs > ca > insecure
         if !rec.pinned_fingerprint.is_empty() {
@@ -293,7 +310,7 @@ impl ConnectorManager {
         let token = self.db.get_connector_secret(id)?;
         let mut connector = RelayConnector::with_tls_builder(
             upstream,
-            self.node_id.clone(),
+            peer_node_id,
             token,
             tls_builder,
         )?
@@ -544,6 +561,8 @@ impl ConnectorManager {
 
 /// ACL-denied audit task: subscribes to `PeerEvent::AclDenied`, at most one entry per peer+target per minute (anti-flood).
 /// `source` tags the origin (`connector=<name>` / `listener`); audit records only peer label and target — never sensitive values.
+/// Federation P2: delegated token register/revoke events on the relay are audited the same way
+/// (deduped per peer+label per minute; blob/plaintext/targets are never logged).
 pub(crate) fn spawn_acl_audit_task(
     db: Database,
     source: String,
@@ -552,27 +571,59 @@ pub(crate) fn spawn_acl_audit_task(
     tokio::spawn(async move {
         let mut seen: std::collections::HashMap<String, Instant> = std::collections::HashMap::new();
         loop {
+            // flood guard: one audit entry per dedup key per minute
+            let mut pass = |key: String| {
+                let now = Instant::now();
+                // lazy sweep: keep the dedup table from growing unbounded
+                if seen.len() > 4096 {
+                    seen.retain(|_, t| now.duration_since(*t) < Duration::from_secs(60));
+                }
+                if seen
+                    .get(&key)
+                    .is_some_and(|t| now.duration_since(*t) < Duration::from_secs(60))
+                {
+                    return false;
+                }
+                seen.insert(key, now);
+                true
+            };
             match rx.recv().await {
                 Ok(PeerEvent::AclDenied { peer_label, target }) => {
-                    let now = Instant::now();
-                    // lazy sweep: keep the dedup table from growing unbounded
-                    if seen.len() > 4096 {
-                        seen.retain(|_, t| now.duration_since(*t) < Duration::from_secs(60));
-                    }
-                    let key = format!("{peer_label}|{target}");
-                    if seen
-                        .get(&key)
-                        .is_some_and(|t| now.duration_since(*t) < Duration::from_secs(60))
-                    {
+                    if !pass(format!("{peer_label}|{target}")) {
                         continue;
                     }
-                    seen.insert(key, now);
                     let _ = db.record_audit_log(
                         None,
                         "system",
                         "peer.acl_denied",
                         Some(&peer_label),
                         Some(&format!("{source} target={target}")),
+                        None,
+                    );
+                }
+                Ok(PeerEvent::DelegationRegistered { node_id, label }) => {
+                    if !pass(format!("deleg-reg|{node_id}|{label}")) {
+                        continue;
+                    }
+                    let _ = db.record_audit_log(
+                        None,
+                        "system",
+                        "delegation.register",
+                        Some(&node_id),
+                        Some(&format!("{source} label={label}")),
+                        None,
+                    );
+                }
+                Ok(PeerEvent::DelegationRevoked { node_id, label }) => {
+                    if !pass(format!("deleg-rev|{node_id}|{label}")) {
+                        continue;
+                    }
+                    let _ = db.record_audit_log(
+                        None,
+                        "system",
+                        "delegation.revoke",
+                        Some(&node_id),
+                        Some(&format!("{source} label={label}")),
                         None,
                     );
                 }
