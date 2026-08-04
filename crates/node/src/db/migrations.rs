@@ -465,4 +465,60 @@ mod tests {
         let _ = std::fs::remove_file(path.with_extension("db-wal"));
         let _ = std::fs::remove_file(path.with_extension("db-shm"));
     }
+
+    #[test]
+    fn migration_v9_upgrades_old_db() {
+        // Build a legacy DB file with only v1~v8 applied (connector without push_groups column)
+        let path = std::env::temp_dir().join(format!("anet-db-mig9-test-{}.db", uuid::Uuid::new_v4()));
+        {
+            let conn = rusqlite::Connection::open(&path).expect("open raw conn");
+            conn.execute_batch(
+                "CREATE TABLE _migration (
+                    version INTEGER PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );",
+            )
+            .unwrap();
+            for (version, name, sql) in MIGRATIONS.iter().take(8) {
+                conn.execute_batch(sql).unwrap();
+                conn.execute(
+                    "INSERT INTO _migration (version, name) VALUES (?1, ?2)",
+                    params![version, name],
+                )
+                .unwrap();
+            }
+            // Insert a connector under the old schema (no push_groups column)
+            conn.execute(
+                "INSERT INTO connector (id, name, upstream_addr, token_enc, sni_hostname, insecure, ca_cert_path, pinned_cert_path, advertise, group_id, enabled, remark, created_at, updated_at, pinned_fingerprint)
+                 VALUES ('conn-old', 'site-old', '1.2.3.4:54430', 'v1:AAAA:BBBB', '', 1, '', '', '', NULL, 1, 'legacy', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '')",
+                [],
+            )
+            .unwrap();
+        }
+
+        // Opening triggers v9 migration: old rows kept, new column defaults to '' (no upload)
+        {
+            let db = Database::open(&path).expect("open migrated db");
+            let rec = db
+                .get_connector("conn-old")
+                .expect("get")
+                .expect("old connector exists");
+            assert_eq!(rec.push_groups, "");
+            assert_eq!(db.list_connectors().unwrap()[0].push_groups, "");
+
+            // After migration, push groups can be set on old rows directly
+            let gid = mk_group(&db, "git");
+            db.set_connector_push_groups("conn-old", &gid)
+                .expect("set push groups");
+            let rec = db.get_connector("conn-old").unwrap().unwrap();
+            assert_eq!(rec.push_groups, gid);
+            db.set_connector_push_groups("conn-old", "").expect("clear");
+            assert_eq!(db.get_connector("conn-old").unwrap().unwrap().push_groups, "");
+        }
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    }
 }
