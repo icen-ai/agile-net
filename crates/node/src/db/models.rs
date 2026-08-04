@@ -167,6 +167,9 @@ pub struct ConnectorRecord {
     /// Cert pinning: upstream server cert path (PEM; empty = unused)
     #[serde(default)]
     pub pinned_cert_path: String,
+    /// Cert fingerprint pinning (SHA-256 hex, out-of-band distribution; empty = unused)
+    #[serde(default)]
+    pub pinned_fingerprint: String,
     /// Serialized former ConnectorConfig.advertise
     pub advertise: String,
     /// ACL mount point: group ID (None = no restriction, allow all)
@@ -192,6 +195,8 @@ pub struct ConnectorView {
     pub ca_cert_path: String,
     #[serde(default)]
     pub pinned_cert_path: String,
+    #[serde(default)]
+    pub pinned_fingerprint: String,
     pub advertise: String,
     #[serde(default)]
     pub group_id: Option<String>,

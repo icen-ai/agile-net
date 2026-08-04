@@ -375,6 +375,11 @@ impl RelayListener {
     /// Start the listen service
     pub async fn start(self: &Arc<Self>) -> Result<()> {
         let listener = TcpListener::bind(self.listen_addr).await?;
+        self.serve(listener).await
+    }
+
+    /// Serve on a pre-bound socket (caller binds first so bind failures surface at startup, not in a spawned task).
+    pub async fn serve(self: &Arc<Self>, listener: TcpListener) -> Result<()> {
         info!(addr = %self.listen_addr, "relay listener started");
 
         loop {

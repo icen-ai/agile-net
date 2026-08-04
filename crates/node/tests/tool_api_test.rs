@@ -122,6 +122,7 @@ async fn setup_tunnel_app() -> (Router, Database, String, String) {
             "",
             "",
             "",
+            "",
             None,
             "",
         )
@@ -236,6 +237,7 @@ async fn bandwidth_api_no_connected_peer() {
         "psk_x",
         "localhost",
         true,
+        "",
         "",
         "",
         "",

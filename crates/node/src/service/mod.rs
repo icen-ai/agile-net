@@ -80,9 +80,34 @@ pub fn new_client_proxy_slot() -> ClientProxySlot {
     Arc::new(ArcSwap::from_pointee(None))
 }
 
+/// Startup cleanup guard: on mid-assembly failure, aborts spawned tasks (releasing their bound
+/// sockets) and shuts down connectors, so a failed start leaves no ports held. Disarmed on success.
+struct StartupGuard {
+    tasks: Vec<tokio::task::JoinHandle<()>>,
+    connectors: Option<Arc<ConnectorManager>>,
+}
+
+impl StartupGuard {
+    fn disarm(&mut self) -> Vec<tokio::task::JoinHandle<()>> {
+        self.connectors = None;
+        std::mem::take(&mut self.tasks)
+    }
+}
+
+impl Drop for StartupGuard {
+    fn drop(&mut self) {
+        for t in &self.tasks {
+            t.abort();
+        }
+        if let Some(m) = self.connectors.take() {
+            // async shutdown, fire-and-forget: the runtime outlives this guard in both CLI and embedded hosts
+            tokio::spawn(async move { m.shutdown().await });
+        }
+    }
+}
+
 /// Running node instance (`stop` is idempotent).
-pub struct NodeServer {
-    db: Database,
+pub struct NodeServer {    db: Database,
     jwt: Arc<JwtService>,
     runtime: Arc<NodeRuntime>,
     state: ApiState,
@@ -104,7 +129,10 @@ impl NodeServer {
         // rustls process-level CryptoProvider (ring) — must be installed before any ServerConfig/ClientConfig is built
         agile_net_core::init_crypto_provider();
 
-        let mut tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+        let mut startup = StartupGuard {
+            tasks: Vec::new(),
+            connectors: None,
+        };
         let log_buffer = opts.log_buffer.unwrap_or_default();
 
         // 1. Database
@@ -191,7 +219,7 @@ impl NodeServer {
                     resolver,
                     db.clone(),
                 ));
-                tasks.push(tokio::spawn(async move {
+                startup.tasks.push(tokio::spawn(async move {
                     manager.run().await;
                 }));
                 tracing::info!(domain = %acme_cfg.domain, "ACME manager running");
@@ -234,14 +262,18 @@ impl NodeServer {
                 }
             };
             let l = listener.clone();
-            tasks.push(tokio::spawn(async move {
-                if let Err(e) = l.start().await {
+            // bind synchronously: surface bind failures (port reserved/blocked) at startup instead of a silently dead listener
+            let relay_socket = tokio::net::TcpListener::bind(addr)
+                .await
+                .map_err(|e| anyhow::anyhow!("relay listener 绑定 {addr} 失败: {e}"))?;
+            startup.tasks.push(tokio::spawn(async move {
+                if let Err(e) = l.serve(relay_socket).await {
                     tracing::error!(error = %e, "relay listener error");
                 }
             }));
             tracing::info!(addr = %addr, "relay listener started");
             // fan-in ACL-denied events -> audit (peer identity = node_id; deduped per peer+target per minute)
-            tasks.push(connectors::spawn_acl_audit_task(
+            startup.tasks.push(connectors::spawn_acl_audit_task(
                 db.clone(),
                 "listener".to_string(),
                 listener.subscribe_events(),
@@ -286,6 +318,7 @@ impl NodeServer {
                 .with_transit_meter(transit_meter.clone()),
         );
         connector_manager.start_all().await;
+        startup.connectors = Some(connector_manager.clone());
 
         // 6. Local proxy inbound (optional)
         let mut proxy_stats = None;
@@ -304,7 +337,7 @@ impl NodeServer {
             }
             proxy_stats = Some(inbound.stats());
             proxy_listen = Some(proxy_addr.to_string());
-            tasks.push(tokio::spawn(async move {
+            startup.tasks.push(tokio::spawn(async move {
                 if let Err(e) = inbound.start().await {
                     tracing::error!(error = %e, "proxy inbound error");
                 }
@@ -331,7 +364,7 @@ impl NodeServer {
             let db = db.clone();
             let shared_router = shared_router.clone();
             let acl_registry = acl_registry.clone();
-            tasks.push(tokio::spawn(async move {
+            startup.tasks.push(tokio::spawn(async move {
                 let mut last_version = db.config_version().unwrap_or(0);
                 let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
                 interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -364,7 +397,7 @@ impl NodeServer {
             let listener = relay_listener.clone();
             let connector_manager = connector_manager.clone();
             let meter = transit_meter.clone();
-            tasks.push(tokio::spawn(async move {
+            startup.tasks.push(tokio::spawn(async move {
                 let mut last_fanin: std::collections::HashMap<String, (u64, u64)> =
                     Default::default();
                 let mut last_fanout: std::collections::HashMap<String, (u64, u64)> =
@@ -409,7 +442,7 @@ impl NodeServer {
         // Data retention cleanup: audit log 90d + node traffic 30d + expired refresh tokens, every 24h
         {
             let db = db.clone();
-            tasks.push(tokio::spawn(async move {
+            startup.tasks.push(tokio::spawn(async move {
                 let mut interval = tokio::time::interval(std::time::Duration::from_secs(24 * 3600));
                 interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                 loop {
@@ -487,7 +520,7 @@ impl NodeServer {
                     .map_err(|e| anyhow::anyhow!("api tls config: {e}"))?;
                 tracing::info!(addr = %api_socket_addr, "Web Dashboard & API Server started (https://{api_socket_addr})");
                 let handle = api_shutdown.clone();
-                tasks.push(tokio::spawn(async move {
+                startup.tasks.push(tokio::spawn(async move {
                     let _ = axum_server::bind_rustls(api_socket_addr, tls_config)
                         .handle(handle)
                         .serve(app.into_make_service_with_connect_info::<SocketAddr>())
@@ -502,12 +535,14 @@ impl NodeServer {
                     );
                 }
                 // bind before serving: supports port 0 dynamic allocation (embedding/tests) and removes the startup race
-                let api_listener = tokio::net::TcpListener::bind(api_socket_addr).await?;
+                let api_listener = tokio::net::TcpListener::bind(api_socket_addr)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("api 绑定 {api_socket_addr} 失败: {e}"))?;
                 let actual = api_listener.local_addr()?;
                 tracing::info!(addr = %actual, "Web Dashboard & API Server started (http://{actual})");
                 let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
                 api_stop_tx = Some(stop_tx);
-                tasks.push(tokio::spawn(async move {
+                startup.tasks.push(tokio::spawn(async move {
                     let _ = axum::serve(
                         api_listener,
                         app.into_make_service_with_connect_info::<SocketAddr>(),
@@ -533,6 +568,7 @@ impl NodeServer {
         // handshake v2: backfill this node's admin API endpoint (sent to relay_tokens flagged to expose the control plane)
         control_api_slot.store(Some(Arc::new((public_host.clone(), bound_api_addr.port()))));
 
+        let tasks = startup.disarm();
         Ok(Self {
             db,
             jwt,

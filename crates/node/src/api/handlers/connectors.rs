@@ -33,6 +33,9 @@ pub struct CreateConnectorRequest {
     pub ca_cert_path: String,
     #[serde(default)]
     pub pinned_cert_path: String,
+    /// Cert fingerprint pinning (SHA-256 hex; empty = unused). Priority over pinned_cert_path/ca/insecure.
+    #[serde(default)]
+    pub pinned_fingerprint: String,
     #[serde(default)]
     pub advertise: Vec<String>,
     /// ACL group (absent/null = unrestricted, allow all)
@@ -40,6 +43,18 @@ pub struct CreateConnectorRequest {
     pub group_id: Option<String>,
     #[serde(default)]
     pub remark: String,
+}
+
+/// Fingerprint format: empty (unused) or 64 hex chars (SHA-256, case-insensitive; normalized to lowercase).
+fn normalize_fingerprint(fp: &str) -> Result<String, String> {
+    let fp = fp.trim().to_lowercase();
+    if fp.is_empty() {
+        return Ok(fp);
+    }
+    if fp.len() != 64 || !fp.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err("pinned_fingerprint must be 64 hex chars (SHA-256)".into());
+    }
+    Ok(fp)
 }
 
 fn validate_connector_input(
@@ -169,6 +184,10 @@ pub async fn create_connector(
     }
 
     let advertise = req.advertise.join(",");
+    let pinned_fingerprint = match normalize_fingerprint(&req.pinned_fingerprint) {
+        Ok(fp) => fp,
+        Err(msg) => return err(StatusCode::BAD_REQUEST, codes::VALIDATION_FAILED, msg),
+    };
     let params = (
         name.to_string(),
         req.upstream_addr.clone(),
@@ -176,6 +195,7 @@ pub async fn create_connector(
         req.sni_hostname.clone(),
         req.ca_cert_path.clone(),
         req.pinned_cert_path.clone(),
+        pinned_fingerprint,
         advertise,
         req.group_id.clone(),
         req.remark.clone(),
@@ -190,6 +210,7 @@ pub async fn create_connector(
                 sni_hostname,
                 ca_cert_path,
                 pinned_cert_path,
+                pinned_fingerprint,
                 advertise,
                 group_id,
                 remark,
@@ -202,6 +223,7 @@ pub async fn create_connector(
                 insecure,
                 &ca_cert_path,
                 &pinned_cert_path,
+                &pinned_fingerprint,
                 &advertise,
                 group_id.as_deref(),
                 &remark,
@@ -255,6 +277,8 @@ pub struct UpdateConnectorRequest {
     pub ca_cert_path: String,
     #[serde(default)]
     pub pinned_cert_path: String,
+    #[serde(default)]
+    pub pinned_fingerprint: String,
     #[serde(default)]
     pub advertise: Vec<String>,
     /// ACL group (PUT is full-replace semantics: absent/null = unrestricted)
@@ -323,6 +347,10 @@ pub async fn update_connector(
     // Empty string counts as not provided (keep the current token)
     let token_reset = req.token.as_deref().filter(|t| !t.is_empty());
     let advertise = req.advertise.join(",");
+    let pinned_fingerprint = match normalize_fingerprint(&req.pinned_fingerprint) {
+        Ok(fp) => fp,
+        Err(msg) => return err(StatusCode::BAD_REQUEST, codes::VALIDATION_FAILED, msg),
+    };
     let params = (
         id.clone(),
         name.to_string(),
@@ -331,6 +359,7 @@ pub async fn update_connector(
         req.sni_hostname.clone(),
         req.ca_cert_path.clone(),
         req.pinned_cert_path.clone(),
+        pinned_fingerprint,
         advertise,
         req.group_id.clone(),
         req.remark.clone(),
@@ -346,6 +375,7 @@ pub async fn update_connector(
                 sni_hostname,
                 ca_cert_path,
                 pinned_cert_path,
+                pinned_fingerprint,
                 advertise,
                 group_id,
                 remark,
@@ -359,6 +389,7 @@ pub async fn update_connector(
                 insecure,
                 &ca_cert_path,
                 &pinned_cert_path,
+                &pinned_fingerprint,
                 &advertise,
                 group_id.as_deref(),
                 &remark,

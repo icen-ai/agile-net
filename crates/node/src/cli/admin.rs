@@ -1,6 +1,6 @@
 //! Administrator management (`anet admin ...`).
 
-use anyhow::{Context as _, Result};
+use anyhow::{Context as _, Result, bail};
 use clap::{Args, Subcommand};
 use serde_json::json;
 
@@ -22,6 +22,8 @@ pub enum AdminSub {
     Delete(IdOnlyArgs),
     /// 修改自己的密码
     Passwd(PasswdArgs),
+    /// 重置管理员密码（--offline 数据库直连，无需登录；本机操作视为已授权）
+    ResetPassword(ResetPasswordArgs),
 }
 
 #[derive(Args, Debug)]
@@ -42,7 +44,26 @@ pub struct PasswdArgs {
     pub new_password: Option<String>,
 }
 
+#[derive(Args, Debug)]
+pub struct ResetPasswordArgs {
+    /// 管理员用户名或 ID 前缀
+    pub id: String,
+    /// 数据库直连模式（本机操作视为已授权；WAL 并发安全，服务运行中亦可执行）
+    #[arg(long)]
+    pub offline: bool,
+    /// 数据库路径（缺省读 DATABASE_PATH 环境变量，回退 agile-net.db）
+    #[arg(long)]
+    pub db: Option<String>,
+    /// 新密码（缺省交互输入并二次确认）
+    #[arg(long)]
+    pub password: Option<String>,
+}
+
 pub(super) async fn cmd_admin(api: Option<String>, args: AdminArgs, json_out: bool) -> Result<()> {
+    // Offline reset bypasses the API entirely: direct DB write, no session required.
+    if let AdminSub::ResetPassword(r) = &args.command {
+        return reset_password_offline(r, json_out).await;
+    }
     let mut client = AnetClient::from_session(api)?;
     match args.command {
         AdminSub::List => {
@@ -113,6 +134,78 @@ pub(super) async fn cmd_admin(api: Option<String>, args: AdminArgs, json_out: bo
                 .await?;
             println!("{}", d["message"].as_str().unwrap_or("密码已修改"));
         }
+        AdminSub::ResetPassword(_) => unreachable!("handled before session setup"),
+    }
+    Ok(())
+}
+
+/// Offline admin password reset: direct DB write with the local machine as the trust boundary
+/// (same idea as the TUI --offline fallback). Revokes the admin's sessions and writes an audit entry.
+async fn reset_password_offline(args: &ResetPasswordArgs, json_out: bool) -> Result<()> {
+    if !args.offline {
+        bail!(
+            "reset-password 需显式加 --offline（数据库直连、无需登录；在线改自己的密码请用 admin passwd）"
+        );
+    }
+    let db_path = args
+        .db
+        .clone()
+        .or_else(|| std::env::var("DATABASE_PATH").ok())
+        .unwrap_or_else(|| "agile-net.db".to_string());
+    let db = crate::db::Database::open(&db_path).context("打开数据库失败")?;
+
+    // Resolve by exact username first, then unique ID prefix.
+    let admin = match db.get_admin_by_username(&args.id)? {
+        Some(a) => a,
+        None => {
+            let matches: Vec<_> = db
+                .list_admins()?
+                .into_iter()
+                .filter(|a| a.id.starts_with(&args.id))
+                .collect();
+            match matches.len() {
+                1 => matches.into_iter().next().unwrap(),
+                0 => bail!("未找到管理员: {}", args.id),
+                _ => bail!("ID 前缀 \"{}\" 匹配到多个管理员，请补全", args.id),
+            }
+        }
+    };
+
+    let password = match &args.password {
+        Some(p) => p.clone(),
+        None => {
+            let p1 = rpassword::prompt_password("新密码（≥10位含大小写数字）: ")
+                .context("读取密码失败")?;
+            let p2 = rpassword::prompt_password("确认新密码: ").context("读取密码失败")?;
+            if p1 != p2 {
+                bail!("两次输入的密码不一致");
+            }
+            p1
+        }
+    };
+    crate::api::handlers::auth::validate_admin_credentials(&admin.username, &password)
+        .map_err(|e| anyhow::anyhow!("密码强度不足: {e}"))?;
+
+    // argon2id hashing is CPU-heavy; keep it off the async executor
+    let hash = tokio::task::spawn_blocking(move || crate::db::hash_password(&password))
+        .await
+        .context("哈希任务失败")??;
+    db.update_admin_password(&admin.id, &hash)?;
+    db.revoke_all_refresh_tokens(&admin.id)?;
+    let _ = db.record_audit_log(
+        Some(&admin.id),
+        "offline-cli",
+        "admin.reset_password",
+        Some(&admin.username),
+        Some("offline database direct reset"),
+        None,
+    );
+
+    if json_out {
+        print_json(&json!({ "id": admin.id, "username": admin.username }));
+    } else {
+        println!("管理员 {} 的密码已重置（其会话已全部吊销）", admin.username);
+        println!("提示：登录限流为进程内存态，若登录仍提示锁定，重启 anet-svc 即可清空");
     }
     Ok(())
 }

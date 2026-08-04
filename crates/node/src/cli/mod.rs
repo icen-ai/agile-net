@@ -19,7 +19,7 @@ mod token;
 
 // Public visibility matches the original single-file cli.rs (tests/cli_test.rs etc. reference the *Sub enums directly).
 pub use account::{AccountAddArgs, AccountArgs, AccountListArgs, AccountSub, AccountUpdateArgs};
-pub use admin::{AdminAddArgs, AdminArgs, AdminSub, PasswdArgs};
+pub use admin::{AdminAddArgs, AdminArgs, AdminSub, PasswdArgs, ResetPasswordArgs};
 pub use audit::{AuditArgs, AuditListArgs, AuditSub};
 pub use common::{AnetClient, IdArgs, IdOnlyArgs, ListArgs, Session};
 pub use connector::{ConnectorAddArgs, ConnectorArgs, ConnectorSub, ConnectorUpdateArgs};

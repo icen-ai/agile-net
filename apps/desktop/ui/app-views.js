@@ -958,6 +958,7 @@ async function refreshUpstreams() {
     '<div class="node-card"><div class="info">' +
     '<div class="name">' + esc(c.name || c.upstream_addr) + ' ' + foBadge(c) + '</div>' +
     '<div class="addr mono">' + esc(c.upstream_addr) + ' · ' + esc(c.token_prefix) + ' · SNI ' + esc(c.sni_hostname) +
+    (c.pinned_fingerprint ? ' · <span class="badge b-ok">pinned</span>' : '') +
     (c.insecure ? ' · <span class="badge b-warn">insecure</span>' : '') +
     AgI18n.t('views.fo-group-fmt', { name: c.group_name ? esc(c.group_name) : AgI18n.t('views.fo-group-none') }) + '</div>' +
     '</div><div class="card-actions">' +
@@ -977,6 +978,7 @@ function foOpenModal(c) {
   $('fo-addr').value = c ? c.upstream_addr : '';
   $('fo-token').value = '';
   $('fo-sni').value = c ? c.sni_hostname : 'cdn.cloudflare.com';
+  $('fo-fp').value = c ? (c.pinned_fingerprint || '') : '';
   $('fo-insecure').checked = c ? !!c.insecure : false;
   $('fo-advertise').value = c ? (c.advertise || '').split(',').filter(Boolean).join('\n') : '';
   $('fo-group').value = c ? (c.group_id || '') : '';
@@ -998,6 +1000,7 @@ function initUpstreams() {
     const addr = $('fo-addr').value.trim();
     const token = $('fo-token').value.trim();
     const sni = $('fo-sni').value.trim() || 'cdn.cloudflare.com';
+    const fp = $('fo-fp').value.trim();
     const insecure = $('fo-insecure').checked;
     const groupId = $('fo-group').value || null;
     const advertise = $('fo-advertise').value.split('\n').map(s => s.trim()).filter(Boolean).join(',');
@@ -1007,10 +1010,10 @@ function initUpstreams() {
     $('fo-err').textContent = '';
     try {
       if (FO_EDIT_ID) {
-        await invoke('update_server_connector', { id: FO_EDIT_ID, name, upstreamAddr: addr, token, sniHostname: sni, insecure, groupId, advertise, remark });
+        await invoke('update_server_connector', { id: FO_EDIT_ID, name, upstreamAddr: addr, token, sniHostname: sni, insecure, pinnedFingerprint: fp, groupId, advertise, remark });
         toast(AgI18n.t('views.fo-updated'), 'ok');
       } else {
-        await invoke('add_server_connector', { name, upstreamAddr: addr, token, sniHostname: sni, insecure, groupId, advertise, remark });
+        await invoke('add_server_connector', { name, upstreamAddr: addr, token, sniHostname: sni, insecure, pinnedFingerprint: fp, groupId, advertise, remark });
         toast(AgI18n.t('views.fo-added'), 'ok');
       }
       foCloseModal();

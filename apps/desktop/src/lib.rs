@@ -138,6 +138,7 @@ pub fn run() {
             server_status,
             init_server_admin,
             set_server_role,
+            set_server_public_host,
             has_web_password,
             set_web_password,
             set_web_role,

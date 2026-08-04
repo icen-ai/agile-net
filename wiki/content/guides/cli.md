@@ -92,19 +92,21 @@ connector 为一等入库资源（TOML `[[connectors]]` 仅启动导入），增
 ```bash
 anet connector list                        # 含实时状态与所属组
 anet connector add --name 机房B --addr relay-b.example.com:54430 --token psk_... \
-    [--sni cdn.cloudflare.com] [--advertise 10.12.0.0/16,git.internal] [--group office]
+    [--sni cdn.cloudflare.com] [--fp sha256指纹] [--advertise 10.12.0.0/16,git.internal] [--group office]
 anet connector update 3f2a [--group 新组] [--token psk_新]   # 缺省参数保留原值
 anet connector enable 3f2a / anet connector disable 3f2a    # 启用起连 / 禁用断开
 anet connector remove 3f2a
 ```
 
 扇出 token 为对端签发凭据：加密落库，创建后不回显（`update --token` 仅用于重置）。
+对端 relay 证书为自签拟态证书，系统 CA 验不过：`--fp` 钉证书指纹（对端节点状态页可复制）即可免 insecure，优先于一切校验方式。
 
 ## 管理员与审计
 
 ```bash
 anet admin list / anet admin add --username ops2    # 安全提示输入密码
 anet admin passwd                                   # 修改自己的密码
+anet admin reset-password admin --offline           # 忘记密码：数据库直沉重置（本机操作，无需登录，会话一并吊销）
 anet audit list [--action admin.login] [--json]
 ```
 

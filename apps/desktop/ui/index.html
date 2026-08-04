@@ -280,6 +280,13 @@
             <div id="server-panel" style="display:none">
               <div class="kv"><span class="k" data-i18n="fanout.adminApi">管理 API</span><span class="mono" id="sv-api">-</span></div>
               <div class="kv"><span class="k" data-i18n="fanout.relayListen">Relay 监听</span><span class="mono" id="sv-relay">-</span></div>
+              <div class="kv"><span class="k" data-i18n="fanout.certFp">证书指纹</span><span class="mono fp-val" id="sv-fp">-</span>
+                <button class="ghost small icon-btn" id="btn-fp-copy" data-i18n-title="common.copy" title="复制"><i data-ic="copy" data-sz="13"></i></button>
+              </div>
+              <div class="kv"><span class="k"><span data-i18n="fanout.publicHost">对外地址</span> <span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip" data-i18n="fanout.publicHostTip">接入链接与隧道端点对外展示的地址（公网 IP 或域名），留空 = 127.0.0.1；保存即生效，无需重启</span></span></span>
+                <input id="sv-pubhost" class="mono" style="flex:1" data-i18n-ph="fanout.publicHostPh" placeholder="留空 = 127.0.0.1">
+                <button class="ghost small" id="btn-pubhost-save" data-i18n="common.save">保存</button>
+              </div>
               <div class="row" style="margin-top:8px">
                 <button id="btn-open-console" class="ghost small"><i data-ic="external-link" data-sz="13"></i> <span data-i18n="fanout.openConsole">打开控制台（账号 / Relay Token / 权限组）</span></button>
               </div>
@@ -943,6 +950,8 @@
         <div><label data-i18n="fanout.sniLabel">SNI 域名</label><input id="fo-sni" class="mono" placeholder="cdn.cloudflare.com"></div>
         <div><label><span data-i18n="term.group">权限组</span> <span class="hint inline" data-i18n="fanout.noRestrict">留空 = 不收敛（放行一切）</span></label><select id="fo-group"><option value="" data-i18n="fanout.noRestrictOpt">不收敛（放行一切）</option></select></div>
       </div>
+      <label><span data-i18n="fanout.fpLabel">证书指纹钉值</span> <span class="hint inline" data-i18n="fanout.fpHint">可空；对端节点状态页复制，64 位 hex，优先于 insecure</span></label>
+      <input id="fo-fp" class="mono" placeholder="sha256...">
       <label class="chk" style="margin-top:12px"><input type="checkbox" id="fo-insecure"> <span data-i18n="fanout.insecure">跳过 TLS 证书校验（insecure，仅调试用）</span></label>
       <label data-i18n="fanout.advertiseLabel">路由再发布 advertise（每行一条 CIDR/域名，可空）</label>
       <textarea id="fo-advertise" class="mono" rows="3" placeholder="10.12.0.0/16&#10;git.internal"></textarea>

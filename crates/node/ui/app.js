@@ -1138,6 +1138,7 @@ function connectorFormHtml(c) {
     '<label>' + T('fanout.upstreamLabel') + '</label><input id="cf-addr" class="mono" style="width:100%" value="' + esc(c.upstream_addr||'') + '" placeholder="peer.example.com:54430">' +
     '<label>' + T('fanout.tokenLabel') + '</label><input id="cf-token" type="password" class="mono" style="width:100%" autocomplete="off" placeholder="' + (c.id ? T('fanout.tokenKeep') : T('fanout.tokenPh')) + '">' +
     '<label>' + T('fanout.sniHostLabel') + '</label><input id="cf-sni" class="mono" style="width:100%" value="' + esc(c.sni_hostname||'') + '">' +
+    '<label>' + T('fanout.fpLabel') + ' <span class="hint">' + T('fanout.fpHint') + '</span></label><input id="cf-fp" class="mono" style="width:100%" value="' + esc(c.pinned_fingerprint||'') + '" placeholder="sha256...">' +
     '<label class="chk" style="display:flex;align-items:center;gap:6px;margin-top:8px"><input type="checkbox" id="cf-insecure" ' + (c.insecure?'checked':'') + '> ' + T('fanout.insecure') + '</label>' +
     '<label>' + T('fanout.advertiseLabel') + '</label><textarea id="cf-advertise" class="mono" style="width:100%;height:90px" placeholder="10.12.0.0/16&#10;git.internal">' + esc((c.advertise||'').split(',').filter(Boolean).join('\n')) + '</textarea>' +
     '<label>' + T('adm.groupLabel') + '</label><select id="cf-group" style="width:100%">' +
@@ -1151,6 +1152,7 @@ function connectorFormBody() {
     upstream_addr: $('cf-addr').value.trim(),
     sni_hostname: $('cf-sni').value.trim(),
     insecure: $('cf-insecure').checked,
+    pinned_fingerprint: $('cf-fp').value.trim(),
     advertise: $('cf-advertise').value.split('\n').map(s => s.trim()).filter(Boolean),
     group_id: $('cf-group').value || null,
     remark: $('cf-remark').value.trim(),

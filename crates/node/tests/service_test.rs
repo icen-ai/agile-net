@@ -106,3 +106,52 @@ async fn node_server_restart_same_db() {
         server.stop().await;
     }
 }
+
+#[tokio::test]
+async fn node_server_failed_start_releases_ports() {
+    // temp dir for db + generated relay certs
+    let dir = std::env::temp_dir().join(format!("anet-svc-test-leak-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+
+    // reserve a free relay port
+    let relay_probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let relay_port = relay_probe.local_addr().unwrap().port();
+    drop(relay_probe);
+
+    // occupy the API port: startup fails at the API bind step, after the relay listener is already bound
+    let api_blocker = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let api_port = api_blocker.local_addr().unwrap().port();
+
+    let mut config = NodeConfig::default();
+    config.listener = Some(agile_net_core::config::node::ListenerConfig {
+        addr: format!("127.0.0.1:{relay_port}"),
+        cert_path: dir.join("relay-cert.pem").to_string_lossy().to_string(),
+        key_path: dir.join("relay-key.pem").to_string_lossy().to_string(),
+        sni_hostname: "cdn.cloudflare.com".into(),
+    });
+
+    let err = NodeServer::start_with(
+        config,
+        NodeServerOptions {
+            db_path: Some(dir.join("node.db").to_string_lossy().to_string()),
+            api_listen: Some(format!("127.0.0.1:{api_port}")),
+            skip_env_seed: true,
+            ..Default::default()
+        },
+    )
+    .await;
+    assert!(err.is_err(), "API 端口被占用时启动应失败");
+    drop(err);
+
+    // failed startup must not leak the already-bound relay port (abort is async: poll briefly)
+    let mut released = false;
+    for _ in 0..20 {
+        if std::net::TcpListener::bind(format!("127.0.0.1:{relay_port}")).is_ok() {
+            released = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(released, "启动失败后 relay 端口应被释放");
+    drop(api_blocker);
+}

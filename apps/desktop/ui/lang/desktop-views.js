@@ -95,6 +95,9 @@ AgI18n.register({
   'views.dash-fo-none': { zh: '未扇出', en: 'No fan-out' },
   'views.dash-fo-off-count': { zh: '扇出监听未开启 · {n} 条扇出已配置', en: 'Fan-out listener off · {n} configured' },
   'views.dash-fo-off': { zh: '扇出监听未开启', en: 'Fan-out listener off' },
+  'views.fp-copied': { zh: '证书指纹已复制，发给扇出方钉值', en: 'Fingerprint copied; share it with fan-out peers for pinning' },
+  'views.fp-unavailable': { zh: '扇出监听未运行，指纹不可用', en: 'Fingerprint unavailable: fan-out listener is not running' },
+  'views.pubhost-saved': { zh: '对外地址已保存并即时生效', en: 'Public address saved, effective immediately' },
 
   // ================= settings.* (app-settings.js) =================
   // ---- role switches: server ----

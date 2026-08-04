@@ -208,6 +208,15 @@ const MIGRATIONS: &[(u32, &str, &str)] = &[
     ALTER TABLE relay_token ADD COLUMN rate_limit_kbps INTEGER;
     "#,
     ),
+    (
+        8,
+        "connector_pinned_fingerprint",
+        r#"
+    -- Fan-out cert fingerprint pinning (SHA-256 hex, distributed out-of-band; empty = unused).
+    -- Lets connectors verify self-signed mimicry certs without insecure or cert files.
+    ALTER TABLE connector ADD COLUMN pinned_fingerprint TEXT NOT NULL DEFAULT '';
+    "#,
+    ),
 ];
 
 impl Database {
@@ -353,6 +362,7 @@ mod tests {
             assert_eq!(rec.name, "site-old");
             assert_eq!(rec.ca_cert_path, "");
             assert_eq!(rec.pinned_cert_path, "");
+            assert_eq!(rec.pinned_fingerprint, "");
 
             // After migration, cert paths can be written directly
             db.update_connector(
@@ -363,6 +373,7 @@ mod tests {
                 "",
                 false,
                 "/etc/anet/ca.pem",
+                "",
                 "",
                 "",
                 None,

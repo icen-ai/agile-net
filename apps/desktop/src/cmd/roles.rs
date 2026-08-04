@@ -37,6 +37,10 @@ pub struct ServerStatus {
     pub has_admin: bool,
     pub api_addr: String,
     pub relay_addr: String,
+    /// Relay cert SHA-256 fingerprint (for fan-out peers to pin; None while not running)
+    pub cert_fingerprint: Option<String>,
+    /// Public endpoint host shown in connect_url (DB node_config.public_host; empty = default 127.0.0.1)
+    pub public_host: String,
     /// (target addr, status) per fan-out connection (live while running; empty otherwise)
     pub connectors: Vec<(String, String)>,
 }
@@ -71,17 +75,42 @@ pub(crate) async fn server_status(state: State<'_, AppState>) -> Result<ServerSt
         let slot = state.server.lock().await;
         slot.as_ref().map(|s| s.connector_states()).unwrap_or_default()
     };
+    let cert_fingerprint = {
+        let slot = state.server.lock().await;
+        slot.as_ref().and_then(|s| s.runtime().cert_fingerprint.clone())
+    };
     let running = state.server.lock().await.is_some();
     let has_admin = roles::open_embedded_db()
         .and_then(|db| db.has_admin().map_err(|e| e.to_string()))
         .unwrap_or(false);
+    let public_host = roles::open_embedded_db()
+        .and_then(|db| db.get_config("public_host").map_err(|e| e.to_string()))
+        .ok()
+        .flatten()
+        .unwrap_or_default();
     Ok(ServerStatus {
         running,
         has_admin,
         api_addr: roles::EMBEDDED_API_ADDR.into(),
         relay_addr: roles::EMBEDDED_RELAY_ADDR.into(),
+        cert_fingerprint,
+        public_host,
         connectors,
     })
+}
+
+/// Set the embedded node's public endpoint host (written to node_config.public_host; hot — the next
+/// generated connect_url uses it immediately, no server-role restart needed; empty = default 127.0.0.1).
+#[tauri::command]
+pub(crate) async fn set_server_public_host(host: String) -> Result<(), String> {
+    let host = host.trim();
+    if host.len() > 253 || host.contains('/') || host.contains(' ') {
+        return Err("对外地址格式非法（应为 IP 或域名，不含路径与空格）".into());
+    }
+    let db = roles::open_embedded_db()?;
+    db.set_config("public_host", host).map_err(map_err)?;
+    roles::audit("gui.fanout_change", serde_json::json!({"action": "public_host", "host": host}));
+    Ok(())
 }
 
 /// First-run forced admin password: create the embedded node admin (argon2id hash persisted to db).
@@ -119,7 +148,21 @@ pub(crate) async fn start_embedded_node(state: &State<'_, AppState>) -> Result<N
         },
     )
     .await
-    .map_err(|e| format!("内嵌节点启动失败: {e}"))
+    .map_err(|e| {
+        let msg = format!("{e:#}");
+        format!("内嵌节点启动失败: {msg}{}", bind_hint(&msg))
+    })
+}
+
+/// Actionable hints for common Windows bind failures (appended to the startup error toast).
+fn bind_hint(msg: &str) -> &'static str {
+    if msg.contains("os error 10013") {
+        "（端口被系统保留或安全软件拦截：运行 netsh interface ipv4 show excludedportrange protocol=tcp 查系统保留段（Hyper-V/WSL2/Docker 常见），netsh interface portproxy show all 查端口代理规则，并检查 360/火绒等安全软件的联网控制）"
+    } else if msg.contains("os error 10048") {
+        "（端口已被占用：检查是否有残留的 anet 进程，或更换端口）"
+    } else {
+        ""
+    }
 }
 
 /// Toggle B: server role. Enabling starts the embedded node (admin password required first); disabling stops it.
@@ -150,20 +193,7 @@ pub(crate) async fn set_server_role(state: State<'_, AppState>, enabled: bool) -
         roles.save()?;
     }
     roles::audit("gui.role_toggle", serde_json::json!({"role": "server", "on": enabled}));
-    let has_admin = roles::open_embedded_db()
-        .and_then(|db| db.has_admin().map_err(|e| e.to_string()))
-        .unwrap_or(false);
-    let connectors = {
-        let slot = state.server.lock().await;
-        slot.as_ref().map(|s| s.connector_states()).unwrap_or_default()
-    };
-    Ok(ServerStatus {
-        running: enabled,
-        has_admin,
-        api_addr: roles::EMBEDDED_API_ADDR.into(),
-        relay_addr: roles::EMBEDDED_RELAY_ADDR.into(),
-        connectors,
-    })
+    server_status(state).await
 }
 
 #[tauri::command]

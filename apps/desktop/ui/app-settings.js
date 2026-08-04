@@ -33,6 +33,10 @@ async function refreshServerPanel() {
   $('server-panel').style.display = on ? 'block' : 'none';
   $('sv-api').textContent = st.api_addr || '-';
   $('sv-relay').textContent = st.relay_addr || '-';
+  const fp = st.cert_fingerprint || '';
+  $('sv-fp').textContent = fp ? fp.slice(0, 16) + '…' : '-';
+  $('sv-fp').title = fp;
+  $('sv-pubhost').value = st.public_host || '';
 }
 
 /* Fan-out listen switch (fan-out view r-server and dashboard d-server are two entries to the same logic, states stay in sync) */
@@ -193,6 +197,25 @@ async function initRoles() {
   };
 
   $('btn-open-console').onclick = () => enterAdmin(null, null, AgI18n.t('views.admin-local'));
+
+  // Relay cert fingerprint: fan-out peers pin this value to verify the self-signed mimicry cert (no insecure needed)
+  $('btn-fp-copy').onclick = async () => {
+    const fp = (window._serverStatus && window._serverStatus.cert_fingerprint) || '';
+    if (!fp) { toast(AgI18n.t('views.fp-unavailable'), 'err'); return; }
+    try {
+      await navigator.clipboard.writeText(fp);
+      toast(AgI18n.t('views.fp-copied'), 'ok');
+    } catch (e) { /* clipboard unavailable: stay silent */ }
+  };
+
+  // Public endpoint host: hot-applied to node_config.public_host (next connect_url uses it immediately)
+  $('btn-pubhost-save').onclick = async () => {
+    try {
+      await invoke('set_server_public_host', { host: $('sv-pubhost').value.trim() });
+      toast(AgI18n.t('views.pubhost-saved'), 'ok');
+      refreshServerPanel();
+    } catch (e) { toast(friendlyError(e), 'err'); }
+  };
 
   /* Settings-view local toggles: lock system proxy / desktop float ball (roll back the checkbox on failure) */
   $('s-sysproxy-lock').onchange = async (e) => {

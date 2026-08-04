@@ -45,6 +45,9 @@ pub struct ConnectorAddArgs {
     /// 跳过 TLS 证书校验（仅调试用）
     #[arg(long)]
     pub insecure: bool,
+    /// 证书指纹钉值（SHA-256 hex 64 位；对端节点状态页可复制，优先于 insecure）
+    #[arg(long)]
+    pub fp: Option<String>,
     /// 宣告路由（逗号分隔，如 10.0.0.0/8,git.internal）
     #[arg(long)]
     pub advertise: Option<String>,
@@ -71,6 +74,9 @@ pub struct ConnectorUpdateArgs {
     pub sni: Option<String>,
     #[arg(long)]
     pub insecure: Option<bool>,
+    /// 证书指纹钉值（SHA-256 hex 64 位；缺省 = 保留原值）
+    #[arg(long)]
+    pub fp: Option<String>,
     /// 宣告路由（逗号分隔；缺省 = 保留原值）
     #[arg(long)]
     pub advertise: Option<String>,
@@ -134,6 +140,7 @@ pub(super) async fn cmd_connector(
                     Some(json!({
                         "name": a.name, "upstream_addr": a.addr, "token": a.token,
                         "sni_hostname": a.sni.unwrap_or_default(), "insecure": a.insecure,
+                        "pinned_fingerprint": a.fp.unwrap_or_default(),
                         "advertise": split_csv(a.advertise.as_deref().unwrap_or_default()),
                         "group_id": group_id, "remark": a.remark.unwrap_or_default(),
                     })),
@@ -166,6 +173,7 @@ pub(super) async fn cmd_connector(
                 "insecure": u.insecure.unwrap_or_else(|| cur["insecure"].as_bool().unwrap_or(false)),
                 "ca_cert_path": cur["ca_cert_path"].as_str().unwrap_or_default(),
                 "pinned_cert_path": cur["pinned_cert_path"].as_str().unwrap_or_default(),
+                "pinned_fingerprint": u.fp.unwrap_or_else(|| cur["pinned_fingerprint"].as_str().unwrap_or_default().to_string()),
                 "advertise": advertise,
                 "group_id": cur["group_id"],
                 "remark": u.remark.unwrap_or_else(|| cur["remark"].as_str().unwrap_or_default().to_string()),

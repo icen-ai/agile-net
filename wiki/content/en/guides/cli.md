@@ -95,7 +95,7 @@ restriction (default = unrestricted).
 ```bash
 anet connector list                        # 含实时状态与所属组
 anet connector add --name 机房B --addr relay-b.example.com:54430 --token psk_... \
-    [--sni cdn.cloudflare.com] [--advertise 10.12.0.0/16,git.internal] [--group office]
+    [--sni cdn.cloudflare.com] [--fp sha256指纹] [--advertise 10.12.0.0/16,git.internal] [--group office]
 anet connector update 3f2a [--group 新组] [--token psk_新]   # 缺省参数保留原值
 anet connector enable 3f2a / anet connector disable 3f2a    # 启用起连 / 禁用断开
 anet connector remove 3f2a
@@ -103,12 +103,16 @@ anet connector remove 3f2a
 
 A fan-out token is a credential issued by the peer: stored encrypted in the database and never
 displayed again after creation (`update --token` is only for resetting it).
+The peer relay cert is a self-signed mimicry cert that system CAs can never verify: pin its
+fingerprint with `--fp` (copy it from the peer's node status page) instead of using insecure —
+pinning takes priority over every other verification mode.
 
 ## Admins and Audit
 
 ```bash
 anet admin list / anet admin add --username ops2    # 安全提示输入密码
 anet admin passwd                                   # 修改自己的密码
+anet admin reset-password admin --offline           # Forgot the password: direct DB reset (local operation, no login; sessions revoked)
 anet audit list [--action admin.login] [--json]
 ```
 

@@ -251,8 +251,11 @@ impl ConnectorManager {
 
         let upstream = resolve_upstream(&rec.upstream_addr).await?;
         let mut tls_builder = TlsConfigBuilder::new().sni_hostname(&rec.sni_hostname);
-        // cert verification priority matches the old TOML assembly: pinned > ca > insecure
-        if !rec.pinned_cert_path.is_empty() {
+        // cert verification priority matches core TlsConfigBuilder: fingerprint > pinned certs > ca > insecure
+        if !rec.pinned_fingerprint.is_empty() {
+            tls_builder = tls_builder.pinned_fingerprint(rec.pinned_fingerprint.clone());
+            tracing::info!(connector = %rec.name, "connector TLS: certificate fingerprint pinning enabled");
+        } else if !rec.pinned_cert_path.is_empty() {
             let certs = load_pem_certs(&rec.pinned_cert_path)?;
             tls_builder = tls_builder.pinned_certs(certs);
             tracing::info!(connector = %rec.name, "connector TLS: certificate pinning enabled");

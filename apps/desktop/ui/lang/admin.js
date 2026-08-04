@@ -255,6 +255,8 @@ AgI18n.register({
   'fanout.tokenPh': { zh: '对端签发的 psk_ 令牌', en: 'psk_ token issued by the peer' },
   'fanout.sniHostLabel': { zh: 'SNI 主机名（可选）', en: 'SNI Hostname (optional)' },
   'fanout.insecure': { zh: '跳过 TLS 证书校验（insecure，仅调试用）', en: 'Skip TLS certificate verification (insecure, debug only)' },
+  'fanout.fpLabel': { zh: '证书指纹钉值', en: 'Cert Fingerprint Pinning' },
+  'fanout.fpHint': { zh: '可空；对端节点状态页复制，64 位 hex，优先于 insecure', en: 'Optional; copy from the peer node status page, 64 hex chars, takes priority over insecure' },
   'fanout.advertiseLabel': { zh: '路由再发布 advertise（每行一条 CIDR/域名，可空）', en: 'Route re-advertise (one CIDR/domain per line, optional)' },
   'fanout.needAll': { zh: '名称、上游地址与 token 必填', en: 'Name, upstream address and token are required' },
   'fanout.createdToast': { zh: '已创建（隧道开始连接）', en: 'Created (tunnel is connecting)' },

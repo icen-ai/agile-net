@@ -172,6 +172,8 @@ pub struct ServerConnectorView {
     pub token_prefix: String,
     pub sni_hostname: String,
     pub insecure: bool,
+    /// Cert fingerprint pinning (SHA-256 hex; empty = unused; editable in the GUI, echo is safe — it's a public hash)
+    pub pinned_fingerprint: String,
     /// Re-advertised routes (stored comma-separated; the edit form echoes them one per line)
     pub advertise: String,
     /// Restricting group (None = unrestricted, allow everything)
@@ -243,6 +245,7 @@ pub(crate) async fn list_server_connectors(
                 token_prefix: v.token_prefix,
                 sni_hostname: v.sni_hostname,
                 insecure: v.insecure,
+                pinned_fingerprint: v.pinned_fingerprint,
                 advertise: v.advertise,
                 group_id: v.group_id,
                 group_name: v.group_name,
@@ -263,10 +266,23 @@ struct ConnectorForm {
     token: String,
     sni_hostname: String,
     insecure: bool,
+    pinned_fingerprint: String,
     group_id: Option<String>,
     name: Option<String>,
     advertise: Option<String>,
     remark: Option<String>,
+}
+
+/// Fingerprint format: empty (unused) or 64 hex chars (SHA-256; normalized to lowercase).
+fn normalize_fingerprint(fp: &str) -> Result<String, String> {
+    let fp = fp.trim().to_lowercase();
+    if fp.is_empty() {
+        return Ok(fp);
+    }
+    if fp.len() != 64 || !fp.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err("证书指纹须为 64 位十六进制（SHA-256）".into());
+    }
+    Ok(fp)
 }
 
 #[tauri::command]
@@ -277,6 +293,7 @@ pub(crate) async fn add_server_connector(
     token: String,
     sni_hostname: String,
     insecure: bool,
+    pinned_fingerprint: Option<String>,
     group_id: Option<String>,
     name: Option<String>,
     advertise: Option<String>,
@@ -287,6 +304,7 @@ pub(crate) async fn add_server_connector(
         token,
         sni_hostname,
         insecure,
+        pinned_fingerprint: pinned_fingerprint.unwrap_or_default(),
         group_id,
         name,
         advertise,
@@ -331,6 +349,7 @@ async fn add_server_connector_inner(
             form.insecure,
             "",
             "",
+            &normalize_fingerprint(&form.pinned_fingerprint)?,
             &advertise,
             group_id.as_deref(),
             &remark,
@@ -350,6 +369,7 @@ pub(crate) async fn update_server_connector(
     token: String,
     sni_hostname: String,
     insecure: bool,
+    pinned_fingerprint: Option<String>,
     group_id: Option<String>,
     name: Option<String>,
     advertise: Option<String>,
@@ -360,6 +380,7 @@ pub(crate) async fn update_server_connector(
         token,
         sni_hostname,
         insecure,
+        pinned_fingerprint: pinned_fingerprint.unwrap_or_default(),
         group_id,
         name,
         advertise,
@@ -421,6 +442,7 @@ async fn update_server_connector_inner(
         form.insecure,
         &old.ca_cert_path,
         &old.pinned_cert_path,
+        &normalize_fingerprint(&form.pinned_fingerprint)?,
         &advertise,
         group_id.as_deref(),
         &remark,
