@@ -35,6 +35,10 @@ pub struct GroupRecord {
     pub id: String,
     pub name: String,
     pub remark: String,
+    /// E2E enforcement (federation P3): targets under this group require end-to-end encryption;
+    /// such groups may only hang on delegated tokens, never on accounts/relay tokens/connectors.
+    #[serde(default)]
+    pub e2e_required: bool,
     #[serde(default)]
     pub rule_count: i64,
     #[serde(default)]
@@ -212,4 +216,35 @@ pub struct ConnectorView {
     pub remark: String,
     pub created_at: String,
     pub updated_at: String,
+}
+
+/// Delegated token record (federation P2; DB row — e2e_key_enc is ciphertext, never log/audit it).
+///
+/// Issued by the resource owner directly to a consumer; registered upstream over the fan-out
+/// session (Ctrl frame, protocol v3) and living exactly as long as that session.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DelegatedTokenRecord {
+    pub id: String,
+    /// SHA-256 of the token plaintext (the relay compares hashes; not a secret by itself)
+    pub token_hash: String,
+    pub token_prefix: String,
+    pub label: String,
+    /// JSON array of local group IDs (resolved to names when building the registration frame)
+    pub groups: String,
+    /// JSON array of {hint, groups} — coarse E2E routing vocabulary (federation P3)
+    pub hint_map: String,
+    /// E2E channel master key ciphertext (`v1:nonce_b64:ct_b64`; same mechanism as connector tokens)
+    #[serde(skip_serializing, default)]
+    pub e2e_key_enc: String,
+    pub created_at: String,
+    /// Disaster-set registration rows (one per upstream connector)
+    #[serde(default)]
+    pub regs: Vec<DelegatedTokenReg>,
+}
+
+/// Disaster-set registration row: one upstream connector of a delegated token.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DelegatedTokenReg {
+    pub connector_id: String,
+    pub is_primary: bool,
 }

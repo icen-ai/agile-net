@@ -226,6 +226,41 @@ const MIGRATIONS: &[(u32, &str, &str)] = &[
     ALTER TABLE connector ADD COLUMN push_groups TEXT NOT NULL DEFAULT '';
     "#,
     ),
+    (
+        10,
+        "delegation_and_e2e",
+        r#"
+    -- Delegated tokens (federation P2): the resource owner issues consumer credentials directly,
+    -- registered upstream over the fan-out session (session-scoped, revoke-by-disconnect).
+    -- groups = JSON array of local group IDs (resolved to names at registration time);
+    -- hint_map = JSON array of {hint, groups} (coarse E2E routing vocabulary);
+    -- e2e_key_enc = E2E channel master key, AES-256-GCM encrypted like connector tokens
+    -- (federation P3: HKDF(token) at issuance; second reversible-storage exception, same mechanism).
+    CREATE TABLE delegated_token (
+        id           TEXT PRIMARY KEY,
+        token_hash   TEXT NOT NULL UNIQUE,
+        token_prefix TEXT NOT NULL,
+        label        TEXT NOT NULL DEFAULT '',
+        groups       TEXT NOT NULL DEFAULT '[]',
+        hint_map     TEXT NOT NULL DEFAULT '[]',
+        e2e_key_enc  TEXT NOT NULL DEFAULT '',
+        created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    -- Disaster-set registration: one row per upstream connector (is_primary=1 marks the primary entry);
+    -- re-registered automatically whenever the fan-out session (re)connects.
+    CREATE TABLE delegated_token_reg (
+        token_id     TEXT NOT NULL REFERENCES delegated_token(id) ON DELETE CASCADE,
+        connector_id TEXT NOT NULL REFERENCES connector(id) ON DELETE CASCADE,
+        is_primary   INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (token_id, connector_id)
+    );
+
+    -- E2E enforcement flag (federation P3): an e2e_required group may only hang on delegated
+    -- tokens — never on local accounts / relay tokens / connectors (those principals have no E2E key).
+    ALTER TABLE "group" ADD COLUMN e2e_required INTEGER NOT NULL DEFAULT 0;
+    "#,
+    ),
 ];
 
 impl Database {
@@ -515,6 +550,67 @@ mod tests {
             assert_eq!(rec.push_groups, gid);
             db.set_connector_push_groups("conn-old", "").expect("clear");
             assert_eq!(db.get_connector("conn-old").unwrap().unwrap().push_groups, "");
+        }
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    }
+
+    #[test]
+    fn migration_v10_upgrades_old_db() {
+        // Build a legacy DB file with only v1~v9 applied (no delegation tables, group without e2e_required)
+        let path = std::env::temp_dir().join(format!("anet-db-mig10-test-{}.db", uuid::Uuid::new_v4()));
+        {
+            let conn = rusqlite::Connection::open(&path).expect("open raw conn");
+            conn.execute_batch(
+                "CREATE TABLE _migration (
+                    version INTEGER PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );",
+            )
+            .unwrap();
+            for (version, name, sql) in MIGRATIONS.iter().take(9) {
+                conn.execute_batch(sql).unwrap();
+                conn.execute(
+                    "INSERT INTO _migration (version, name) VALUES (?1, ?2)",
+                    params![version, name],
+                )
+                .unwrap();
+            }
+            // A group + connector under the old schema
+            conn.execute(
+                "INSERT INTO \"group\" (id, name, remark, created_at, updated_at)
+                 VALUES ('g-old', 'legacy', '', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO connector (id, name, upstream_addr, token_enc, sni_hostname, insecure, ca_cert_path, pinned_cert_path, advertise, group_id, enabled, remark, created_at, updated_at, pinned_fingerprint, push_groups)
+                 VALUES ('conn-old', 'site-old', '1.2.3.4:54430', 'v1:AAAA:BBBB', '', 1, '', '', '', NULL, 1, 'legacy', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '', '')",
+                [],
+            )
+            .unwrap();
+        }
+
+        // Opening triggers v10: old rows gain e2e_required=0; delegation tables usable with the old connector
+        {
+            let db = Database::open(&path).expect("open migrated db");
+            let g = db.get_group("g-old").expect("get").expect("old group exists");
+            assert!(!g.e2e_required);
+            assert_eq!(db.group_attachment_count("g-old").unwrap(), 0);
+            db.set_group_e2e_required("g-old", true).expect("free group can be marked");
+
+            let tok = db
+                .create_delegated_token(&"ab".repeat(32), "psk_test01", "legacy-issue", "[]", "[]", "v1:AAAA:CCCC")
+                .expect("create delegated token");
+            db.set_delegated_token_regs(&tok.id, &[("conn-old".to_string(), true)])
+                .expect("set regs on old connector");
+            let regs = db.delegated_regs_of(&tok.id).unwrap();
+            assert_eq!(regs.len(), 1);
+            assert_eq!(regs[0].connector_id, "conn-old");
+            assert!(regs[0].is_primary);
         }
 
         let _ = std::fs::remove_file(&path);

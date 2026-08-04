@@ -5,7 +5,7 @@
 //!
 //! Submodules split by domain (pure move, no logic change): pool (connection pool and
 //! shared helpers) / migrations (versioned migrations) / paginate (shared paged-query helper) /
-//! admin / rules / accounts / connectors / logs.
+//! admin / rules / accounts / connectors / delegation (federation P2) / logs.
 //! Public paths `db::xxx` are unchanged.
 
 pub mod models;
@@ -13,6 +13,7 @@ pub mod models;
 mod accounts;
 mod admin;
 mod connectors;
+mod delegation;
 mod logs;
 mod migrations;
 mod paginate;

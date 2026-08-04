@@ -270,7 +270,8 @@ impl Database {
             &conn,
             "g.id, g.name, g.remark, g.created_at, g.updated_at,
              (SELECT COUNT(*) FROM group_rule gr WHERE gr.group_id = g.id),
-             (SELECT COUNT(*) FROM account a WHERE a.group_id = g.id)",
+             (SELECT COUNT(*) FROM account a WHERE a.group_id = g.id),
+             g.e2e_required",
             "\"group\" g",
             &where_clauses,
             &bind,
@@ -287,7 +288,8 @@ impl Database {
             .prepare(
                 "SELECT g.id, g.name, g.remark, g.created_at, g.updated_at,
                         (SELECT COUNT(*) FROM group_rule gr WHERE gr.group_id = g.id),
-                        (SELECT COUNT(*) FROM account a WHERE a.group_id = g.id)
+                        (SELECT COUNT(*) FROM account a WHERE a.group_id = g.id),
+                        g.e2e_required
                  FROM \"group\" g WHERE g.id = ?1",
             )
             .map_err(db_err)?;
@@ -302,7 +304,7 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn
             .prepare(
-                "SELECT g.id, g.name, g.remark, g.created_at, g.updated_at, 0, 0 FROM \"group\" g WHERE g.name = ?1",
+                "SELECT g.id, g.name, g.remark, g.created_at, g.updated_at, 0, 0, g.e2e_required FROM \"group\" g WHERE g.name = ?1",
             )
             .map_err(db_err)?;
         let mut rows = stmt.query(params![name]).map_err(db_err)?;
@@ -325,6 +327,7 @@ impl Database {
             id,
             name: name.to_string(),
             remark: remark.to_string(),
+            e2e_required: false,
             rule_count: 0,
             account_count: 0,
             created_at: now.clone(),
@@ -392,6 +395,52 @@ impl Database {
             .map_err(db_err)?;
         Ok(())
     }
+
+    /// Total references from principals without an E2E key (accounts + relay tokens + connectors).
+    /// An e2e_required group must stay attachable to delegated tokens only (federation P3 §1.4).
+    pub fn group_attachment_count(&self, group_id: &str) -> Result<i64> {
+        let conn = self.conn();
+        let count: i64 = conn
+            .query_row(
+                "SELECT (SELECT COUNT(*) FROM account WHERE group_id = ?1)
+                      + (SELECT COUNT(*) FROM relay_token WHERE group_id = ?1)
+                      + (SELECT COUNT(*) FROM connector WHERE group_id = ?1)",
+                params![group_id],
+                |r| r.get(0),
+            )
+            .map_err(db_err)?;
+        Ok(count)
+    }
+
+    /// Set the E2E enforcement flag (federation P3). Refuses to mark a group still referenced by
+    /// accounts / relay tokens / connectors (those principals have no E2E key — fail closed).
+    pub fn set_group_e2e_required(&self, id: &str, required: bool) -> Result<()> {
+        if required && self.group_attachment_count(id)? > 0 {
+            return Err(agile_net_core::error::Error::Other(
+                "该组仍被账号/扇入令牌/扇出连接引用，不可标记端到端加密".into(),
+            ));
+        }
+        let conn = self.conn();
+        conn.execute(
+            "UPDATE \"group\" SET e2e_required = ?1, updated_at = ?2 WHERE id = ?3",
+            params![required as i64, now_rfc3339(), id],
+        )
+        .map_err(db_err)?;
+        Ok(())
+    }
+
+    /// Whether the group carries the E2E enforcement flag (None = group missing).
+    pub fn group_e2e_required(&self, id: &str) -> Result<Option<bool>> {
+        let conn = self.conn();
+        let mut stmt = conn
+            .prepare("SELECT e2e_required FROM \"group\" WHERE id = ?1")
+            .map_err(db_err)?;
+        let mut rows = stmt.query(params![id]).map_err(db_err)?;
+        Ok(match rows.next().map_err(db_err)? {
+            Some(r) => Some(r.get::<_, i64>(0).map_err(db_err)? != 0),
+            None => None,
+        })
+    }
 }
 
 fn map_group_row(r: &rusqlite::Row) -> rusqlite::Result<GroupRecord> {
@@ -403,5 +452,6 @@ fn map_group_row(r: &rusqlite::Row) -> rusqlite::Result<GroupRecord> {
         updated_at: r.get(4)?,
         rule_count: r.get(5)?,
         account_count: r.get(6)?,
+        e2e_required: r.get::<_, i64>(7)? != 0,
     })
 }
