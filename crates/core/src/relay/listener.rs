@@ -67,8 +67,41 @@ pub enum AuthIdentity {
         account_id: String,
         /// ACL rules (CIDR / exact domain / *.suffix domain)
         acl: Vec<String>,
+        /// Federation P2: delegated-session stamp — forwarded Opens carry the token's group
+        /// tags, E2E hints bound the envelope vocabulary (None = regular account)
+        delegated: Option<DelegatedStamp>,
     },
 }
+
+/// Federation P2: stamp carried by a delegated client session (registered token).
+#[derive(Debug, Clone)]
+pub struct DelegatedStamp {
+    /// Issuing fan-out endpoint (node_id), for audit and routing provenance
+    pub issuer: String,
+    /// Issuer group names the token may use (intersected with the issuer's pushed groups)
+    pub groups: Vec<String>,
+    /// Coarse routing vocabulary for E2E envelopes of this token
+    pub hints: Vec<String>,
+}
+
+/// Federation P2: a delegated token registered by an online fan-out endpoint (session-scoped,
+/// relay-side volatile state — dropped when the issuer session ends, revoke-by-disconnect).
+#[derive(Debug, Clone)]
+pub struct DelegatedToken {
+    /// Issuer node_id (the fan-out session that registered this token)
+    pub issuer: String,
+    pub label: String,
+    /// Issuer group names the token may use (already intersected with pushed groups)
+    pub groups: Vec<String>,
+    /// Transparent-tier ACL snapshot: union of the referenced pushed-group rules
+    pub acl_rules: Vec<String>,
+    /// Coarse E2E routing vocabulary (validated against the issuer's advertised routes)
+    pub hint_map: Vec<crate::proto::message::HintEntry>,
+}
+
+/// Relay-side delegated token registry (token_hash -> token). Volatile by design: nothing is
+/// persisted, a relay restart clears it and issuers re-register on reconnect.
+pub type DelegatedRegistry = Arc<DashMap<String, DelegatedToken>>;
 
 /// Authorizable-pool entry of one online peer (federation P1): its advertised routes and
 /// pushed policy groups, source-tagged by node_id.
@@ -166,6 +199,9 @@ pub enum PeerEvent {
     /// Restriction denial: a peer-initiated target connection was intercepted by PeerAcl (for control-plane audit).
     /// `peer_label` is the peer identifier (fan-in=node_id, fan-out=upstream_addr).
     AclDenied { peer_label: String, target: String },
+    /// Federation P2: a fan-out endpoint registered/revoked a delegated token on its session.
+    DelegationRegistered { node_id: String, label: String },
+    DelegationRevoked { node_id: String, label: String },
 }
 
 /// Connected node session
@@ -197,6 +233,8 @@ pub struct RelayListener {
     peer_advertise: Arc<DashMap<String, Vec<String>>>,
     /// Policy groups pushed by each downstream node (federation P1 authorizable pool)
     peer_groups: Arc<DashMap<String, Vec<crate::proto::message::PushedGroupMsg>>>,
+    /// Federation P2: delegated tokens registered by online fan-out endpoints (session-scoped)
+    delegated: DelegatedRegistry,
     /// Aggregated queryable route table (RCU hot update)
     routes: Arc<arc_swap::ArcSwap<AdvertisedRoutes>>,
     /// Online client sessions (account_id -> session handle list, for online checks and forced disconnect)
@@ -253,6 +291,7 @@ impl RelayListener {
             peers: Arc::new(DashMap::new()),
             peer_advertise: Arc::new(DashMap::new()),
             peer_groups: Arc::new(DashMap::new()),
+            delegated: Arc::new(DashMap::new()),
             routes: Arc::new(arc_swap::ArcSwap::from_pointee(AdvertisedRoutes::default())),
             clients: Arc::new(DashMap::new()),
             events,
@@ -270,6 +309,14 @@ impl RelayListener {
     /// Attach the relay transit meter (fan-in peer-initiated forwards booked with from=node_id).
     pub fn with_transit_meter(mut self, meter: Arc<TransitMeter>) -> Self {
         self.transit = Some(meter);
+        self
+    }
+
+    /// Inject a shared delegated token registry (federation P2): the node layer hands one
+    /// instance to both the listener (register/revoke writes) and the token validator (auth
+    /// reads), so the two always see the same live state.
+    pub fn with_delegated_registry(mut self, registry: DelegatedRegistry) -> Self {
+        self.delegated = registry;
         self
     }
 
@@ -358,6 +405,12 @@ impl RelayListener {
                 }
             })
             .collect()
+    }
+
+    /// Federation P2: shared handle of the delegated token registry (the token validator
+    /// resolves delegated client auth against it; entries die with their issuer session).
+    pub fn delegated_registry(&self) -> DelegatedRegistry {
+        self.delegated.clone()
     }
 
     /// Number of online client accounts.
@@ -557,12 +610,18 @@ impl RelayListener {
                 )
                 .await
             }
-            AuthIdentity::Client { account_id, acl } => {
+            AuthIdentity::Client {
+                account_id,
+                acl,
+                delegated,
+            } => {
                 self.serve_client_session(
                     tls_stream,
                     peer_addr,
                     account_id,
                     acl,
+                    delegated,
+                    token_hash,
                     flow_control,
                     limiter,
                 )
@@ -671,8 +730,14 @@ impl RelayListener {
         info!(peer = %peer_addr, node_id = %node_id, "node authenticated successfully");
 
         let (open_tx, mut open_rx) = tokio::sync::mpsc::channel::<OpenRequest>(64);
-        let (mux, reader_handle) =
-            MuxSession::start(tls_stream, 1, SessionEvents::open(open_tx), flow_control, limiter);
+        let (ctrl_tx, mut ctrl_rx) = tokio::sync::mpsc::channel::<Bytes>(64);
+        let (mux, reader_handle) = MuxSession::start(
+            tls_stream,
+            1,
+            SessionEvents::open_and_ctrl(open_tx, ctrl_tx),
+            flow_control,
+            limiter,
+        );
 
         self.peers.insert(
             node_id.clone(),
@@ -700,22 +765,31 @@ impl RelayListener {
         // concurrency cap: on a peer Open flood every request would spawn a task and dial
         // out; beyond the cap reply OpenFail, guarding task/connection resources
         let open_permits = Arc::new(Semaphore::new(MAX_INBOUND_OPENS_PER_SESSION));
-        while let Some(req) = open_rx.recv().await {
-            let Ok(permit) = open_permits.clone().try_acquire_owned() else {
-                debug!(node = %node_id, channel = req.channel_id, "inbound open limit reached, rejecting");
-                let _ = mux
-                    .send_frame(Frame::empty(FrameType::OpenFail, req.channel_id))
-                    .await;
-                continue;
-            };
-            let this = self.clone();
-            let mux = mux.clone();
-            let node_id = node_id.clone();
-            let acl = acl.clone();
-            tokio::spawn(async move {
-                let _permit = permit; // permit held by the task until the bridge ends
-                this.handle_node_open(mux, req, node_id, acl).await;
-            });
+        loop {
+            tokio::select! {
+                req = open_rx.recv() => {
+                    let Some(req) = req else { break };
+                    let Ok(permit) = open_permits.clone().try_acquire_owned() else {
+                        debug!(node = %node_id, channel = req.channel_id, "inbound open limit reached, rejecting");
+                        let _ = mux
+                            .send_frame(Frame::empty(FrameType::OpenFail, req.channel_id))
+                            .await;
+                        continue;
+                    };
+                    let this = self.clone();
+                    let mux = mux.clone();
+                    let node_id = node_id.clone();
+                    let acl = acl.clone();
+                    tokio::spawn(async move {
+                        let _permit = permit; // permit held by the task until the bridge ends
+                        this.handle_node_open(mux, req, node_id, acl).await;
+                    });
+                }
+                payload = ctrl_rx.recv() => {
+                    let Some(payload) = payload else { break };
+                    self.handle_node_ctrl(&mux, &node_id, &payload).await;
+                }
+            }
         }
 
         let _ = reader_handle.await;
@@ -723,11 +797,166 @@ impl RelayListener {
         self.peers.remove(&node_id);
         self.set_peer_routes(&node_id, Vec::new());
         self.peer_groups.remove(&node_id);
+        // federation P2: delegated tokens die with their issuer session (revoke-by-disconnect);
+        // kick every delegated client session they had authenticated
+        let dead: Vec<String> = self
+            .delegated
+            .iter()
+            .filter(|e| e.value().issuer == node_id)
+            .map(|e| e.key().clone())
+            .collect();
+        for hash in dead {
+            self.delegated.remove(&hash);
+            self.disconnect_client(&delegated_session_key(&hash));
+        }
         let _ = self.events.send(PeerEvent::NodeDisconnected {
             node_id: node_id.clone(),
         });
         info!(node_id = %node_id, "peer disconnected");
         Ok(())
+    }
+
+    /// Handle a session control-plane message (federation P2): delegated token register/revoke,
+    /// answered with a TokenAck. Malformed frames are logged and ignored (never fatal to the session).
+    async fn handle_node_ctrl(self: &Arc<Self>, mux: &Arc<MuxSession>, node_id: &str, payload: &[u8]) {
+        use crate::proto::message::CtrlMessage as C;
+        let msg = match serde_json::from_slice::<C>(payload) {
+            Ok(m) => m,
+            Err(e) => {
+                debug!(node = %node_id, error = %e, "malformed ctrl frame ignored");
+                return;
+            }
+        };
+        match msg {
+            C::TokenRegister {
+                token_hash,
+                label,
+                groups,
+                hint_map,
+            } => {
+                let (ok, error) = match self.register_delegated(node_id, &token_hash, &label, groups, hint_map) {
+                    Ok(()) => {
+                        info!(node = %node_id, label = %label, "delegated token registered");
+                        let _ = self.events.send(PeerEvent::DelegationRegistered {
+                            node_id: node_id.to_string(),
+                            label,
+                        });
+                        (true, String::new())
+                    }
+                    Err(e) => {
+                        warn!(node = %node_id, reason = %e, "delegated token registration rejected");
+                        (false, e)
+                    }
+                };
+                self.send_ctrl_ack(mux, token_hash, ok, error).await;
+            }
+            C::TokenRevoke { token_hash } => {
+                if let Some(label) = self.revoke_delegated(node_id, &token_hash) {
+                    info!(node = %node_id, label = %label, "delegated token revoked");
+                    let _ = self.events.send(PeerEvent::DelegationRevoked {
+                        node_id: node_id.to_string(),
+                        label,
+                    });
+                }
+                self.send_ctrl_ack(mux, token_hash, true, String::new()).await;
+            }
+            C::TokenAck { .. } => {
+                debug!(node = %node_id, "unexpected TokenAck from issuer ignored");
+            }
+        }
+    }
+
+    async fn send_ctrl_ack(&self, mux: &Arc<MuxSession>, token_hash: String, ok: bool, error: String) {
+        let ack = crate::proto::message::CtrlMessage::TokenAck {
+            token_hash,
+            ok,
+            error,
+        };
+        if let Ok(p) = serde_json::to_vec(&ack) {
+            let _ = mux.send_frame(Frame::new(FrameType::Ctrl, 0, Bytes::from(p))).await;
+        }
+    }
+
+    /// Validate and register a delegated token (federation P2):
+    /// - the token's groups are intersected with the issuer's pushed policy groups (an empty
+    ///   register set means "all pushed groups"); an empty intersection is rejected
+    /// - every hint must route back to this very issuer via the advertised route table
+    ///   (a hint that routes nowhere — or to another peer — can never serve, fail closed)
+    /// - one token_hash belongs to one issuer (a second issuer claiming it is rejected)
+    fn register_delegated(
+        &self,
+        node_id: &str,
+        token_hash: &str,
+        label: &str,
+        groups: Vec<String>,
+        hint_map: Vec<crate::proto::message::HintEntry>,
+    ) -> std::result::Result<(), String> {
+        if token_hash.len() != 64 || !token_hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err("invalid token_hash".into());
+        }
+        if label.len() > 128 {
+            return Err("label too long".into());
+        }
+        if let Some(existing) = self.delegated.get(token_hash)
+            && existing.issuer != node_id
+        {
+            return Err("token_hash already registered by another issuer".into());
+        }
+
+        // intersect the token's groups with the issuer's pushed pool; empty set = all pushed
+        let pushed = self
+            .peer_groups
+            .get(node_id)
+            .map(|v| v.clone())
+            .unwrap_or_default();
+        let wanted: Vec<_> = if groups.is_empty() {
+            pushed.iter().collect()
+        } else {
+            pushed.iter().filter(|g| groups.contains(&g.name)).collect()
+        };
+        if wanted.is_empty() {
+            return Err("no known groups (push policy groups before registering)".into());
+        }
+        let mut names = Vec::with_capacity(wanted.len());
+        let mut rules: Vec<String> = Vec::new();
+        for g in &wanted {
+            names.push(g.name.clone());
+            for r in &g.rules {
+                if !rules.contains(r) {
+                    rules.push(r.clone());
+                }
+            }
+        }
+
+        // hints must resolve to this issuer over the advertised route table
+        for h in &hint_map {
+            if self.resolve_peer(&h.hint).as_deref() != Some(node_id) {
+                return Err(format!("hint '{}' does not route to this issuer", h.hint));
+            }
+        }
+
+        self.delegated.insert(
+            token_hash.to_string(),
+            DelegatedToken {
+                issuer: node_id.to_string(),
+                label: label.to_string(),
+                groups: names,
+                acl_rules: rules,
+                hint_map,
+            },
+        );
+        Ok(())
+    }
+
+    /// Drop a delegated token (issuer-scoped) and kick the client sessions it authenticated.
+    /// Returns the label for audit when a registration existed.
+    fn revoke_delegated(&self, node_id: &str, token_hash: &str) -> Option<String> {
+        let (hash, tok) = self
+            .delegated
+            .remove_if(token_hash, |_, v| v.issuer == node_id)?;
+        let label = tok.label;
+        self.disconnect_client(&delegated_session_key(&hash));
+        Some(label)
     }
 
     /// Client session: handle inbound Open requests (ACL + downstream routing + direct connect).
@@ -737,6 +966,8 @@ impl RelayListener {
         peer_addr: SocketAddr,
         account_id: String,
         acl: Vec<String>,
+        delegated: Option<DelegatedStamp>,
+        token_hash: String,
         flow_control: bool,
         limiter: Option<Arc<TokenBucket>>,
     ) -> Result<()> {
@@ -770,9 +1001,11 @@ impl RelayListener {
             let this = self.clone();
             let mux = mux.clone();
             let acl_router = acl_router.clone();
+            let delegated = delegated.clone();
+            let token_hash = token_hash.clone();
             tokio::spawn(async move {
                 let _permit = permit; // permit held by the task until the bridge ends
-                this.handle_client_open(mux, req, acl_router).await;
+                this.handle_client_open(mux, req, acl_router, delegated, token_hash).await;
             });
         }
 
@@ -793,12 +1026,14 @@ impl RelayListener {
         Ok(())
     }
 
-    /// Handle a client Open: ACL check -> downstream routing -> direct connect, then bridge.
+    /// Handle a client Open: ACL check -> delegated re-stamp (federation P2) -> routing, then bridge.
     async fn handle_client_open(
         self: &Arc<Self>,
         mux: Arc<MuxSession>,
         req: OpenRequest,
         acl_router: Arc<ProxyRouter>,
+        delegated: Option<DelegatedStamp>,
+        token_hash: String,
     ) {
         let open_req: OpenChannel = match serde_json::from_slice(&req.payload) {
             Ok(v) => v,
@@ -814,6 +1049,7 @@ impl RelayListener {
         let target = format!("{}:{}", open_req.target_addr, open_req.target_port);
 
         // ACL: the target must hit a rule of this account's group
+        // (delegated sessions: the rule snapshot covers transparent rules plus the hint vocabulary)
         if !acl_router.matches_target(&target) {
             warn!(target = %target, "client open denied by ACL");
             let _ = mux
@@ -821,6 +1057,35 @@ impl RelayListener {
                 .await;
             return;
         }
+
+        // federation P2: re-stamp the Open of a delegated session before forwarding —
+        // transparent tier carries the token's group tags for the issuer's per-group
+        // enforcement; E2E envelopes pass through blind (kid/hint consistency checked)
+        let open_req = match delegated {
+            Some(stamp) => {
+                let mut o = open_req;
+                match &o.e2e {
+                    Some(e2e) => {
+                        if e2e.kid != crate::relay::e2e::kid_of(&token_hash)
+                            || e2e.hint != o.target_addr
+                            || !stamp.hints.contains(&o.target_addr)
+                        {
+                            warn!(target = %target, "delegated e2e open rejected (kid/hint mismatch)");
+                            let _ = mux
+                                .send_frame(Frame::empty(FrameType::OpenFail, req.channel_id))
+                                .await;
+                            return;
+                        }
+                        o.groups = Vec::new(); // group tags travel sealed inside the blob
+                    }
+                    None => {
+                        o.groups = stamp.groups.clone();
+                    }
+                }
+                o
+            }
+            None => open_req,
+        };
 
         // client account traffic is already metered per account (traffic_log); transit pairs skip duplicate metering (from = None)
         self.route_open(mux, req, open_req, target, None).await;
@@ -875,6 +1140,8 @@ impl RelayListener {
     }
 
     /// Open routing and bridging: prefer downstream-node advertised routes, else local direct connect.
+    /// The Open payload is forwarded verbatim (group tags / E2E envelopes pass through, keeping
+    /// multi-hop federation chains transparent end to end).
     /// `from` is the transit-metering source label (fan-in peer node_id; None = no metering).
     async fn route_open(
         self: &Arc<Self>,
@@ -889,10 +1156,7 @@ impl RelayListener {
 
         // prefer downstream-node advertised routes, else local direct connect
         let bridged = if let Some(peer_id) = self.resolve_peer(&open_req.target_addr) {
-            match self
-                .open_channel(&peer_id, &open_req.target_addr, open_req.target_port)
-                .await
-            {
+            match self.open_channel_full(&peer_id, &open_req).await {
                 Ok(peer_channel) => {
                     if mux
                         .send_frame(Frame::empty(FrameType::OpenOk, req.channel_id))
@@ -983,20 +1247,26 @@ impl RelayListener {
         self.routes.store(Arc::new(table));
     }
 
-    /// Initiate a new connection request to the given node (Open Channel)
+    /// Initiate a new connection request to the given node (plain Open; wrapper of `open_channel_full`).
     pub async fn open_channel(
         &self,
         node_id: &str,
         target_addr: &str,
         target_port: u16,
     ) -> Result<MuxChannel> {
+        self.open_channel_full(node_id, &OpenChannel::new(target_addr, target_port))
+            .await
+    }
+
+    /// Initiate a new connection request to the given node, forwarding the Open payload verbatim
+    /// (federation P2/P3: group tags and E2E envelopes are preserved across hops).
+    pub async fn open_channel_full(&self, node_id: &str, open: &OpenChannel) -> Result<MuxChannel> {
         let peer = self
             .peers
             .get(node_id)
             .ok_or_else(|| Error::NotFound(format!("peer node {node_id} not connected")))?;
 
-        let payload = serde_json::to_vec(&OpenChannel::new(target_addr, target_port))
-            .map_err(|e| Error::Protocol(e.to_string()))?;
+        let payload = serde_json::to_vec(open).map_err(|e| Error::Protocol(e.to_string()))?;
 
         peer.mux.open_channel(Bytes::from(payload)).await
     }
@@ -1009,6 +1279,12 @@ impl Drop for ConnGuard {
     fn drop(&mut self) {
         self.0.fetch_sub(1, Ordering::Relaxed);
     }
+}
+
+/// Client-session key of a delegated token (federation P2): sessions authenticated by a
+/// delegated token are tracked/kicked under this account id.
+pub fn delegated_session_key(token_hash: &str) -> String {
+    format!("delegated:{token_hash}")
 }
 
 /// Compile ACL rule strings into a ProxyRouter (a hit means allowed).

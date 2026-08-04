@@ -17,8 +17,8 @@ pub use bridge::bridge;
 pub use connector::{ConnectionState, RelayConnector};
 pub use limit::TokenBucket;
 pub use listener::{
-    AuthIdentity, PeerEvent, RelayListener, StaticTokenValidator, TokenValidator, build_acl_router,
-    constant_time_eq,
+    AuthIdentity, DelegatedRegistry, DelegatedStamp, DelegatedToken, PeerEvent, RelayListener,
+    StaticTokenValidator, TokenValidator, build_acl_router, constant_time_eq, delegated_session_key,
 };
 pub use mux::{MuxChannel, MuxSession, SessionEvents};
 pub use transit::{FROM_PROXY, TO_LOCAL, TransitMeter, TransitPair};

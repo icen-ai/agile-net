@@ -11,7 +11,9 @@
 use crate::db::{Database, sha256_hex};
 use crate::service::acl::PeerAclRegistry;
 use agile_net_core::proto::message::{AuthKind, AuthRequest, ControlOffer};
-use agile_net_core::relay::listener::{AuthIdentity, TokenValidator};
+use agile_net_core::relay::listener::{
+    AuthIdentity, DelegatedRegistry, DelegatedStamp, TokenValidator, delegated_session_key,
+};
 use std::sync::Arc;
 
 /// Manageable fan-out registry: upstream node name → control endpoint (handshake v2 discovery, maintained by the connector sync task).
@@ -33,6 +35,9 @@ pub struct DbTokenValidator {
     manageable: ManageableRegistry,
     /// Peer ACL registry (relay_token.group_id → PeerAcl; None group = unrestricted).
     acl: Arc<PeerAclRegistry>,
+    /// Federation P2: delegated token registry shared with the relay listener (client auth
+    /// falls through to it when no local account matches the tunnel token hash).
+    delegated: Option<DelegatedRegistry>,
 }
 
 impl DbTokenValidator {
@@ -42,6 +47,7 @@ impl DbTokenValidator {
             control_api: Arc::new(arc_swap::ArcSwapOption::from_pointee(None)),
             manageable: Arc::new(dashmap::DashMap::new()),
             acl: Arc::new(PeerAclRegistry::new()),
+            delegated: None,
         }
     }
 
@@ -60,6 +66,13 @@ impl DbTokenValidator {
     /// Inject the peer ACL registry (fan-in token group restriction).
     pub fn with_acl_registry(mut self, registry: Arc<PeerAclRegistry>) -> Self {
         self.acl = registry;
+        self
+    }
+
+    /// Inject the delegated token registry (federation P2; share the listener's instance so
+    /// registrations/revocations take effect for auth immediately).
+    pub fn with_delegated_registry(mut self, registry: DelegatedRegistry) -> Self {
+        self.delegated = Some(registry);
         self
     }
 
@@ -132,31 +145,50 @@ impl TokenValidator for DbTokenValidator {
                     acl,
                 })
             }
-            AuthKind::Client => {
-                let account = self.db.find_account_by_tunnel_hash(&token_hash).ok()??;
-                if !account.enabled {
-                    return None;
-                }
-                // Load all rules of the account's group as the data-plane ACL.
-                let rules = self.db.rules_of_account(&account.id).ok()?;
-                let mut acl: Vec<String> = rules.into_iter().map(|r| r.value).collect();
-                // "Manage this node" permission: implicitly open the node's own loopback API
-                // and manageable fan-out endpoints (revoking it drops the path on next tunnel auth).
-                if account.admin_console {
-                    acl.push("127.0.0.1/32".to_string());
-                    for item in self.manageable.iter() {
-                        let offer = item.value();
-                        if let Some(host) = &offer.api_host {
-                            acl.push(acl_rule_for_host(host));
+            AuthKind::Client => match self.db.find_account_by_tunnel_hash(&token_hash) {
+                Ok(Some(account)) => {
+                    if !account.enabled {
+                        return None;
+                    }
+                    // Load all rules of the account's group as the data-plane ACL.
+                    let rules = self.db.rules_of_account(&account.id).ok()?;
+                    let mut acl: Vec<String> = rules.into_iter().map(|r| r.value).collect();
+                    // "Manage this node" permission: implicitly open the node's own loopback API
+                    // and manageable fan-out endpoints (revoking it drops the path on next tunnel auth).
+                    if account.admin_console {
+                        acl.push("127.0.0.1/32".to_string());
+                        for item in self.manageable.iter() {
+                            let offer = item.value();
+                            if let Some(host) = &offer.api_host {
+                                acl.push(acl_rule_for_host(host));
+                            }
                         }
                     }
+                    let _ = self.db.touch_account_seen(&account.id);
+                    Some(AuthIdentity::Client {
+                        account_id: account.id,
+                        acl,
+                        delegated: None,
+                    })
                 }
-                let _ = self.db.touch_account_seen(&account.id);
-                Some(AuthIdentity::Client {
-                    account_id: account.id,
-                    acl,
-                })
-            }
+                Ok(None) => {
+                    // federation P2: no local account — fall through to the delegated registry
+                    // (tokens registered by an online fan-out endpoint on its session)
+                    let entry = self.delegated.as_ref()?.get(&token_hash)?.clone();
+                    let mut acl = entry.acl_rules.clone();
+                    acl.extend(entry.hint_map.iter().map(|h| h.hint.clone()));
+                    Some(AuthIdentity::Client {
+                        account_id: delegated_session_key(&token_hash),
+                        acl,
+                        delegated: Some(DelegatedStamp {
+                            issuer: entry.issuer.clone(),
+                            groups: entry.groups.clone(),
+                            hints: entry.hint_map.iter().map(|h| h.hint.clone()).collect(),
+                        }),
+                    })
+                }
+                Err(_) => None, // database errors fail closed
+            },
         }
     }
 }
@@ -242,5 +274,102 @@ mod tests {
         let db = Database::in_memory().unwrap();
         let validator = DbTokenValidator::new(db);
         assert!(validator.validate(&node_auth("psk_no-such-token")).is_none());
+    }
+
+    fn client_auth(token: &str) -> AuthRequest {
+        AuthRequest {
+            node_id: "consumer-a".to_string(),
+            token: token.to_string(),
+            kind: AuthKind::Client,
+            advertise: Vec::new(),
+            groups: Vec::new(),
+            version: 3,
+        }
+    }
+
+    #[test]
+    fn delegated_token_falls_through_to_registry() {
+        use agile_net_core::proto::message::HintEntry;
+        use agile_net_core::relay::listener::DelegatedToken;
+
+        let db = Database::in_memory().unwrap();
+        let token = "psk_delegated-alice";
+        let hash = sha256_hex(token.as_bytes());
+        let registry: DelegatedRegistry = Arc::new(dashmap::DashMap::new());
+        registry.insert(
+            hash.clone(),
+            DelegatedToken {
+                issuer: "issuer-c".into(),
+                label: "alice".into(),
+                groups: vec!["git".into()],
+                acl_rules: vec!["10.0.0.0/8".into()],
+                hint_map: vec![HintEntry {
+                    hint: "relay.internal".into(),
+                    groups: vec!["git".into()],
+                }],
+            },
+        );
+        let validator = DbTokenValidator::new(db).with_delegated_registry(registry.clone());
+
+        // no local account with this hash -> the delegated registry answers
+        let identity = validator.validate(&client_auth(token)).expect("delegated auth ok");
+        let AuthIdentity::Client {
+            account_id,
+            acl,
+            delegated,
+        } = identity
+        else {
+            panic!("expected client identity");
+        };
+        assert_eq!(account_id, delegated_session_key(&hash));
+        assert!(acl.contains(&"10.0.0.0/8".to_string()));
+        assert!(acl.contains(&"relay.internal".to_string()), "hints join the ACL vocabulary");
+        let stamp = delegated.expect("delegated stamp");
+        assert_eq!(stamp.issuer, "issuer-c");
+        assert_eq!(stamp.groups, vec!["git".to_string()]);
+        assert_eq!(stamp.hints, vec!["relay.internal".to_string()]);
+
+        // after the registration is dropped (revoke / issuer disconnect) auth fails closed
+        registry.remove(&hash);
+        assert!(validator.validate(&client_auth(token)).is_none());
+    }
+
+    #[test]
+    fn local_account_wins_over_delegated_registry() {
+        use agile_net_core::relay::listener::DelegatedToken;
+
+        let db = Database::in_memory().unwrap();
+        let gid = mk_group_with_rule(&db, "peers", "10.12.0.0/16");
+        let token = "psk_dual-identity";
+        let hash = sha256_hex(token.as_bytes());
+        // a local account with this tunnel token hash
+        let acc = db.create_account("u-local", &crate::db::hash_password("Passw0rd!ab").unwrap(), &gid, "").unwrap();
+        db.set_account_tunnel_token(&acc.id, Some(&hash)).unwrap();
+        // and a delegated registration under the same hash
+        let registry: DelegatedRegistry = Arc::new(dashmap::DashMap::new());
+        registry.insert(
+            hash.clone(),
+            DelegatedToken {
+                issuer: "issuer-c".into(),
+                label: "alice".into(),
+                groups: vec![],
+                acl_rules: vec![],
+                hint_map: vec![],
+            },
+        );
+        let validator = DbTokenValidator::new(db).with_delegated_registry(registry);
+
+        // local account takes precedence (no delegated stamp)
+        let identity = validator.validate(&client_auth(token)).expect("auth ok");
+        let AuthIdentity::Client {
+            account_id,
+            delegated,
+            ..
+        } = identity
+        else {
+            panic!("expected client identity");
+        };
+        assert_eq!(account_id, acc.id);
+        assert!(delegated.is_none());
     }
 }

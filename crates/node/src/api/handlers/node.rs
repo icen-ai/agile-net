@@ -614,6 +614,16 @@ async fn handle_ws(mut socket: WebSocket, state: ApiState) {
                         "time": chrono::Utc::now().to_rfc3339(),
                         "data": { "peer_label": peer_label, "target": target },
                     }),
+                    Some(PeerEvent::DelegationRegistered { node_id, label }) => json!({
+                        "type": "delegation.registered",
+                        "time": chrono::Utc::now().to_rfc3339(),
+                        "data": { "node_id": node_id, "label": label },
+                    }),
+                    Some(PeerEvent::DelegationRevoked { node_id, label }) => json!({
+                        "type": "delegation.revoked",
+                        "time": chrono::Utc::now().to_rfc3339(),
+                        "data": { "node_id": node_id, "label": label },
+                    }),
                     None => break,
                 }
             }

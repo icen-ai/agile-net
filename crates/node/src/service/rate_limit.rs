@@ -66,6 +66,7 @@ mod tests {
         let client = AuthIdentity::Client {
             account_id: "acc-1".into(),
             acl: vec![],
+            delegated: None,
         };
         assert_eq!(token_rate_limit_bps(&client, "any-hash", &db), None);
         // Node variant: maps to a relay_token row by token hash

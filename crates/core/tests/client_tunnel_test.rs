@@ -48,6 +48,7 @@ impl TokenValidator for TestValidator {
                     Some(AuthIdentity::Client {
                         account_id: auth.node_id.clone(),
                         acl: vec!["127.0.0.0/8".to_string()],
+                        delegated: None,
                     })
                 } else {
                     None

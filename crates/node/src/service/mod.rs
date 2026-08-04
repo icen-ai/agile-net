@@ -183,11 +183,15 @@ impl NodeServer {
         let mut cert_fingerprint: Option<String> = None;
         if let Some(listener_cfg) = &config.listener {
             let addr: SocketAddr = listener_cfg.addr.parse()?;
+            // federation P2: one registry instance shared by the validator (auth reads) and
+            // the listener (session-scoped register/revoke writes)
+            let delegated_registry = Arc::new(dashmap::DashMap::new());
             let validator = Arc::new(
                 DbTokenValidator::new(db.clone())
                     .with_control_api(control_api_slot.clone())
                     .with_manageable(manageable_registry.clone())
-                    .with_acl_registry(acl_registry.clone()),
+                    .with_acl_registry(acl_registry.clone())
+                    .with_delegated_registry(delegated_registry.clone()),
             );
 
             let tls_acceptor = if let Some(acme_cfg) = &config.acme {
@@ -250,6 +254,7 @@ impl NodeServer {
                 let db_rl = db.clone();
                 let l = RelayListener::with_validator(addr, validator, tls_acceptor)
                     .with_transit_meter(transit_meter.clone())
+                    .with_delegated_registry(delegated_registry)
                     .with_session_rate_limit(move |id, hash| {
                         rate_limit::token_rate_limit_bps(id, hash, &db_rl)
                     });
