@@ -43,6 +43,13 @@ pub struct GroupRecord {
     pub rule_count: i64,
     #[serde(default)]
     pub account_count: i64,
+    /// Adoption lineage (federation P1): fan-in peer node_id + pushed group name of the source
+    /// this group mirrors (both empty = plain local group). Mirrored groups are read-only and
+    /// follow the source automatically; editing requires a copy.
+    #[serde(default)]
+    pub adopted_node: String,
+    #[serde(default)]
+    pub adopted_name: String,
     pub created_at: String,
     pub updated_at: String,
 }

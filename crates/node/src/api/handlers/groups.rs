@@ -278,13 +278,17 @@ pub async fn update_group(
     Json(req): Json<UpdateGroupRequest>,
 ) -> Response {
     let gid = id.clone();
-    let exists = state
-        .db_call(move |db| db.get_group(&gid))
-        .await
-        .unwrap_or(None)
-        .is_some();
-    if !exists {
+    let existing = state.db_call(move |db| db.get_group(&gid)).await.unwrap_or(None);
+    let Some(existing) = existing else {
         return err(StatusCode::NOT_FOUND, codes::NOT_FOUND, "group not found");
+    };
+    // adopted groups are read-only mirrors of their pushed source — copy first, then edit
+    if !existing.adopted_node.is_empty() {
+        return err(
+            StatusCode::BAD_REQUEST,
+            codes::VALIDATION_FAILED,
+            "跟随上送的采纳组为只读——请先复制为本地组再编辑",
+        );
     }
     if let Some(name) = &req.name {
         let name = name.trim();
@@ -366,13 +370,17 @@ pub async fn set_group_rules(
     Json(req): Json<SetGroupRulesRequest>,
 ) -> Response {
     let gid = id.clone();
-    let exists = state
-        .db_call(move |db| db.get_group(&gid))
-        .await
-        .unwrap_or(None)
-        .is_some();
-    if !exists {
+    let existing = state.db_call(move |db| db.get_group(&gid)).await.unwrap_or(None);
+    let Some(existing) = existing else {
         return err(StatusCode::NOT_FOUND, codes::NOT_FOUND, "group not found");
+    };
+    // adopted groups are read-only mirrors of their pushed source — copy first, then edit
+    if !existing.adopted_node.is_empty() {
+        return err(
+            StatusCode::BAD_REQUEST,
+            codes::VALIDATION_FAILED,
+            "跟随上送的采纳组为只读——请先复制为本地组再编辑",
+        );
     }
     if req.rule_ids.len() > 500 {
         return err(

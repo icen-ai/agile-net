@@ -507,6 +507,8 @@ const ACT_CLICK = {
   'conn-toggle': b => toggleConnector(b.dataset.id, b.dataset.enabled === 'true'),
   'conn-del': b => delConnector(b.dataset.id, b.dataset.name),
   'deleg-revoke': b => revokeDelegation(b.dataset.id, b.dataset.name),
+  'grp-copy': b => copyAdopted(b.dataset.id, b.dataset.name),
+  'fed-adopt-now': b => { adoptPushed(b.dataset.node, b.dataset.group).then(() => { closeModal(); }); },
   'pool-toggle': b => {
     const row = document.querySelector('[data-poolrow="' + CSS.escape(b.dataset.node) + '"]');
     if (row) row.hidden = !row.hidden;
@@ -828,9 +830,10 @@ async function delAccount(id, username) {
 async function renderGroups() {
   $('view').innerHTML = '<div class="page-title">' + ic('shield', 20) + T('term.group') + '</div><div class="page-desc">' + T('groups.desc') + '</div>' +
     '<div class="toolbar"><input id="grp-q" placeholder="' + T('groups.searchPh') + '" value="' + esc(S.filter.groups||'') + '">' +
-    '<div class="spacer"></div><button id="grp-create">' + ic('plus', 15) + T('groups.create') + '</button></div>' +
+    '<div class="spacer"></div><button class="ghost" id="grp-adopt">' + ic('download', 15) + T('groups.adopt') + '</button><button id="grp-create">' + ic('plus', 15) + T('groups.create') + '</button></div>' +
     '<div class="card table-wrap"><table><thead><tr><th>' + T('common.name') + '</th><th>' + T('groups.colRules') + '</th><th>' + T('groups.colAccounts') + '</th><th>' + T('common.remark') + '</th><th>' + T('common.action') + '</th></tr></thead><tbody id="grp-body"></tbody></table><div id="grp-pager"></div></div>';
   $('grp-q').oninput = (e) => { S.filter.groups = e.target.value; S.page.groups = 1; renderGroups(); };
+  $('grp-adopt').onclick = openAdoptCenter;
   $('grp-create').onclick = openCreateGroup;
   await loadGroups();
 }
@@ -840,18 +843,26 @@ async function loadGroups() {
   if (S.filter.groups) url += '&q=' + encodeURIComponent(S.filter.groups);
   try {
     const d = await api('GET', url);
-    body.innerHTML = (d.items||[]).map(g =>
-      '<tr><td><b>' + esc(g.name) + '</b>' + (g.e2e_required ? ' <span class="badge b-warn" title="' + T('groups.e2e') + '">E2E</span>' : '') + '<div class="mono" style="color:var(--dim2)">' + shortId(g.id) + '</div></td>' +
-      '<td><span class="badge b-info">' + g.rule_count + '</span></td>' +
-      '<td><span class="badge b-info">' + g.account_count + '</span></td>' +
-      '<td style="color:var(--dim)">' + esc(g.remark || '-') + '</td>' +
-      '<td style="white-space:nowrap">' +
-        '<button class="ghost small" data-act="grp-detail" data-id="' + esc(g.id) + '">' + T('groups.detail') + '</button> ' +
-        '<button class="ghost small" data-act="grp-bind" data-id="' + esc(g.id) + '" data-name="' + esc(g.name) + '">' + T('groups.bind') + '</button> ' +
-        '<button class="ghost small" data-act="grp-edit" data-id="' + esc(g.id) + '" data-name="' + esc(g.name) + '" data-remark="' + esc(g.remark||'') + '" data-e2e="' + (g.e2e_required ? '1' : '') + '">' + T('common.edit') + '</button> ' +
-        '<button class="danger small" data-act="grp-del" data-id="' + esc(g.id) + '" data-name="' + esc(g.name) + '" data-count="' + g.account_count + '">' + T('common.delete') + '</button>' +
-      '</td></tr>'
-    ).join('') || '<tr><td colspan="5" class="empty">' + T('groups.empty') + '</td></tr>';
+    body.innerHTML = (d.items||[]).map(g => {
+      const adopted = !!g.adopted_node;
+      const nameCell = '<b>' + esc(g.name) + '</b>' + (g.e2e_required ? ' <span class="badge b-warn" title="' + T('groups.e2e') + '">E2E</span>' : '') +
+        (adopted ? ' <span class="badge b-info" title="' + esc(T('groups.adoptedTip', { node: g.adopted_node, src: g.adopted_name })) + '">' + T('groups.adoptedBadge') + '</span>' : '') +
+        '<div class="mono" style="color:var(--dim2)">' + shortId(g.id) + '</div>';
+      // adopted groups are read-only mirrors: 绑定/编辑 swap for 复制 (detach into an editable group)
+      const ops = adopted
+        ? '<button class="ghost small" data-act="grp-detail" data-id="' + esc(g.id) + '">' + T('groups.detail') + '</button> ' +
+          '<button class="ghost small" data-act="grp-copy" data-id="' + esc(g.id) + '" data-name="' + esc(g.name) + '">' + T('groups.copy') + '</button> ' +
+          '<button class="danger small" data-act="grp-del" data-id="' + esc(g.id) + '" data-name="' + esc(g.name) + '" data-count="' + g.account_count + '">' + T('common.delete') + '</button>'
+        : '<button class="ghost small" data-act="grp-detail" data-id="' + esc(g.id) + '">' + T('groups.detail') + '</button> ' +
+          '<button class="ghost small" data-act="grp-bind" data-id="' + esc(g.id) + '" data-name="' + esc(g.name) + '">' + T('groups.bind') + '</button> ' +
+          '<button class="ghost small" data-act="grp-edit" data-id="' + esc(g.id) + '" data-name="' + esc(g.name) + '" data-remark="' + esc(g.remark||'') + '" data-e2e="' + (g.e2e_required ? '1' : '') + '">' + T('common.edit') + '</button> ' +
+          '<button class="danger small" data-act="grp-del" data-id="' + esc(g.id) + '" data-name="' + esc(g.name) + '" data-count="' + g.account_count + '">' + T('common.delete') + '</button>';
+      return '<tr><td>' + nameCell + '</td>' +
+        '<td><span class="badge b-info">' + g.rule_count + '</span></td>' +
+        '<td><span class="badge b-info">' + g.account_count + '</span></td>' +
+        '<td style="color:var(--dim)">' + esc(g.remark || '-') + '</td>' +
+        '<td style="white-space:nowrap">' + ops + '</td></tr>';
+    }).join('') || '<tr><td colspan="5" class="empty">' + T('groups.empty') + '</td></tr>';
     $('grp-pager').innerHTML = pager('groups', d.total||0);
     S.groups = d.items || S.groups;
   } catch(e) { toast(e.message, 'err'); }
@@ -959,6 +970,7 @@ async function renderRules() {
         '<option value="host" ' + (S.filter.rulesType==='host'?'selected':'') + '>host</option>' +
       '</select>' +
       '<div class="spacer"></div>' +
+      '<button class="ghost" id="rule-adopt">' + ic('download', 15) + T('groups.adopt') + '</button>' +
       '<button class="ghost" id="rule-batch">' + T('rules.batch') + '</button>' +
       '<button id="rule-create">' + ic('plus', 15) + T('rules.create') + '</button>' +
     '</div>' +
@@ -967,6 +979,7 @@ async function renderRules() {
   $('rule-q').oninput = (e) => { S.filter.rules = e.target.value; S.page.rules = 1; renderRules(); };
   $('rule-type').onchange = (e) => { S.filter.rulesType = e.target.value; S.page.rules = 1; renderRules(); };
   $('rule-batch').onclick = openBatchImport;
+  $('rule-adopt').onclick = openAdoptCenter;
   $('rule-create').onclick = openCreateRule;
   await loadRules();
 }
@@ -1184,6 +1197,42 @@ async function adoptPushed(nodeId, groupName) {
     toast(T('fanin.adopted', { name: d.name, n: d.rule_count, r: d.reused }), 'ok');
     loadGroupsCache();
   } catch(e) { toast(e.message, 'err'); }
+}
+/* Adoption center (federation P1 acceptance): every fan-in peer's pushed groups, split into
+   待采纳 (adoptable) / 跟随中 (already mirrored, read-only, auto-updating — copy to edit). */
+async function openAdoptCenter() {
+  let items = [];
+  try { items = (await api('GET', '/api/v1/admin/federation/offered')).items || []; }
+  catch(e) { toast(e.message, 'err'); return; }
+  const peers = items.filter(o => (o.groups || []).length);
+  const body = peers.length ? peers.map(o =>
+    '<div style="margin:10px 0 4px"><b>' + esc(o.node_id) + '</b></div>' +
+    o.groups.map(g => {
+      const status = g.adopted
+        ? '<span class="badge b-ok">' + T('groups.adoptedBadge') + '</span> <span class="hint">' + esc(g.adopted_name || '') + '</span>'
+        : '<span class="badge b-off">' + T('groups.adoptPending') + '</span>';
+      const action = g.adopted
+        ? '<button class="ghost small" data-act="grp-copy" data-id="' + esc(g.adopted_id) + '" data-name="' + esc(g.adopted_name || g.name) + '">' + T('groups.copy') + '</button>'
+        : '<button class="ghost small" data-act="fed-adopt-now" data-node="' + esc(o.node_id) + '" data-group="' + esc(g.name) + '">' + T('fanin.adopt') + '</button>';
+      return '<div class="kv"><span><b>' + esc(g.name) + '</b> ' +
+        '<span style="color:var(--dim)">' + T('fanin.rulesN', { n: (g.rules || []).length }) + '</span> ' +
+        (g.e2e_required ? '<span class="badge b-warn">E2E</span> ' : '') + status + '</span>' +
+        '<span>' + action + '</span></div>';
+    }).join('')
+  ).join('') : '<div class="empty">' + T('groups.adoptEmpty') + '</div>';
+  openModal(T('groups.adoptTitle'),
+    '<div class="hint" style="margin-bottom:8px">' + T('groups.adoptHint') + '</div>' + body,
+    [{label: T('common.close'), kind: 'ghost', fn: closeModal}]);
+}
+/* Detach an adopted mirror into an editable local group (the mirror keeps following its source). */
+async function copyAdopted(id, name) {
+  confirmAction(T('groups.copyConfirm', { name }), async () => {
+    try {
+      const d = await api('POST', '/api/v1/admin/federation/adopted/' + encodeURIComponent(id) + '/copy');
+      toast(T('groups.copiedToast', { name: d.name }), 'ok');
+      loadGroupsCache(); loadGroups();
+    } catch(e) { toast(e.message, 'err'); }
+  });
 }
 async function loadTokens() {
   const body = $('tok-body'); if (!body) return;

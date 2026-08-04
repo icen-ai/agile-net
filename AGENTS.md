@@ -67,7 +67,7 @@
    - 一切可分享的技术字段必须能打包进一条链接（链接恒为三件套：入口地址 + 凭证 + 入口证书指纹）；生成一律 `anet://`，解析必须兼容旧 `agilenet://`；Rust 底座 `core::link`，前端唯一实现共享 `aglink.js`，严禁第三处解析器。
    - 签发弹窗统一「分享卡片」：端点选择（对外声明 public_host > 内网直连枚举 > 回环兜底）+ 完整链接/仅密钥 tab + 下载 .anet；API 反代端点走 `node_config.public_api_url`（scheme+端口覆盖），relay 数据面必须 L4 透传（严禁 L7 终结 TLS）。
    - `.anet` 文件：magic `ANET1` JSON 信封（role/issuer/created_at/note/payload），PIN 加密与 sync.rs 同构（格式级兼容）；导入三入口（文件选择/双击文件关联/拖拽入窗）必先展示信封元信息再确认应用；桌面经 tauri-plugin-dialog/deep-link/single-instance 落地。
-   - 策略上送：扇出 connector `push_groups`（DB v9）→ `AuthRequest.groups` → 上游可授权池（`federation/offered`）→ 一键采纳（`federation/adopt`，组名 `组名@节点ID` 命名空间隔离）；上送内容清洗上限见 `relay::listener::MAX_PUSHED_*`。
+   - 策略上送：扇出 connector `push_groups`（DB v9）→ `AuthRequest.groups` → 上游可授权池（`federation/offered`，折叠本地采纳状态）→ 一键采纳（`federation/adopt` 幂等，组名 `组名@节点ID` 命名空间隔离；**采纳组 = 只读活镜像**——DB v12 血缘列，`service::adoption::sync_adopted` 逐 watcher tick 漂移写跟随源规则/E2E 标记、源离线保留快照，组更新/绑规则写入口拒绝，`federation/adopted/{id}/copy` 复制为可编辑本地组）；上送内容清洗上限见 `relay::listener::MAX_PUSHED_*`。
 5. **前端约定（Web 后台 + 桌面/Android 共用前端，均无 Node 构建链）**：
    - 图标统一内置 Lucide 内联 SVG（双端唯一图标表 `apps/desktop/ui/icons.js`：`AgIcon()` + `data-ic` 占位水合 + `AgIconHydrate(root)` 复跑），只收录用到的图标；**严禁文字表情充当图标，文档中同样不得出现文字表情**。
    - 视觉 token 对齐 Cindy 桌面端（浅色默认），见 `docs/architecture/ui-design.md`。

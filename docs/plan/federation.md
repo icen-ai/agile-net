@@ -43,10 +43,15 @@ ALTER TABLE connector ADD COLUMN push_groups TEXT NOT NULL DEFAULT '';
 ## 4. 服务端 API
 
 - `GET /api/v1/admin/federation/offered` → 可授权池：在线下游节点的
-  `{ node_id, online, advertise: [...], groups: [{ name, remark, rules: [...] }] }`
+  `{ node_id, online, advertise: [...], groups: [{ name, remark, rules: [...] }] }`；
+  每组折叠本地采纳状态（`adopted` / `adopted_id` / `adopted_name`——采纳中心的待采纳/跟随中分栏）
 - `POST /api/v1/admin/federation/adopt { node_id, group }` → 一键采纳为本地组：
   规则逐条复用（同 type+value 命中既有 rule）或新建；组名 = `组名@节点ID`（命名空间隔离，
-  重名追加 `·2` 后缀）；审计 `federation.adopt`
+  重名追加 `·2` 后缀）；审计 `federation.adopt`。**幂等**：同一上送组重复采纳返回既有镜像
+  （`already: true`）。**采纳组为只读活镜像**（DB v12 血缘列 `adopted_node/adopted_name`）：
+  同步引擎逐 watcher tick 跟随源的规则与 E2E 标记（仅漂移写；源离线保留最后快照），
+  组更新/绑规则写入口拒绝（先复制再编辑）；`POST …/federation/adopted/{id}/copy`
+  复制为可编辑本地组（审计 `federation.copy`）
 - relay token 创建响应新增 `share_url` + `endpoints`（见 §5）
 - `GET /api/v1/admin/node/status` 新增 `endpoints: { public, lan: [...] }` 与 `public_api_url`
 - `PUT /api/v1/admin/node/settings` 新增 `public_api_url`（反代端点，见 §6）

@@ -272,6 +272,18 @@ const MIGRATIONS: &[(u32, &str, &str)] = &[
     ALTER TABLE delegated_token ADD COLUMN mode TEXT NOT NULL DEFAULT 'dedicated';
     "#,
     ),
+    (
+        12,
+        "group_adoption_lineage",
+        r#"
+    -- Adopted-group lineage (federation P1 acceptance): an adopted group is a live read-only
+    -- mirror of the pushed source (adopted_node = fan-in peer node_id, adopted_name = pushed
+    -- group name). The sync engine re-applies the source's rules/E2E flag on every watcher
+    -- tick; editing requires an explicit copy. Empty = plain local group.
+    ALTER TABLE "group" ADD COLUMN adopted_node TEXT NOT NULL DEFAULT '';
+    ALTER TABLE "group" ADD COLUMN adopted_name TEXT NOT NULL DEFAULT '';
+    "#,
+    ),
 ];
 
 impl Database {

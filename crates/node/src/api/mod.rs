@@ -484,6 +484,10 @@ pub fn create_app(state: ApiState) -> Router {
             "/api/v1/admin/federation/adopt",
             post(handlers::federation::adopt),
         )
+        .route(
+            "/api/v1/admin/federation/adopted/{id}/copy",
+            post(handlers::federation::copy_adopted),
+        )
         // ---- Admin: Delegation (federation P2, issuer side) ----
         .route(
             "/api/v1/admin/delegation/tokens",

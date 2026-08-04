@@ -11,7 +11,7 @@ use crate::api::extractors::{AdminAuth, ClientIp};
 use crate::api::{ApiState, codes, err, ok};
 use axum::{
     Json,
-    extract::State,
+    extract::{Path, State},
     http::StatusCode,
     response::Response,
 };
@@ -21,17 +21,40 @@ use serde_json::json;
 /// Max local group name length (aligned with the groups handler).
 const MAX_GROUP_NAME: usize = 64;
 
-/// GET /api/v1/admin/federation/offered — the authorizable pool (online peers only).
+/// GET /api/v1/admin/federation/offered — the authorizable pool (online peers only), each
+/// pushed group folded with its local adoption state (the adoption dialog's 待采纳/跟随中 split).
 pub async fn offered(AdminAuth(_): AdminAuth, State(state): State<ApiState>) -> Response {
+    let adopted = state
+        .db_call(|db| db.list_adopted_groups())
+        .await
+        .unwrap_or_default();
     let items: Vec<serde_json::Value> = match &state.runtime.listener {
         Some(listener) => listener
             .peer_offers()
             .into_iter()
             .map(|o| {
+                let groups: Vec<serde_json::Value> = o
+                    .groups
+                    .iter()
+                    .map(|g| {
+                        let local = adopted
+                            .iter()
+                            .find(|a| a.adopted_node == o.node_id && a.adopted_name == g.name);
+                        json!({
+                            "name": g.name,
+                            "remark": g.remark,
+                            "rules": g.rules,
+                            "e2e_required": g.e2e_required,
+                            "adopted": local.is_some(),
+                            "adopted_id": local.map(|a| a.id.clone()),
+                            "adopted_name": local.map(|a| a.name.clone()),
+                        })
+                    })
+                    .collect();
                 json!({
                     "node_id": o.node_id,
                     "advertise": o.advertise,
-                    "groups": o.groups,
+                    "groups": groups,
                 })
             })
             .collect(),
@@ -124,6 +147,24 @@ pub async fn adopt(
     let rules = pushed.rules.clone();
     let src_e2e = pushed.e2e_required;
     let node_id = req.node_id.clone();
+
+    // idempotent: adopting the same pushed group twice returns the existing mirror
+    let existing = state
+        .db_call({
+            let (n, g) = (node_id.clone(), src_name.clone());
+            move |db| db.find_adopted_group(&n, &g)
+        })
+        .await;
+    if let Ok(Some(g)) = existing {
+        return ok(json!({
+            "id": g.id,
+            "name": g.name,
+            "rule_count": g.rule_count,
+            "reused": 0,
+            "already": true,
+        }));
+    }
+
     let created = state
         .db_call(move |db| {
             // Group name with source tag (dedup via get_group_by_name)
@@ -153,6 +194,8 @@ pub async fn adopt(
             }
             let group = db.create_group(&name, &format!("上送自 {node_id}：{src_remark}"))?;
             db.set_group_rules(&group.id, &rule_ids)?;
+            // adoption lineage: the group becomes a read-only live mirror of the pushed source
+            db.set_group_adoption(&group.id, &node_id, &src_name)?;
             // federation P3: adoption inherits the E2E enforcement flag (fresh group has no
             // attachments yet, so the guard always passes)
             if src_e2e {
@@ -186,6 +229,53 @@ pub async fn adopt(
             codes::INTERNAL,
             e.to_string(),
         ),
+    }
+}
+
+/// POST /api/v1/admin/federation/adopted/{id}/copy — detach a mirror into an editable local
+/// group (same rule bindings; no lineage). The adopted original keeps following its source.
+pub async fn copy_adopted(
+    AdminAuth(claims): AdminAuth,
+    State(state): State<ApiState>,
+    ClientIp(ip): ClientIp,
+    Path(id): Path<String>,
+) -> Response {
+    let copied = state
+        .db_call(move |db| {
+            let Some(src) = db.get_group(&id)? else {
+                return Ok(Err("采纳组不存在".to_string()));
+            };
+            if src.adopted_node.is_empty() {
+                return Ok(Err("该组不是采纳组".to_string()));
+            }
+            // detached editable copy: `<name> 副本`, deduped with ·N suffixes
+            let base: String = src.name.chars().take(MAX_GROUP_NAME - 6).collect();
+            let mut name = format!("{base} 副本");
+            let mut n = 2u32;
+            while db.get_group_by_name(&name)?.is_some() {
+                name = format!("{base} 副本·{n}");
+                n += 1;
+            }
+            let remark = format!("复制自采纳组 {}（上送自 {}）", src.name, src.adopted_node);
+            let group = db.create_group(&name, &remark)?;
+            let rule_ids: Vec<String> = db
+                .rules_of_group(&src.id)?
+                .into_iter()
+                .map(|r| r.id)
+                .collect();
+            db.set_group_rules(&group.id, &rule_ids)?;
+            db.bump_config_version()?;
+            Ok(Ok((group, rule_ids.len())))
+        })
+        .await;
+
+    match copied {
+        Ok(Ok((group, n))) => {
+            audit(&state, &claims, &ip, "federation.copy", Some(&group.id), &group.name).await;
+            ok(json!({ "id": group.id, "name": group.name, "rule_count": n }))
+        }
+        Ok(Err(msg)) => err(StatusCode::BAD_REQUEST, codes::VALIDATION_FAILED, msg),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, codes::INTERNAL, e.to_string()),
     }
 }
 

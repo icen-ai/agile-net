@@ -97,7 +97,7 @@ async fn federation_push_pool_adopt_grant() {
         .create_rule("ip-cidr", "10.12.0.0/16", false, "")
         .expect("rule2")
         .id;
-    c.db().set_group_rules(&gid, &[rid, rid2]).expect("bind");
+    c.db().set_group_rules(&gid, &[rid.clone(), rid2.clone()]).expect("bind");
     let cid = c
         .db()
         .create_connector(
@@ -174,7 +174,7 @@ async fn federation_push_pool_adopt_grant() {
     assert_eq!(adopted["rule_count"].as_u64(), Some(2));
     let adopted_gid = adopted["id"].as_str().unwrap().to_string();
 
-    // Adoption is idempotent-friendly: a second adopt gets a deduped name and reuses rules
+    // Adoption is idempotent: a second adopt returns the existing mirror (already=true)
     let resp = http
         .post(format!("{b_base}/api/v1/admin/federation/adopt"))
         .bearer_auth(&b_token)
@@ -184,8 +184,113 @@ async fn federation_push_pool_adopt_grant() {
         .unwrap();
     let body: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(body["code"].as_u64(), Some(0));
-    assert_eq!(body["data"]["name"].as_str().unwrap(), format!("git@{node_id}·2"));
-    assert_eq!(body["data"]["reused"].as_u64(), Some(2));
+    assert_eq!(body["data"]["id"].as_str().unwrap(), adopted_gid);
+    assert_eq!(body["data"]["already"].as_bool(), Some(true));
+
+    // The offered pool folds the adoption state (the dialog's 待采纳/跟随中 split)
+    let resp = http
+        .get(format!("{b_base}/api/v1/admin/federation/offered"))
+        .bearer_auth(&b_token)
+        .send()
+        .await
+        .unwrap();
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let g = body["data"]["items"][0]["groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|g| g["name"].as_str() == Some("git"))
+        .expect("pushed group listed")
+        .clone();
+    assert_eq!(g["adopted"].as_bool(), Some(true));
+    assert_eq!(g["adopted_id"].as_str().unwrap(), adopted_gid);
+
+    // The mirror is read-only: update / rebind are refused (copy first, then edit)
+    let resp = http
+        .put(format!("{b_base}/api/v1/admin/groups/{adopted_gid}"))
+        .bearer_auth(&b_token)
+        .json(&serde_json::json!({ "remark": "should fail" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 400, "adopted mirror must be read-only");
+    let resp = http
+        .put(format!("{b_base}/api/v1/admin/groups/{adopted_gid}/rules"))
+        .bearer_auth(&b_token)
+        .json(&serde_json::json!({ "rule_ids": [] }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 400, "adopted mirror rebind must be refused");
+
+    // The mirror follows the source: C swaps one pushed rule; B's adopted group re-syncs
+    // (push slot refresh -> reconnect re-push -> adoption sync tick, all ≤ a few seconds)
+    let new_rule = c
+        .db()
+        .create_rule("host", "ops.internal", false, "")
+        .expect("new rule")
+        .id;
+    let old_rules: Vec<String> = vec![rid.clone(), rid2.clone()];
+    c.db().set_group_rules(&gid, &[new_rule, rid2.clone()]).unwrap(); // git.internal -> ops.internal
+    c.db().bump_config_version().unwrap();
+    let mut mirrored: Vec<String> = Vec::new();
+    for _ in 0..80 {
+        mirrored = b
+            .db()
+            .rules_of_group(&adopted_gid)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.value)
+            .collect();
+        if mirrored.iter().any(|v| v == "ops.internal") {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+    assert!(
+        mirrored.iter().any(|v| v == "ops.internal"),
+        "mirror should follow the pushed source: {mirrored:?}"
+    );
+
+    // Copy detaches into an editable local group; the mirror keeps following
+    let resp = http
+        .post(format!("{b_base}/api/v1/admin/federation/adopted/{adopted_gid}/copy"))
+        .bearer_auth(&b_token)
+        .send()
+        .await
+        .unwrap();
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["code"].as_u64(), Some(0), "copy: {body}");
+    let copy_gid = body["data"]["id"].as_str().unwrap().to_string();
+    let resp = http
+        .put(format!("{b_base}/api/v1/admin/groups/{copy_gid}"))
+        .bearer_auth(&b_token)
+        .json(&serde_json::json!({ "remark": "editable copy" }))
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success(), "the copy is editable");
+
+    // restore C's pushed rules so the downstream assertions see the original pair
+    c.db().set_group_rules(&gid, &old_rules).unwrap();
+    c.db().bump_config_version().unwrap();
+    for _ in 0..80 {
+        let vals: Vec<String> = b
+            .db()
+            .rules_of_group(&adopted_gid)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.value)
+            .collect();
+        // wait for the full restored pair (the swapped mirror may still hold ops.internal)
+        if vals.iter().any(|v| v == "git.internal")
+            && vals.iter().any(|v| v == "10.12.0.0/16")
+            && !vals.iter().any(|v| v == "ops.internal")
+        {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
 
     // Grant to consumer A: create an account on B bound to the adopted group
     let resp = http

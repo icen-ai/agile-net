@@ -271,7 +271,7 @@ impl Database {
             "g.id, g.name, g.remark, g.created_at, g.updated_at,
              (SELECT COUNT(*) FROM group_rule gr WHERE gr.group_id = g.id),
              (SELECT COUNT(*) FROM account a WHERE a.group_id = g.id),
-             g.e2e_required",
+             g.e2e_required, g.adopted_node, g.adopted_name",
             "\"group\" g",
             &where_clauses,
             &bind,
@@ -289,7 +289,7 @@ impl Database {
                 "SELECT g.id, g.name, g.remark, g.created_at, g.updated_at,
                         (SELECT COUNT(*) FROM group_rule gr WHERE gr.group_id = g.id),
                         (SELECT COUNT(*) FROM account a WHERE a.group_id = g.id),
-                        g.e2e_required
+                        g.e2e_required, g.adopted_node, g.adopted_name
                  FROM \"group\" g WHERE g.id = ?1",
             )
             .map_err(db_err)?;
@@ -304,7 +304,7 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn
             .prepare(
-                "SELECT g.id, g.name, g.remark, g.created_at, g.updated_at, 0, 0, g.e2e_required FROM \"group\" g WHERE g.name = ?1",
+                "SELECT g.id, g.name, g.remark, g.created_at, g.updated_at, 0, 0, g.e2e_required, g.adopted_node, g.adopted_name FROM \"group\" g WHERE g.name = ?1",
             )
             .map_err(db_err)?;
         let mut rows = stmt.query(params![name]).map_err(db_err)?;
@@ -330,6 +330,8 @@ impl Database {
             e2e_required: false,
             rule_count: 0,
             account_count: 0,
+            adopted_node: String::new(),
+            adopted_name: String::new(),
             created_at: now.clone(),
             updated_at: now,
         })
@@ -383,6 +385,53 @@ impl Database {
             )
             .map_err(db_err)?;
         Ok(count)
+    }
+
+    /// Stamp adoption lineage on a freshly adopted group (federation P1 acceptance).
+    pub fn set_group_adoption(&self, id: &str, node: &str, src_name: &str) -> Result<()> {
+        let conn = self.conn();
+        conn.execute(
+            "UPDATE \"group\" SET adopted_node = ?1, adopted_name = ?2 WHERE id = ?3",
+            params![node, src_name, id],
+        )
+        .map_err(db_err)?;
+        Ok(())
+    }
+
+    /// Every adopted (mirrored) group — the sync engine's working set.
+    pub fn list_adopted_groups(&self) -> Result<Vec<GroupRecord>> {
+        let conn = self.conn();
+        let mut stmt = conn
+            .prepare(
+                "SELECT g.id, g.name, g.remark, g.created_at, g.updated_at,
+                        (SELECT COUNT(*) FROM group_rule gr WHERE gr.group_id = g.id),
+                        (SELECT COUNT(*) FROM account a WHERE a.group_id = g.id),
+                        g.e2e_required, g.adopted_node, g.adopted_name
+                 FROM \"group\" g WHERE g.adopted_node != ''",
+            )
+            .map_err(db_err)?;
+        let mut rows = stmt.query([]).map_err(db_err)?;
+        let mut out = Vec::new();
+        while let Some(r) = rows.next().map_err(db_err)? {
+            out.push(map_group_row(r).map_err(db_err)?);
+        }
+        Ok(out)
+    }
+
+    /// The local mirror of one pushed group (adoption idempotence + the offered-pool status flag).
+    pub fn find_adopted_group(&self, node: &str, src_name: &str) -> Result<Option<GroupRecord>> {
+        let conn = self.conn();
+        let mut stmt = conn
+            .prepare(
+                "SELECT g.id, g.name, g.remark, g.created_at, g.updated_at, 0, 0, g.e2e_required, g.adopted_node, g.adopted_name
+                 FROM \"group\" g WHERE g.adopted_node = ?1 AND g.adopted_name = ?2",
+            )
+            .map_err(db_err)?;
+        let mut rows = stmt.query(params![node, src_name]).map_err(db_err)?;
+        Ok(match rows.next().map_err(db_err)? {
+            Some(r) => Some(map_group_row(r).map_err(db_err)?),
+            None => None,
+        })
     }
 
     pub fn delete_group(&self, id: &str, force: bool) -> Result<()> {
@@ -453,5 +502,7 @@ fn map_group_row(r: &rusqlite::Row) -> rusqlite::Result<GroupRecord> {
         rule_count: r.get(5)?,
         account_count: r.get(6)?,
         e2e_required: r.get::<_, i64>(7)? != 0,
+        adopted_node: r.get(8)?,
+        adopted_name: r.get(9)?,
     })
 }

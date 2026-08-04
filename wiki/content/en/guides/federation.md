@@ -12,6 +12,14 @@ Three ways to share, by trust tier:
 | Delegated issuance (P2, transparent) | C issues credentials to A directly — no work for B's admin | Traffic content |
 | Delegated issuance + E2E groups (P3) | You don't trust B: content is end-to-end encrypted | Coarse routing hints only — no targets, no content |
 
+## One-click adoption (relay B)
+
+Admin UI → **Groups** or **Rules** → **Adopt**: every pushed group, grouped by fan-in endpoint.
+Adopting mirrors the group locally (`name@nodeID`) as a **read-only live mirror**: rule or E2E
+changes on the source side follow within seconds; an offline source leaves the last snapshot
+serving. To customize, hit **Copy** — a detached editable group is created while the mirror
+keeps following. Deleting the mirror un-adopts it.
+
 ## Delegated issuance (resource owner C)
 
 Admin UI → **Fan-out** → **Delegation** tab → **Issue Delegation**:
