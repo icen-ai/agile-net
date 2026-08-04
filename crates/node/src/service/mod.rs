@@ -7,6 +7,7 @@
 
 pub mod acl;
 pub mod connectors;
+pub mod delegation;
 pub mod rate_limit;
 
 use crate::api::{ApiState, NodeRuntime, create_app};

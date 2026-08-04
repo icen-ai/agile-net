@@ -8,13 +8,16 @@ use crate::db::Database;
 use crate::db::models::ConnectorRecord;
 use crate::relay_auth::ManageableRegistry;
 use crate::service::acl::PeerAclRegistry;
+use crate::service::delegation::build_register_msg;
 use crate::service::{ClientRoutes, load_pem_certs, resolve_upstream};
-use agile_net_core::proto::message::PushedGroupMsg;
+use agile_net_core::proto::frame::{Frame, FrameType};
+use agile_net_core::proto::message::{CtrlMessage, PROTOCOL_VERSION_DELEGATION, PushedGroupMsg};
 use agile_net_core::relay::transit::TransitMeter;
-use agile_net_core::relay::{ConnectionState, PeerEvent, RelayConnector, RelayListener};
+use agile_net_core::relay::{ConnectionState, MuxSession, PeerEvent, RelayConnector, RelayListener};
 use agile_net_core::tunnel::tls::TlsConfigBuilder;
 use anyhow::Result;
 use dashmap::DashMap;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -42,6 +45,9 @@ pub struct ConnectorManager {
     manageable: ManageableRegistry,
     /// Transit metering (None = assembled connectors are not metered)
     transit: Option<Arc<TransitMeter>>,
+    /// Federation P2: delegated-token registration state, (token_id, connector_id) ->
+    /// "pending" / "registered" / "failed: <reason>" / "offline" / "unsupported" (upstream < v3)
+    delegation_states: Arc<DashMap<(String, String), String>>,
     handles: DashMap<String, ConnectorHandle>,
 }
 
@@ -56,6 +62,7 @@ impl ConnectorManager {
             acl: Arc::new(PeerAclRegistry::new()),
             manageable: Arc::new(DashMap::new()),
             transit: None,
+            delegation_states: Arc::new(DashMap::new()),
             handles: DashMap::new(),
         }
     }
@@ -355,6 +362,88 @@ impl ConnectorManager {
             connector.subscribe_events(),
         ));
 
+        // federation P2: delegated-token registration sync — re-register every token of this
+        // connector on each new session (the relay registry is volatile), register newly issued
+        // tokens incrementally, and fold registration acks into the state table for the API
+        {
+            let c = connector.clone();
+            let db = self.db.clone();
+            let connector_id = id.to_string();
+            let states = self.delegation_states.clone();
+            tasks.push(tokio::spawn(async move {
+                let mut last_mux: Option<Arc<MuxSession>> = None;
+                // token_id -> token_hash, already sent on the current session
+                let mut live: HashMap<String, String> = HashMap::new();
+                let mut interval = tokio::time::interval(Duration::from_secs(2));
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                loop {
+                    interval.tick().await;
+                    let tokens = db
+                        .delegated_tokens_of_connector(&connector_id)
+                        .unwrap_or_default();
+
+                    let connected = c.is_connected();
+                    let supported =
+                        connected && c.upstream_version() >= PROTOCOL_VERSION_DELEGATION;
+                    if !supported {
+                        let label = if connected { "unsupported" } else { "offline" };
+                        for rec in &tokens {
+                            states.insert((rec.id.clone(), connector_id.clone()), label.into());
+                        }
+                        last_mux = None;
+                        live.clear();
+                        continue;
+                    }
+
+                    let mux = c.current_mux();
+                    let new_session = match (&last_mux, &mux) {
+                        (Some(a), Some(b)) => !Arc::ptr_eq(a, b),
+                        (None, Some(_)) => true,
+                        _ => false,
+                    };
+                    if new_session {
+                        c.clear_delegation_acks();
+                        live.clear();
+                    }
+                    last_mux = mux.clone();
+                    let Some(mux) = mux else { continue };
+
+                    // fold acks of this session into the state table
+                    for (tid, hash) in &live {
+                        if let Some((ok, err)) = c.delegation_ack(hash) {
+                            let v = if ok {
+                                "registered".into()
+                            } else {
+                                format!("failed: {err}")
+                            };
+                            states.insert((tid.clone(), connector_id.clone()), v);
+                        }
+                    }
+
+                    // register tokens not yet sent on this session
+                    for rec in tokens {
+                        if live.contains_key(&rec.id) {
+                            continue;
+                        }
+                        let msg = build_register_msg(&db, &rec);
+                        let hash = rec.token_hash.clone();
+                        let Ok(payload) = serde_json::to_vec(&msg) else {
+                            continue;
+                        };
+                        if mux
+                            .send_frame(Frame::new(FrameType::Ctrl, 0, payload))
+                            .await
+                            .is_err()
+                        {
+                            break; // session died mid-flush; next tick re-evaluates
+                        }
+                        states.insert((rec.id.clone(), connector_id.clone()), "pending".into());
+                        live.insert(rec.id.clone(), hash);
+                    }
+                }
+            }));
+        }
+
         Ok(Some(ConnectorHandle {
             connector,
             push_slot,
@@ -395,6 +484,46 @@ impl ConnectorManager {
                 }
             }
         }
+    }
+
+    /// Federation P2: revoke a delegated token — delete locally and send the revocation frame to
+    /// every online upstream of its disaster set (offline upstreams invalidate by disconnect).
+    pub async fn revoke_delegated(&self, token_id: &str) -> Result<bool> {
+        let Some(rec) = crate::service::delegation::revoke_token(&self.db, token_id)? else {
+            return Ok(false);
+        };
+        for reg in &rec.regs {
+            if let Some(h) = self.handles.get(&reg.connector_id)
+                && h.connector.is_connected()
+                && h.connector.upstream_version() >= PROTOCOL_VERSION_DELEGATION
+                && let Some(mux) = h.connector.current_mux()
+            {
+                let msg = CtrlMessage::TokenRevoke {
+                    token_hash: rec.token_hash.clone(),
+                };
+                if let Ok(payload) = serde_json::to_vec(&msg) {
+                    let _ = mux
+                        .send_frame(Frame::new(FrameType::Ctrl, 0, payload))
+                        .await;
+                }
+            }
+            self.delegation_states
+                .remove(&(token_id.to_string(), reg.connector_id.clone()));
+        }
+        Ok(true)
+    }
+
+    /// Federation P2: registration state of every delegated token, (token_id, connector_id, state).
+    pub fn delegation_states(&self) -> Vec<(String, String, String)> {
+        self.delegation_states
+            .iter()
+            .map(|e| (e.key().0.clone(), e.key().1.clone(), e.value().clone()))
+            .collect()
+    }
+
+    /// Negotiated upstream protocol version of a connector (None = no runtime handle; 0 = offline).
+    pub fn upstream_version_of(&self, id: &str) -> Option<u32> {
+        self.handles.get(id).map(|h| h.connector.upstream_version())
     }
 }
 

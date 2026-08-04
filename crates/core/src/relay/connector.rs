@@ -8,7 +8,7 @@
 use crate::error::{Error, Result};
 use crate::proto::frame::{Frame, FrameType};
 use crate::proto::message::{
-    AuthKind, AuthRequest, ControlOffer, OpenChannel, PROTOCOL_VERSION,
+    AuthKind, AuthRequest, ControlOffer, CtrlMessage, OpenChannel, PROTOCOL_VERSION,
     PROTOCOL_VERSION_FLOW_CONTROL, PushedGroupMsg,
 };
 use crate::proxy::router::{Outbound, ProxyRouter};
@@ -82,6 +82,8 @@ pub struct RelayConnector {
     current_mux: Arc<arc_swap::ArcSwapOption<MuxSession>>,
     /// Negotiated upstream protocol version (0 = not connected / unknown; gates v3 delegation features)
     upstream_version: Arc<AtomicU32>,
+    /// Federation P2: latest registration/revocation ack per delegated token hash (control plane replies)
+    delegation_acks: Arc<dashmap::DashMap<String, (bool, String)>>,
     /// Relay transit metering (meter + source label = connector name; reverse flows from upstream booked with from=this label)
     transit: Option<(Arc<TransitMeter>, String)>,
     /// Observable events such as restriction denials (subscribed by the control plane for audit)
@@ -134,6 +136,7 @@ impl RelayConnector {
             acl: None,
             current_mux: Arc::new(arc_swap::ArcSwapOption::from_pointee(None)),
             upstream_version: Arc::new(AtomicU32::new(0)),
+            delegation_acks: Arc::new(dashmap::DashMap::new()),
             transit: None,
             events,
             state: Arc::new(AtomicU8::new(ConnectionState::Disconnected as u8)),
@@ -248,6 +251,17 @@ impl RelayConnector {
     /// `>= PROTOCOL_VERSION_DELEGATION` — the issuer must stay silent towards older upstreams.
     pub fn upstream_version(&self) -> u32 {
         self.upstream_version.load(Ordering::Relaxed)
+    }
+
+    /// Latest delegation ack for a token hash ((ok, error); consumed by the re-registration task).
+    pub fn delegation_ack(&self, token_hash: &str) -> Option<(bool, String)> {
+        self.delegation_acks.get(token_hash).map(|v| v.clone())
+    }
+
+    /// Reset the ack table (called before re-registering a fresh session, so stale acks of a
+    /// previous session are never attributed to the new one).
+    pub fn clear_delegation_acks(&self) {
+        self.delegation_acks.clear();
     }
 
     /// Single connection: TLS handshake + auth + spawn the session maintenance task.
@@ -365,11 +379,12 @@ impl RelayConnector {
         );
 
         let (open_tx, mut open_rx) = mpsc::channel::<OpenRequest>(64);
+        let (ctrl_tx, mut ctrl_rx) = mpsc::channel::<Bytes>(64);
         // no session rate limiting on the connector side (limits are injected by the listener per identity)
         let (mux, reader_handle) = MuxSession::start(
             tls_stream,
             2,
-            SessionEvents::open(open_tx),
+            SessionEvents::open_and_ctrl(open_tx, ctrl_tx),
             flow_control,
             None,
         );
@@ -388,6 +403,7 @@ impl RelayConnector {
         let mux_task = mux.clone();
         let current_mux = self.current_mux.clone();
         let upstream_version = self.upstream_version.clone();
+        let delegation_acks = self.delegation_acks.clone();
 
         tokio::spawn(async move {
             let mut ping_timeout = next_ping_delay();
@@ -437,6 +453,16 @@ impl RelayConnector {
                                 debug!(error = %e, "open channel handling finished with error");
                             }
                         });
+                    }
+                    Some(payload) = ctrl_rx.recv() => {
+                        // session control plane (v3): only TokenAck flows relay -> issuer
+                        match serde_json::from_slice::<CtrlMessage>(&payload) {
+                            Ok(CtrlMessage::TokenAck { token_hash, ok, error }) => {
+                                debug!(ok, error = %error, "delegation ack received");
+                                delegation_acks.insert(token_hash, (ok, error));
+                            }
+                            _ => debug!("ignoring unknown/malformed ctrl frame from upstream"),
+                        }
                     }
                 }
             }

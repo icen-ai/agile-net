@@ -26,6 +26,9 @@ rcgen = { workspace = true }
 rustls-pemfile = { workspace = true }
 webpki-roots = { workspace = true }
 sha2 = { workspace = true }
+# E2E channel crypto (federation P3): HKDF key derivation + AES-256-GCM sealing.
+# Same ring version the workspace rustls provider and the node crate already use — zero new build cost.
+ring = "0.17"
 
 [dev-dependencies]
 # test-util：令牌桶单测用 tokio::time::pause 虚拟时钟（full 不含该 feature）

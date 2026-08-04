@@ -6,6 +6,7 @@ pub mod acl;
 pub mod bandwidth;
 pub mod bridge;
 pub mod connector;
+pub mod e2e;
 pub mod limit;
 pub mod listener;
 pub mod mux;
