@@ -81,21 +81,24 @@ fn validate_connector_input(
     Ok(())
 }
 
-/// Validate the ACL group exists (when Some).
+/// Validate the ACL group exists (when Some); federation P3: e2e_required groups hang only
+/// on delegated tokens, never on a connector's reverse-traffic restriction.
 async fn validate_group(state: &ApiState, group_id: Option<&str>) -> Option<Response> {
     if let Some(gid) = group_id {
         let gid_owned = gid.to_string();
-        let exists = state
+        let group = state
             .db_call(move |db| db.get_group(&gid_owned))
             .await
-            .unwrap_or(None)
-            .is_some();
-        if !exists {
+            .unwrap_or(None);
+        let Some(g) = group else {
             return Some(err(
                 StatusCode::NOT_FOUND,
                 codes::NOT_FOUND,
                 format!("group not found: {gid}"),
             ));
+        };
+        if let Some(r) = super::groups::reject_e2e_group(&g) {
+            return Some(r);
         }
     }
     None

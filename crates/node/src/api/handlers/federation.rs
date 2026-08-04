@@ -122,6 +122,7 @@ pub async fn adopt(
     let src_name = pushed.name.clone();
     let src_remark = pushed.remark.clone();
     let rules = pushed.rules.clone();
+    let src_e2e = pushed.e2e_required;
     let node_id = req.node_id.clone();
     let created = state
         .db_call(move |db| {
@@ -152,6 +153,11 @@ pub async fn adopt(
             }
             let group = db.create_group(&name, &format!("上送自 {node_id}：{src_remark}"))?;
             db.set_group_rules(&group.id, &rule_ids)?;
+            // federation P3: adoption inherits the E2E enforcement flag (fresh group has no
+            // attachments yet, so the guard always passes)
+            if src_e2e {
+                db.set_group_e2e_required(&group.id, true)?;
+            }
             db.bump_config_version()?;
             Ok((group, rule_ids.len(), reused))
         })

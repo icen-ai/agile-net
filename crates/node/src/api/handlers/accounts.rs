@@ -134,13 +134,16 @@ pub async fn create_account(
         );
     }
     let gid = req.group_id.clone();
-    let group_exists = state
+    let group = state
         .db_call(move |db| db.get_group(&gid))
         .await
-        .unwrap_or(None)
-        .is_some();
-    if !group_exists {
+        .unwrap_or(None);
+    let Some(g) = group else {
         return err(StatusCode::NOT_FOUND, codes::NOT_FOUND, "group not found");
+    };
+    // federation P3: e2e_required groups hang only on delegated tokens
+    if let Some(r) = super::groups::reject_e2e_group(&g) {
+        return r;
     }
 
     // Server-side strong password (sk style); argon2id hash offloaded to the blocking pool
@@ -252,13 +255,16 @@ pub async fn update_account(
 
     if let Some(gid) = &req.group_id {
         let gid = gid.clone();
-        let group_exists = state
+        let group = state
             .db_call(move |db| db.get_group(&gid))
             .await
-            .unwrap_or(None)
-            .is_some();
-        if !group_exists {
+            .unwrap_or(None);
+        let Some(g) = group else {
             return err(StatusCode::NOT_FOUND, codes::NOT_FOUND, "group not found");
+        };
+        // federation P3: e2e_required groups hang only on delegated tokens
+        if let Some(r) = super::groups::reject_e2e_group(&g) {
+            return r;
         }
     }
 

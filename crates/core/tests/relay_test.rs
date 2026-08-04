@@ -245,6 +245,7 @@ async fn pushed_groups_pool_and_disconnect_clear() -> Result<()> {
             name: "git".into(),
             remark: "代码组".into(),
             rules: vec!["git.internal".into(), "10.12.0.0/16".into()],
+            e2e_required: false,
         },
     ]));
     let connector = RelayConnector::new(addr, "peer-c", token)?.with_push_groups(slot);
@@ -284,6 +285,7 @@ fn sanitize_pushed_groups_caps() {
         name: name.into(),
         remark: String::new(),
         rules: rules.into_iter().map(str::to_string).collect(),
+        e2e_required: false,
     };
     let huge = (0..MAX_PUSHED_GROUP_RULES + 10)
         .map(|i| format!("10.0.{i}.0/24"))
@@ -296,6 +298,7 @@ fn sanitize_pushed_groups_caps() {
             name: "big".into(),
             remark: String::new(),
             rules: huge,
+            e2e_required: false,
         },
     ]);
     assert_eq!(out.len(), 2);

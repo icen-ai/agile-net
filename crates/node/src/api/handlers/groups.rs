@@ -21,6 +21,18 @@ pub struct ListQuery {
     pub q: Option<String>,
 }
 
+/// Federation P3: an e2e_required group may hang only on delegated tokens — every other
+/// attach path (account / relay token / connector) rejects it with this uniform error.
+pub(crate) fn reject_e2e_group(g: &crate::db::models::GroupRecord) -> Option<Response> {
+    g.e2e_required.then(|| {
+        err(
+            StatusCode::BAD_REQUEST,
+            codes::VALIDATION_FAILED,
+            format!("端到端加密组「{}」仅可用于签发委托", g.name),
+        )
+    })
+}
+
 pub async fn list_groups(
     AdminAuth(_): AdminAuth,
     State(state): State<ApiState>,
@@ -153,6 +165,9 @@ pub struct CreateGroupRequest {
     pub remark: String,
     #[serde(default)]
     pub rule_ids: Vec<String>,
+    /// Federation P3: mark the group E2E-enforced at creation (fresh group has no attachments)
+    #[serde(default)]
+    pub e2e_required: bool,
 }
 
 fn validate_group_input(name: &str, remark: &str) -> Result<(), String> {
@@ -215,6 +230,12 @@ pub async fn create_group(
         .await
     {
         Ok(group) => {
+            if req.e2e_required {
+                let gid = group.id.clone();
+                let _ = state
+                    .db_call(move |db| db.set_group_e2e_required(&gid, true))
+                    .await;
+            }
             if !req.rule_ids.is_empty() {
                 let (gid, rule_ids) = (group.id.clone(), req.rule_ids.clone());
                 let _ = state
@@ -243,6 +264,10 @@ pub async fn create_group(
 pub struct UpdateGroupRequest {
     pub name: Option<String>,
     pub remark: Option<String>,
+    /// Federation P3: set/clear the E2E enforcement flag (marking fails while accounts,
+    /// relay tokens or connectors still reference the group — they have no E2E key)
+    #[serde(default)]
+    pub e2e_required: Option<bool>,
 }
 
 pub async fn update_group(
@@ -294,6 +319,26 @@ pub async fn update_group(
             codes::INTERNAL,
             e.to_string(),
         );
+    }
+    if let Some(flag) = req.e2e_required {
+        let gid = id.clone();
+        match state
+            .db_call(move |db| db.set_group_e2e_required(&gid, flag))
+            .await
+        {
+            Ok(()) => {}
+            // guard tripped: the group is still referenced by accounts / relay tokens / connectors
+            Err(e) => return err(StatusCode::BAD_REQUEST, codes::VALIDATION_FAILED, e.to_string()),
+        }
+        audit(
+            &state,
+            &claims,
+            &ip,
+            "group.e2e_required",
+            Some(&id),
+            if flag { "on" } else { "off" },
+        )
+        .await;
     }
     audit(&state, &claims, &ip, "group.update", Some(&id), "").await;
     match state.db_call(move |db| db.get_group(&id)).await {

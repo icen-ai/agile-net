@@ -497,7 +497,7 @@ const ACT_CLICK = {
   'acc-del': b => delAccount(b.dataset.id, b.dataset.name),
   'grp-detail': b => openGroupDetail(b.dataset.id),
   'grp-bind': b => openBindRules(b.dataset.id, b.dataset.name),
-  'grp-edit': b => openEditGroup(b.dataset.id, b.dataset.name, b.dataset.remark || ''),
+  'grp-edit': b => openEditGroup(b.dataset.id, b.dataset.name, b.dataset.remark || '', b.dataset.e2e === '1'),
   'grp-del': b => delGroup(b.dataset.id, b.dataset.name, Number(b.dataset.count || 0)),
   'rule-edit': b => openEditRule(b.dataset.id, b.dataset.type, b.dataset.value, b.dataset.resolve === 'true', b.dataset.remark || ''),
   'rule-del': b => delRule(b.dataset.id, b.dataset.value, Number(b.dataset.count || 0)),
@@ -841,14 +841,14 @@ async function loadGroups() {
   try {
     const d = await api('GET', url);
     body.innerHTML = (d.items||[]).map(g =>
-      '<tr><td><b>' + esc(g.name) + '</b><div class="mono" style="color:var(--dim2)">' + shortId(g.id) + '</div></td>' +
+      '<tr><td><b>' + esc(g.name) + '</b>' + (g.e2e_required ? ' <span class="badge b-warn" title="' + T('groups.e2e') + '">E2E</span>' : '') + '<div class="mono" style="color:var(--dim2)">' + shortId(g.id) + '</div></td>' +
       '<td><span class="badge b-info">' + g.rule_count + '</span></td>' +
       '<td><span class="badge b-info">' + g.account_count + '</span></td>' +
       '<td style="color:var(--dim)">' + esc(g.remark || '-') + '</td>' +
       '<td style="white-space:nowrap">' +
         '<button class="ghost small" data-act="grp-detail" data-id="' + esc(g.id) + '">' + T('groups.detail') + '</button> ' +
         '<button class="ghost small" data-act="grp-bind" data-id="' + esc(g.id) + '" data-name="' + esc(g.name) + '">' + T('groups.bind') + '</button> ' +
-        '<button class="ghost small" data-act="grp-edit" data-id="' + esc(g.id) + '" data-name="' + esc(g.name) + '" data-remark="' + esc(g.remark||'') + '">' + T('common.edit') + '</button> ' +
+        '<button class="ghost small" data-act="grp-edit" data-id="' + esc(g.id) + '" data-name="' + esc(g.name) + '" data-remark="' + esc(g.remark||'') + '" data-e2e="' + (g.e2e_required ? '1' : '') + '">' + T('common.edit') + '</button> ' +
         '<button class="danger small" data-act="grp-del" data-id="' + esc(g.id) + '" data-name="' + esc(g.name) + '" data-count="' + g.account_count + '">' + T('common.delete') + '</button>' +
       '</td></tr>'
     ).join('') || '<tr><td colspan="5" class="empty">' + T('groups.empty') + '</td></tr>';
@@ -859,26 +859,28 @@ async function loadGroups() {
 function openCreateGroup() {
   openModal(T('groups.createTitle'),
     '<label>' + T('adm.nameUnique') + '</label><input id="ng-name" style="width:100%">' +
-    '<label>' + T('common.remark') + '</label><input id="ng-remark" style="width:100%">',
+    '<label>' + T('common.remark') + '</label><input id="ng-remark" style="width:100%">' +
+    '<label class="chk" style="display:flex;align-items:center;gap:6px;margin-top:8px"><input type="checkbox" id="ng-e2e"> ' + T('groups.e2e') + ' ' + ahelp(T('groups.e2eTip')) + '</label>',
     [
       {label: T('common.cancel'), kind:'ghost', fn: closeModal},
       {label: T('common.create'), fn: async () => {
         try {
-          await api('POST', '/api/v1/admin/groups', { name: $('ng-name').value.trim(), remark: $('ng-remark').value.trim() });
+          await api('POST', '/api/v1/admin/groups', { name: $('ng-name').value.trim(), remark: $('ng-remark').value.trim(), e2e_required: $('ng-e2e').checked });
           closeModal(); toast(T('adm.created'), 'ok'); loadGroupsCache(); loadGroups();
         } catch(e) { toast(e.message, 'err'); }
       }},
     ]);
 }
-function openEditGroup(id, name, remark) {
+function openEditGroup(id, name, remark, e2e) {
   openModal(T('groups.editTitle'),
     '<label>' + T('common.name') + '</label><input id="eg-name" style="width:100%" value="' + esc(name) + '">' +
-    '<label>' + T('common.remark') + '</label><input id="eg-remark" style="width:100%" value="' + esc(remark) + '">',
+    '<label>' + T('common.remark') + '</label><input id="eg-remark" style="width:100%" value="' + esc(remark) + '">' +
+    '<label class="chk" style="display:flex;align-items:center;gap:6px;margin-top:8px"><input type="checkbox" id="eg-e2e"' + (e2e ? ' checked' : '') + '> ' + T('groups.e2e') + ' ' + ahelp(T('groups.e2eTip')) + '</label>',
     [
       {label: T('common.cancel'), kind:'ghost', fn: closeModal},
       {label: T('common.save'), fn: async () => {
         try {
-          await api('PUT', '/api/v1/admin/groups/' + id, { name: $('eg-name').value.trim(), remark: $('eg-remark').value.trim() });
+          await api('PUT', '/api/v1/admin/groups/' + id, { name: $('eg-name').value.trim(), remark: $('eg-remark').value.trim(), e2e_required: $('eg-e2e').checked });
           closeModal(); toast(T('adm.saved'), 'ok'); loadGroupsCache(); loadGroups();
         } catch(e) { toast(e.message, 'err'); }
       }},

@@ -17,6 +17,8 @@ pub enum AuthKind {
 /// The listener tags it with the session's node_id (source tag, namespace isolation) and
 /// offers it in the upstream authorizable pool; the upstream admin adopts it into a local
 /// group in one click. Old upstreams ignore this field (serde default, backwards compatible).
+/// `e2e_required` rides the push (federation P3): adoption inherits the flag, and the pool UI
+/// shows it — enforcement itself always happens on the issuer side.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PushedGroupMsg {
     pub name: String,
@@ -24,6 +26,9 @@ pub struct PushedGroupMsg {
     pub remark: String,
     #[serde(default)]
     pub rules: Vec<String>,
+    /// E2E enforcement flag (federation P3; informational upstream — the issuer enforces)
+    #[serde(default)]
+    pub e2e_required: bool,
 }
 
 /// Auth frame payload: connector / client -> listener.

@@ -76,17 +76,20 @@ pub async fn create_token(
     }
     if let Some(gid) = &req.group_id {
         let probe = gid.clone();
-        let exists = state
+        let group = state
             .db_call(move |db| db.get_group(&probe))
             .await
-            .unwrap_or(None)
-            .is_some();
-        if !exists {
+            .unwrap_or(None);
+        let Some(g) = group else {
             return err(
                 StatusCode::NOT_FOUND,
                 codes::NOT_FOUND,
                 format!("group not found: {gid}"),
             );
+        };
+        // federation P3: e2e_required groups hang only on delegated tokens
+        if let Some(r) = super::groups::reject_e2e_group(&g) {
+            return r;
         }
     }
 
@@ -265,17 +268,20 @@ pub async fn update_token(
     };
     if let Some(Some(gid)) = &new_group {
         let probe = gid.clone();
-        let exists = state
+        let group = state
             .db_call(move |db| db.get_group(&probe))
             .await
-            .unwrap_or(None)
-            .is_some();
-        if !exists {
+            .unwrap_or(None);
+        let Some(g) = group else {
             return err(
                 StatusCode::NOT_FOUND,
                 codes::NOT_FOUND,
                 format!("group not found: {gid}"),
             );
+        };
+        // federation P3: e2e_required groups hang only on delegated tokens
+        if let Some(r) = super::groups::reject_e2e_group(&g) {
+            return r;
         }
     }
     // Parse quota input: null = unlimited, positive integer = set to that value (other types/<=0 all 400)

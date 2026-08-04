@@ -493,6 +493,7 @@ impl ConnectorManager {
                     name: g.name,
                     remark: g.remark,
                     rules,
+                    e2e_required: g.e2e_required,
                 })
             })
             .collect()

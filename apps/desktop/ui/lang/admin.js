@@ -147,6 +147,8 @@ AgI18n.register({
   'groups.empty': { zh: '暂无权限组', en: 'No groups' },
   'groups.createTitle': { zh: '新建权限组', en: 'New Group' },
   'groups.editTitle': { zh: '编辑权限组', en: 'Edit Group' },
+  'groups.e2e': { zh: '端到端加密（E2E）', en: 'End-to-End Encryption (E2E)' },
+  'groups.e2eTip': { zh: '开启后本组仅可用于签发委托（不可挂账号/扇入令牌/扇出）；目标流量端到端加密直达本端点，中继只见路由词。已被引用的组需先解除引用才能开启。', en: 'Once enabled, this group can only hang on delegated tokens (never accounts / fan-in tokens / fan-out). Traffic to its targets is sealed end-to-end to this endpoint; relays only see routing hints. Unlink existing references before enabling.' },
   'groups.detailTitle': { zh: '权限组详情 — {name}', en: 'Group Details — {name}' },
   'groups.relRules': { zh: '关联规则（{n}）', en: 'Linked Rules ({n})' },
   'groups.relAccounts': { zh: '组内账号（{n}）', en: 'Member Accounts ({n})' },
