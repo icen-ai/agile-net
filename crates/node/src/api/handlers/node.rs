@@ -137,6 +137,19 @@ pub async fn status(AdminAuth(_): AdminAuth, State(state): State<ApiState>) -> R
         })
         .collect();
 
+    // Public identity (federation P1): declared external address + reverse-proxy API override + share endpoints
+    let (public_host_cfg, public_api_url_cfg) = state
+        .db_call(|db| {
+            Ok((
+                db.get_config("public_host").ok().flatten(),
+                db.get_config("public_api_url").ok().flatten(),
+            ))
+        })
+        .await
+        .unwrap_or((None, None));
+    let public_api = state.declared_api_addr().await;
+    let public_relay = state.declared_relay_addr().await;
+
     // Relay transit (live snapshot: totals + origin->terminus pairs; the two adjacent hops visible to this node)
     let (t_up, t_down, t_pairs) = state.runtime.transit_meter.snapshot();
     let transit_json = json!({
@@ -171,6 +184,12 @@ pub async fn status(AdminAuth(_): AdminAuth, State(state): State<ApiState>) -> R
         },
         "system": system_stats(),
         "cert_fingerprint": state.runtime.cert_fingerprint,
+        "public_host": public_host_cfg,
+        "public_api_url": public_api_url_cfg,
+        "endpoints": {
+            "api": public_api,
+            "relay": public_relay,
+        },
     }))
 }
 
@@ -304,6 +323,8 @@ pub async fn logs(
 pub struct SettingsRequest {
     pub node_name: Option<String>,
     pub public_host: Option<String>,
+    /// Reverse-proxy fronted API endpoint (full scheme://host[:port]; empty = clear; federation P1)
+    pub public_api_url: Option<String>,
 }
 
 pub async fn update_settings(
@@ -356,6 +377,33 @@ pub async fn update_settings(
             );
         }
         applied.push("public_host");
+    }
+    if let Some(url) = &req.public_api_url {
+        let url = url.trim().trim_end_matches('/');
+        // Empty = clear the override; otherwise a full http(s) URL is required (no path)
+        if !url.is_empty()
+            && (!(url.starts_with("https://") || url.starts_with("http://"))
+                || url.len() > 253
+                || url[url.find("://").unwrap() + 3..].contains('/'))
+        {
+            return err(
+                StatusCode::BAD_REQUEST,
+                codes::VALIDATION_FAILED,
+                "public_api_url must be http(s)://host[:port] (no path)",
+            );
+        }
+        let url = url.to_string();
+        if let Err(e) = state
+            .db_call(move |db| db.set_config("public_api_url", &url))
+            .await
+        {
+            return err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                codes::INTERNAL,
+                e.to_string(),
+            );
+        }
+        applied.push("public_api_url");
     }
     audit(
         &state,

@@ -36,6 +36,28 @@
     },
     "android": {
       "minSdkVersion": 26
+    },
+    "fileAssociations": [
+      {
+        "ext": ["anet"],
+        "name": "AgileNet 凭据文件",
+        "description": "AgileNet 接入/扇出凭据（.anet 信封，可 PIN 加密）",
+        "role": "Viewer",
+        "mimeType": "application/json"
+      }
+    ]
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["anet", "agilenet"]
+      },
+      "mobile": [
+        { "scheme": ["anet"], "host": "connect" },
+        { "scheme": ["anet"], "host": "fanout" },
+        { "scheme": ["agilenet"], "host": "connect" },
+        { "scheme": ["agilenet"], "host": "fanout" }
+      ]
     }
   }
 }

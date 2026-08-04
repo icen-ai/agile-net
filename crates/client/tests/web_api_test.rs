@@ -231,7 +231,7 @@ async fn export_requires_confirm() {
     assert_eq!(j["code"].as_u64(), Some(0));
     let url = j["data"].as_str().unwrap();
     assert!(
-        url.starts_with("agilenet://connect?"),
+        url.starts_with("anet://connect?"),
         "导出应为接入链接: {url}"
     );
     assert!(url.contains("account=u1"));

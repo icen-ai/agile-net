@@ -217,6 +217,22 @@ pub async fn run(args: InitArgs) -> Result<()> {
         if listener_on { "0.0.0.0:54430（证书首启自动生成）" } else { "关闭" }
     );
 
+    // 4b. Public identity (federation P1 productization): a rendezvous declares its external
+    // address — access links and fan-out share links point at it (hot-applied, rewritable in the console)
+    let mut public_host: Option<String> = None;
+    if listener_on && interactive {
+        if prompt_yes_no("   本机是公网会合点吗？（有公网地址，供外网端点/客户端连入）", false)? {
+            let h = prompt("   对外地址（公网 IP 或域名，如 anet.example.com）", "")?;
+            let h = h.trim();
+            if h.is_empty() || h.len() > 253 || h.contains('/') || h.contains(' ') {
+                eprintln!("   对外地址格式无效，已跳过（可稍后在控制台「设置」补配）");
+            } else {
+                public_host = Some(h.to_string());
+                println!("   公网身份: {h}（接入/扇出链接将使用该地址）");
+            }
+        }
+    }
+
     // Write config (only if it does not exist)
     let db_path = args
         .db
@@ -235,6 +251,9 @@ pub async fn run(args: InitArgs) -> Result<()> {
             "# AgileNet 节点配置（anet init 生成）\nname = \"{name}\"\ndb_path = \"{}\"\n\n[api]\naddr = \"{api}\"\n",
             toml_path(&db_path)
         );
+        if let Some(h) = &public_host {
+            toml.push_str(&format!("\n# 公网会合点对外地址（接入/扇出链接的展示地址）\npublic_host = \"{h}\"\n"));
+        }
         if listener_on {
             toml.push_str(&format!(
                 "\n[listener]\naddr = \"0.0.0.0:54430\"\ncert_path = \"{}\"\nkey_path = \"{}\"\nsni_hostname = \"cdn.cloudflare.com\"\n",

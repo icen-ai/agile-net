@@ -1,4 +1,10 @@
-//! agilenet://connect?... URL parse & generate.
+//! Connect-link parsing for the client engine (fan-in account side).
+//!
+//! The unified link primitives (`anet://` scheme, connect/fanout roles, parse + build) live in
+//! `agile_net_core::link` — THE single Rust base, shared by the node (link generation at
+//! issuance) and the client (import). This module only maps the core `ConnectLink` onto the
+//! client-side `ParsedConnect` shape (extra fields: pinned_cert_path / manage_hosts /
+//! save_credential / admin flag as a display string) and adapts saved credentials.
 
 use serde::{Deserialize, Serialize};
 
@@ -26,94 +32,72 @@ pub struct ParsedConnect {
     pub admin: Option<String>,
 }
 
-/// Parse an agilenet://connect?... URL.
+/// Parse an `anet://connect?...` URL (legacy `agilenet://` accepted).
 pub fn parse_connect_url(url: &str) -> std::result::Result<ParsedConnect, String> {
-    let rest = url
-        .strip_prefix("agilenet://connect?")
-        .ok_or_else(|| "无效的接入链接前缀".to_string())?;
-    let mut server = String::new();
-    let mut port: Option<u16> = None;
-    let mut account = String::new();
-    let mut password = String::new();
-    let mut fp: Option<String> = None;
-    let mut insecure = false;
-    let mut admin: Option<String> = None;
-    for pair in rest.split('&') {
-        let mut kv = pair.splitn(2, '=');
-        let (k, v) = (kv.next().unwrap_or(""), kv.next().unwrap_or(""));
-        let v = url_decode(v);
-        match k {
-            "server" => server = v,
-            "port" => port = v.parse().ok(),
-            "account" => account = v,
-            "password" => password = v,
-            "fp" => fp = Some(v),
-            "insecure" => insecure = v == "1" || v.eq_ignore_ascii_case("true"),
-            "admin" => admin = Some(v),
-            _ => {}
-        }
-    }
-    if server.is_empty() || account.is_empty() || password.is_empty() {
-        return Err("接入链接缺少必要参数 (server/account/password)".into());
-    }
-    // Fill in the port from the port param when server has none
-    let addr = if server.contains(':') {
-        server
-    } else {
-        format!("{}:{}", server, port.unwrap_or(59090))
-    };
+    let link = agile_net_core::link::parse_connect_url(url)?;
     Ok(ParsedConnect {
-        addr,
-        username: account,
-        password,
-        insecure,
+        addr: link.addr,
+        username: link.account,
+        password: link.password,
+        insecure: link.insecure,
         pinned_cert_path: None,
-        pinned_fingerprint: fp,
+        pinned_fingerprint: link.pinned_fingerprint,
         manage_hosts: false,
         save_credential: true,
-        admin,
+        admin: link.admin.then(|| "1".to_string()),
     })
 }
 
-/// Generate an agilenet://connect URL from a saved credential (contains plaintext password; share with care).
+/// Generate an anet://connect URL from a saved credential (contains plaintext password; share with care).
 pub fn connect_url_of(c: &Credential) -> String {
-    let stripped = c
-        .addr
-        .trim_start_matches("http://")
-        .trim_start_matches("https://")
-        .trim_end_matches('/');
-    let (host, port) = match stripped.rsplit_once(':') {
-        Some((h, p)) if p.parse::<u16>().is_ok() => (h.to_string(), p.to_string()),
-        _ => (stripped.to_string(), "59090".to_string()),
-    };
-    let mut url = format!(
-        "agilenet://connect?server={host}&port={port}&account={}&password={}",
-        c.username, c.password
-    );
-    if let Some(fp) = &c.pinned_fingerprint {
-        url.push_str(&format!("&tls=1&fp={fp}"));
-    }
-    if c.insecure {
-        url.push_str("&insecure=1");
-    }
-    url
+    agile_net_core::link::build_connect_url(
+        &c.addr,
+        &c.username,
+        &c.password,
+        c.pinned_fingerprint.as_deref(),
+    )
 }
 
-fn url_decode(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%'
-            && i + 2 < bytes.len()
-            && let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16)
-        {
-            out.push(v);
-            i += 3;
-            continue;
-        }
-        out.push(if bytes[i] == b'+' { b' ' } else { bytes[i] });
-        i += 1;
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_maps_core_link_shape() {
+        let p = parse_connect_url(
+            "anet://connect?server=anet.example.com&port=59090&account=alice&password=sk-x&fp=ab12&admin=1",
+        )
+        .expect("parse");
+        assert_eq!(p.addr, "anet.example.com:59090");
+        assert_eq!(p.username, "alice");
+        assert_eq!(p.password, "sk-x");
+        assert_eq!(p.pinned_fingerprint.as_deref(), Some("ab12"));
+        assert_eq!(p.admin.as_deref(), Some("1"));
+        assert!(p.save_credential);
     }
-    String::from_utf8_lossy(&out).to_string()
+
+    #[test]
+    fn parse_legacy_scheme_still_works() {
+        let p = parse_connect_url("agilenet://connect?server=1.2.3.4&port=59090&account=a&password=b")
+            .expect("legacy parse");
+        assert_eq!(p.addr, "1.2.3.4:59090");
+        assert_eq!(p.admin, None);
+    }
+
+    #[test]
+    fn connect_url_of_roundtrips() {
+        let c = Credential {
+            addr: "1.2.3.4:59090".into(),
+            username: "u".into(),
+            password: "p".into(),
+            insecure: false,
+            pinned_fingerprint: Some("ab".into()),
+        };
+        let url = connect_url_of(&c);
+        assert!(url.starts_with("anet://connect?"));
+        let p = parse_connect_url(&url).expect("roundtrip");
+        assert_eq!(p.username, "u");
+        assert_eq!(p.password, "p");
+        assert_eq!(p.pinned_fingerprint.as_deref(), Some("ab"));
+    }
 }

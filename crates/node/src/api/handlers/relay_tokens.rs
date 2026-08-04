@@ -160,6 +160,19 @@ pub async fn create_token(
                 )
                 .await;
             }
+            // Federation P1: one-click import link (anet://fanout; address priority: declared
+            // public identity > listener address) + endpoint candidates for the share dialog
+            let relay_addr = state.public_relay_addr().await;
+            let sni = state.runtime.relay_sni.clone().unwrap_or_default();
+            let share_url = agile_net_core::link::build_fanout_url(
+                &relay_addr,
+                &token,
+                &sni,
+                state.runtime.cert_fingerprint.as_deref(),
+            );
+            let (_, relay_port) = state.public_tunnel_endpoint().await;
+            let public = state.declared_relay_addr().await;
+            let endpoints = state.share_endpoints(relay_port, public).await;
             ok_created(json!({
                 "id": record.id,
                 "token": token,
@@ -170,6 +183,8 @@ pub async fn create_token(
                 "group_id": record.group_id,
                 "rate_limit_kbps": record.rate_limit_kbps,
                 "created_at": record.created_at,
+                "share_url": share_url,
+                "endpoints": endpoints,
             }))
         }
         Err(e) => err(

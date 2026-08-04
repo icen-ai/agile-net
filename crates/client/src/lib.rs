@@ -31,6 +31,7 @@ pub use client::{
     AgileNetClient, ClientRule, ConnectParams, ManageableNode, NodeState, NodeStatus,
 };
 pub use config_cache::{CachedNodeConfig, ConfigCache};
+pub use agile_net_core::link::{FanoutLink, LINK_SCHEME, build_fanout_url, parse_fanout_url};
 pub use connect_url::{ParsedConnect, connect_url_of, parse_connect_url};
 pub use credential::{Credential, CredentialStore};
 pub use custom_rules::{CustomBypassRule, CustomRules};

@@ -27,6 +27,7 @@ async fn test_app() -> (Router, Database) {
         proxy_listen: None,
         log_buffer: LogBuffer::new(),
         cert_fingerprint: None,
+        relay_sni: None,
         manageable: Default::default(),
         client_proxy_slot: Default::default(),
         transit_meter: agile_net_core::relay::transit::TransitMeter::new(),
@@ -552,8 +553,10 @@ async fn accounts_strong_password_and_lifecycle() {
         body["data"]["connect_url"]
             .as_str()
             .unwrap()
-            .starts_with("agilenet://connect?")
+            .starts_with("anet://connect?")
     );
+    // Issuance responses carry share-endpoint candidates (federation P1)
+    assert!(body["data"]["endpoints"].is_array());
     let account_id = body["data"]["id"].as_str().unwrap().to_string();
 
     // Weak username rejected

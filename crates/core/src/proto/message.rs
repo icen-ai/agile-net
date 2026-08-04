@@ -12,6 +12,20 @@ pub enum AuthKind {
     Client,
 }
 
+/// Policy group pushed by a fan-out endpoint at auth (federation P1: policy upload).
+///
+/// The listener tags it with the session's node_id (source tag, namespace isolation) and
+/// offers it in the upstream authorizable pool; the upstream admin adopts it into a local
+/// group in one click. Old upstreams ignore this field (serde default, backwards compatible).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PushedGroupMsg {
+    pub name: String,
+    #[serde(default)]
+    pub remark: String,
+    #[serde(default)]
+    pub rules: Vec<String>,
+}
+
 /// Auth frame payload: connector / client -> listener.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthRequest {
@@ -23,6 +37,9 @@ pub struct AuthRequest {
     /// CIDRs/domains the node advertises as servable (only for kind = Node)
     #[serde(default)]
     pub advertise: Vec<String>,
+    /// Policy groups pushed upstream for the authorizable pool (only for kind = Node; federation P1)
+    #[serde(default)]
+    pub groups: Vec<PushedGroupMsg>,
     /// Protocol version, for future negotiation
     #[serde(default = "default_version")]
     pub version: u32,

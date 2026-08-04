@@ -20,7 +20,7 @@ AgI18n.register({
   'core.btn-start-proxy': { zh: '启动代理', en: 'Start Proxy' },
   'core.btn-stop-proxy': { zh: '停止代理', en: 'Stop Proxy' },
   'core.err-need-url': { zh: '请粘贴接入链接', en: 'Please paste a connect URL' },
-  'core.err-bad-url': { zh: '链接格式不正确，应以 agilenet://connect? 开头', en: 'Invalid URL: must start with agilenet://connect?' },
+  'core.err-bad-url': { zh: '链接格式不正确，应以 anet://connect? 开头', en: 'Invalid URL: must start with anet://connect?' },
   'core.clip-ok': { zh: '已识别剪贴板中的接入链接', en: 'Connect URL detected in clipboard' },
   'core.clip-none': { zh: '剪贴板中没有接入链接', en: 'No connect URL in clipboard' },
   'core.clip-fail': { zh: '无法读取剪贴板', en: 'Cannot read clipboard' },

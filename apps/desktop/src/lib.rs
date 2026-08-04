@@ -8,7 +8,37 @@ use agile_net_client::{AgileNetClient, CredentialStore, ParsedConnect};
 use agile_net_node::service::NodeServer;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
+
+/// Forward deep links (anet:// / legacy agilenet://) and .anet file-association paths to the
+/// frontend as `ag-open-payload` (kind: link|file), focusing the main window (federation P1).
+fn open_payloads_from_argv(app: &tauri::AppHandle, argv: &[String]) {
+    let mut hit = false;
+    for arg in argv.iter().skip(1) {
+        if arg.starts_with("anet://") || arg.starts_with("agilenet://") {
+            let _ = app.emit_to(
+                "main",
+                "ag-open-payload",
+                serde_json::json!({"kind": "link", "value": arg}),
+            );
+            hit = true;
+        } else if arg.to_lowercase().ends_with(".anet") {
+            let _ = app.emit_to(
+                "main",
+                "ag-open-payload",
+                serde_json::json!({"kind": "file", "value": arg}),
+            );
+            hit = true;
+        }
+    }
+    if hit {
+        if let Some(w) = app.get_webview_window("main") {
+            let _ = w.unminimize();
+            let _ = w.show();
+            let _ = w.set_focus();
+        }
+    }
+}
 
 mod cmd;
 mod custom_rules;
@@ -98,7 +128,18 @@ pub fn run() {
         )
         .init();
 
-    let app = tauri::Builder::default()
+    let mut builder = tauri::Builder::default();
+    // Single instance must register first: deep links / file-association launches on Windows
+    // reach the running instance as argv; forwarded to the frontend as open payloads (desktop only)
+    #[cfg(desktop)]
+    {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            open_payloads_from_argv(app, &argv);
+        }));
+    }
+    let app = builder
+        .plugin(tauri_plugin_deep_link::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
@@ -214,9 +255,32 @@ pub fn run() {
             sync::sync_restore,
             sync::sync_export,
             sync::sync_import,
+            anet_save_file,
+            anet_open_file,
+            read_text_file,
         ])
         .setup(|app| {
             setup_tray(app)?;
+
+            // Deep links (macOS/iOS/Android deliver via the plugin event; Windows/Linux via argv —
+            // single-instance above and the first-launch argv below)
+            {
+                use tauri::Listener as _;
+                let handle = app.handle().clone();
+                app.listen("deep-link://new-url", move |event| {
+                    let urls: Vec<String> = serde_json::from_str(event.payload())
+                        .or_else(|_| serde_json::from_str(event.payload()).map(|u: String| vec![u]))
+                        .unwrap_or_default();
+                    let argv: Vec<String> = std::iter::once(String::new())
+                        .chain(urls.into_iter().filter(|u| u.starts_with("anet://") || u.starts_with("agilenet://")))
+                        .collect();
+                    if argv.len() > 1 {
+                        open_payloads_from_argv(&handle, &argv);
+                    }
+                });
+            }
+            // First-launch argv (Windows file association / scheme launch with no running instance)
+            open_payloads_from_argv(&app.handle().clone(), &std::env::args().collect::<Vec<_>>());
 
             // Restore previously enabled server role (embedded node) and subscription kernel; start the system proxy patrol
             let handle = app.handle().clone();

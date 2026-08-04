@@ -40,6 +40,7 @@ fn test_app_with(db: Database, manager: ConnectorManager) -> Router {
         proxy_listen: None,
         log_buffer: LogBuffer::new(),
         cert_fingerprint: None,
+        relay_sni: None,
         manageable: Default::default(),
         client_proxy_slot: Default::default(),
         transit_meter: agile_net_core::relay::transit::TransitMeter::new(),

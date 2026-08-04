@@ -70,6 +70,20 @@ addr = "127.0.0.1:1080"                # 非 loopback 必须配置认证
 # login_lock_minutes = 15
 ```
 
+## 反代/域名场景（联邦 P1）
+
+对外展示地址与监听地址解耦：`public_host`（公网身份，接入链接与隧道端点的展示地址，控制台「设置」
+热生效）+ `public_api_url`（控制台设置，API 反代端点 `http(s)://host[:port]`，接入链接随之携带
+https scheme）。硬约束：
+
+- **Relay 数据面必须 L4 TCP 透传**：SNI 是拟态主机名可直接穿透；L7 终结 TLS 会破坏私有协议与
+  证书指纹钉值（对端将无法校验）。Nginx `stream{}` / HAProxy `mode tcp` / SLB TCP 监听均可。
+- API 管理面可以 L7 HTTPS 反代（443/域名终结 TLS 没问题），此时把对外完整端点填入
+  「设置 → API 反代端点」（如 `https://anet.example.com`），新签发的接入链接即带 https scheme。
+- 多节点共用一公网 IP 时按端口区分后端（relay SNI 为拟态值，无法按 SNI 分流多 anet 节点）；
+  更推荐单入口节点 + 联邦路由（扇出注册把各内网路由收敛到入口，见联邦模型）。
+- `anet init` 向导会询问「本机是否公网会合点 + 对外地址」，与控制台设置等价，落 `public_host`。
+
 ## anet-svc client：`client.toml`
 
 ```toml

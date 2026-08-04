@@ -22,7 +22,7 @@ The console window or any browser opens `127.0.0.1:58xxx` and loads the remote n
 ## Management-Grade Connect URL (Manage This Node)
 
 When the console creates a client account, checking "Also grant management permission" generates
-the `agilenet://connect?...&admin=1` variant (the generation page shows a strong warning, and issuance is audited as `account.issue_admin_link`).
+the `anet://connect?...&admin=1` variant (the generation page shows a strong warning, and issuance is audited as `account.issue_admin_link`).
 
 After the client connects:
 

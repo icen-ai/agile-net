@@ -36,6 +36,8 @@ pub struct NodeRuntime {
     pub log_buffer: LogBuffer,
     /// Relay cert SHA-256 fingerprint (for client cert pinning; None in ACME mode)
     pub cert_fingerprint: Option<String>,
+    /// Relay TLS SNI hostname served by the listener (static: configured sni_hostname; ACME: the domain; None without listener)
+    pub relay_sni: Option<String>,
     /// Manageable upstream registry (handshake v2 discovery; for config delivery and status display)
     pub manageable: crate::relay_auth::ManageableRegistry,
     /// Client-role proxy state slot (written by the GUI host; overrides the status proxy section when set)
@@ -127,6 +129,102 @@ impl ApiState {
         (host, self.relay_port)
     }
 
+    /// Connect-url server value: `public_api_url` (full scheme://host[:port] override for
+    /// reverse-proxy fronted APIs, DB config) > public_host:api_port.
+    pub async fn public_api_addr(&self) -> String {
+        if let Some(url) = self
+            .db_call(|db| db.get_config("public_api_url"))
+            .await
+            .ok()
+            .flatten()
+            .map(|s| s.trim().trim_end_matches('/').to_string())
+            .filter(|s| !s.is_empty())
+        {
+            return url;
+        }
+        let (host, port) = self.public_api_endpoint().await;
+        format!("{host}:{port}")
+    }
+
+    /// Whether the declared public host is a real external identity (not the 127.0.0.1 default).
+    fn declared_public_host(host: &str) -> bool {
+        let h = host.trim();
+        !h.is_empty() && h != "127.0.0.1" && h != "localhost" && h != "::1"
+    }
+
+    /// Relay data-plane share address (fanout links): the declared public identity
+    /// (public_host:relay_port) when set, else the listener's own address.
+    pub async fn public_relay_addr(&self) -> String {
+        if let Some(addr) = self.declared_relay_addr().await {
+            return addr;
+        }
+        let (host, port) = self.public_tunnel_endpoint().await;
+        self.runtime
+            .listener
+            .as_ref()
+            .map(|l| l.listen_addr().to_string())
+            .unwrap_or_else(|| format!("{host}:{port}"))
+    }
+
+    /// Declared public relay identity (Some only when public_host is a real external address).
+    pub async fn declared_relay_addr(&self) -> Option<String> {
+        let (host, port) = self.public_tunnel_endpoint().await;
+        Self::declared_public_host(&host).then(|| format!("{host}:{port}"))
+    }
+
+    /// Declared public API identity: the full public_api_url override wins; else public_host:api_port
+    /// when it is a real external address; None when undeclared.
+    pub async fn declared_api_addr(&self) -> Option<String> {
+        if let Some(url) = self
+            .db_call(|db| db.get_config("public_api_url"))
+            .await
+            .ok()
+            .flatten()
+            .map(|s| s.trim().trim_end_matches('/').to_string())
+            .filter(|s| !s.is_empty())
+        {
+            return Some(url);
+        }
+        let (host, port) = self.public_api_endpoint().await;
+        Self::declared_public_host(&host).then(|| format!("{host}:{port}"))
+    }
+
+    /// Share-endpoint candidates for issuance dialogs (federation P1: relay-vs-direct choice).
+    /// `public` = the declared public identity for this role (full API URL or host:port),
+    /// placed first when present; then LAN IPv4 addresses (non-loopback up interfaces);
+    /// loopback as the last resort.
+    pub async fn share_endpoints(&self, port: u16, public: Option<String>) -> Vec<ShareEndpoint> {
+        let mut out: Vec<ShareEndpoint> = Vec::new();
+        if let Some(addr) = public.filter(|a| !a.trim().is_empty()) {
+            out.push(ShareEndpoint {
+                kind: "public".into(),
+                addr,
+            });
+        }
+        let seen: std::collections::HashSet<String> =
+            out.iter().map(|e| e.addr.clone()).collect();
+        // Local interface enumeration (fast syscall, issuance-path only)
+        let mut lan = lan_ipv4_addrs()
+            .into_iter()
+            .map(|ip| format!("{ip}:{port}"))
+            .filter(|a| !seen.contains(a))
+            .map(|addr| ShareEndpoint {
+                kind: "lan".into(),
+                addr,
+            })
+            .collect::<Vec<_>>();
+        // Stable order for deterministic UI/tests
+        lan.sort_by(|a, b| a.addr.cmp(&b.addr));
+        out.extend(lan);
+        if out.is_empty() {
+            out.push(ShareEndpoint {
+                kind: "local".into(),
+                addr: format!("127.0.0.1:{port}"),
+            });
+        }
+        out
+    }
+
     /// Offload synchronous DB calls to the blocking thread pool.
     ///
     /// rusqlite is a sync API; calling it directly in an async handler holds a tokio worker
@@ -161,8 +259,27 @@ impl ApiState {
     }
 }
 
-// ==================== Blocking work offload ====================
+/// Share-endpoint candidate (issuance dialogs: declared public identity / LAN direct / loopback).
+#[derive(Debug, Clone, Serialize)]
+pub struct ShareEndpoint {
+    /// "public" (declared identity) | "lan" (same-LAN direct) | "local" (loopback)
+    pub kind: String,
+    pub addr: String,
+}
 
+/// Enumerate LAN IPv4 addresses (non-loopback, up interfaces; default-net, the anet tool data source).
+pub(crate) fn lan_ipv4_addrs() -> Vec<String> {
+    let mut out: Vec<String> = default_net::get_interfaces()
+        .iter()
+        .filter(|i| i.is_up() && !i.is_loopback())
+        .flat_map(|i| i.ipv4.iter().map(|n| n.addr.to_string()))
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+// ==================== Blocking work offload ====================
 /// Unified offload point for sync blocking work: argon2id hash/verify, JWT issue/rotation
 /// (with internal DB writes) and other CPU/IO-heavy calls enter the tokio blocking pool
 /// here, never holding an async worker. DB access: `ApiState::db_call` (wraps this fn).
@@ -358,6 +475,15 @@ pub fn create_app(state: ApiState) -> Router {
             post(handlers::connectors::disable_connector),
         )
         .route("/api/v1/admin/node/events", any(handlers::node::events_ws))
+        // ---- Admin: Federation (authorizable pool + one-click adoption) ----
+        .route(
+            "/api/v1/admin/federation/offered",
+            get(handlers::federation::offered),
+        )
+        .route(
+            "/api/v1/admin/federation/adopt",
+            post(handlers::federation::adopt),
+        )
         // ---- Admin: Tool (batch-4 bandwidth, the only tool command exposed via API) ----
         .route(
             "/api/v1/admin/tool/bandwidth",

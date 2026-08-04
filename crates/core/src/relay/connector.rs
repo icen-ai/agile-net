@@ -9,7 +9,7 @@ use crate::error::{Error, Result};
 use crate::proto::frame::{Frame, FrameType};
 use crate::proto::message::{
     AuthKind, AuthRequest, ControlOffer, OpenChannel, PROTOCOL_VERSION,
-    PROTOCOL_VERSION_FLOW_CONTROL,
+    PROTOCOL_VERSION_FLOW_CONTROL, PushedGroupMsg,
 };
 use crate::proxy::router::{Outbound, ProxyRouter};
 use crate::relay::acl::PeerAcl;
@@ -67,6 +67,9 @@ pub struct RelayConnector {
     peer_router: Option<Arc<RelayListener>>,
     /// Serviceable CIDRs/domains advertised upstream (static config)
     advertise: Vec<String>,
+    /// Policy groups pushed upstream at auth (federation P1; hot-swappable slot —
+    /// a change triggers a reconnect to re-push, same pattern as route re-advertise)
+    push_groups: Arc<arc_swap::ArcSwap<Vec<PushedGroupMsg>>>,
     /// Handshake v2: management endpoint pushed by the upstream when it exposes a control plane
     control: Arc<arc_swap::ArcSwapOption<ControlOffer>>,
     /// Route re-advertise: client-tunnel merged routes (rules resold downstream, via=client tunnel)
@@ -122,6 +125,7 @@ impl RelayConnector {
             sni_hostname: tls_builder.sni_hostname,
             peer_router: None,
             advertise: Vec::new(),
+            push_groups: Arc::new(arc_swap::ArcSwap::from_pointee(Vec::new())),
             control: Arc::new(arc_swap::ArcSwapOption::from_pointee(None)),
             client_router: None,
             openers: None,
@@ -144,6 +148,13 @@ impl RelayConnector {
     /// Set the CIDR/domain list advertised upstream.
     pub fn with_advertise(mut self, advertise: Vec<String>) -> Self {
         self.advertise = advertise;
+        self
+    }
+
+    /// Federation P1: inject the pushed-policy-group slot (shared with the control plane;
+    /// updates land at the next reconnect, and the run loop reconnects on change to re-push).
+    pub fn with_push_groups(mut self, slot: Arc<arc_swap::ArcSwap<Vec<PushedGroupMsg>>>) -> Self {
+        self.push_groups = slot;
         self
     }
 
@@ -277,12 +288,13 @@ impl RelayConnector {
         let mut tls_stream = self.tls_connector.connect(server_name, tcp_stream).await?;
         debug!(upstream = %self.upstream_addr, "tls connected to upstream");
 
-        // send the Auth frame (advertise set = static + re-advertised client tunnel rules)
+        // send the Auth frame (advertise set = static + re-advertised client tunnel rules; groups = pushed policy slot)
         let auth_req = AuthRequest {
             node_id: self.node_id.clone(),
             token: self.token.clone(),
             kind: AuthKind::Node,
             advertise: self.effective_advertise(),
+            groups: self.push_groups.load().as_ref().clone(),
             version: PROTOCOL_VERSION,
         };
         let payload = serde_json::to_vec(&auth_req).map_err(|e| Error::Protocol(e.to_string()))?;
@@ -440,11 +452,21 @@ impl RelayConnector {
                     attempt = 0;
                     // wait for the session to drop (the background task flips state to Disconnected);
                     // proactively reconnect to re-advertise upstream when client tunnel rules change (route re-advertise)
+                    // or when the pushed policy groups change (federation P1 re-push)
                     let mut last_router = self.client_router.as_ref().map(|r| r.load_full());
+                    let mut last_groups = self.push_groups.load_full();
                     while self.state() == ConnectionState::Connected {
                         if self.shutdown_flag.load(Ordering::Relaxed) {
                             break;
                         }
+                        let cur_groups = self.push_groups.load_full();
+                        if !Arc::ptr_eq(&last_groups, &cur_groups) {
+                            info!("pushed policy groups changed — reconnecting to re-push");
+                            self.shutdown_notify.notify_waiters();
+                            tokio::time::sleep(Duration::from_millis(300)).await;
+                            break;
+                        }
+                        last_groups = cur_groups;
                         if let Some(r) = &self.client_router {
                             let cur = r.load_full();
                             let changed = match &last_router {

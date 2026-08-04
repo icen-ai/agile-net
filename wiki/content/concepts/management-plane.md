@@ -22,7 +22,7 @@ GUI 内置 loopback 转发器（本地环回端口 → 客户端隧道 → 目�
 ## 管理版接入链接（管理此节点）
 
 控制台创建客户端账号时勾选「同时授予管理权限」，生成
-`agilenet://connect?...&admin=1` 变体（生成页强警示 + `account.issue_admin_link` 签发审计）。
+`anet://connect?...&admin=1` 变体（生成页强警示 + `account.issue_admin_link` 签发审计）。
 
 客户端连接后：
 

@@ -67,6 +67,7 @@ impl TokenValidator for AclValidator {
             Some(AuthIdentity::Node {
                 node_id: auth.node_id.clone(),
                 advertise: auth.advertise.clone(),
+                groups: auth.groups.clone(),
                 control: None,
                 acl: self.acl.clone(),
             })
@@ -90,6 +91,7 @@ async fn connect_raw_peer(relay_addr: SocketAddr, node_id: &str, token: &str) ->
         token: token.to_string(),
         kind: AuthKind::Node,
         advertise: Vec::new(),
+            groups: Vec::new(),
         version: PROTOCOL_VERSION,
     };
     let payload = serde_json::to_vec(&auth_req).unwrap();

@@ -185,6 +185,47 @@ window.addEventListener('DOMContentLoaded', async () => {
   $('btn-import').onclick = (e) => importUrl($('connect-url').value, e.target);
   $('btn-import-hero').onclick = (e) => importUrl($('connect-url-hero').value, e.target);
   $('btn-paste').onclick = pasteFromClipboard;
+  // .anet import (file picker entry; drag-drop and file association funnel into the same dialog)
+  $('btn-anet').onclick = async () => {
+    if (HTTP_MODE) { $('anet-file-input').click(); return; }
+    try {
+      const r = await invoke('anet_open_file');
+      if (r) anetImportDialog(r.content, r.name);
+    } catch (e) { toast(friendlyError(e), 'err'); }
+  };
+  $('anet-file-input').onchange = async (e) => {
+    const f = e.target.files[0];
+    e.target.value = '';
+    if (f) anetImportDialog(await f.text(), f.name);
+  };
+  // .anet drag-drop import (only .anet files claimed; the subscription card owns its YAML drop)
+  document.addEventListener('dragover', (e) => {
+    if ([...(e.dataTransfer ? e.dataTransfer.items : [])].some(i => i.kind === 'file')) e.preventDefault();
+  });
+  document.addEventListener('drop', async (e) => {
+    const f = e.dataTransfer && e.dataTransfer.files && [...e.dataTransfer.files].find(f => /\.anet$/i.test(f.name));
+    if (!f) return;
+    e.preventDefault();
+    anetImportDialog(await f.text(), f.name);
+  });
+  // Deep link / file association payloads (anet:// links routed by role; .anet files into the import dialog)
+  if (TAURI && TAURI.event) {
+    TAURI.event.listen('ag-open-payload', async (e) => {
+      const p = e.payload || {};
+      if (p.kind === 'link') {
+        const url = String(p.value || '');
+        const parsed = AgLink.parse(url);
+        if (parsed.error) { toast(AgI18n.t('core.err-bad-url'), 'err'); return; }
+        if (parsed.role === 'connect') { switchView('connect'); importUrl(url, null); }
+        else { switchView('upstreams'); foOpenModal(null); foFillFields(parsed); toast(AgI18n.t('fanout.pasted'), 'ok'); }
+      } else if (p.kind === 'file') {
+        try {
+          const content = await invoke('read_text_file', { path: String(p.value || '') });
+          anetImportDialog(content, String(p.value).split(/[\\/]/).pop());
+        } catch (err) { toast(friendlyError(err), 'err'); }
+      }
+    });
+  }
   $('link-paste').onclick = pasteFromClipboard;
   $('link-manual').onclick = () => { switchView('nodes'); toggleManual(true); };
   $('manual-toggle').onclick = () => toggleManual();
@@ -220,6 +261,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     if (btn.dataset.act === 'reconnect') reconnectSaved(key, btn);
     if (btn.dataset.act === 'disconnect') disconnectNode(key);
     if (btn.dataset.act === 'export') exportCred(key);
+    if (btn.dataset.act === 'anet') exportCredAnet(key);
     if (btn.dataset.act === 'delcred') deleteCred(key, btn);
     if (btn.dataset.act === 'console') openNodeConsole(btn.dataset.id);
   });

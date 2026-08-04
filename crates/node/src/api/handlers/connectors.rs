@@ -41,6 +41,9 @@ pub struct CreateConnectorRequest {
     /// ACL group (absent/null = unrestricted, allow all)
     #[serde(default)]
     pub group_id: Option<String>,
+    /// Policy upload (federation P1): local group IDs pushed upstream at auth (empty = no upload)
+    #[serde(default)]
+    pub push_groups: Vec<String>,
     #[serde(default)]
     pub remark: String,
 }
@@ -96,6 +99,40 @@ async fn validate_group(state: &ApiState, group_id: Option<&str>) -> Option<Resp
         }
     }
     None
+}
+
+/// Validate and normalize pushed group IDs (federation P1): each must exist; dedup;
+/// cap at the protocol pool size. Returns the DB-serialized comma-joined string.
+async fn validate_push_groups(state: &ApiState, ids: &[String]) -> Result<String, Response> {
+    if ids.len() > agile_net_core::relay::listener::MAX_PUSHED_GROUPS {
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            codes::VALIDATION_FAILED,
+            "push_groups too large (max 32)",
+        ));
+    }
+    let mut seen = std::collections::HashSet::new();
+    let mut out: Vec<String> = Vec::new();
+    for gid in ids {
+        if !seen.insert(gid.clone()) {
+            continue;
+        }
+        let probe = gid.clone();
+        let exists = state
+            .db_call(move |db| db.get_group(&probe))
+            .await
+            .unwrap_or(None)
+            .is_some();
+        if !exists {
+            return Err(err(
+                StatusCode::NOT_FOUND,
+                codes::NOT_FOUND,
+                format!("group not found: {gid}"),
+            ));
+        }
+        out.push(gid.clone());
+    }
+    Ok(out.join(","))
 }
 
 /// View JSON: ConnectorView + live state (never contains token plaintext/ciphertext).
@@ -163,6 +200,10 @@ pub async fn create_connector(
     if let Some(resp) = validate_group(&state, req.group_id.as_deref()).await {
         return resp;
     }
+    let push_groups = match validate_push_groups(&state, &req.push_groups).await {
+        Ok(s) => s,
+        Err(resp) => return resp,
+    };
     // Name uniqueness (DB has a UNIQUE constraint too; the pre-check gives a clear 409)
     let name_owned = name.to_string();
     let name_taken = state
@@ -232,6 +273,16 @@ pub async fn create_connector(
         .await;
     match created {
         Ok(rec) => {
+            // Policy upload (federation P1): set before the first hot assembly so the groups ride the first handshake
+            if !push_groups.is_empty() {
+                let (cid, pg) = (rec.id.clone(), push_groups.clone());
+                if let Err(e) = state
+                    .db_call(move |db| db.set_connector_push_groups(&cid, &pg))
+                    .await
+                {
+                    tracing::error!(connector = %name, error = %e, "set push_groups failed");
+                }
+            }
             // Hot assembly failure does not block creation (DB row exists; state shows disconnected, fix and retry via update)
             if let Err(e) = state.runtime.connector_manager.upsert_from_db(&rec.id).await {
                 tracing::error!(connector = %name, error = %e, "connector hot-start failed");
@@ -284,6 +335,9 @@ pub struct UpdateConnectorRequest {
     /// ACL group (PUT is full-replace semantics: absent/null = unrestricted)
     #[serde(default)]
     pub group_id: Option<String>,
+    /// Policy upload (federation P1): absent = keep current; provided (incl. empty) = replace
+    #[serde(default)]
+    pub push_groups: Option<Vec<String>>,
     #[serde(default)]
     pub remark: String,
 }
@@ -325,6 +379,14 @@ pub async fn update_connector(
     if let Some(resp) = validate_group(&state, req.group_id.as_deref()).await {
         return resp;
     }
+    // Policy upload (federation P1): absent = keep; provided = validated replacement
+    let push_groups = match &req.push_groups {
+        Some(ids) => match validate_push_groups(&state, ids).await {
+            Ok(s) => Some(s),
+            Err(resp) => return resp,
+        },
+        None => None,
+    };
     let (name_owned, cid) = (name.to_string(), id.clone());
     let name_taken = state
         .db_call(move |db| {
@@ -403,6 +465,20 @@ pub async fn update_connector(
             e.to_string(),
         );
     }
+    // Policy upload replacement (federation P1; before the hot rebuild so the new set rides the next handshake)
+    if let Some(pg) = &push_groups {
+        let (cid, pg) = (id.clone(), pg.clone());
+        if let Err(e) = state
+            .db_call(move |db| db.set_connector_push_groups(&cid, &pg))
+            .await
+        {
+            return err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                codes::INTERNAL,
+                e.to_string(),
+            );
+        }
+    }
     // Rebuild this connector (drop the old link, then bring up the new one)
     if let Err(e) = state.runtime.connector_manager.upsert_from_db(&id).await {
         tracing::error!(connector = %name, error = %e, "connector hot-rebuild failed");
@@ -414,12 +490,16 @@ pub async fn update_connector(
         "connector.update",
         Some(&id),
         &format!(
-            "{name} -> {} (token {})",
+            "{name} -> {} (token {}{})",
             req.upstream_addr,
             if token_reset.is_some() {
                 "rotated"
             } else {
                 "kept"
+            },
+            match &push_groups {
+                Some(pg) => format!(", push_groups={}", if pg.is_empty() { "cleared".into() } else { pg.split(',').count().to_string() }),
+                None => String::new(),
             }
         ),
     )

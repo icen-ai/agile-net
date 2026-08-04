@@ -248,6 +248,163 @@ function confirmAction(text, onYes) {
   ]);
 }
 
+/* ================= Share card (federation P1) =================
+   Issuance dialogs (account / fan-in token): endpoint choice (public identity / LAN direct) +
+   tab switch (full link / key only) + copy. The link is rebuilt from the parsed fields via the
+   shared AgLink parser on endpoint switch (the secret is shown only this once, no refetch). */
+function aglinkErrText(code) {
+  return T('aglink.' + (code || 'missing'));
+}
+function shareCardHtml(endpoints) {
+  const eps = endpoints || [];
+  const epRow = eps.length > 1
+    ? '<label>' + T('share.endpoint') + '</label><select data-share-ep style="width:100%">' +
+      eps.map(e => '<option value="' + esc(e.addr) + '">' + T('share.ep.' + e.kind) + ' · ' + esc(e.addr) + '</option>').join('') + '</select>'
+    : '';
+  return epRow +
+    '<div class="agtabs" style="margin:10px 0 6px"><div class="agtabs-pill">' +
+      '<button class="agtab active" data-share-tab="link">' + T('share.tabLink') + '</button>' +
+      '<button class="agtab" data-share-tab="key">' + T('share.tabKey') + '</button>' +
+    '</div></div>' +
+    '<div class="secret-box"><span class="mono" data-share-val></span></div>' +
+    '<div class="actions" style="justify-content:flex-start;margin-top:10px">' +
+      '<button class="ghost small" data-share-copy data-act="copy">' + ic('copy', 13) + T('common.copy') + '</button>' +
+      '<button class="ghost small" data-share-anet>' + ic('download', 13) + T('share.downloadAnet') + '</button>' +
+    '</div>';
+}
+function shareCardBind(root, opts) {
+  const parsed = AgLink.parse(opts.link);
+  if (parsed.error) return;
+  const epSel = root.querySelector('[data-share-ep]');
+  const valBox = root.querySelector('[data-share-val]');
+  const copyBtn = root.querySelector('[data-share-copy]');
+  if (!valBox || !copyBtn) return;
+  let tab = 'link';
+  function currentLink() {
+    const addr = epSel ? epSel.value : parsed.addr;
+    return opts.role === 'fanout'
+      ? AgLink.buildFanout({ addr, token: parsed.token, sni: parsed.sni, fp: parsed.fp, insecure: parsed.insecure })
+      : AgLink.buildConnect({ addr, account: parsed.account, password: parsed.password, fp: parsed.fp, insecure: parsed.insecure, admin: parsed.admin });
+  }
+  function render() {
+    const v = tab === 'link' ? currentLink() : opts.secret;
+    valBox.textContent = v;
+    copyBtn.dataset.copy = v;
+    root.querySelectorAll('[data-share-tab]').forEach(b => b.classList.toggle('active', b.dataset.shareTab === tab));
+  }
+  root.querySelectorAll('[data-share-tab]').forEach(b => { b.onclick = () => { tab = b.dataset.shareTab; render(); }; });
+  if (epSel) epSel.onchange = render;
+  const anetBtn = root.querySelector('[data-share-anet]');
+  if (anetBtn) anetBtn.onclick = () => openAnetExport(opts.role, parsed, currentLink(), opts.note || '');
+  render();
+}
+
+/* ================= .anet credential file (federation P1 §2.8) =================
+   Export: envelope meta (issuer/note) + optional 4-digit PIN (default recommended) -> native
+   save (desktop console bridge) or blob download (browser). Import: meta preview first, then
+   PIN if needed, then apply by role (fanout -> prefilled form; connect -> client-side notice). */
+async function anetIssuer() {
+  if (!S.nodeName) {
+    try { S.nodeName = (await api('GET', '/api/v1/admin/node/status')).node_name || 'AgileNet'; } catch(e) { S.nodeName = 'AgileNet'; }
+  }
+  return S.nodeName;
+}
+function anetErrText(code) {
+  const map = { bad_json: 'badFile', bad_magic: 'badFile', bad_version: 'badFile', bad_role: 'badFile', bad_payload: 'badFile', bad_enc: 'badFile', decrypt: 'badPin', bad_pin: 'badPin', need_pin: 'badPin', no_crypto: 'noCrypto' };
+  return T('anet.' + (map[code] || 'badFile'));
+}
+function isEmbeddedConsole() { return document.documentElement.classList.contains('embed') && window.parent !== window; }
+/* Save .anet text: native save dialog via the desktop console bridge when embedded, blob download otherwise */
+async function anetSaveFile(name, content) {
+  if (isEmbeddedConsole()) {
+    return new Promise((resolve) => {
+      const onMsg = (e) => {
+        const d = e.data || {};
+        if (d.type === 'ag-anet-saved') { window.removeEventListener('message', onMsg); resolve(!!d.ok); }
+      };
+      window.addEventListener('message', onMsg);
+      window.parent.postMessage({ type: 'ag-anet-save', name, content }, '*');
+      setTimeout(() => { window.removeEventListener('message', onMsg); resolve(false); }, 120000);
+    });
+  }
+  const blob = new Blob([content], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  return true;
+}
+function anetExportDialogHtml(defaultNote) {
+  const cryptoOk = AgAnet.canEncrypt();
+  return '<label>' + T('anet.note') + '</label><input id="ax-note" style="width:100%" value="' + esc(defaultNote || '') + '" placeholder="' + T('anet.notePh') + '">' +
+    '<label class="chk" style="display:flex;align-items:center;gap:6px;margin-top:10px"><input type="checkbox" id="ax-pin-on" ' + (cryptoOk ? 'checked' : 'disabled') + '> ' + T('anet.pinLabel') + '</label>' +
+    '<div id="ax-pin-row"><input id="ax-pin" class="mono" style="width:140px" maxlength="4" inputmode="numeric" placeholder="' + T('anet.pinPh') + '">' +
+    '<div class="hint">' + T('anet.pinHint') + '</div></div>' +
+    (cryptoOk ? '' : '<div class="hint" style="color:var(--warn)">' + T('anet.noCrypto') + '</div>');
+}
+async function openAnetExport(role, parsed, link, defaultNote) {
+  const issuer = await anetIssuer();
+  openModal(T('anet.exportTitle'), anetExportDialogHtml(defaultNote), [
+    {label: T('common.cancel'), kind:'ghost', fn: closeModal},
+    {label: T('anet.export'), fn: async () => {
+      const note = $('ax-note').value.trim();
+      const pinOn = $('ax-pin-on').checked;
+      const pin = pinOn ? $('ax-pin').value.trim() : '';
+      if (pinOn && !/^\d{4}$/.test(pin)) { toast(T('anet.pinNeed4'), 'err'); return; }
+      // Payload = the parsed technical fields + the concrete link (endpoint choice already applied)
+      const payload = { ...parsed, link };
+      try {
+        const text = await AgAnet.build({ role, issuer, note }, payload, pin);
+        const name = AgAnet.suggestName(issuer, note || (role === 'fanout' ? parsed.sni : parsed.account));
+        const saved = await anetSaveFile(name, text);
+        if (saved) { closeModal(); toast(T('anet.exported'), 'ok'); }
+      } catch(e) { toast(anetErrText(e.code), 'err'); }
+    }},
+  ]);
+  $('ax-pin-on').onchange = (e) => { $('ax-pin-row').style.display = e.target.checked ? 'block' : 'none'; };
+}
+/* Import: meta preview first, then PIN when encrypted, then apply by role */
+function openAnetImport(text, fileName) {
+  let parsed;
+  try { parsed = AgAnet.parse(text); } catch(e) { toast(anetErrText(e.code), 'err'); return; }
+  const env = parsed.envelope;
+  const roleText = env.role === 'fanout' ? T('anet.roleFanout') : T('anet.roleConnect');
+  openModal(T('anet.importTitle'),
+    '<div class="kv"><span class="k">' + T('anet.metaRole') + '</span><span><span class="badge b-info">' + roleText + '</span> ' +
+      (parsed.needPin ? '<span class="badge b-warn">' + T('anet.encrypted') + '</span>' : '<span class="badge b-info">' + T('anet.plaintext') + '</span>') + '</span></div>' +
+    '<div class="kv"><span class="k">' + T('anet.metaIssuer') + '</span><span>' + esc(env.issuer || '-') + '</span></div>' +
+    '<div class="kv"><span class="k">' + T('anet.metaTime') + '</span><span>' + esc((env.created_at || '').replace('T', ' ').replace(/\..*$/, '')) + '</span></div>' +
+    '<div class="kv"><span class="k">' + T('anet.metaNote') + '</span><span>' + esc(env.note || '-') + '</span></div>' +
+    (fileName ? '<div class="kv"><span class="k">' + T('anet.metaFile') + '</span><span class="mono" style="font-size:12px">' + esc(fileName) + '</span></div>' : '') +
+    (parsed.needPin
+      ? '<label style="margin-top:10px">' + T('anet.pinNeed') + '</label><input id="ai-pin" class="mono" style="width:140px" maxlength="4" inputmode="numeric">'
+      : ''),
+    [
+      {label: T('common.cancel'), kind:'ghost', fn: closeModal},
+      {label: T('anet.apply'), fn: async () => {
+        let payload;
+        if (parsed.needPin) {
+          try { payload = await AgAnet.decrypt(env, $('ai-pin').value.trim()); }
+          catch(e) { toast(anetErrText(e.code), 'err'); return; }
+        } else {
+          payload = env.payload;
+        }
+        applyAnetPayload(env.role, payload);
+      }},
+    ]);
+}
+function applyAnetPayload(role, payload) {
+  if (role === 'fanout') {
+    closeModal();
+    openCreateConnector(payload || {});
+    toast(T('anet.appliedFanout'), 'ok');
+  } else {
+    // A connect credential is for clients, not for this console — explain instead of silently dropping
+    toast(T('anet.connectHere'), 'err');
+  }
+}
+
 /* ================= Login/logout ================= */
 async function doLogin() {
   const u = $('login-user').value.trim(), p = $('login-pass').value;
@@ -342,6 +499,11 @@ const ACT_CLICK = {
   'conn-edit': b => openEditConnector(b.dataset.id),
   'conn-toggle': b => toggleConnector(b.dataset.id, b.dataset.enabled === 'true'),
   'conn-del': b => delConnector(b.dataset.id, b.dataset.name),
+  'pool-toggle': b => {
+    const row = document.querySelector('[data-poolrow="' + CSS.escape(b.dataset.node) + '"]');
+    if (row) row.hidden = !row.hidden;
+  },
+  'fed-adopt': b => adoptPushed(b.dataset.node, b.dataset.group),
   'admin-del': b => delAdmin(b.dataset.id, b.dataset.name),
 };
 const ACT_CHANGE = {
@@ -605,24 +767,24 @@ function openCreateAccount() {
         const admin_console = $('na-admin').checked;
         try {
           const d = await api('POST', '/api/v1/admin/accounts', {username, group_id, remark, admin_console});
-          showAccountSecret(T('accounts.createdTitle'), d.username, d.password, d.connect_url, d.id, admin_console);
+          showAccountSecret(T('accounts.createdTitle'), d.username, d.password, d.connect_url, d.id, admin_console, d.endpoints);
           loadAccounts();
         } catch(e) { toast(e.message, 'err'); }
       }},
     ]);
   $('na-admin').onchange = (e) => { $('na-admin-warn').style.display = e.target.checked ? 'block' : 'none'; };
 }
-function showAccountSecret(title, username, password, connectUrl, accountId, isAdminLink) {
+function showAccountSecret(title, username, password, connectUrl, accountId, isAdminLink, endpoints) {
   openModal(title,
     (isAdminLink ? '<div class="hint" style="color:var(--danger-text);margin-bottom:8px">' + ic('triangle-alert', 13) + ' ' + T('accounts.adminLinkHint') + '</div>' : '') +
     '<div class="kv"><span class="k">' + T('term.account') + '</span><span><b>' + esc(username) + '</b></span></div>' +
-    '<div class="kv"><span class="k">' + T('common.password') + '</span><span class="mono">' + esc(password) + ' <button class="ghost small" data-act="copy" data-copy="' + esc(password) + '">' + ic('copy', 13) + T('common.copy') + '</button></span></div>' +
-    '<div class="secret-box"><div style="color:var(--dim);font-size:12px;margin-bottom:4px">' + T('accounts.connectUrlLabel') + '</div><span class="mono">' + esc(connectUrl) + '</span></div>' +
-    '<div class="actions" style="justify-content:flex-start;margin-top:10px"><button class="ghost small" data-act="copy" data-copy="' + esc(connectUrl) + '">' + ic('copy', 13) + T('accounts.copyUrl') + '</button>' +
+    shareCardHtml(endpoints) +
+    '<div class="actions" style="justify-content:flex-start;margin-top:10px">' +
     '<button class="ghost small" data-act="show-qr" data-id="' + esc(accountId) + '">' + ic('qr-code', 13) + T('accounts.showQr') + '</button></div>' +
     '<div class="qr-box" id="qr-box"></div>' +
     '<div class="hint" style="color:var(--warn)">' + ic('triangle-alert', 13) + ' ' + T('accounts.secretHint') + '</div>',
     [{label: T('accounts.saved'), fn: closeModal}]);
+  shareCardBind($('modal-root'), { role: 'connect', secret: password, link: connectUrl, endpoints, note: username });
 }
 async function showQr(accountId) {
   try {
@@ -636,7 +798,7 @@ async function resetAccountPwd(id, username) {
   confirmAction(T('accounts.resetConfirm', { name: username }), async () => {
     try {
       const d = await api('POST', '/api/v1/admin/accounts/' + id + '/reset-password');
-      showAccountSecret(T('accounts.resetTitle'), username, d.password, d.connect_url, id);
+      showAccountSecret(T('accounts.resetTitle'), username, d.password, d.connect_url, id, false, d.endpoints);
     } catch(e) { toast(e.message, 'err'); }
   });
 }
@@ -909,6 +1071,8 @@ function openBatchImport() {
 /* Latest list data cache: besides polling signature detection, search filtering and tab switching reuse it directly (no refetch) */
 let FANIN_PEERS = [];
 let FANIN_TOKENS = [];
+/* Authorizable pool cache (federation P1): node_id -> { advertise, groups } (fetched with the fan-in status) */
+let FED_OFFERS = {};
 async function renderFanIn() {
   const tab = S.faninTab;
   $('view').innerHTML = '<div class="page-title">' + ic('orbit', 20) + T('term.fanin') + '</div><div class="page-desc">' + T('fanin.admDesc') + '</div>' +
@@ -921,7 +1085,7 @@ async function renderFanIn() {
       '<div class="agtabs-tools"><input id="fanin-q" style="width:230px" placeholder="' + T('fanin.admSearchPh') + '" value="' + esc(S.faninQuery) + '"' + (tab === 'listen' ? ' hidden' : '') + '></div>' +
     '</div>' +
     '<div data-agpanel="listen"><div class="card"><h3>' + T('fanin.listenerTitle') + '</h3><div id="fanin-listener"></div></div></div>' +
-    '<div data-agpanel="peers" hidden><div class="card"><h3>' + T('fanin.peersTitle') + '</h3><div class="table-wrap"><table><thead><tr><th>' + T('fanin.colPeer') + '</th><th>' + T('dashboard.up') + '</th><th>' + T('dashboard.down') + '</th></tr></thead><tbody id="fanin-peers"></tbody></table></div></div></div>' +
+    '<div data-agpanel="peers" hidden><div class="card"><h3>' + T('fanin.peersTitle') + '</h3><div class="table-wrap"><table><thead><tr><th>' + T('fanin.colPeer') + '</th><th>' + T('dashboard.up') + '</th><th>' + T('dashboard.down') + '</th><th>' + T('fanin.colPool') + '</th></tr></thead><tbody id="fanin-peers"></tbody></table></div></div></div>' +
     '<div data-agpanel="tokens" hidden><div class="card"><h3>' + T('fanin.tokensTitle') + ahelp(T('fanin.tokenHelp')) + '</h3>' +
       '<div class="toolbar"><div class="spacer"></div><button id="tok-create">' + ic('plus', 15) + T('fanin.createToken') + '</button></div>' +
       '<div class="table-wrap"><table><thead><tr><th>' + T('fanin.colPrefix') + '</th><th>' + T('term.group') + '</th><th>' + T('fanin.colRate') + '</th><th>' + T('common.remark') + '</th><th>' + T('fanin.colExpose') + '</th><th>' + T('fanin.colLastUsed') + '</th><th>' + T('common.createdAt') + '</th><th>' + T('common.action') + '</th></tr></thead><tbody id="tok-body"></tbody></table></div></div></div>';
@@ -965,17 +1129,51 @@ async function loadFaninStatus() {
   const seen = new Set(traffic.map(t => t.node_id));
   peers.filter(p => !seen.has(p)).forEach(p => rows.push({ node_id: p, bytes_up: 0, bytes_down: 0 }));
   FANIN_PEERS = rows;
+  // Authorizable pool (federation P1): advertised routes + pushed policy groups of online peers
+  try {
+    const f = await api('GET', '/api/v1/admin/federation/offered');
+    FED_OFFERS = {};
+    (f.items || []).forEach(o => { FED_OFFERS[o.node_id] = o; });
+  } catch(e) { /* pool failure never blocks the peer list */ }
   renderFaninPeers();
+}
+/* Pushed-group detail of one peer (source-tagged; one-click adoption into a local group) */
+function poolDetailHtml(o) {
+  const adv = (o.advertise || []);
+  const groups = (o.groups || []);
+  return '<div style="padding:2px 0 10px">' +
+    (adv.length ? '<div class="hint" style="margin:4px 0">' + T('fanin.advRoutes') + '</div><div>' +
+      adv.map(a => '<span class="badge b-info mono" style="margin:0 6px 4px 0">' + esc(a) + '</span>').join('') + '</div>' : '') +
+    (groups.length ? '<div class="hint" style="margin:8px 0 4px">' + T('fanin.pushedGroups') + ahelp(T('fanin.poolHelp')) + '</div>' +
+      groups.map(g =>
+        '<div class="kv"><span><b>' + esc(g.name) + '</b> <span style="color:var(--dim)">' + T('fanin.rulesN', { n: (g.rules || []).length }) + '</span>' +
+        (g.remark ? ' <span style="color:var(--dim2)">' + esc(g.remark) + '</span>' : '') + '</span>' +
+        '<span><button class="ghost small" data-act="fed-adopt" data-node="' + esc(o.node_id) + '" data-group="' + esc(g.name) + '">' + T('fanin.adopt') + '</button></span></div>'
+      ).join('') : '') +
+    '</div>';
 }
 function renderFaninPeers() {
   const body = $('fanin-peers'); if (!body) return;
   const q = S.faninQuery.trim().toLowerCase();
   const rows = q ? FANIN_PEERS.filter(t => (t.node_id || '').toLowerCase().includes(q)) : FANIN_PEERS;
-  body.innerHTML = rows.map(t =>
-    '<tr><td class="mono"><span class="dot on"></span>' + esc(t.node_id) + '</td>' +
-    '<td class="mono">' + fmtBytes(t.bytes_up) + '</td>' +
-    '<td class="mono">' + fmtBytes(t.bytes_down) + '</td></tr>'
-  ).join('') || '<tr><td colspan="3" class="empty">' + (q ? T('fanin.noMatchPeers') : T('fanin.emptyPeers')) + '</td></tr>';
+  body.innerHTML = rows.map(t => {
+    const o = FED_OFFERS[t.node_id];
+    const hasPool = !!(o && ((o.advertise || []).length || (o.groups || []).length));
+    let html = '<tr><td class="mono"><span class="dot on"></span>' + esc(t.node_id) + '</td>' +
+      '<td class="mono">' + fmtBytes(t.bytes_up) + '</td>' +
+      '<td class="mono">' + fmtBytes(t.bytes_down) + '</td>' +
+      '<td>' + (hasPool ? '<button class="ghost small" data-act="pool-toggle" data-node="' + esc(t.node_id) + '">' + T('fanin.poolDetail') + '</button>' : '') + '</td></tr>';
+    if (hasPool) html += '<tr data-poolrow="' + esc(t.node_id) + '" hidden><td colspan="4" style="background:var(--bg2)">' + poolDetailHtml(o) + '</td></tr>';
+    return html;
+  }).join('') || '<tr><td colspan="4" class="empty">' + (q ? T('fanin.noMatchPeers') : T('fanin.emptyPeers')) + '</td></tr>';
+}
+/* One-click adoption: materialize a pushed group into a local group (federation P1 acceptance) */
+async function adoptPushed(nodeId, groupName) {
+  try {
+    const d = await api('POST', '/api/v1/admin/federation/adopt', { node_id: nodeId, group: groupName });
+    toast(T('fanin.adopted', { name: d.name, n: d.rule_count, r: d.reused }), 'ok');
+    loadGroupsCache();
+  } catch(e) { toast(e.message, 'err'); }
 }
 async function loadTokens() {
   const body = $('tok-body'); if (!body) return;
@@ -1054,10 +1252,11 @@ function openCreateToken() {
             rate_limit_kbps: rateVal > 0 ? rateVal : null,
           });
           openModal(T('fanin.createdTitle'),
-            '<div class="secret-box"><span class="mono">' + esc(d.token) + '</span></div>' +
-            '<div class="actions" style="justify-content:flex-start;margin-top:10px"><button class="ghost small" data-act="copy" data-copy="' + esc(d.token) + '">' + ic('copy', 13) + T('fanin.copyToken') + '</button></div>' +
+            '<div class="kv"><span class="k">' + T('common.remark') + '</span><span>' + esc(d.remark || '-') + '</span></div>' +
+            shareCardHtml(d.endpoints) +
             '<div class="hint" style="color:var(--warn)">' + ic('triangle-alert', 13) + ' ' + T('fanin.createdHint') + '</div>',
             [{label: T('accounts.saved'), fn: () => { closeModal(); loadTokens(); }}]);
+          shareCardBind($('modal-root'), { role: 'fanout', secret: d.token, link: d.share_url, endpoints: d.endpoints, note: d.remark || d.token_prefix });
         } catch(e) { toast(e.message, 'err'); }
       }},
     ]);
@@ -1101,9 +1300,21 @@ function connStatusBadge(st) {
 }
 async function renderConnectors() {
   $('view').innerHTML = '<div class="page-title">' + ic('git-fork', 20) + T('term.fanout') + '</div><div class="page-desc">' + T('fanout.admDesc') + '</div>' +
-    '<div class="toolbar"><div class="spacer"></div><button id="conn-create">' + ic('plus', 15) + T('fanout.create') + '</button></div>' +
+    '<div class="toolbar"><div class="spacer"></div><button class="ghost" id="conn-import">' + ic('upload', 15) + T('anet.importBtn') + '</button><button id="conn-create">' + ic('plus', 15) + T('fanout.create') + '</button></div>' +
+    '<input type="file" id="conn-import-file" accept=".anet,application/json" style="display:none">' +
     '<div class="card table-wrap"><table><thead><tr><th>' + T('common.name') + '</th><th>' + T('fanout.colUpstream') + '</th><th>' + T('term.group') + '</th><th>' + T('common.status') + '</th><th>' + T('adm.stOn') + '</th><th>' + T('common.remark') + '</th><th>' + T('common.action') + '</th></tr></thead><tbody id="conn-body"></tbody></table></div>';
-  $('conn-create').onclick = openCreateConnector;
+  $('conn-create').onclick = () => openCreateConnector();
+  // .anet import: native open dialog via the desktop bridge when embedded, file picker otherwise
+  $('conn-import').onclick = () => {
+    if (isEmbeddedConsole()) window.parent.postMessage({ type: 'ag-anet-open' }, '*');
+    else $('conn-import-file').click();
+  };
+  $('conn-import-file').onchange = async (e) => {
+    const f = e.target.files[0];
+    e.target.value = '';
+    if (!f) return;
+    openAnetImport(await f.text(), f.name);
+  };
   await loadConnectors();
   S.timers.push(setInterval(loadConnectors, 5000));
 }
@@ -1134,7 +1345,9 @@ async function loadConnectors() {
 }
 function connectorFormHtml(c) {
   c = c || {};
-  return '<label>' + T('adm.nameUnique') + '</label><input id="cf-name" style="width:100%" value="' + esc(c.name||'') + '">' +
+  return '<div class="paste-bar"><input id="cf-paste" class="mono" style="width:100%" placeholder="' + T('fanout.pastePh') + '">' +
+    '<div class="hint" id="cf-paste-err" style="display:none;color:var(--danger-text)"></div></div>' +
+    '<label>' + T('adm.nameUnique') + '</label><input id="cf-name" style="width:100%" value="' + esc(c.name||'') + '">' +
     '<label>' + T('fanout.upstreamLabel') + '</label><input id="cf-addr" class="mono" style="width:100%" value="' + esc(c.upstream_addr||'') + '" placeholder="peer.example.com:54430">' +
     '<label>' + T('fanout.tokenLabel') + '</label><input id="cf-token" type="password" class="mono" style="width:100%" autocomplete="off" placeholder="' + (c.id ? T('fanout.tokenKeep') : T('fanout.tokenPh')) + '">' +
     '<label>' + T('fanout.sniHostLabel') + '</label><input id="cf-sni" class="mono" style="width:100%" value="' + esc(c.sni_hostname||'') + '">' +
@@ -1144,7 +1357,43 @@ function connectorFormHtml(c) {
     '<label>' + T('adm.groupLabel') + '</label><select id="cf-group" style="width:100%">' +
       '<option value="">' + T('adm.noRestrictOpt') + '</option>' +
       S.groups.map(g => '<option value="' + esc(g.id) + '" ' + (c.group_id===g.id?'selected':'') + '>' + esc(g.name) + '</option>').join('') + '</select>' +
+    '<label>' + T('fanout.pushLabel') + ' <span class="hint">' + T('fanout.pushHint') + '</span></label>' +
+    '<div class="rule-check" style="max-height:130px">' +
+      (S.groups.length ? S.groups.map(g =>
+        '<label><input type="checkbox" class="cf-push" value="' + esc(g.id) + '" ' + ((c.push_groups||'').split(',').includes(g.id)?'checked':'') + '>' +
+        '<span>' + esc(g.name) + '</span><span class="badge b-info">' + (g.rule_count||0) + '</span></label>'
+      ).join('') : '<div class="empty">' + T('groups.empty') + '</div>') + '</div>' +
     '<label>' + T('common.remark') + '</label><input id="cf-remark" style="width:100%" value="' + esc(c.remark||'') + '">';
+}
+/* Paste-to-import (federation P1): the shared AgLink parser fills all technical fields from an
+   anet://fanout link; on failure the form stays manual with an inline error line. */
+function fillConnectorFields(p) {
+  $('cf-addr').value = p.addr || '';
+  if (p.token) $('cf-token').value = p.token;
+  $('cf-sni').value = p.sni || '';
+  $('cf-fp').value = p.fp || '';
+  $('cf-insecure').checked = !!p.insecure;
+}
+function bindConnectorPaste() {
+  const box = $('cf-paste');
+  if (!box) return;
+  const fill = () => {
+    const raw = box.value.trim();
+    if (!raw) return;
+    const p = AgLink.parse(raw);
+    const err = $('cf-paste-err');
+    if (p.error || p.role !== 'fanout') {
+      err.textContent = aglinkErrText(p.role && p.role !== 'fanout' ? 'bad_role' : p.error);
+      err.style.display = 'block';
+      return;
+    }
+    err.style.display = 'none';
+    fillConnectorFields(p);
+    box.value = '';
+    toast(T('fanout.pasted'), 'ok');
+  };
+  box.addEventListener('paste', () => setTimeout(fill, 0));
+  box.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); fill(); } });
 }
 function connectorFormBody() {
   return {
@@ -1155,10 +1404,11 @@ function connectorFormBody() {
     pinned_fingerprint: $('cf-fp').value.trim(),
     advertise: $('cf-advertise').value.split('\n').map(s => s.trim()).filter(Boolean),
     group_id: $('cf-group').value || null,
+    push_groups: [...document.querySelectorAll('.cf-push:checked')].map(c => c.value),
     remark: $('cf-remark').value.trim(),
   };
 }
-function openCreateConnector() {
+function openCreateConnector(pref) {
   openModal(T('fanout.create'), connectorFormHtml(), [
     {label: T('common.cancel'), kind:'ghost', fn: closeModal},
     {label: T('common.create'), fn: async () => {
@@ -1171,6 +1421,9 @@ function openCreateConnector() {
       } catch(e) { toast(e.message, 'err'); }
     }},
   ]);
+  bindConnectorPaste();
+  // .anet import prefill (technical fields from the envelope payload; business fields stay manual)
+  if (pref && typeof pref === 'object') fillConnectorFields(pref);
 }
 async function openEditConnector(id) {
   let c;
@@ -1193,6 +1446,7 @@ async function openEditConnector(id) {
       } catch(e) { toast(e.message, 'err'); }
     }},
   ]);
+  bindConnectorPaste();
 }
 async function toggleConnector(id, enabled) {
   try {
@@ -1219,6 +1473,7 @@ async function renderAudit() {
          'account.create','account.update','account.delete','account.reset_password','account.enable','account.disable',
          'relay_token.create','relay_token.delete','relay_token.expose_control','relay_token.set_group',
          'connector.create','connector.update','connector.delete','connector.enable','connector.disable',
+         'federation.adopt',
          'account.issue_admin_link','admin.console_access','admin.session_via_relay','node.update_settings'].map(a =>
           '<option value="' + a + '" ' + (S.filter.auditAction===a?'selected':'') + '>' + a + '</option>').join('') +
       '</select>' +
@@ -1252,7 +1507,8 @@ async function renderSettings() {
   $('view').innerHTML = '<div class="page-title">' + ic('settings', 20) + T('set.title') + '</div><div class="page-desc">' + T('set.desc') + '</div>' +
     '<div class="card"><h3>' + T('set.serverInfo') + '</h3>' +
       '<label>' + T('set.nodeName') + '</label><div style="display:flex;gap:10px"><input id="set-name" style="flex:1"><button id="set-name-save">' + T('common.save') + '</button></div>' +
-      '<label>' + T('set.publicHost') + '</label><div style="display:flex;gap:10px"><input id="set-host" style="flex:1" placeholder="cdn.example.com"><button id="set-host-save">' + T('common.save') + '</button></div>' +
+      '<label>' + T('set.publicHost') + ' ' + ahelp(T('set.publicHostTip')) + '</label><div style="display:flex;gap:10px"><input id="set-host" style="flex:1" placeholder="anet.example.com"><button id="set-host-save">' + T('common.save') + '</button></div>' +
+      '<label>' + T('set.apiUrl') + ' ' + ahelp(T('set.apiUrlTip')) + '</label><div style="display:flex;gap:10px"><input id="set-apiurl" class="mono" style="flex:1" placeholder="https://anet.example.com"><button id="set-apiurl-save">' + T('common.save') + '</button></div>' +
       '<div id="set-info" style="margin-top:14px"></div>' +
     '</div>' +
     '<div class="card"><h3>' + T('set.admins') + '</h3>' +
@@ -1267,11 +1523,14 @@ async function renderSettings() {
     '<div class="card"><h3>' + T('set.sysLogs') + '</h3><div id="set-logs" class="mono" style="max-height:300px;overflow-y:auto;color:var(--dim);font-size:12px"></div></div>';
   $('set-name-save').onclick = saveNodeName;
   $('set-host-save').onclick = savePublicHost;
+  $('set-apiurl-save').onclick = savePublicApiUrl;
   $('admin-create').onclick = createAdmin;
   $('pw-change').onclick = changePassword;
   try {
     const st = await api('GET', '/api/v1/admin/node/status');
     $('set-name').value = st.node_name || '';
+    $('set-host').value = st.public_host || '';
+    $('set-apiurl').value = st.public_api_url || '';
     $('set-info').innerHTML =
       kv(T('set.version'), 'v' + st.version) + kv(T('set.uptime'), fmtUptime(st.uptime)) +
       kv(T('dashboard.cardRelay'), st.roles.listener.enabled ? st.roles.listener.addr : T('adm.stNotOn')) +
@@ -1309,6 +1568,12 @@ async function savePublicHost() {
   try {
     await api('PUT', '/api/v1/admin/node/settings', { public_host: $('set-host').value.trim() });
     toast(T('set.hostSaved'), 'ok');
+  } catch(e) { toast(e.message, 'err'); }
+}
+async function savePublicApiUrl() {
+  try {
+    await api('PUT', '/api/v1/admin/node/settings', { public_api_url: $('set-apiurl').value.trim() });
+    toast(T('set.urlSaved'), 'ok');
   } catch(e) { toast(e.message, 'err'); }
 }
 async function createAdmin() {
@@ -1405,6 +1670,21 @@ window.addEventListener('DOMContentLoaded', async () => {
     if (d.type === 'ag-nav' && {dashboard:1,accounts:1,groups:1,rules:1,fanin:1,connectors:1,audit:1,settings:1}[d.view]) {
       switchView(d.view);
     }
+    // Desktop bridge: native open-dialog result (ag-anet-open was requested by an import entry)
+    if (d.type === 'ag-anet-open-result' && typeof d.content === 'string' && S.access) {
+      openAnetImport(d.content, d.name || '');
+    }
+  });
+  // .anet drag-drop import (global entry; file picker lives on the fan-out page): meta preview first
+  document.addEventListener('dragover', (e) => {
+    if (S.access && [...(e.dataTransfer ? e.dataTransfer.items : [])].some(i => i.kind === 'file')) e.preventDefault();
+  });
+  document.addEventListener('drop', async (e) => {
+    if (!S.access) return;
+    const f = e.dataTransfer && e.dataTransfer.files && [...e.dataTransfer.files].find(f => /\.anet$/i.test(f.name));
+    if (!f) return;
+    e.preventDefault();
+    openAnetImport(await f.text(), f.name);
   });
   $('login-pass').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
   $('login-user').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });

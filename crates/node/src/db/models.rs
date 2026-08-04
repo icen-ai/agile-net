@@ -175,6 +175,9 @@ pub struct ConnectorRecord {
     /// ACL mount point: group ID (None = no restriction, allow all)
     #[serde(default)]
     pub group_id: Option<String>,
+    /// Policy upload: comma-separated local group IDs pushed upstream at auth (empty = no upload; federation P1)
+    #[serde(default)]
+    pub push_groups: String,
     pub enabled: bool,
     pub remark: String,
     pub created_at: String,
@@ -202,6 +205,9 @@ pub struct ConnectorView {
     pub group_id: Option<String>,
     #[serde(default)]
     pub group_name: Option<String>,
+    /// Policy upload: comma-separated local group IDs pushed upstream at auth (empty = no upload; federation P1)
+    #[serde(default)]
+    pub push_groups: String,
     pub enabled: bool,
     pub remark: String,
     pub created_at: String,

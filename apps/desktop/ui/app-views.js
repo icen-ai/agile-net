@@ -668,9 +668,24 @@ function initAdminMode() {
     n.onclick = () => adminNavActivate(n.dataset.aview);
   });
   // embedded admin console (SPA) toasts routed into Dynamic Island (origin-checked, only from the current admin iframe)
-  window.addEventListener('message', (e) => {
-    if (ADMIN && e.origin === ADMIN.origin && e.data && e.data.type === 'ag-toast') {
-      toast(String(e.data.msg || ''), typeof e.data.kind === 'string' ? e.data.kind : 'info');
+  window.addEventListener('message', async (e) => {
+    if (!(ADMIN && e.origin === ADMIN.origin)) return;
+    const d = e.data || {};
+    if (d.type === 'ag-toast') {
+      toast(String(d.msg || ''), typeof d.kind === 'string' ? d.kind : 'info');
+      return;
+    }
+    // .anet bridge: the embedded console delegates native save/open dialogs to the host
+    const f = $('admin-frame');
+    if (d.type === 'ag-anet-save' && typeof d.content === 'string') {
+      let ok = false;
+      try { ok = !!(await invoke('anet_save_file', { suggested: String(d.name || 'credential.anet'), content: d.content })); } catch (_) {}
+      if (f && f.contentWindow) f.contentWindow.postMessage({ type: 'ag-anet-saved', ok }, ADMIN.origin);
+    }
+    if (d.type === 'ag-anet-open') {
+      let r = null;
+      try { r = await invoke('anet_open_file'); } catch (_) {}
+      if (f && f.contentWindow && r) f.contentWindow.postMessage({ type: 'ag-anet-open-result', name: r.name, content: r.content }, ADMIN.origin);
     }
   });
   const menu = $('admin-menu');
@@ -703,7 +718,9 @@ async function openNodeConsole(nodeId) {
 async function importUrl(url, btn) {
   url = (url || '').trim();
   if (!url) { toast(T('err-need-url'), 'err'); return; }
-  if (!url.startsWith('agilenet://connect?')) { toast(T('err-bad-url'), 'err'); return; }
+  // Shared parser gate (anet:// + legacy agilenet://); the Rust parser does the real conversion
+  const p = AgLink.parse(url);
+  if (p.error || p.role !== 'connect') { toast(T('err-bad-url'), 'err'); return; }
   try {
     const input = await invoke('parse_connect_url', { url });
     if (input.admin) toast(AgI18n.t('views.url-admin-note'), 'info');
@@ -714,7 +731,8 @@ async function importUrl(url, btn) {
 async function pasteFromClipboard() {
   try {
     const text = await navigator.clipboard.readText();
-    if (text && text.trim().startsWith('agilenet://connect?')) {
+    const p = text && AgLink.parse(text.trim());
+    if (p && !p.error && p.role === 'connect') {
       $('connect-url-hero') && ($('connect-url-hero').value = text.trim());
       $('connect-url') && ($('connect-url').value = text.trim());
       toast(T('clip-ok'), 'ok');
@@ -874,6 +892,7 @@ function renderCredList(creds, statusMap) {
         ? '<button class="ghost small" data-act="console" data-id="' + esc(key) + '">' + AgIcon('monitor', 13) + ' ' + AgI18n.t('views.manage') + '</button>' : '') +
       mainBtn +
       '<button class="ghost small icon-btn" title="' + AgI18n.t('views.export-title') + '" data-act="export" data-key="' + esc(key) + '">' + AgIcon('share-2', 13) + '</button>' +
+      '<button class="ghost small icon-btn" title="' + AgI18n.t('anet.exportTitle') + '" data-act="anet" data-key="' + esc(key) + '">' + AgIcon('file-key', 13) + '</button>' +
       '<button class="danger small icon-btn" title="' + AgI18n.t('views.del-fanin-title') + '" data-act="delcred" data-key="' + esc(key) + '">' + AgIcon('trash-2', 13) + '</button>' +
       '</div></div>';
   }).join('') + shownUnsaved.map(n =>
@@ -933,7 +952,7 @@ function foBadge(c) {
   return '<span class="badge b-gray">' + AgI18n.t('views.not-started') + '</span>';
 }
 
-/** Group dropdown: fetch local embedded node group list (keep current selection; failure doesn't block the list) */
+/** Group dropdown + push-group checkboxes: fetch local embedded node group list (keep current selections; failure doesn't block the list) */
 async function foLoadGroups() {
   try {
     const groups = await invoke('list_embedded_groups');
@@ -942,6 +961,15 @@ async function foLoadGroups() {
       groups.map(g => '<option value="' + esc(g.id) + '">' + esc(g.name) + '</option>').join('');
     if (groups.some(g => g.id === cur)) $('fo-group').value = cur;
     agSelectRefresh($('fo-group'));
+    // Policy upload (federation P1): checkbox list, selections kept across re-renders
+    const pushList = $('fo-push-list');
+    if (pushList) {
+      const checked = FO_PUSH_PENDING || new Set([...pushList.querySelectorAll('input:checked')].map(c => c.value));
+      FO_PUSH_PENDING = null;
+      pushList.innerHTML = groups.length
+        ? groups.map(g => '<label class="chk"><input type="checkbox" class="fo-push" value="' + esc(g.id) + '"' + (checked.has(g.id) ? ' checked' : '') + '> <span>' + esc(g.name) + '</span></label>').join('')
+        : '<div class="hint">' + AgI18n.t('views.fo-push-empty') + '</div>';
+    }
   } catch (e) { /* group list load failure doesn't block the fan-out list */ }
 }
 
@@ -969,11 +997,14 @@ async function refreshUpstreams() {
 }
 
 /* ---- New/edit fan-out modal (fields aligned with admin console 「新建扇出」; advertise one per line, comma-joined on save) ---- */
+let FO_PUSH_PENDING = null; // Set<groupId> applied to the push-group list on its next render (null = keep selections)
 function foOpenModal(c) {
   FO_EDIT_ID = c ? c.id : null;
   $('fo-modal-title').textContent = c ? AgI18n.t('views.fo-title-edit') : AgI18n.t('views.fo-title-new');
   $('fo-ok').textContent = c ? AgI18n.t('common.save') : AgI18n.t('views.create');
   $('fo-token-hint').style.display = c ? '' : 'none';
+  $('fo-paste').value = '';
+  $('fo-paste-err').style.display = 'none';
   $('fo-name').value = c ? c.name : '';
   $('fo-addr').value = c ? c.upstream_addr : '';
   $('fo-token').value = '';
@@ -983,6 +1014,9 @@ function foOpenModal(c) {
   $('fo-advertise').value = c ? (c.advertise || '').split(',').filter(Boolean).join('\n') : '';
   $('fo-group').value = c ? (c.group_id || '') : '';
   agSelectRefresh($('fo-group'));
+  // Policy upload selections (applied by foLoadGroups' push-list render)
+  FO_PUSH_PENDING = new Set(c ? (c.push_groups || '').split(',').filter(Boolean) : []);
+  foLoadGroups();
   $('fo-remark').value = c ? (c.remark || '') : '';
   $('fo-err').textContent = '';
   $('fo-modal').style.display = 'flex';
@@ -995,6 +1029,25 @@ function initUpstreams() {
   $('btn-fo-refresh').onclick = refreshUpstreams;
   $('btn-fo-add').onclick = () => foOpenModal(null);
   $('fo-cancel').onclick = foCloseModal;
+  // Paste-to-import (federation P1): the shared AgLink parser fills all technical fields from an
+  // anet://fanout link; on failure the form stays manual with an inline error line.
+  const foFill = () => {
+    const raw = $('fo-paste').value.trim();
+    if (!raw) return;
+    const p = AgLink.parse(raw);
+    const err = $('fo-paste-err');
+    if (p.error || p.role !== 'fanout') {
+      err.textContent = AgI18n.t('aglink.' + (p.role && p.role !== 'fanout' ? 'bad_role' : p.error));
+      err.style.display = 'block';
+      return;
+    }
+    err.style.display = 'none';
+    foFillFields(p);
+    $('fo-paste').value = '';
+    toast(AgI18n.t('fanout.pasted'), 'ok');
+  };
+  $('fo-paste').addEventListener('paste', () => setTimeout(foFill, 0));
+  $('fo-paste').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); foFill(); } });
   $('fo-ok').onclick = async () => {
     const name = $('fo-name').value.trim();
     const addr = $('fo-addr').value.trim();
@@ -1003,6 +1056,7 @@ function initUpstreams() {
     const fp = $('fo-fp').value.trim();
     const insecure = $('fo-insecure').checked;
     const groupId = $('fo-group').value || null;
+    const pushGroups = [...document.querySelectorAll('.fo-push:checked')].map(c => c.value);
     const advertise = $('fo-advertise').value.split('\n').map(s => s.trim()).filter(Boolean).join(',');
     const remark = $('fo-remark').value.trim();
     if (!addr) { $('fo-err').textContent = AgI18n.t('views.fo-addr-required'); return; }
@@ -1010,10 +1064,10 @@ function initUpstreams() {
     $('fo-err').textContent = '';
     try {
       if (FO_EDIT_ID) {
-        await invoke('update_server_connector', { id: FO_EDIT_ID, name, upstreamAddr: addr, token, sniHostname: sni, insecure, pinnedFingerprint: fp, groupId, advertise, remark });
+        await invoke('update_server_connector', { id: FO_EDIT_ID, name, upstreamAddr: addr, token, sniHostname: sni, insecure, pinnedFingerprint: fp, groupId, pushGroups, advertise, remark });
         toast(AgI18n.t('views.fo-updated'), 'ok');
       } else {
-        await invoke('add_server_connector', { name, upstreamAddr: addr, token, sniHostname: sni, insecure, pinnedFingerprint: fp, groupId, advertise, remark });
+        await invoke('add_server_connector', { name, upstreamAddr: addr, token, sniHostname: sni, insecure, pinnedFingerprint: fp, groupId, pushGroups, advertise, remark });
         toast(AgI18n.t('views.fo-added'), 'ok');
       }
       foCloseModal();
@@ -1053,6 +1107,126 @@ async function renderDashFanout() {
   setText('d-fanout-sub', running
     ? 'API ' + (st.api_addr || '-') + ' · Relay ' + (st.relay_addr || '-')
     : (total ? AgI18n.t('views.dash-fo-off-count', { n: total }) : AgI18n.t('views.dash-fo-off')));
+}
+
+
+/* ================= .anet credential file (federation P1 §2.8): export/import dialogs + entries ================= */
+function anetModal(opts) {
+  $('anet-title').textContent = opts.title;
+  $('anet-sub').textContent = opts.sub || '';
+  $('anet-body').innerHTML = opts.bodyHtml;
+  $('anet-ok').textContent = opts.okLabel;
+  $('anet-modal').style.display = 'flex';
+  $('anet-ok').onclick = async () => { await opts.onOk(); };
+  $('anet-cancel').onclick = anetCloseModal;
+}
+function anetCloseModal() { $('anet-modal').style.display = 'none'; }
+function anetErrText(code) {
+  const map = { bad_json: 'badFile', bad_magic: 'badFile', bad_version: 'badFile', bad_role: 'badFile', bad_payload: 'badFile', bad_enc: 'badFile', decrypt: 'badPin', bad_pin: 'badPin', need_pin: 'badPin', no_crypto: 'noCrypto' };
+  return AgI18n.t('anet.' + (map[code] || 'badFile'));
+}
+
+/* Export (fan-in credential): note + PIN (default recommended) -> AgAnet.build -> native save dialog */
+async function exportCredAnet(key) {
+  const c = (window._creds || {})[key];
+  if (!c) return;
+  let url;
+  try { url = await invoke('export_credential', { key }); } catch (e) { toast(friendlyError(e), 'err'); return; }
+  const parsed = AgLink.parse(url);
+  if (parsed.error) { toast(AgI18n.t('anet.badFile'), 'err'); return; }
+  const issuer = key.includes('@') ? key.slice(0, key.indexOf('@')) : key;
+  const cryptoOk = AgAnet.canEncrypt();
+  anetModal({
+    title: AgI18n.t('anet.exportTitle'),
+    okLabel: AgI18n.t('anet.export'),
+    bodyHtml:
+      '<label>' + AgI18n.t('anet.note') + '</label><input id="ax-note" style="width:100%" value="' + esc(c.username || '') + '">' +
+      '<label class="chk" style="margin-top:10px"><input type="checkbox" id="ax-pin-on" ' + (cryptoOk ? 'checked' : 'disabled') + '> <span>' + AgI18n.t('anet.pinLabel') + '</span></label>' +
+      '<div id="ax-pin-row"><input id="ax-pin" class="mono" style="width:140px" maxlength="4" inputmode="numeric" placeholder="' + AgI18n.t('anet.pinPh') + '">' +
+      '<div class="hint">' + AgI18n.t('anet.pinHint') + '</div></div>' +
+      (cryptoOk ? '' : '<div class="hint" style="color:var(--warn)">' + AgI18n.t('anet.noCrypto') + '</div>'),
+    onOk: async () => {
+      const note = $('ax-note').value.trim();
+      const pinOn = $('ax-pin-on').checked;
+      const pin = pinOn ? $('ax-pin').value.trim() : '';
+      if (pinOn && !/^\d{4}$/.test(pin)) { toast(AgI18n.t('anet.pinNeed4'), 'err'); return; }
+      try {
+        const text = await AgAnet.build({ role: 'connect', issuer, note }, { ...parsed, link: url }, pin);
+        const name = AgAnet.suggestName(issuer, note || c.username);
+        // Web remote panel (no Tauri IPC): blob download fallback; desktop: native save dialog
+        const saved = HTTP_MODE
+          ? anetSaveBlob(name, text)
+          : await invoke('anet_save_file', { suggested: name, content: text });
+        if (saved) { anetCloseModal(); toast(AgI18n.t('anet.exported'), 'ok'); }
+      } catch (e) { toast(typeof e === 'string' ? e : anetErrText(e && e.code), 'err'); }
+    },
+  });
+  $('ax-pin-on').onchange = (e) => { $('ax-pin-row').style.display = e.target.checked ? 'block' : 'none'; };
+}
+
+/* Browser save fallback (Web remote panel has no native dialog) */
+function anetSaveBlob(name, content) {
+  const blob = new Blob([content], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  return true;
+}
+
+/* Import (three entries funnel here: file picker / drag-drop / file association):
+   envelope meta preview first, PIN when encrypted, then apply by role */
+function anetImportDialog(text, fileName) {
+  let parsed;
+  try { parsed = AgAnet.parse(text); } catch (e) { toast(anetErrText(e.code), 'err'); return; }
+  const env = parsed.envelope;
+  anetModal({
+    title: AgI18n.t('anet.importTitle'),
+    sub: fileName || '',
+    okLabel: AgI18n.t('anet.apply'),
+    bodyHtml:
+      '<div class="kv"><span class="k">' + AgI18n.t('anet.metaRole') + '</span><span><span class="badge b-info">' + AgI18n.t(env.role === 'fanout' ? 'anet.roleFanout' : 'anet.roleConnect') + '</span> ' +
+        (parsed.needPin ? '<span class="badge b-warn">' + AgI18n.t('anet.encrypted') + '</span>' : '<span class="badge b-gray">' + AgI18n.t('anet.plaintext') + '</span>') + '</span></div>' +
+      '<div class="kv"><span class="k">' + AgI18n.t('anet.metaIssuer') + '</span><span>' + esc(env.issuer || '-') + '</span></div>' +
+      '<div class="kv"><span class="k">' + AgI18n.t('anet.metaTime') + '</span><span>' + esc((env.created_at || '').replace('T', ' ').replace(/\..*$/, '')) + '</span></div>' +
+      '<div class="kv"><span class="k">' + AgI18n.t('anet.metaNote') + '</span><span>' + esc(env.note || '-') + '</span></div>' +
+      (parsed.needPin ? '<label style="margin-top:10px">' + AgI18n.t('anet.pinNeed') + '</label><input id="ai-pin" class="mono" style="width:140px" maxlength="4" inputmode="numeric">' : ''),
+    onOk: async () => {
+      let payload;
+      if (parsed.needPin) {
+        try { payload = await AgAnet.decrypt(env, $('ai-pin').value.trim()); }
+        catch (e) { toast(anetErrText(e.code), 'err'); return; }
+      } else {
+        payload = env.payload;
+      }
+      anetCloseModal();
+      applyAnetPayload(env.role, payload);
+    },
+  });
+}
+function applyAnetPayload(role, payload) {
+  payload = payload || {};
+  if (role === 'fanout') {
+    switchView('upstreams');
+    foOpenModal(null);
+    foFillFields(payload);
+    toast(AgI18n.t('anet.appliedFanout'), 'ok');
+    return;
+  }
+  // connect: the embedded link is authoritative (rebuilt from fields when absent)
+  const link = payload.link || AgLink.buildConnect(payload);
+  switchView('connect');
+  importUrl(link, null);
+}
+
+/* Fan-out technical-field fill (paste import / .anet import / deep link share one path) */
+function foFillFields(p) {
+  $('fo-addr').value = p.addr || '';
+  if (p.token) $('fo-token').value = p.token;
+  $('fo-sni').value = p.sni || '';
+  $('fo-fp').value = p.fp || '';
+  $('fo-insecure').checked = !!p.insecure;
 }
 
 

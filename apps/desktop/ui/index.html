@@ -161,12 +161,12 @@
         <h1 data-i18n="home.welcome">欢迎使用 AgileNet</h1>
         <p class="hero-sub" data-i18n="home.heroSub">企业级网络穿透与代理链路由 · 三步接入您的内网</p>
         <div class="hero-steps">
-          <div class="hero-step"><span class="num">1</span><span data-i18n="home.step1a">向管理员索取</span><b data-i18n="home.step1b">接入链接</b><br><span class="dim">(agilenet://connect?...)</span></div>
+          <div class="hero-step"><span class="num">1</span><span data-i18n="home.step1a">向管理员索取</span><b data-i18n="home.step1b">接入链接</b><br><span class="dim">(anet://connect?...)</span></div>
           <div class="hero-step"><span class="num">2</span><span data-i18n="home.step2a">粘贴到下方</span><b data-i18n="home.step2b">一键连接</b></div>
           <div class="hero-step"><span class="num">3</span><span data-i18n="home.step3a">启动</span><b data-i18n="home.step3b">代理</b><span data-i18n="home.step3c">即可访问内网</span></div>
         </div>
         <div class="hero-input">
-          <input id="connect-url-hero" class="mono" placeholder="粘贴接入链接 agilenet://connect?..." data-i18n-ph="home.connectPh">
+          <input id="connect-url-hero" class="mono" placeholder="粘贴接入链接 anet://connect?..." data-i18n-ph="home.connectPh">
           <button id="btn-import-hero" class="big"><i data-ic="rocket" data-sz="17"></i><span data-i18n="home.connectBtn">一键接入</span></button>
         </div>
         <div class="hero-alt"><span data-i18n="home.or">或</span> <a href="javascript:void(0)" id="link-paste" data-i18n="common.pasteImport">从剪贴板导入</a> · <a href="javascript:void(0)" id="link-manual" data-i18n="home.manualFill">手动填写</a></div>
@@ -296,9 +296,9 @@
                 <span class="hint" data-i18n="fanout.quotaHint">按套餐限制单节点可签发的 Relay Token 数量与并发接入数（详见产品计划）</span>
               </div>
             </div>
-            <div class="role-row beta-soon">
-              <div class="role-info"><b><span data-i18n="fanout.federation">企业联邦对接（节点连节点）</span> <span class="badge-soon" data-i18n="common.comingSoon">敬请期待</span></b>
-                <span class="hint" data-i18n="fanout.federationHint">Site-to-Site 互联凭证，含带宽/并发/IP 白名单细粒度控制</span>
+            <div class="role-row">
+              <div class="role-info"><b><span data-i18n="fanout.federation">企业联邦对接（节点连节点）</span></b>
+                <span class="hint" data-i18n="fanout.federationHint">扇出连接内勾选「上送权限组」，对端控制台扇入页即可一键采纳并授权给消费者（签发权留在资源主）</span>
               </div>
             </div>
           </div>
@@ -328,8 +328,10 @@
       <!-- Quick connect (import bar) -->
       <div class="card" id="quick-card">
         <div class="row">
-          <input id="connect-url" class="grow mono" placeholder="粘贴接入链接添加扇入 agilenet://connect?..." data-i18n-ph="fanin.connectPh">
+          <input id="connect-url" class="grow mono" placeholder="粘贴接入链接添加扇入 anet://connect?..." data-i18n-ph="fanin.connectPh">
           <button id="btn-import" data-i18n="fanin.import">导入并连接</button>
+          <button id="btn-anet" class="ghost icon-btn" title="导入 .anet 凭据文件" data-i18n-title="fanin.importAnet"><i data-ic="file-key" data-sz="15"></i></button>
+          <input type="file" id="anet-file-input" accept=".anet,application/json" style="display:none">
           <button id="btn-paste" class="ghost icon-btn" title="从剪贴板导入" data-i18n-title="common.pasteImport"><i data-ic="clipboard" data-sz="15"></i></button>
         </div>
       </div>
@@ -929,6 +931,24 @@
   </div>
 </div>
 
+<!-- .anet credential file dialog (federation P1 §2.8): export (note + PIN) / import (meta preview + PIN) -->
+<div class="modal-mask" id="anet-modal" style="display:none">
+  <div class="modal sub-modal">
+    <div class="sm-head">
+      <span class="sm-logo"><i data-ic="file-key" data-sz="20"></i></span>
+      <div>
+        <h3 id="anet-title"></h3>
+        <div class="hint" id="anet-sub"></div>
+      </div>
+    </div>
+    <div class="sm-body" id="anet-body"></div>
+    <div class="row" style="justify-content:flex-end">
+      <button id="anet-cancel" class="ghost" data-i18n="common.cancel">取消</button>
+      <button id="anet-ok"></button>
+    </div>
+  </div>
+</div>
+
 <!-- Create/edit fan-out modal (fields aligned with admin console 「新建扇出」 modal) -->
 <div class="modal-mask" id="fo-modal" style="display:none">
   <div class="modal sub-modal fo-modal">
@@ -940,6 +960,10 @@
       </div>
     </div>
     <div class="sm-body">
+      <div class="paste-bar">
+        <input id="fo-paste" class="mono" data-i18n-ph="fanout.pastePh" placeholder="粘贴扇出链接自动填充（anet://fanout?...）">
+        <div class="hint sm-err" id="fo-paste-err" style="display:none"></div>
+      </div>
       <label data-i18n="fanout.nameLabel">名称（可空，留空 = 取目标地址）</label>
       <input id="fo-name" placeholder="例如：分公司跳板机" data-i18n-ph="fanout.namePh">
       <label data-i18n="fanout.addrLabel">目标地址</label>
@@ -953,6 +977,8 @@
       <label><span data-i18n="fanout.fpLabel">证书指纹钉值</span> <span class="hint inline" data-i18n="fanout.fpHint">可空；对端节点状态页复制，64 位 hex，优先于 insecure</span></label>
       <input id="fo-fp" class="mono" placeholder="sha256...">
       <label class="chk" style="margin-top:12px"><input type="checkbox" id="fo-insecure"> <span data-i18n="fanout.insecure">跳过 TLS 证书校验（insecure，仅调试用）</span></label>
+      <label><span data-i18n="fanout.pushLabel">上送权限组</span> <span class="hint inline" data-i18n="fanout.pushHint">随握手推送给上游，对端可一键采纳授权（可空）</span></label>
+      <div id="fo-push-list" style="max-height:110px;overflow-y:auto"></div>
       <label data-i18n="fanout.advertiseLabel">路由再发布 advertise（每行一条 CIDR/域名，可空）</label>
       <textarea id="fo-advertise" class="mono" rows="3" placeholder="10.12.0.0/16&#10;git.internal"></textarea>
       <label data-i18n="common.remark">备注</label>
@@ -1096,6 +1122,8 @@
 
 <script src="icons.js"></script>
 <script src="agutil.js"></script>
+<script src="aglink.js"></script>
+<script src="aganet.js"></script>
 <script src="agchart.js"></script>
 <script src="agi18n.js"></script>
 <script src="aglang.js"></script>

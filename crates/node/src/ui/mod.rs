@@ -32,6 +32,10 @@ const AGCHART_JS: &str = include_str!("../../../../apps/desktop/ui/agchart.js");
 const AGICONS_JS: &str = include_str!("../../../../apps/desktop/ui/icons.js");
 /// Shared base utilities (esc/ahelp/$ with identical semantics on both ends, embedded the same way).
 const AGUTIL_JS: &str = include_str!("../../../../apps/desktop/ui/agutil.js");
+/// Shared unified link parser (anet:// connect/fanout, federation P1; the single parser for all forms on both ends).
+const AGLINK_JS: &str = include_str!("../../../../apps/desktop/ui/aglink.js");
+/// Shared .anet credential file builder/parser (federation P1 §2.8; WebCrypto, both ends).
+const AGANET_JS: &str = include_str!("../../../../apps/desktop/ui/aganet.js");
 /// Shared i18n runtime (single source of the bilingual mechanism, embedded the same way).
 const AGI18N_JS: &str = include_str!("../../../../apps/desktop/ui/agi18n.js");
 /// Shared bilingual dictionary (single source for both ends, embedded the same way).
@@ -112,6 +116,18 @@ async fn agutil_js_handler() -> impl IntoResponse {
     resp
 }
 
+async fn aglink_js_handler() -> impl IntoResponse {
+    let mut resp = ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8")], AGLINK_JS).into_response();
+    base_headers(&mut resp);
+    resp
+}
+
+async fn aganet_js_handler() -> impl IntoResponse {
+    let mut resp = ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8")], AGANET_JS).into_response();
+    base_headers(&mut resp);
+    resp
+}
+
 async fn agi18n_js_handler() -> impl IntoResponse {
     let mut resp = ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8")], AGI18N_JS).into_response();
     base_headers(&mut resp);
@@ -141,6 +157,8 @@ pub fn create_ui_router() -> Router {
         .route("/ui/agchart.js", get(agchart_js_handler))
         .route("/ui/icons.js", get(agicons_js_handler))
         .route("/ui/agutil.js", get(agutil_js_handler))
+        .route("/ui/aglink.js", get(aglink_js_handler))
+        .route("/ui/aganet.js", get(aganet_js_handler))
         .route("/ui/agi18n.js", get(agi18n_js_handler))
         .route("/ui/aglang.js", get(aglang_js_handler))
         .route("/ui/lang/admin.js", get(admin_lang_js_handler))

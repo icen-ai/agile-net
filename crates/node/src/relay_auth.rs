@@ -127,6 +127,7 @@ impl TokenValidator for DbTokenValidator {
                 Some(AuthIdentity::Node {
                     node_id: auth.node_id.clone(),
                     advertise: auth.advertise.clone(),
+                    groups: auth.groups.clone(),
                     control,
                     acl,
                 })
@@ -179,6 +180,7 @@ mod tests {
             token: token.to_string(),
             kind: AuthKind::Node,
             advertise: Vec::new(),
+            groups: Vec::new(),
             version: 1,
         }
     }

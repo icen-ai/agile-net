@@ -217,6 +217,15 @@ const MIGRATIONS: &[(u32, &str, &str)] = &[
     ALTER TABLE connector ADD COLUMN pinned_fingerprint TEXT NOT NULL DEFAULT '';
     "#,
     ),
+    (
+        9,
+        "connector_push_groups",
+        r#"
+    -- Policy upload (federation P1): local group IDs pushed upstream with the fan-out handshake
+    -- (comma-separated; empty = no upload). The upstream pools them source-tagged for one-click adoption.
+    ALTER TABLE connector ADD COLUMN push_groups TEXT NOT NULL DEFAULT '';
+    "#,
+    ),
 ];
 
 impl Database {

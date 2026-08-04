@@ -25,6 +25,11 @@ agile-net-core = { path = "../../crates/core" }
 agile-net-node = { path = "../../crates/node" }
 tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tauri-plugin-autostart = "2"
+# .anet 文件原生保存/打开对话框（federation P1 §2.8）
+tauri-plugin-dialog = "2"
+# anet:// 协议注册与深链（federation P1 §2.7）；单实例转发深链/文件关联参数
+tauri-plugin-deep-link = "2"
+tauri-plugin-single-instance = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }

@@ -55,6 +55,8 @@ pub enum AuthIdentity {
         node_id: String,
         /// Advertised serviceable CIDRs/domains
         advertise: Vec<String>,
+        /// Policy groups pushed for the upstream authorizable pool (federation P1)
+        groups: Vec<crate::proto::message::PushedGroupMsg>,
         /// Handshake v2: management endpoint pushed to this downstream when exposing a control plane (carried in AuthOk)
         control: Option<crate::proto::message::ControlOffer>,
         /// Fan-in restriction: allowlist for target connections initiated by this peer (None = unrestricted, allow all)
@@ -66,6 +68,42 @@ pub enum AuthIdentity {
         /// ACL rules (CIDR / exact domain / *.suffix domain)
         acl: Vec<String>,
     },
+}
+
+/// Authorizable-pool entry of one online peer (federation P1): its advertised routes and
+/// pushed policy groups, source-tagged by node_id.
+#[derive(Debug, Clone)]
+pub struct PeerOffer {
+    pub node_id: String,
+    pub advertise: Vec<String>,
+    pub groups: Vec<crate::proto::message::PushedGroupMsg>,
+}
+
+/// Caps for pushed policy groups (anti-abuse; a compromised/malicious peer cannot flood the pool).
+pub const MAX_PUSHED_GROUPS: usize = 32;
+pub const MAX_PUSHED_GROUP_NAME: usize = 128;
+pub const MAX_PUSHED_GROUP_RULES: usize = 256;
+pub const MAX_PUSHED_RULE_LEN: usize = 256;
+
+/// Sanitize pushed groups before pooling (drop offending entries, never reject the session).
+pub fn sanitize_pushed_groups(
+    groups: Vec<crate::proto::message::PushedGroupMsg>,
+) -> Vec<crate::proto::message::PushedGroupMsg> {
+    groups
+        .into_iter()
+        .filter(|g| !g.name.trim().is_empty() && g.name.len() <= MAX_PUSHED_GROUP_NAME)
+        .take(MAX_PUSHED_GROUPS)
+        .map(|mut g| {
+            g.remark.truncate(MAX_PUSHED_RULE_LEN);
+            g.rules = g
+                .rules
+                .into_iter()
+                .filter(|r| !r.trim().is_empty() && r.len() <= MAX_PUSHED_RULE_LEN)
+                .take(MAX_PUSHED_GROUP_RULES)
+                .collect();
+            g
+        })
+        .collect()
 }
 
 /// Token validator: implemented by the upper layer (node crate's database or static config).
@@ -96,6 +134,7 @@ impl TokenValidator for StaticTokenValidator {
             Some(AuthIdentity::Node {
                 node_id: auth.node_id.clone(),
                 advertise: auth.advertise.clone(),
+                groups: auth.groups.clone(),
                 control: None,
                 acl: None,
             })
@@ -156,6 +195,8 @@ pub struct RelayListener {
     peers: Arc<DashMap<String, PeerSession>>,
     /// Raw route entries advertised by each downstream node
     peer_advertise: Arc<DashMap<String, Vec<String>>>,
+    /// Policy groups pushed by each downstream node (federation P1 authorizable pool)
+    peer_groups: Arc<DashMap<String, Vec<crate::proto::message::PushedGroupMsg>>>,
     /// Aggregated queryable route table (RCU hot update)
     routes: Arc<arc_swap::ArcSwap<AdvertisedRoutes>>,
     /// Online client sessions (account_id -> session handle list, for online checks and forced disconnect)
@@ -211,6 +252,7 @@ impl RelayListener {
             tls_acceptor,
             peers: Arc::new(DashMap::new()),
             peer_advertise: Arc::new(DashMap::new()),
+            peer_groups: Arc::new(DashMap::new()),
             routes: Arc::new(arc_swap::ArcSwap::from_pointee(AdvertisedRoutes::default())),
             clients: Arc::new(DashMap::new()),
             events,
@@ -285,6 +327,7 @@ impl RelayListener {
         if let Some((_, peer)) = self.peers.remove(node_id) {
             peer.mux.shutdown();
             self.set_peer_routes(node_id, Vec::new());
+            self.peer_groups.remove(node_id);
             let _ = self.events.send(PeerEvent::NodeDisconnected {
                 node_id: node_id.to_string(),
             });
@@ -292,6 +335,29 @@ impl RelayListener {
         } else {
             false
         }
+    }
+
+    /// Federation P1 authorizable pool: advertised routes + pushed policy groups of every online peer.
+    pub fn peer_offers(&self) -> Vec<PeerOffer> {
+        self.peers
+            .iter()
+            .map(|p| {
+                let node_id = p.key().clone();
+                PeerOffer {
+                    advertise: self
+                        .peer_advertise
+                        .get(&node_id)
+                        .map(|v| v.clone())
+                        .unwrap_or_default(),
+                    groups: self
+                        .peer_groups
+                        .get(&node_id)
+                        .map(|v| v.clone())
+                        .unwrap_or_default(),
+                    node_id,
+                }
+            })
+            .collect()
     }
 
     /// Number of online client accounts.
@@ -474,6 +540,7 @@ impl RelayListener {
             AuthIdentity::Node {
                 node_id,
                 advertise,
+                groups,
                 acl,
                 ..
             } => {
@@ -482,6 +549,7 @@ impl RelayListener {
                     peer_addr,
                     node_id,
                     advertise,
+                    groups,
                     token_hash,
                     flow_control,
                     acl,
@@ -586,7 +654,7 @@ impl RelayListener {
         }
     }
 
-    /// Node session: register the peer, load advertised routes, handle peer-initiated Open requests until disconnect.
+    /// Node session: register the peer, load advertised routes and pushed groups, handle peer-initiated Open requests until disconnect.
     #[allow(clippy::too_many_arguments)]
     async fn serve_node_session(
         self: &Arc<Self>,
@@ -594,6 +662,7 @@ impl RelayListener {
         peer_addr: SocketAddr,
         node_id: String,
         advertise: Vec<String>,
+        groups: Vec<crate::proto::message::PushedGroupMsg>,
         token_hash: String,
         flow_control: bool,
         acl: Option<Arc<PeerAcl>>,
@@ -614,6 +683,14 @@ impl RelayListener {
             },
         );
         self.set_peer_routes(&node_id, advertise);
+        // Federation P1: pool the pushed policy groups (sanitized; cleared on disconnect)
+        let groups = sanitize_pushed_groups(groups);
+        if groups.is_empty() {
+            self.peer_groups.remove(&node_id);
+        } else {
+            info!(node_id = %node_id, groups = groups.len(), "peer pushed policy groups (authorizable pool)");
+            self.peer_groups.insert(node_id.clone(), groups);
+        }
         let _ = self.events.send(PeerEvent::NodeConnected {
             node_id: node_id.clone(),
         });
@@ -645,6 +722,7 @@ impl RelayListener {
 
         self.peers.remove(&node_id);
         self.set_peer_routes(&node_id, Vec::new());
+        self.peer_groups.remove(&node_id);
         let _ = self.events.send(PeerEvent::NodeDisconnected {
             node_id: node_id.clone(),
         });

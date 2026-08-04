@@ -47,6 +47,7 @@ impl Database {
             pinned_fingerprint: pinned_fingerprint.to_string(),
             advertise: advertise.to_string(),
             group_id: group_id.map(|g| g.to_string()),
+            push_groups: String::new(),
             enabled: true,
             remark: remark.to_string(),
             created_at: now.clone(),
@@ -62,7 +63,7 @@ impl Database {
             let mut stmt = conn
                 .prepare(
                     "SELECT c.id, c.name, c.upstream_addr, c.token_enc, c.sni_hostname, c.insecure, c.ca_cert_path, c.pinned_cert_path, c.pinned_fingerprint, c.advertise,
-                            c.group_id, g.name, c.enabled, c.remark, c.created_at, c.updated_at
+                            c.group_id, g.name, c.enabled, c.remark, c.created_at, c.updated_at, c.push_groups
                      FROM connector c LEFT JOIN \"group\" g ON c.group_id = g.id ORDER BY c.created_at DESC",
                 )
                 .map_err(db_err)?;
@@ -85,6 +86,7 @@ impl Database {
                     remark: r.get(13).map_err(db_err)?,
                     created_at: r.get(14).map_err(db_err)?,
                     updated_at: r.get(15).map_err(db_err)?,
+                    push_groups: r.get(16).map_err(db_err)?,
                 };
                 let group_name: Option<String> = r.get(11).map_err(db_err)?;
                 recs.push((rec, group_name));
@@ -111,6 +113,7 @@ impl Database {
                 advertise: rec.advertise,
                 group_id: rec.group_id,
                 group_name,
+                push_groups: rec.push_groups,
                 enabled: rec.enabled,
                 remark: rec.remark,
                 created_at: rec.created_at,
@@ -125,7 +128,7 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn
             .prepare(
-                "SELECT id, name, upstream_addr, token_enc, sni_hostname, insecure, ca_cert_path, pinned_cert_path, pinned_fingerprint, advertise, group_id, enabled, remark, created_at, updated_at
+                "SELECT id, name, upstream_addr, token_enc, sni_hostname, insecure, ca_cert_path, pinned_cert_path, pinned_fingerprint, advertise, group_id, enabled, remark, created_at, updated_at, push_groups
                  FROM connector WHERE id = ?1",
             )
             .map_err(db_err)?;
@@ -147,9 +150,21 @@ impl Database {
                 remark: r.get(12).map_err(db_err)?,
                 created_at: r.get(13).map_err(db_err)?,
                 updated_at: r.get(14).map_err(db_err)?,
+                push_groups: r.get(15).map_err(db_err)?,
             }),
             None => None,
         })
+    }
+
+    /// Set the pushed policy groups (federation P1; comma-separated local group IDs, empty = no upload).
+    pub fn set_connector_push_groups(&self, id: &str, push_groups: &str) -> Result<()> {
+        let conn = self.conn();
+        conn.execute(
+            "UPDATE connector SET push_groups = ?1, updated_at = ?2 WHERE id = ?3",
+            params![push_groups, now_rfc3339(), id],
+        )
+        .map_err(db_err)?;
+        Ok(())
     }
 
     /// Get a connector's fan-out token plaintext by ID (decrypted, runtime connect only; never log/audit it).

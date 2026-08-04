@@ -70,6 +70,25 @@ addr = "127.0.0.1:1080"                # 非 loopback 必须配置认证
 # login_lock_minutes = 15
 ```
 
+## Reverse Proxy / Domain Fronting (Federation P1)
+
+The advertised address is decoupled from the listen address: `public_host` (public identity shown in
+access links and tunnel endpoints; hot-applied from Console → Settings) plus `public_api_url`
+(Console setting: the reverse-proxied API endpoint `http(s)://host[:port]`; access links then carry
+the https scheme). Hard constraints:
+
+- **The relay data plane requires L4 TCP passthrough**: the SNI is a mimicry hostname and passes
+  through fine, but terminating its TLS at L7 breaks the private protocol and cert-fingerprint
+  pinning (peers can no longer verify). Nginx `stream{}`, HAProxy `mode tcp` or an L4 LB listener all work.
+- The admin API may sit behind an L7 HTTPS reverse proxy (TLS termination on 443/a domain is fine);
+  put the full external endpoint into "Settings → Reverse-Proxy API Endpoint"
+  (e.g. `https://anet.example.com`) and newly issued access links carry the https scheme.
+- Sharing one public IP across nodes: split backends by port (the relay SNI is a mimicry value and
+  cannot demultiplex multiple anet nodes); better still, a single entry node plus federation routing
+  (fan-out registration converges each intranet's routes at the entry).
+- The `anet init` wizard asks "is this a public rendezvous + external address", equivalent to the
+  console setting, and writes `public_host`.
+
 ## anet-svc client: `client.toml`
 
 ```toml

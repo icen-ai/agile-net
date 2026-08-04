@@ -91,12 +91,20 @@
     "enabled": true,
     "remark": "张三 - 前端",
     "created_at": "2025-07-30T10:00:00Z",
-    "connect_url": "agilenet://connect?server=cdn.example.com&port=443&account=zhangsan&password=XkR7mNpQ2vH5bT3c&tls=1"
+    "connect_url": "anet://connect?server=cdn.example.com&port=443&account=zhangsan&password=XkR7mNpQ2vH5bT3c&tls=1",
+    "endpoints": [
+      { "kind": "public", "addr": "cdn.example.com:59090" },
+      { "kind": "lan", "addr": "192.168.1.5:59090" }
+    ]
   }
 }
 ```
 
 **`password` 和 `connect_url` 仅在创建时返回一次**，后续不可查看。Admin 需当场保存或生成二维码发给用户。
+
+签发链接（federation P1）：`connect_url` 为 `anet://connect` 统一格式（兼容解析旧 `agilenet://`；
+server 可带 `https://host[:port]` 全形式，承载 API 反代端点 `public_api_url`）；`endpoints` 为端点候选
+（`public` 对外声明身份 / `lan` 同内网直连 / `local` 回环兜底），签发弹窗切换端点即重拼链接，无需重新请求。
 
 ---
 
@@ -134,7 +142,7 @@
   "code": 0,
   "data": {
     "password": "Yw9kPm3nRx6vJt2q",
-    "connect_url": "agilenet://connect?server=cdn.example.com&port=443&account=zhangsan&password=Yw9kPm3nRx6vJt2q&tls=1"
+    "connect_url": "anet://connect?server=cdn.example.com&port=443&account=zhangsan&password=Yw9kPm3nRx6vJt2q&tls=1"
   }
 }
 ```

@@ -49,7 +49,7 @@ connect(params)
 | `list_nodes()` | 节点列表（实时状态） |
 | `list_credentials()` | 已保存凭据 |
 | `start_proxy(port)` / `stop_proxy()` / `proxy_status()` | 本地代理控制 |
-| `parse_connect_url(url)` | 解析 `agilenet://connect?...` 接入链接 |
+| `parse_connect_url(url)` | 解析 `anet://connect?...` 接入链接（兼容旧 `agilenet://`） |
 
 ## 凭据存储
 

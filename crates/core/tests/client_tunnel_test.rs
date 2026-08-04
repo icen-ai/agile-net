@@ -35,6 +35,7 @@ impl TokenValidator for TestValidator {
                     Some(AuthIdentity::Node {
                         node_id: auth.node_id.clone(),
                         advertise: auth.advertise.clone(),
+                        groups: auth.groups.clone(),
                         control: None,
                         acl: None,
                     })

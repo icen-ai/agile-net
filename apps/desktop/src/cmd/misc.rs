@@ -179,6 +179,8 @@ pub struct ServerConnectorView {
     /// Restricting group (None = unrestricted, allow everything)
     pub group_id: Option<String>,
     pub group_name: Option<String>,
+    /// Policy upload (federation P1): comma-separated local group IDs pushed upstream at auth (empty = no upload)
+    pub push_groups: String,
     pub enabled: bool,
     pub remark: String,
     /// Live state (connected/connecting/reconnecting/disconnected; always disconnected while the embedded node is not running)
@@ -249,6 +251,7 @@ pub(crate) async fn list_server_connectors(
                 advertise: v.advertise,
                 group_id: v.group_id,
                 group_name: v.group_name,
+                push_groups: v.push_groups,
                 enabled: v.enabled,
                 remark: v.remark,
                 state: state_str.into(),
@@ -268,9 +271,27 @@ struct ConnectorForm {
     insecure: bool,
     pinned_fingerprint: String,
     group_id: Option<String>,
+    /// Policy upload (federation P1): local group IDs pushed upstream at auth; add: None = no upload; update: None = keep
+    push_groups: Option<Vec<String>>,
     name: Option<String>,
     advertise: Option<String>,
     remark: Option<String>,
+}
+
+/// Validate pushed group IDs and serialize (comma-joined; empty = no upload).
+fn normalize_push_groups(db: &agile_net_node::db::Database, ids: &[String]) -> Result<String, String> {
+    if ids.len() > 32 {
+        return Err("上送权限组过多（最多 32 个）".into());
+    }
+    let mut seen = std::collections::HashSet::new();
+    let mut out: Vec<String> = Vec::new();
+    for gid in ids {
+        if seen.insert(gid.clone()) {
+            validate_group(db, Some(gid))?;
+            out.push(gid.clone());
+        }
+    }
+    Ok(out.join(","))
 }
 
 /// Fingerprint format: empty (unused) or 64 hex chars (SHA-256; normalized to lowercase).
@@ -295,6 +316,7 @@ pub(crate) async fn add_server_connector(
     insecure: bool,
     pinned_fingerprint: Option<String>,
     group_id: Option<String>,
+    push_groups: Option<Vec<String>>,
     name: Option<String>,
     advertise: Option<String>,
     remark: Option<String>,
@@ -306,6 +328,7 @@ pub(crate) async fn add_server_connector(
         insecure,
         pinned_fingerprint: pinned_fingerprint.unwrap_or_default(),
         group_id,
+        push_groups,
         name,
         advertise,
         remark,
@@ -355,6 +378,13 @@ async fn add_server_connector_inner(
             &remark,
         )
         .map_err(map_err)?;
+    // Policy upload (federation P1): set before the hot assembly so the groups ride the first handshake
+    if let Some(ids) = &form.push_groups {
+        let pg = normalize_push_groups(&db, ids)?;
+        if !pg.is_empty() {
+            db.set_connector_push_groups(&rec.id, &pg).map_err(map_err)?;
+        }
+    }
     roles::audit("gui.fanout_change", serde_json::json!({"action": "add", "name": name}));
     hot_upsert_connector(state, &rec.id, &name).await;
     Ok(())
@@ -371,6 +401,7 @@ pub(crate) async fn update_server_connector(
     insecure: bool,
     pinned_fingerprint: Option<String>,
     group_id: Option<String>,
+    push_groups: Option<Vec<String>>,
     name: Option<String>,
     advertise: Option<String>,
     remark: Option<String>,
@@ -382,6 +413,7 @@ pub(crate) async fn update_server_connector(
         insecure,
         pinned_fingerprint: pinned_fingerprint.unwrap_or_default(),
         group_id,
+        push_groups,
         name,
         advertise,
         remark,
@@ -448,6 +480,11 @@ async fn update_server_connector_inner(
         &remark,
     )
     .map_err(map_err)?;
+    // Policy upload (federation P1): None = keep current; Some (incl. empty) = replace
+    if let Some(ids) = &form.push_groups {
+        let pg = normalize_push_groups(&db, ids)?;
+        db.set_connector_push_groups(id, &pg).map_err(map_err)?;
+    }
     roles::audit("gui.fanout_change", serde_json::json!({"action": "update", "name": name}));
     hot_upsert_connector(state, id, &name).await;
     Ok(())
@@ -466,6 +503,61 @@ pub(crate) async fn remove_server_connector(state: State<'_, AppState>, id: Stri
         m.remove(&id).await;
     }
     Ok(())
+}
+
+// ==================== .anet credential files (federation P1 §2.8) ====================
+
+/// .anet export: native save dialog (console bridge / fan-in export); false = user cancelled.
+#[tauri::command]
+pub(crate) async fn anet_save_file(app: tauri::AppHandle, suggested: String, content: String) -> Result<bool, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let suggested = if suggested.trim().is_empty() {
+        "credential.anet".to_string()
+    } else {
+        suggested
+    };
+    let Some(path) = app
+        .dialog()
+        .file()
+        .set_file_name(&suggested)
+        .add_filter("AgileNet 凭据", &["anet"])
+        .blocking_save_file()
+    else {
+        return Ok(false);
+    };
+    let pb = path.as_path().ok_or("不支持的文件路径")?;
+    std::fs::write(pb, content).map_err(|e| format!("写入文件失败：{e}"))?;
+    roles::audit("gui.anet_export", serde_json::json!({"file": pb.file_name().unwrap_or_default().to_string_lossy()}));
+    Ok(true)
+}
+
+/// .anet import: native open dialog; None = cancelled.
+#[tauri::command]
+pub(crate) async fn anet_open_file(app: tauri::AppHandle) -> Result<Option<serde_json::Value>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let Some(path) = app
+        .dialog()
+        .file()
+        .add_filter("AgileNet 凭据", &["anet"])
+        .blocking_pick_file()
+    else {
+        return Ok(None);
+    };
+    let pb = path.as_path().ok_or("不支持的文件路径")?;
+    let content = std::fs::read_to_string(pb).map_err(|e| format!("读取文件失败：{e}"))?;
+    Ok(Some(serde_json::json!({
+        "name": pb.file_name().unwrap_or_default().to_string_lossy(),
+        "content": content,
+    })))
+}
+
+/// File-association open (double-click / second-instance argv): read the .anet content for the import dialog.
+#[tauri::command]
+pub(crate) async fn read_text_file(path: String) -> Result<String, String> {
+    if path.len() > 4096 {
+        return Err("路径过长".into());
+    }
+    std::fs::read_to_string(&path).map_err(|e| format!("读取文件失败：{e}"))
 }
 
 /// Write the real client proxy state into the embedded node state slot (call after start/stop/mode switch/role shutdown;

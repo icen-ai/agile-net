@@ -85,6 +85,19 @@ impl Database {
         Ok(count > 0)
     }
 
+    /// Find a rule's ID by its unique (type, value) pair (adoption dedup: reuse existing rules).
+    pub fn find_rule_id(&self, rule_type: &str, value: &str) -> Result<Option<String>> {
+        let conn = self.conn();
+        let mut stmt = conn
+            .prepare("SELECT id FROM rule WHERE type = ?1 AND value = ?2")
+            .map_err(db_err)?;
+        let mut rows = stmt.query(params![rule_type, value]).map_err(db_err)?;
+        Ok(match rows.next().map_err(db_err)? {
+            Some(r) => Some(r.get(0).map_err(db_err)?),
+            None => None,
+        })
+    }
+
     pub fn create_rule(
         &self,
         rule_type: &str,

@@ -354,6 +354,14 @@ impl NodeServer {
             proxy_listen,
             log_buffer,
             cert_fingerprint,
+            // SNI served by the listener (share links): the ACME domain in ACME mode, else the configured sni_hostname
+            relay_sni: config.listener.as_ref().map(|lc| {
+                config
+                    .acme
+                    .as_ref()
+                    .map(|a| a.domain.clone())
+                    .unwrap_or_else(|| lc.sni_hostname.clone())
+            }),
             manageable: manageable_registry.clone(),
             client_proxy_slot: opts.client_proxy_slot.clone(),
             transit_meter: transit_meter.clone(),
@@ -364,6 +372,7 @@ impl NodeServer {
             let db = db.clone();
             let shared_router = shared_router.clone();
             let acl_registry = acl_registry.clone();
+            let connector_manager = connector_manager.clone();
             startup.tasks.push(tokio::spawn(async move {
                 let mut last_version = db.config_version().unwrap_or(0);
                 let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
@@ -377,6 +386,8 @@ impl NodeServer {
                         let count = new_router.route_count();
                         shared_router.store(Arc::new(new_router));
                         acl_registry.rebuild(&db);
+                        // Federation P1: pushed group rules may have changed — refresh slots (reconnect re-push)
+                        connector_manager.refresh_push_groups();
                         tracing::debug!(
                             version = current,
                             rules = count,

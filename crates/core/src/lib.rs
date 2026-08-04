@@ -5,6 +5,7 @@
 
 pub mod config;
 pub mod error;
+pub mod link;
 pub mod proto;
 pub mod proxy;
 pub mod relay;

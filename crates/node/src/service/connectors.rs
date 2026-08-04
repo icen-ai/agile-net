@@ -5,9 +5,11 @@
 //! control-plane changes — old connection torn down before the new one starts, no node restart.
 
 use crate::db::Database;
+use crate::db::models::ConnectorRecord;
 use crate::relay_auth::ManageableRegistry;
 use crate::service::acl::PeerAclRegistry;
 use crate::service::{ClientRoutes, load_pem_certs, resolve_upstream};
+use agile_net_core::proto::message::PushedGroupMsg;
 use agile_net_core::relay::transit::TransitMeter;
 use agile_net_core::relay::{ConnectionState, PeerEvent, RelayConnector, RelayListener};
 use agile_net_core::tunnel::tls::TlsConfigBuilder;
@@ -19,6 +21,9 @@ use std::time::{Duration, Instant};
 /// Runtime handle of a single connector (connector instance plus all its background tasks).
 struct ConnectorHandle {
     connector: Arc<RelayConnector>,
+    /// Federation P1: pushed policy group slot (hot-swapped by refresh_push_groups;
+    /// the connector reconnects to re-push on change)
+    push_slot: Arc<arc_swap::ArcSwap<Vec<PushedGroupMsg>>>,
     tasks: Vec<tokio::task::JoinHandle<()>>,
 }
 
@@ -281,6 +286,12 @@ impl ConnectorManager {
         .with_advertise(parse_advertise(&rec.advertise))
         .with_acl(self.acl.handle(rec.group_id.as_deref()));
 
+        // Federation P1: assemble the pushed policy groups (connector.push_groups -> name + rules)
+        let push_slot = Arc::new(arc_swap::ArcSwap::from_pointee(
+            self.pushed_groups_of(&rec),
+        ));
+        connector = connector.with_push_groups(push_slot.clone());
+
         // transit metering: upstream reverse inbound accounted with from=connector name
         if let Some(m) = &self.transit {
             connector = connector.with_transit_meter(m.clone(), rec.name.clone());
@@ -344,7 +355,46 @@ impl ConnectorManager {
             connector.subscribe_events(),
         ));
 
-        Ok(Some(ConnectorHandle { connector, tasks }))
+        Ok(Some(ConnectorHandle {
+            connector,
+            push_slot,
+            tasks,
+        }))
+    }
+
+    /// Assemble the pushed policy groups of a connector record (push_groups ids -> name + rule values).
+    fn pushed_groups_of(&self, rec: &ConnectorRecord) -> Vec<PushedGroupMsg> {
+        rec.push_groups
+            .split(',')
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .filter_map(|gid| {
+                let g = self.db.get_group(gid).ok()??;
+                let rules = self
+                    .db
+                    .rules_of_group(gid)
+                    .map(|rs| rs.into_iter().map(|r| r.value).collect())
+                    .unwrap_or_default();
+                Some(PushedGroupMsg {
+                    name: g.name,
+                    remark: g.remark,
+                    rules,
+                })
+            })
+            .collect()
+    }
+
+    /// Federation P1: refresh every connector's pushed-group slot from the DB (config_version watcher;
+    /// a content change reconnects the connector to re-push upstream).
+    pub fn refresh_push_groups(&self) {
+        for h in self.handles.iter() {
+            if let Ok(Some(rec)) = self.db.get_connector(h.key()) {
+                let groups = self.pushed_groups_of(&rec);
+                if h.push_slot.load().as_ref() != &groups {
+                    h.push_slot.store(Arc::new(groups));
+                }
+            }
+        }
     }
 }
 

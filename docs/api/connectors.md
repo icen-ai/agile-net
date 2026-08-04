@@ -67,6 +67,7 @@ connector 为一等入库资源：TOML `[[connectors]]` 仅启动导入（name �
   "pinned_cert_path": "certs/up.pem",
   "advertise": ["10.12.0.0/16", "git.internal"],
   "group_id": "uuid",
+  "push_groups": ["uuid-g1", "uuid-g2"],
   "remark": "分公司出口"
 }
 ```
@@ -80,18 +81,20 @@ connector 为一等入库资源：TOML `[[connectors]]` 仅启动导入（name �
 | `insecure` | 可选，默认 false（跳过证书校验，仅开发用） |
 | `advertise` | 可选，**字符串数组**（≤64 条，单条 ≤256 字符）；入库序列化为逗号拼接 |
 | `group_id` | 可选；缺省/null = 不收敛；ID 不存在返回 40400 |
+| `push_groups` | 可选，策略上送（federation P1）：本地权限组 ID 数组（≤32 个，去重，ID 不存在 40400）；随扇出握手推送给上游，进入其可授权池供一键采纳；缺省/空数组 = 不上送 |
 | `remark` | 可选，0-256 字符 |
 
 ### 响应 201
 
-返回完整 connector 对象（同列表项，含 `state`）。
+返回完整 connector 对象（同列表项，含 `state` 与 `push_groups` 逗号拼接串）。
 
 ---
 
 ## PUT `/api/v1/admin/connectors/:id`
 
 更新扇出对端。**全量替换语义**：除 `token` 外缺省字段即置默认值
-（`group_id` 缺省/null = 不收敛）；`token` 留空/null = 保留原值，传入新值 = 重置。
+（`group_id` 缺省/null = 不收敛）；`token` 留空/null = 保留原值，传入新值 = 重置；
+`push_groups` 缺省 = 保留当前上送组，传入（含空数组）= 替换。
 更新后先断旧连接再装配新连接。
 
 ### 响应 200

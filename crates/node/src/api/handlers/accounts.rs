@@ -200,6 +200,7 @@ pub async fn create_account(
                 .await
                 .ok()
                 .flatten();
+            let endpoints = connect_endpoints(&state).await;
             ok_created(json!({
                 "id": account.id,
                 "username": account.username,
@@ -210,6 +211,7 @@ pub async fn create_account(
                 "admin_console": account.admin_console,
                 "created_at": account.created_at,
                 "connect_url": connect_url,
+                "endpoints": endpoints,
             }))
         }
         Err(e) => err(
@@ -434,9 +436,11 @@ pub async fn reset_password(
     )
     .await;
 
+    let endpoints = connect_endpoints(&state).await;
     ok(json!({
         "password": password,
         "connect_url": connect_url,
+        "endpoints": endpoints,
     }))
 }
 
@@ -521,13 +525,19 @@ pub async fn delete_account(
 
 /// Build the client connect URL (points at the admin API endpoint; the data-plane endpoint comes from config).
 /// Carries the cert fingerprint (static cert mode) so the client can pin the cert in one click, no insecure needed.
+/// Endpoint resolution: public_api_url (reverse-proxy scheme+port override) > public_host:api_port (federation P1).
 async fn build_connect_url(state: &ApiState, username: &str, password: &str) -> String {
-    let (server, port) = state.public_api_endpoint().await;
-    let mut url = format!(
-        "agilenet://connect?server={server}&port={port}&account={username}&password={password}&tls=1"
-    );
-    if let Some(fp) = &state.runtime.cert_fingerprint {
-        url.push_str(&format!("&fp={fp}"));
-    }
-    url
+    let addr = state.public_api_addr().await;
+    agile_net_core::link::build_connect_url(
+        &addr,
+        username,
+        password,
+        state.runtime.cert_fingerprint.as_deref(),
+    )
+}
+
+/// Endpoint candidates for the share dialog (public declared identity > LAN direct > loopback).
+async fn connect_endpoints(state: &ApiState) -> Vec<crate::api::ShareEndpoint> {
+    let public = state.declared_api_addr().await;
+    state.share_endpoints(state.api_port(), public).await
 }

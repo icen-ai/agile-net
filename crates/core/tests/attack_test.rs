@@ -165,6 +165,7 @@ async fn wrong_token_has_penalty_delay() -> Result<()> {
         token: "wrong_token".into(),
         kind: agile_net_core::proto::message::AuthKind::Node,
         advertise: vec![],
+        groups: Vec::new(),
         version: 1,
     };
     let payload = serde_json::to_vec(&auth).unwrap();
@@ -370,6 +371,7 @@ fn auth_kind_enforced() {
         token: "node-psk".into(),
         kind: agile_net_core::proto::message::AuthKind::Client,
         advertise: vec![],
+        groups: Vec::new(),
         version: 1,
     };
     assert!(
@@ -647,6 +649,7 @@ async fn open_flood_capped() -> Result<()> {
         token: "tok".into(),
         kind: agile_net_core::proto::message::AuthKind::Node,
         advertise: vec![],
+        groups: Vec::new(),
         version: 1,
     };
     let payload = serde_json::to_vec(&auth).unwrap();

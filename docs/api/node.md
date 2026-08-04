@@ -184,27 +184,18 @@
 ```json
 {
   "node_name": "新的节点名",
-  "listener": {
-    "enabled": true,
-    "port": 443,
-    "tls_cert_path": "/etc/agile-net/cert.pem",
-    "tls_key_path": "/etc/agile-net/key.pem"
-  },
-  "connector": {
-    "enabled": true,
-    "upstream_server": "cdn.example.com",
-    "upstream_port": 443,
-    "upstream_tls": true,
-    "relay_token": "psk_xxx"
-  },
-  "proxy": {
-    "listen_addr": "127.0.0.1",
-    "listen_port": 57890
-  }
+  "public_host": "anet.example.com",
+  "public_api_url": "https://anet.example.com"
 }
 ```
 
-所有字段可选，仅更新传入的字段。更改涉及网络监听的配置需要重启对应模块。
+所有字段可选，仅更新传入的字段：
+
+| 字段 | 说明 |
+|------|------|
+| `node_name` | 1-64 字符 |
+| `public_host` | 公网会合点对外身份（公网 IP 或域名；接入链接与隧道端点的展示地址；保存即热生效，无需重启） |
+| `public_api_url` | API 反代端点（federation P1：API 经 HTTPS 反代时的 scheme + 端口覆盖；`http(s)://host[:port]`，无路径；空串 = 清除。接入链接随之携带 https scheme） |
 
 ### 响应 200
 
@@ -212,11 +203,63 @@
 {
   "code": 0,
   "data": {
-    "applied": ["node_name", "connector.upstream_server"],
-    "restart_required": ["listener"]
+    "applied": ["node_name", "public_host"],
+    "restart_required": []
   }
 }
 ```
+
+---
+
+## GET `/api/v1/admin/federation/offered`
+
+可授权池（federation P1）：在线扇入端点随握手上送的路由与权限组，来源 tag = 端点 node_id。
+
+### 响应 200
+
+```json
+{
+  "code": 0,
+  "data": {
+    "items": [
+      {
+        "node_id": "peer-c",
+        "advertise": ["10.12.0.0/16", "git.internal"],
+        "groups": [
+          { "name": "git", "remark": "代码组", "rules": ["git.internal", "10.12.0.0/16"] }
+        ]
+      }
+    ]
+  }
+}
+```
+
+仅在线端点入池（上送内容随扇入会话存活，断开即清除）；无 relay listener 时返回空列表。
+
+---
+
+## POST `/api/v1/admin/federation/adopt`
+
+一键采纳：把池中的上送组物化为本地权限组（规则按 `(type, value)` 唯一性复用或新建，
+组名 = `组名@node_id`，重名追加 `·N` 后缀）。审计 `federation.adopt`。
+
+### 请求
+
+```json
+{ "node_id": "peer-c", "group": "git" }
+```
+
+### 响应 200
+
+```json
+{
+  "code": 0,
+  "data": { "id": "uuid", "name": "git@peer-c", "rule_count": 2, "reused": 0 }
+}
+```
+
+端点不在线 / 上送组不存在均返回 40400。采纳后的本地组与手工创建的组完全同构，可直接授权给账号；
+资源主侧的后续变更不会自动同步（采纳是显式动作，再次采纳生成 `·N` 新组）。
 
 ---
 
@@ -255,10 +298,19 @@
     "expose_control": false,
     "control_scope": "full",
     "group_id": "uuid",
-    "created_at": "2025-07-30T10:00:00Z"
+    "created_at": "2025-07-30T10:00:00Z",
+    "share_url": "anet://fanout?server=anet.example.com&port=54430&token=psk_xxxxxxxxxxxxxxxx&sni=cdn.cloudflare.com&fp=ab12...",
+    "endpoints": [
+      { "kind": "public", "addr": "anet.example.com:54430" },
+      { "kind": "lan", "addr": "192.168.1.5:54430" }
+    ]
   }
 }
 ```
+
+扇入令牌分享链接化（federation P1）：`share_url` 为一键导入链接（`anet://fanout`，地址优先级 = 对外声明
+`public_host` > 监听地址；含 SNI 与证书指纹钉值）；`endpoints` 为签发对话框的端点候选
+（`public` 对外声明身份 / `lan` 同内网直连 / `local` 回环兜底），前端切换端点即重拼链接，无需重新请求。
 
 ---
 

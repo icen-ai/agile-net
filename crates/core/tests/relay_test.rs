@@ -19,6 +19,11 @@ fn get_free_addr() -> SocketAddr {
     addr
 }
 
+/// Port-allocation race guard: get_free_addr releases the probe socket before rebinding, so
+/// parallel tests can collide on the same port (TLS cross-talk: "got ClientHello"). Serialize
+/// the network tests — the probe-bind/listen sequence stays fast enough for that.
+static NET_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// AT-M2-01: frame encode/decode roundtrip
 #[test]
 fn frame_roundtrip_all_types() {
@@ -56,6 +61,7 @@ fn frame_roundtrip_all_types() {
 /// AT-M2-02: TLS tunnel establishment and bidirectional communication
 #[tokio::test]
 async fn tls_tunnel_established() -> Result<()> {
+    let _net_guard = NET_TEST_LOCK.lock().unwrap();
     let addr = get_free_addr();
     let token = "secret_token_123";
 
@@ -82,6 +88,7 @@ async fn tls_tunnel_established() -> Result<()> {
 /// AT-M2-04: auth failure rejected
 #[tokio::test]
 async fn auth_rejected_with_wrong_token() -> Result<()> {
+    let _net_guard = NET_TEST_LOCK.lock().unwrap();
     let addr = get_free_addr();
     let listener = std::sync::Arc::new(RelayListener::new(addr, "correct_token")?);
     tokio::spawn(async move {
@@ -102,6 +109,7 @@ async fn auth_rejected_with_wrong_token() -> Result<()> {
 /// AT-M2-03: TCP passthrough E2E
 #[tokio::test]
 async fn tcp_passthrough() -> Result<()> {
+    let _net_guard = NET_TEST_LOCK.lock().unwrap();
     let echo_addr = get_free_addr();
     let relay_addr = get_free_addr();
     let token = "passthrough_token";
@@ -155,6 +163,7 @@ async fn tcp_passthrough() -> Result<()> {
 /// AT-M2-07: concurrent data channels
 #[tokio::test]
 async fn concurrent_data_channels() -> Result<()> {
+    let _net_guard = NET_TEST_LOCK.lock().unwrap();
     let echo_addr = get_free_addr();
     let relay_addr = get_free_addr();
     let token = "concurrent_token";
@@ -213,4 +222,89 @@ async fn concurrent_data_channels() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Federation P1: pushed policy groups ride the fan-out handshake into the upstream
+/// authorizable pool (peer_offers), and are cleared when the session drops.
+#[tokio::test]
+async fn pushed_groups_pool_and_disconnect_clear() -> Result<()> {
+    let _net_guard = NET_TEST_LOCK.lock().unwrap();
+    use agile_net_core::proto::message::PushedGroupMsg;
+    let addr = get_free_addr();
+    let token = "secret_token_123";
+
+    let listener = std::sync::Arc::new(RelayListener::new(addr, token)?);
+    let l = listener.clone();
+    tokio::spawn(async move {
+        let _ = l.start().await;
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let slot = std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(vec![
+        PushedGroupMsg {
+            name: "git".into(),
+            remark: "代码组".into(),
+            rules: vec!["git.internal".into(), "10.12.0.0/16".into()],
+        },
+    ]));
+    let connector = RelayConnector::new(addr, "peer-c", token)?.with_push_groups(slot);
+    connector.connect().await?;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let offers = listener.peer_offers();
+    let o = offers.iter().find(|o| o.node_id == "peer-c").expect("peer offer");
+    assert_eq!(o.groups.len(), 1);
+    assert_eq!(o.groups[0].name, "git");
+    assert_eq!(o.groups[0].remark, "代码组");
+    assert_eq!(
+        o.groups[0].rules,
+        vec!["git.internal".to_string(), "10.12.0.0/16".to_string()]
+    );
+
+    connector.disconnect().await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        listener
+            .peer_offers()
+            .iter()
+            .all(|o| o.node_id != "peer-c"),
+        "disconnect clears the pooled offer"
+    );
+    Ok(())
+}
+
+/// Federation P1: pushed-group sanitization drops offending entries (never rejects the session).
+#[test]
+fn sanitize_pushed_groups_caps() {
+    use agile_net_core::proto::message::PushedGroupMsg;
+    use agile_net_core::relay::listener::{
+        MAX_PUSHED_GROUP_RULES, MAX_PUSHED_GROUPS, sanitize_pushed_groups,
+    };
+    let mk = |name: &str, rules: Vec<&str>| PushedGroupMsg {
+        name: name.into(),
+        remark: String::new(),
+        rules: rules.into_iter().map(str::to_string).collect(),
+    };
+    let huge = (0..MAX_PUSHED_GROUP_RULES + 10)
+        .map(|i| format!("10.0.{i}.0/24"))
+        .collect::<Vec<_>>();
+    let out = sanitize_pushed_groups(vec![
+        mk("", vec!["a"]),                    // empty name dropped
+        mk(&"x".repeat(200), vec!["a"]),      // overlong name dropped
+        mk("ok", vec!["", "  ", "10.0.0.0/8", &"y".repeat(300)]), // blank/overlong rules dropped
+        PushedGroupMsg {
+            name: "big".into(),
+            remark: String::new(),
+            rules: huge,
+        },
+    ]);
+    assert_eq!(out.len(), 2);
+    assert_eq!(out[0].name, "ok");
+    assert_eq!(out[0].rules, vec!["10.0.0.0/8".to_string()]);
+    assert_eq!(out[1].rules.len(), MAX_PUSHED_GROUP_RULES);
+    // Group-count cap
+    let many = (0..MAX_PUSHED_GROUPS + 5)
+        .map(|i| mk(&format!("g{i}"), vec![]))
+        .collect();
+    assert_eq!(sanitize_pushed_groups(many).len(), MAX_PUSHED_GROUPS);
 }

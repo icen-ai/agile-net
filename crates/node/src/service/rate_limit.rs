@@ -72,6 +72,7 @@ mod tests {
         let node = AuthIdentity::Node {
             node_id: "n-1".into(),
             advertise: vec![],
+            groups: vec![],
             control: None,
             acl: None,
         };

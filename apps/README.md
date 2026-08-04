@@ -13,8 +13,8 @@
 - **灵动岛通知**：标题栏中央状态岛（代理/网络摘要），通知瞬时弹出自动收回；
   部分网络不可达时点击展开异常节点明细
 - **空状态引导**：未连接节点时展示三步接入引导，粘贴框自动聚焦
-- **剪贴板识别**：一键识别剪贴板中的 `agilenet://` 接入链接并导入
-- 快速接入：粘贴 `agilenet://connect?...` 链接一键导入连接（含 sk- 强密码）
+- **剪贴板识别**：一键识别剪贴板中的 `anet://`（兼容旧 `agilenet://`）接入链接并导入
+- 快速接入：粘贴 `anet://connect?...` 链接一键导入连接（含 sk- 强密码）
 - 手动添加：地址 / 账号 / 密码 / 证书固定 PEM / insecure 开关 / hosts 管理（折叠面板）
 - 节点管理：多节点连接、实时状态徽标（连接中/重连中脉冲动画）、断开、凭据保存与自动重连
 - **已保存节点管理**：状态区分（已连接/未连接…）、删除（二次确认）、导出为接入链接
@@ -132,7 +132,7 @@ ui/ (HTML+JS)  ──IPC──>  src/lib.rs (Tauri commands)
                               ├─ connect_node / disconnect_node / list_nodes
                               ├─ start_proxy / stop_proxy / proxy_status
                               ├─ list_credentials（密码存 OS keyring，credentials.json 只留元数据，0600 文件回退）
-                              └─ parse_connect_url（agilenet:// 接入链接解析）
+                              └─ parse_connect_url（anet:// 接入链接解析，兼容 agilenet://）
                               │
                         agile-net-client 引擎（anet-svc client 同源）
                               │

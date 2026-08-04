@@ -18,12 +18,12 @@
 
 **当前仓库结构**（双产物统一已完成，见上述计划）：
 
-- `crates/core`：核心网络协议（mux 帧/会话）、TLS 握手（证书固定 pinning）、Relay 穿透（listener/connector；listener 会话级 Open 洪泛防护 `MAX_INBOUND_OPENS_PER_SESSION=256`，Semaphore 限流、超限回 OpenFail）、对端收敛（`relay::PeerAcl`，扇入/扇出数据面钩子 + `ProxyRouter::matches` 复用）、会话带宽限速（`relay::limit::TokenBucket`，relay_token.rate_limit_kbps→会话读写合并令牌桶，读写泵背压生效）、客户端隧道（`ClientTunnel`）、代理入站（SOCKS5/HTTP + 认证）与路由器（`ProxyRouter`，热路径 `route_host(&str)` 零分配）、共享工具（`util` 模块：`sha256_hex` / `base64_encode` / `LoginRateLimiter` 全仓唯一来源，node 侧 `db::sha256_hex` 为再导出）。
+- `crates/core`：核心网络协议（mux 帧/会话）、TLS 握手（证书固定 pinning）、Relay 穿透（listener/connector；listener 会话级 Open 洪泛防护 `MAX_INBOUND_OPENS_PER_SESSION=256`，Semaphore 限流、超限回 OpenFail）、对端收敛（`relay::PeerAcl`，扇入/扇出数据面钩子 + `ProxyRouter::matches` 复用）、会话带宽限速（`relay::limit::TokenBucket`，relay_token.rate_limit_kbps→会话读写合并令牌桶，读写泵背压生效）、客户端隧道（`ClientTunnel`）、代理入站（SOCKS5/HTTP + 认证）与路由器（`ProxyRouter`，热路径 `route_host(&str)` 零分配）、共享工具（`util` 模块：`sha256_hex` / `base64_encode` / `LoginRateLimiter` 全仓唯一来源，node 侧 `db::sha256_hex` 为再导出）、统一链接底座（`link` 模块：`anet://` connect/fanout 双角色解析+生成，兼容旧 `agilenet://`，server 可带 https:// 全形式承载 API 反代）、联邦策略上送（`AuthRequest.groups: Vec<PushedGroupMsg>` serde 兼容旧上游；listener `peer_offers()` 可授权池 + `sanitize_pushed_groups` 上限清洗；connector 上送槽位变更自动重连再推）。
 - `crates/node`：服务端/节点库 + 二进制 **`anet-svc` / `anet`**（同一实现双入口：`start` 默认 / `stop` / `restart` / `status` / `init` / `node` / `rule` / `group` / `account` / `token` / `connector` / `admin` / `audit` / `client` / `tui` / `doctor`）：装配根 `service::NodeServer`、扇出管理 `service::connectors::ConnectorManager`（DB 为唯一事实来源，热操作）、对端收敛注册表 `service::acl::PeerAclRegistry`、SQLite（版本化迁移）、Axum REST API、Web 管理后台（`ui`）、TUI（API 优先 + DB 只读兜底）、CLI（`cli/` 目录按域 11 文件）、服务管理（`svc` 模块 PID 文件）、首装向导（`init` 模块）、内存日志缓冲、自我诊断（`tool::doctor/` 目录按域 10 文件：7 节检查 + 自动修复，CLI `anet doctor` 与 GUI `run_doctor` 共用，`run_streaming` 支持逐节流式回调）。
 - `crates/client`：客户端核心引擎（库）：`lib.rs` 只做模块声明与再导出（pub API 路径不变），实现按域拆分——`client`（多节点连接：登录/配置/隧道/长轮询/心跳，规则合并与暂停 `paused_rules`，本地代理）、`credential`（凭据存储：桌面平台 OS keyring 优先存密码，0600 文件回退，旧明文自动迁移）、`config_cache`（节点配置离线缓存）、`connect_url`（接入链接解析/生成）、`custom_rules`（自定义规则）、`hosts`（系统 hosts 管理）+ 管理面 Web API（`api` 模块）、客户端角色守护（`daemon` 模块）。
 - `apps/desktop`：**anet-gui**（Tauri 2 桌面/Android，独立 workspace，前端无 Node 构建链）：Rust 侧 `cmd/`（命令按域 11 模块）+ `kernel/`（mihomo sidecar 7 模块，manager.rs 以 `KernelState` 聚合结构统一管理内核状态槽位）+ 装配根 lib.rs（<300 行，AppState/run/generate_handler）；前端 `ui/app-*.js` 按域 6 文件（core/views/subscription/hero/logs/settings）+ 启动序列 app.js（普通 script 串联共享全局，index.html 依依赖序引入）+ i18n 双语（`agi18n.js` 运行时 + `aglang.js` 基础字典 + `lang/` 域分片，见 §7）：三路独立开关（客户端/服务端/Web 远程面）+ 扇出管理（connector 入库 CRUD + 权限组收敛 + 证书指纹钉值，独立菜单；监听面板可复制本机证书指纹、可设对外地址 public_host 热生效）+ 控制台窗口 + 订阅代理（mihomo sidecar 内核托管，GUI 独享）+ 系统代理托管（冲突巡检提醒 + 「锁定系统代理」硬核模式）+ 日志视图（实时连接/实时日志/命中追踪/事件中心四页签，mihomo external-controller WS 采集，右键强制打断/一键加规则，连接详情展开含链路迷你拓扑）+ 首页中控台（大总开关 proxy_power + 实时速率双序列曲线 + dstat 摘要 + 新手检查单）+ 节点页批量测速（流式 .lat 延迟分级/按延迟排序/推荐徽标）+ 托盘弹窗（tray.html：实时网速/代理组速切/连接摘要）+ 桌面悬浮球（float.html：拖拽/单双击/右键菜单/气泡通知）+ 拖拽导入本地 Clash YAML 订阅 + 设置内自我诊断（流式逐节动画）+ 性能模式（reduce_effects 关模糊动画，低配/国产 Linux）+ 窄屏底部导航 .bnav（≤720px，桌面/管理端隐藏）+ 设置同步（sync.rs：WebDAV/S3/文件三通道版本化加密存档，4 位 PIN AES-256-GCM 或明文，恢复自动备份+重启）。
 - `.docker`：四级节点链编排测试（`docker-compose.test.yaml`）与常驻演示（`docker-compose.chain.yaml`）。
-- `docs/plan/merge-gui-svc.md`：双产物统一实施计划；`docs/plan/subscription.md`：GUI 独享订阅代理（mihomo sidecar）实施计划；`docs/plan/tun.md`：TUN 模式（anet 在前、FlClash 在后，Windows 桌面）实施计划；`docs/todo/peer-acl.md`：对端收敛（Peer ACL，已实施）设计与实施记录；`docs/todo/island.md`：移动端系统岛规划；`docs/todo/gui-observability.md`：GUI 可观测性（日志三连/托盘/悬浮球）与 anet doctor 自我诊断实施记录。
+- `docs/plan/merge-gui-svc.md`：双产物统一实施计划；`docs/plan/subscription.md`：GUI 独享订阅代理（mihomo sidecar）实施计划；`docs/plan/tun.md`：TUN 模式（anet 在前、FlClash 在后，Windows 桌面）实施计划；`docs/plan/federation.md` + `docs/todo/federation.md`：联邦模型（公网会合点 + 资源主主权 + 信任分级）设计与 P1 实施记录（P1 已落地：anet:// 链接三载体、策略上送/可授权池/一键采纳、公网身份产品化；e2e 验收 `crates/node/tests/federation_test.rs`）；`docs/todo/peer-acl.md`：对端收敛（Peer ACL，已实施）设计与实施记录；`docs/todo/island.md`：移动端系统岛规划；`docs/todo/gui-observability.md`：GUI 可观测性（日志三连/托盘/悬浮球）与 anet doctor 自我诊断实施记录。
 
 ---
 
@@ -46,7 +46,7 @@
      ```
 2. **数据库与 API**：
    - 数据库交互统一封装在 `crates/node/src/db/`（pool/migrations/admin/rules/accounts/connectors/logs/paginate 按域 8 文件 + mod/models，`paginate.rs` 为分页查询公共 helper，`sha256_hex` 自 `core::util` 再导出保持 `db::sha256_hex` 路径；`r2d2_sqlite` 连接池：file 池 8 / memory 池 1，WAL），版本化迁移见 `migrations.rs` 的 `MIGRATIONS`。
-   - 表：`admin`, `rule`, `group`, `group_rule`, `account`, `relay_token`（含 `rate_limit_kbps` 带宽配额列 v7+）, `connector`, `node_config`, `audit_log`, `traffic_log`, `node_traffic_log`, `refresh_token`。
+   - 表：`admin`, `rule`, `group`, `group_rule`, `account`, `relay_token`（含 `rate_limit_kbps` 带宽配额列 v7+）, `connector`（含 `pinned_fingerprint` 指纹钉值列 v8+、`push_groups` 策略上送组列 v9+）, `node_config`（含 `public_host` / `public_api_url` 公网身份与反代端点）, `audit_log`, `traffic_log`, `node_traffic_log`, `refresh_token`。
    - API 路由在 `crates/node/src/api/`（axum，可配内置 HTTPS）；管理接口强制 `AdminAuth`、客户端接口强制 `ClientAuth`；响应统一 `{code, data}` / `{code, message}` 信封，错误码遵循 `docs/api/overview.md`。handler 内严禁直接跑阻塞活：DB 调用一律经 `ApiState::db_call`（spawn_blocking offload），auth.rs 的 argon2id 校验/哈希与 jwt issue/refresh/revoke 同样 offload。
 3. **安全硬化**：
    - 密码统一 argon2id（64MB/t=3/p=4），严禁明文存储。
@@ -63,6 +63,11 @@
 5. **端口规范**：
    - 默认端口一律 5 万段，规避 Clash 系常用端口：API `59090`、Relay listener `54430`、客户端代理 `57890`。
    - 与 Clash/FlClash 共存的组合配置见 `apps/README.md`。
+5. **链接与凭证载体规范（联邦 P1 已落地，docs/plan/federation.md）**：
+   - 一切可分享的技术字段必须能打包进一条链接（链接恒为三件套：入口地址 + 凭证 + 入口证书指纹）；生成一律 `anet://`，解析必须兼容旧 `agilenet://`；Rust 底座 `core::link`，前端唯一实现共享 `aglink.js`，严禁第三处解析器。
+   - 签发弹窗统一「分享卡片」：端点选择（对外声明 public_host > 内网直连枚举 > 回环兜底）+ 完整链接/仅密钥 tab + 下载 .anet；API 反代端点走 `node_config.public_api_url`（scheme+端口覆盖），relay 数据面必须 L4 透传（严禁 L7 终结 TLS）。
+   - `.anet` 文件：magic `ANET1` JSON 信封（role/issuer/created_at/note/payload），PIN 加密与 sync.rs 同构（格式级兼容）；导入三入口（文件选择/双击文件关联/拖拽入窗）必先展示信封元信息再确认应用；桌面经 tauri-plugin-dialog/deep-link/single-instance 落地。
+   - 策略上送：扇出 connector `push_groups`（DB v9）→ `AuthRequest.groups` → 上游可授权池（`federation/offered`）→ 一键采纳（`federation/adopt`，组名 `组名@节点ID` 命名空间隔离）；上送内容清洗上限见 `relay::listener::MAX_PUSHED_*`。
 5. **前端约定（Web 后台 + 桌面/Android 共用前端，均无 Node 构建链）**：
    - 图标统一内置 Lucide 内联 SVG（双端唯一图标表 `apps/desktop/ui/icons.js`：`AgIcon()` + `data-ic` 占位水合 + `AgIconHydrate(root)` 复跑），只收录用到的图标；**严禁文字表情充当图标，文档中同样不得出现文字表情**。
    - 视觉 token 对齐 Cindy 桌面端（浅色默认），见 `docs/architecture/ui-design.md`。
@@ -72,7 +77,7 @@
 6. **前端共享与组件沉淀（两端一致性唯一来源）**：
    - **共享 token**：`apps/desktop/ui/tokens.css` 是设计 token 的唯一权威文件（颜色/语义色/边框/文字梯度，深浅两套）。桌面端 `<link>` 引入；管理端经 `include_str!` 内嵌服务（`crates/node/src/ui/mod.rs` 引用相对路径）。**严禁在任一端的 style.css 里另起同名 token 或硬编码色值**，新增 token 一律进 tokens.css 并在 `docs/architecture/ui-design.md` 登记。
    - **管理端 SPA 文件布局**：`crates/node/ui/`（`index.html` / `app.js` / `style.css`），`mod.rs` 只做路由与内嵌（`include_str!`），**严禁再把界面代码写进 Rust 字符串**。
-   - **共享组件层**：`apps/desktop/ui/components.css` 是两端共用组件样式唯一来源（桌面 `<link>`、管理端 `/ui/components.css` 同机制内嵌），当前收录 ag-select 自定义下拉（两端各自 app.js 的 `agSelectEnhance(root)` / `agSelectRefresh(sel)` 驱动）、ag-tabs 横向页签条（`agTabsBind(bar, onSwitch)`）、ahelp 行内帮助（`.ahelp` 纯 CSS hover 说明卡，共享 `ahelp(text)` helper 在 agutil.js，解释性小字一律收进 ahelp 而非常驻 hint）；端特有覆盖留各自 style.css。共享 JS 组件同机制沉淀在 `apps/desktop/ui/`（桌面 `<script src>`、管理端 `/ui/*.js` 内嵌服务）：`agchart.js`（图表：sparkline 省略版 / line 完整版，签名不变不重绘、rAF 插值过渡，两端调用 `AgChart.sparkline(el, series, opts)` / `AgChart.line(el, cfg)`）、`icons.js`（双端唯一图标表，`AgIcon()` / `data-ic` 水合 / `AgIconHydrate`）、`agutil.js`（`$` / `esc` / `ahelp`，仅收录两端语义完全一致的工具，依赖 icons.js 先加载）。
+   - **共享组件层**：`apps/desktop/ui/components.css` 是两端共用组件样式唯一来源（桌面 `<link>`、管理端 `/ui/components.css` 同机制内嵌），当前收录 ag-select 自定义下拉（两端各自 app.js 的 `agSelectEnhance(root)` / `agSelectRefresh(sel)` 驱动）、ag-tabs 横向页签条（`agTabsBind(bar, onSwitch)`）、ahelp 行内帮助（`.ahelp` 纯 CSS hover 说明卡，共享 `ahelp(text)` helper 在 agutil.js，解释性小字一律收进 ahelp 而非常驻 hint）；端特有覆盖留各自 style.css。共享 JS 组件同机制沉淀在 `apps/desktop/ui/`（桌面 `<script src>`、管理端 `/ui/*.js` 内嵌服务）：`agchart.js`（图表：sparkline 省略版 / line 完整版，签名不变不重绘、rAF 插值过渡，两端调用 `AgChart.sparkline(el, series, opts)` / `AgChart.line(el, cfg)`）、`icons.js`（双端唯一图标表，`AgIcon()` / `data-ic` 水合 / `AgIconHydrate`）、`agutil.js`（`$` / `esc` / `ahelp`，仅收录两端语义完全一致的工具，依赖 icons.js 先加载）、`aglink.js`（anet:// 统一链接解析器/生成器，connect/fanout 双角色，兼容 agilenet://；全部表单的粘贴导入/分享卡片/深链路由唯一实现，与 Rust `core::link` 行为对齐）、`aganet.js`（.anet 凭据文件构建/解析/加解密，WebCrypto PBKDF2-100k + AES-256-GCM，与 sync.rs 格式级兼容）。
    - **组件沉淀流程**：新组件先在本端页面内实现并验证；第二次需要（或明确两端共用）时，先**泛化**（class 命名语义化、尺寸/状态走修饰类、色值只吃 token）再沉淀到共享层（tokens.css / 共享组件样式 / icons.js），随后各端改为引用共享实现。禁止把页面级一次性样式直接拷给另一端。
    - 端文案：AgileNet 对端一律称「端点」；连接方向用「扇出」（本端点主动连出，原上游）/「扇入」（对端连入本端点，原下游）；「节点」仅指订阅代理节点。
 7. **国际化（i18n，zh-CN + en-US 双语）**：

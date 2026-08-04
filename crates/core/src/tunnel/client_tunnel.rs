@@ -144,6 +144,7 @@ impl ClientTunnel {
                 .clone(),
             kind: AuthKind::Client,
             advertise: Vec::new(),
+            groups: Vec::new(),
             version: PROTOCOL_VERSION,
         };
         let payload = serde_json::to_vec(&auth_req).map_err(|e| Error::Protocol(e.to_string()))?;
