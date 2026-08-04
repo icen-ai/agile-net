@@ -6,4 +6,6 @@
   Cache-Control: public, max-age=300
 
 /assets/*
-  Cache-Control: public, max-age=86400, immutable
+  # No build chain / no content-hashed filenames: must not be immutable,
+  # otherwise edge/browser keep stale JS after a deploy (nav.json/app.js mismatch).
+  Cache-Control: public, max-age=300, must-revalidate
