@@ -284,7 +284,12 @@ function shareCardBind(root, opts) {
     const addr = epSel ? epSel.value : parsed.addr;
     return opts.role === 'fanout'
       ? AgLink.buildFanout({ addr, token: parsed.token, sni: parsed.sni, fp: parsed.fp, insecure: parsed.insecure })
-      : AgLink.buildConnect({ addr, account: parsed.account, password: parsed.password, fp: parsed.fp, insecure: parsed.insecure, admin: parsed.admin });
+      : AgLink.buildConnect({
+          addr, account: parsed.account, password: parsed.password, fp: parsed.fp,
+          insecure: parsed.insecure, admin: parsed.admin,
+          // federation P2: keep the disaster set of a delegated credential across rebuilds
+          entries: (parsed.entries || []).map((a, i) => ({ addr: a, fp: (parsed.entryFps || [])[i] || '' })),
+        });
   }
   function render() {
     const v = tab === 'link' ? currentLink() : opts.secret;
@@ -499,6 +504,7 @@ const ACT_CLICK = {
   'conn-edit': b => openEditConnector(b.dataset.id),
   'conn-toggle': b => toggleConnector(b.dataset.id, b.dataset.enabled === 'true'),
   'conn-del': b => delConnector(b.dataset.id, b.dataset.name),
+  'deleg-revoke': b => revokeDelegation(b.dataset.id, b.dataset.name),
   'pool-toggle': b => {
     const row = document.querySelector('[data-poolrow="' + CSS.escape(b.dataset.node) + '"]');
     if (row) row.hidden = !row.hidden;
@@ -1293,16 +1299,34 @@ function openEditToken(id, groupId, exposeControl, controlScope, rateKbps) {
     ]);
 }
 
-/* ================= Fan-out (upstream connectors) ================= */
+/* ================= Fan-out (upstream connectors) + Delegation (federation P2) ================= */
 function connStatusBadge(st) {
   return '<span class="badge ' + (st === 'connected' ? 'b-ok' : (st === 'disconnected' ? 'b-off' : 'b-warn')) + '">' +
     esc(connStatusText(st)) + '</span>';
 }
 async function renderConnectors() {
   $('view').innerHTML = '<div class="page-title">' + ic('git-fork', 20) + T('term.fanout') + '</div><div class="page-desc">' + T('fanout.admDesc') + '</div>' +
-    '<div class="toolbar"><div class="spacer"></div><button class="ghost" id="conn-import">' + ic('upload', 15) + T('anet.importBtn') + '</button><button id="conn-create">' + ic('plus', 15) + T('fanout.create') + '</button></div>' +
-    '<input type="file" id="conn-import-file" accept=".anet,application/json" style="display:none">' +
-    '<div class="card table-wrap"><table><thead><tr><th>' + T('common.name') + '</th><th>' + T('fanout.colUpstream') + '</th><th>' + T('term.group') + '</th><th>' + T('common.status') + '</th><th>' + T('adm.stOn') + '</th><th>' + T('common.remark') + '</th><th>' + T('common.action') + '</th></tr></thead><tbody id="conn-body"></tbody></table></div>';
+    '<div class="agtabs" style="margin:14px 0 12px"><div class="agtabs-pill">' +
+      '<button class="agtab active" data-ftab="conns">' + T('deleg.tabConns') + '</button>' +
+      '<button class="agtab" data-ftab="deleg">' + T('deleg.tab') + '</button>' +
+    '</div></div>' +
+    '<div id="ftab-conns">' +
+      '<div class="toolbar"><div class="spacer"></div><button class="ghost" id="conn-import">' + ic('upload', 15) + T('anet.importBtn') + '</button><button id="conn-create">' + ic('plus', 15) + T('fanout.create') + '</button></div>' +
+      '<input type="file" id="conn-import-file" accept=".anet,application/json" style="display:none">' +
+      '<div class="card table-wrap"><table><thead><tr><th>' + T('common.name') + '</th><th>' + T('fanout.colUpstream') + '</th><th>' + T('term.group') + '</th><th>' + T('common.status') + '</th><th>' + T('adm.stOn') + '</th><th>' + T('common.remark') + '</th><th>' + T('common.action') + '</th></tr></thead><tbody id="conn-body"></tbody></table></div>' +
+    '</div>' +
+    '<div id="ftab-deleg" style="display:none">' +
+      '<div class="toolbar"><div class="hint" style="max-width:560px">' + T('deleg.desc') + '</div><div class="spacer"></div><button id="deleg-issue">' + ic('plus', 15) + T('deleg.issue') + '</button></div>' +
+      '<div class="card table-wrap"><table><thead><tr><th>' + T('deleg.colLabel') + '</th><th>' + T('deleg.colGroups') + '</th><th>' + T('deleg.colSet') + '</th><th>' + T('common.createdAt') + '</th><th>' + T('common.action') + '</th></tr></thead><tbody id="deleg-body"></tbody></table></div>' +
+    '</div>';
+  // ag-tabs switching (explicit binding, no inline handlers)
+  $('view').querySelectorAll('[data-ftab]').forEach(b => {
+    b.onclick = () => {
+      $('view').querySelectorAll('[data-ftab]').forEach(x => x.classList.toggle('active', x === b));
+      $('ftab-conns').style.display = b.dataset.ftab === 'conns' ? '' : 'none';
+      $('ftab-deleg').style.display = b.dataset.ftab === 'deleg' ? '' : 'none';
+    };
+  });
   $('conn-create').onclick = () => openCreateConnector();
   // .anet import: native open dialog via the desktop bridge when embedded, file picker otherwise
   $('conn-import').onclick = () => {
@@ -1315,8 +1339,9 @@ async function renderConnectors() {
     if (!f) return;
     openAnetImport(await f.text(), f.name);
   };
-  await loadConnectors();
-  S.timers.push(setInterval(loadConnectors, 5000));
+  $('deleg-issue').onclick = () => openIssueDelegation();
+  await Promise.all([loadConnectors(), loadDelegation()]);
+  S.timers.push(setInterval(() => { loadConnectors(); loadDelegation(); }, 5000));
 }
 async function loadConnectors() {
   const body = $('conn-body'); if (!body) return;
@@ -1342,6 +1367,128 @@ async function loadConnectors() {
       '</td></tr>';
     }).join('') || '<tr><td colspan="7" class="empty">' + T('fanout.empty') + '</td></tr>';
   } catch(e) { toast(e.message, 'err'); }
+}
+/* ---- Delegation (federation P2): issue / list / revoke delegated tokens ---- */
+function delegStateBadge(st) {
+  if (st && st.startsWith('failed')) {
+    return '<span class="badge b-off" title="' + esc(st) + '">' + T('deleg.stFailed') + '</span>';
+  }
+  const map = {
+    registered: ['b-ok', T('deleg.stRegistered')],
+    pending: ['b-warn', T('deleg.stPending')],
+    unsupported: ['b-off', T('deleg.stUnsupported')],
+  };
+  const m = map[st] || ['b-off', T('deleg.stOffline')];
+  return '<span class="badge ' + m[0] + '">' + m[1] + '</span>';
+}
+async function loadDelegation() {
+  const body = $('deleg-body'); if (!body) return;
+  try {
+    const d = await api('GET', '/api/v1/admin/delegation/tokens');
+    const items = d.items || [];
+    // polling change detection: identical signature → no DOM rewrite (avoids flicker)
+    const sig = JSON.stringify(items);
+    if (sig === body.dataset.sig) return;
+    body.dataset.sig = sig;
+    body.innerHTML = items.map(t => {
+      const groups = (t.groups || []).map(g =>
+        '<span class="badge b-info">' + esc(g.name) + '</span>' + (g.e2e_required ? ' <span class="badge b-warn">E2E</span>' : '')
+      ).join(' ');
+      const regs = (t.regs || []).map(r =>
+        '<div style="display:flex;align-items:center;gap:6px;padding:2px 0">' +
+          (r.is_primary ? '<span class="badge b-ok">' + T('deleg.primaryBadge') + '</span>' : '') +
+          '<span>' + esc(r.connector_name) + '</span>' + delegStateBadge(r.state) + '</div>'
+      ).join('');
+      return '<tr><td><b>' + esc(t.label || t.token_prefix) + '</b><div class="mono" style="color:var(--dim2)">' + esc(t.token_prefix) + '</div></td>' +
+        '<td>' + (groups || '-') + '</td>' +
+        '<td>' + (regs || '-') + '</td>' +
+        '<td style="color:var(--dim);white-space:nowrap">' + esc((t.created_at || '').replace('T', ' ').replace(/\..*$/, '')) + '</td>' +
+        '<td><button class="danger small" data-act="deleg-revoke" data-id="' + esc(t.id) + '" data-name="' + esc(t.label || t.token_prefix) + '">' + T('adm.revoke') + '</button></td></tr>';
+    }).join('') || '<tr><td colspan="5" class="empty">' + T('deleg.empty') + '</td></tr>';
+  } catch(e) { toast(e.message, 'err'); }
+}
+async function revokeDelegation(id, name) {
+  confirmAction(T('deleg.revokeConfirm', { name }), async () => {
+    try {
+      await api('DELETE', '/api/v1/admin/delegation/tokens/' + encodeURIComponent(id));
+      toast(T('deleg.revokedToast'), 'ok');
+      loadDelegation();
+    } catch(e) { toast(e.message, 'err'); }
+  });
+}
+/* Issue dialog: failover-set multi-select (online v3+ upstreams pre-checked; v2 upstreams
+   disabled with a reason) -> primary-entry radio (linked to the checked set) -> local group
+   multi-select (E2E groups badged) -> label. The share card shows once with the full link. */
+async function openIssueDelegation() {
+  let conns = [];
+  try { conns = (await api('GET', '/api/v1/admin/connectors')).items || []; } catch(e) { toast(e.message, 'err'); return; }
+  const usable = conns.filter(c => c.enabled);
+  if (!usable.length) { toast(T('deleg.noUpstreams'), 'err'); return; }
+  if (!(S.groups || []).length) { toast(T('groups.empty'), 'err'); return; }
+
+  const targetRows = usable.map(c => {
+    const ver = c.upstream_version || 0;
+    const old = c.state === 'connected' && ver < 3;
+    const pre = c.state === 'connected' && ver >= 3;
+    const verNote = old ? ' <span class="hint">' + T('deleg.unsupported', { v: ver }) + '</span>' : '';
+    return '<label class="chk" style="display:flex;align-items:center;gap:8px;padding:5px 4px">' +
+      '<input type="checkbox" class="di-target" value="' + esc(c.id) + '"' + (pre ? ' checked' : '') + (old ? ' disabled' : '') + '>' +
+      '<span><b>' + esc(c.name) + '</b> <span class="mono" style="color:var(--dim2)">' + esc(c.upstream_addr) + '</span></span>' +
+      connStatusBadge(c.state) + verNote + '</label>';
+  }).join('');
+  const groupRows = (S.groups || []).map(g =>
+    '<label><input type="checkbox" class="di-group" value="' + esc(g.id) + '">' +
+    '<span>' + esc(g.name) + '</span>' + (g.e2e_required ? '<span class="badge b-warn">E2E</span>' : '<span class="badge b-info">' + (g.rule_count || 0) + '</span>') + '</label>'
+  ).join('');
+
+  openModal(T('deleg.issue'),
+    '<label>' + T('deleg.targets') + ' ' + ahelp(T('deleg.targetsHelp')) + '</label>' +
+    '<div class="rule-check" style="max-height:150px">' + targetRows + '</div>' +
+    '<label style="margin-top:10px">' + T('deleg.primary') + ' ' + ahelp(T('deleg.primaryHelp')) + '</label>' +
+    '<div id="di-primary" style="padding:2px 4px"></div>' +
+    '<label style="margin-top:10px">' + T('term.group') + ' ' + ahelp(T('deleg.groupsHelp')) + '</label>' +
+    '<div class="rule-check" style="max-height:130px">' + groupRows + '</div>' +
+    '<label style="margin-top:10px">' + T('common.remark') + '</label><input id="di-label" style="width:100%" placeholder="' + T('deleg.labelPh') + '">',
+    [
+      {label: T('common.cancel'), kind: 'ghost', fn: closeModal},
+      {label: T('deleg.issue'), fn: async () => {
+        const targets = [...document.querySelectorAll('.di-target:checked')].map(c => c.value);
+        const groupIds = [...document.querySelectorAll('.di-group:checked')].map(c => c.value);
+        if (!targets.length) { toast(T('deleg.needTargets'), 'err'); return; }
+        if (!groupIds.length) { toast(T('deleg.needGroups'), 'err'); return; }
+        const primary = $('di-primary').dataset.value || targets[0];
+        try {
+          const d = await api('POST', '/api/v1/admin/delegation/tokens', {
+            label: $('di-label').value.trim(),
+            group_ids: groupIds,
+            regs: targets.map(id => ({ connector_id: id, is_primary: id === primary })),
+          });
+          closeModal();
+          openModal(T('deleg.issuedTitle'), shareCardHtml([]), []);
+          shareCardBind($('modal-root'), { role: 'connect', secret: d.token, link: d.share_url, endpoints: [], note: d.label });
+          loadDelegation();
+        } catch(e) { toast(e.message, 'err'); }
+      }},
+    ]);
+
+  // primary radio follows the checked set (first checked entry wins by default)
+  const primaryBox = $('di-primary');
+  function syncPrimary() {
+    const checked = [...document.querySelectorAll('.di-target:checked')].map(c => c.value);
+    const keep = checked.includes(primaryBox.dataset.value) ? primaryBox.dataset.value : checked[0];
+    primaryBox.dataset.value = keep || '';
+    primaryBox.innerHTML = checked.map(id => {
+      const c = usable.find(x => x.id === id);
+      return '<label class="chk" style="display:inline-flex;align-items:center;gap:5px;margin-right:14px">' +
+        '<input type="radio" name="di-primary" value="' + esc(id) + '"' + (id === keep ? ' checked' : '') + '> ' +
+        esc(c ? c.name : id) + '</label>';
+    }).join('') || '<div class="hint">' + T('deleg.needTargets') + '</div>';
+  }
+  document.querySelectorAll('.di-target').forEach(c => c.addEventListener('change', syncPrimary));
+  primaryBox.addEventListener('change', (e) => {
+    if (e.target && e.target.value) primaryBox.dataset.value = e.target.value;
+  });
+  syncPrimary();
 }
 function connectorFormHtml(c) {
   c = c || {};

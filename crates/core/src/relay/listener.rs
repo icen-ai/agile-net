@@ -960,6 +960,7 @@ impl RelayListener {
     }
 
     /// Client session: handle inbound Open requests (ACL + downstream routing + direct connect).
+    #[allow(clippy::too_many_arguments)]
     async fn serve_client_session(
         self: &Arc<Self>,
         tls_stream: tokio_rustls::server::TlsStream<TcpStream>,

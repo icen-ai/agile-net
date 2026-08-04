@@ -484,6 +484,15 @@ pub fn create_app(state: ApiState) -> Router {
             "/api/v1/admin/federation/adopt",
             post(handlers::federation::adopt),
         )
+        // ---- Admin: Delegation (federation P2, issuer side) ----
+        .route(
+            "/api/v1/admin/delegation/tokens",
+            get(handlers::delegation::list_tokens).post(handlers::delegation::issue_token),
+        )
+        .route(
+            "/api/v1/admin/delegation/tokens/{id}",
+            axum::routing::delete(handlers::delegation::revoke_token),
+        )
         // ---- Admin: Tool (batch-4 bandwidth, the only tool command exposed via API) ----
         .route(
             "/api/v1/admin/tool/bandwidth",

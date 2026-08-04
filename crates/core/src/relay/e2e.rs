@@ -152,7 +152,7 @@ pub fn seal_open(
 /// 1 = issuer -> client).
 pub fn open_open(e2e_key: &[u8; 32], e2e: &E2eOpen) -> Result<(E2eOpenPayload, ChannelCipher)> {
     let wire = crate::util::base64_decode(&e2e.blob)
-        .map_err(|_| Error::Protocol("e2e blob is not valid base64".into()))?;
+        .ok_or_else(|| Error::Protocol("e2e blob is not valid base64".into()))?;
     if wire.len() < NONCE_LEN + TAG_LEN {
         return Err(Error::Protocol("e2e blob too short".into()));
     }
@@ -173,7 +173,7 @@ pub fn open_open(e2e_key: &[u8; 32], e2e: &E2eOpen) -> Result<(E2eOpenPayload, C
         .map_err(|e| Error::Protocol(format!("invalid e2e open payload: {e}")))?;
 
     let chan_salt = crate::util::base64_decode(&payload.chan_salt)
-        .map_err(|_| Error::Protocol("invalid chan_salt".into()))?;
+        .ok_or_else(|| Error::Protocol("invalid chan_salt".into()))?;
     if chan_salt.len() != CHAN_SALT_LEN {
         return Err(Error::Protocol("chan_salt length invalid".into()));
     }

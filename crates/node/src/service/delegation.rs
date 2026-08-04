@@ -9,6 +9,7 @@ use crate::db::models::DelegatedTokenRecord;
 use crate::db::{Database, generate_relay_token, sha256_hex};
 use agile_net_core::proto::message::{CtrlMessage, HintEntry};
 use anyhow::{Result, bail};
+use std::net::IpAddr;
 
 /// Issue a delegated token and set its disaster set (one row per upstream connector).
 /// Returns the record and the plaintext (shown once, inside the share link).
@@ -74,8 +75,7 @@ pub fn revoke_token(db: &Database, id: &str) -> Result<Option<DelegatedTokenReco
 
 /// Build the registration frame for one token: local group IDs resolve to names (the relay
 /// only ever sees names — namespaces are per-issuer), dangling groups are skipped with a warn.
-pub fn build_register_msg(db: &Database, rec: &DelegatedTokenRecord) -> CtrlMessage {
-    let group_ids: Vec<String> = serde_json::from_str(&rec.groups).unwrap_or_default();
+pub fn build_register_msg(db: &Database, rec: &DelegatedTokenRecord) -> CtrlMessage {    let group_ids: Vec<String> = serde_json::from_str(&rec.groups).unwrap_or_default();
     let mut names = Vec::with_capacity(group_ids.len());
     for gid in &group_ids {
         match db.get_group(gid) {
@@ -91,10 +91,41 @@ pub fn build_register_msg(db: &Database, rec: &DelegatedTokenRecord) -> CtrlMess
     }
 }
 
+/// Derive a placeholder routing hint from the issuer's advertised routes (federation P3).
+///
+/// The hint is a literal address that must resolve back to this issuer on the relay's route
+/// table — CIDR -> network address + 1, `*.suffix` wildcard -> `relay<suffix>`, exact host ->
+/// itself. One shared hint covers every E2E group (the coarsest vocabulary: the relay learns
+/// nothing about which group a connection belongs to). None when nothing is advertised.
+pub fn derive_hint(advertise: &[String]) -> Option<String> {
+    for entry in advertise {
+        let entry = entry.trim();
+        if entry.is_empty() {
+            continue;
+        }
+        if let Ok(net) = entry.parse::<ip_network::IpNetwork>() {
+            let host = match net.network_address() {
+                IpAddr::V4(v4) => IpAddr::V4(std::net::Ipv4Addr::from(u32::from(v4).wrapping_add(1))),
+                IpAddr::V6(v6) => IpAddr::V6(std::net::Ipv6Addr::from(u128::from(v6).wrapping_add(1))),
+            };
+            return Some(host.to_string());
+        }
+        if entry.contains('*') {
+            let suffix = entry.trim_start_matches('*');
+            if !suffix.is_empty() {
+                return Some(format!("relay{suffix}"));
+            }
+            continue;
+        }
+        return Some(entry.to_string());
+    }
+    None
+}
+
 /// Recover the E2E master key of a token (issuer side, E2E unwrap path; never expose via API).
 pub fn e2e_key_of(db: &Database, rec: &DelegatedTokenRecord) -> Result<[u8; 32]> {
     let b64 = db.decrypt_secret(&rec.e2e_key_enc)?;
-    let raw = agile_net_core::util::base64_decode(&b64).map_err(|_| anyhow::anyhow!("e2e key corrupt"))?;
+    let raw = agile_net_core::util::base64_decode(&b64).ok_or_else(|| anyhow::anyhow!("e2e key corrupt"))?;
     let len = raw.len();
     let key: [u8; 32] = raw
         .try_into()

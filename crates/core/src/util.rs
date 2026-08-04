@@ -39,45 +39,37 @@ pub fn base64_encode(data: &[u8]) -> String {
 }
 
 /// Minimal base64 decoder (standard alphabet, padding required; pairs with `base64_encode`
-/// so core still avoids a base64 dependency). Err(()) on any invalid character or truncation.
-pub fn base64_decode(s: &str) -> Result<Vec<u8>, ()> {
-    fn val(b: u8) -> Result<u32, ()> {
+/// so core still avoids a base64 dependency). None on any invalid character or truncation.
+pub fn base64_decode(s: &str) -> Option<Vec<u8>> {
+    fn val(b: u8) -> Option<u32> {
         match b {
-            b'A'..=b'Z' => Ok((b - b'A') as u32),
-            b'a'..=b'z' => Ok((b - b'a' + 26) as u32),
-            b'0'..=b'9' => Ok((b - b'0' + 52) as u32),
-            b'+' => Ok(62),
-            b'/' => Ok(63),
-            _ => Err(()),
+            b'A'..=b'Z' => Some((b - b'A') as u32),
+            b'a'..=b'z' => Some((b - b'a' + 26) as u32),
+            b'0'..=b'9' => Some((b - b'0' + 52) as u32),
+            b'+' => Some(62),
+            b'/' => Some(63),
+            _ => None,
         }
     }
     let bytes = s.as_bytes();
     if bytes.is_empty() {
-        return Ok(Vec::new());
+        return Some(Vec::new());
     }
-    if bytes.len() % 4 != 0 {
-        return Err(());
+    if !bytes.len().is_multiple_of(4) {
+        return None;
     }
     let mut out = Vec::with_capacity(bytes.len() / 4 * 3);
     for (i, chunk) in bytes.chunks(4).enumerate() {
         let last = i == bytes.len() / 4 - 1;
-        let pad = if last {
-            if chunk[3] == b'=' {
-                if chunk[2] == b'=' {
-                    2
-                } else {
-                    1
-                }
-            } else {
-                0
-            }
+        let pad = if last && chunk[3] == b'=' {
+            if chunk[2] == b'=' { 2 } else { 1 }
         } else {
             0
         };
         // '=' may only appear as trailing padding in the last chunk
         for (j, &c) in chunk.iter().enumerate() {
             if c == b'=' && !(last && j >= 4 - pad) {
-                return Err(());
+                return None;
             }
         }
         let v0 = val(chunk[0])?;
@@ -93,7 +85,7 @@ pub fn base64_decode(s: &str) -> Result<Vec<u8>, ()> {
             out.push(n as u8);
         }
     }
-    Ok(out)
+    Some(out)
 }
 
 /// Login rate limiter: 5 attempts/min/IP by default, 15-minute lock after 5 consecutive failures.

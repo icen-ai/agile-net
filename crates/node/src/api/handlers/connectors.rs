@@ -164,8 +164,15 @@ pub async fn list_connectors(AdminAuth(_): AdminAuth, State(state): State<ApiSta
                         .connector_manager
                         .state_of(&v.id)
                         .unwrap_or("disconnected");
+                    let ver = state
+                        .runtime
+                        .connector_manager
+                        .upstream_version_of(&v.id)
+                        .unwrap_or(0);
                     let mut value = serde_json::to_value(&v).unwrap_or_else(|_| json!({}));
                     value["state"] = json!(st);
+                    // negotiated upstream protocol version (federation P2: delegation needs >= 3)
+                    value["upstream_version"] = json!(ver);
                     value
                 })
                 .collect();

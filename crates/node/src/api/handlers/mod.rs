@@ -6,6 +6,7 @@ pub mod audit;
 pub mod auth;
 pub mod client;
 pub mod connectors;
+pub mod delegation;
 pub mod federation;
 pub mod groups;
 pub mod node;

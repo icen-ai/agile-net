@@ -62,9 +62,12 @@ function resolveServer(p, defaultPort) {
 function truthy(v) { return v === '1' || String(v).toLowerCase() === 'true'; }
 
 /* Parse a unified link. Returns:
-   { role:'connect', server, addr, account, password, fp, insecure, admin } |
+   { role:'connect', server, addr, account, password, fp, insecure, admin, delegated, label,
+     entries[], entryFps[] } |
    { role:'fanout',  server, addr, token, sni, fp, insecure } |
-   { error } */
+   { error }
+   Federation P2: connect links may carry the disaster set (entry/entryfp, comma-joined parallel
+   lists; empty = single entry) and the `d:<label>` account mark of a delegated credential. */
 function parse(url) {
   const sp = splitUrl(url);
   if (sp.error) return sp;
@@ -74,10 +77,17 @@ function parse(url) {
     if (!sv) return { error: 'missing_params' };
     if (sv.error) return sv;
     if (!p.account || !p.password) return { error: 'missing_params' };
+    const entries = String(p.entry || '').split(',').map(s => s.trim()).filter(Boolean);
+    const entryFps = String(p.entryfp || '').split(',').map(s => s.trim());
+    while (entryFps.length < entries.length) entryFps.push('');
+    const delegated = p.account.startsWith('d:');
     return {
       role: 'connect', server: sv.server, addr: sv.addr,
       account: p.account, password: p.password,
       fp: p.fp || '', insecure: truthy(p.insecure), admin: truthy(p.admin),
+      delegated, label: delegated ? p.account.slice(2) : '',
+      entries: entries.length ? entries : [sv.addr],
+      entryFps: entries.length ? entryFps : [p.fp || ''],
     };
   }
   const sv = resolveServer(p, 54430);
@@ -104,13 +114,20 @@ function serverParams(addr) {
   return [['server', m[1]], ['port', m[2] || '']];
 }
 
-/* Build a fan-in account link (anet://connect?...). */
+/* Build a fan-in account link (anet://connect?...). Pass `entries:[{addr,fp}]` (federation P2
+   disaster set, primary first) to append entry/entryfp; a single-entry set stays parameter-free. */
 function buildConnect(f) {
-  return 'anet://connect?' + qs([
+  const params = [
     ...serverParams(f.addr || f.server),
     ['account', f.account], ['password', f.password],
     ['fp', f.fp], ['insecure', !!f.insecure], ['admin', !!f.admin],
-  ]);
+  ];
+  const entries = (f.entries || []).filter(e => e && e.addr);
+  if (entries.length > 1) {
+    params.push(['entry', entries.map(e => e.addr).join(',')]);
+    params.push(['entryfp', entries.map(e => e.fp || '').join(',')]);
+  }
+  return 'anet://connect?' + qs(params);
 }
 
 /* Build a fan-out peer link (anet://fanout?...). */

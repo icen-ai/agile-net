@@ -35,6 +35,34 @@ pub struct ConnectLink {
     /// Admin link flag (admin=1: the holder can manage the node; strong warning on import)
     #[serde(default)]
     pub admin: bool,
+    /// Federation P2 disaster set: full entry list including the primary (failover order);
+    /// empty = single entry (`addr`), the pre-P2 behavior
+    #[serde(default)]
+    pub entries: Vec<String>,
+    /// Per-entry relay cert fingerprints (parallel to `entries`; "" = fall back to TOFU)
+    #[serde(default)]
+    pub entry_fps: Vec<String>,
+}
+
+impl ConnectLink {
+    /// Effective entry list (disaster set or the single primary).
+    pub fn entries(&self) -> Vec<String> {
+        if self.entries.is_empty() {
+            vec![self.addr.clone()]
+        } else {
+            self.entries.clone()
+        }
+    }
+
+    /// Whether this is a delegated credential (federation P2: account carries the `d:` mark).
+    pub fn is_delegated(&self) -> bool {
+        self.account.starts_with("d:")
+    }
+
+    /// Delegated token label (the `d:` mark stripped).
+    pub fn delegated_label(&self) -> Option<&str> {
+        self.account.strip_prefix("d:")
+    }
 }
 
 /// Parsed fan-out peer link (`anet://fanout?...`).
@@ -94,6 +122,8 @@ pub fn parse_connect_url(url: &str) -> std::result::Result<ConnectLink, String> 
     let mut fp: Option<String> = None;
     let mut insecure = false;
     let mut admin = false;
+    let mut entries: Vec<String> = Vec::new();
+    let mut entry_fps: Vec<String> = Vec::new();
     for pair in rest.split('&') {
         let mut kv = pair.splitn(2, '=');
         let (k, v) = (kv.next().unwrap_or(""), kv.next().unwrap_or(""));
@@ -106,12 +136,18 @@ pub fn parse_connect_url(url: &str) -> std::result::Result<ConnectLink, String> 
             "fp" => fp = Some(v),
             "insecure" => insecure = truthy(&v),
             "admin" => admin = truthy(&v),
+            // federation P2 disaster set: comma-separated full entry list (failover order)
+            "entry" => entries = v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
+            // parallel per-entry fingerprints (empty item = TOFU for that entry)
+            "entryfp" => entry_fps = v.split(',').map(|s| s.trim().to_string()).collect(),
             _ => {}
         }
     }
     if server.is_empty() || account.is_empty() || password.is_empty() {
         return Err("接入链接缺少必要参数 (server/account/password)".into());
     }
+    // normalize the parallel fingerprint list to the entry count (missing = TOFU)
+    entry_fps.resize(entries.len(), String::new());
     Ok(ConnectLink {
         addr: resolve_server(&server, port, DEFAULT_API_PORT),
         account,
@@ -119,6 +155,8 @@ pub fn parse_connect_url(url: &str) -> std::result::Result<ConnectLink, String> 
         pinned_fingerprint: fp,
         insecure,
         admin,
+        entries,
+        entry_fps,
     })
 }
 
@@ -242,6 +280,53 @@ pub fn build_fanout_url(
     url
 }
 
+/// Build a delegated-credential link (federation P2; contains the token plaintext, share with care).
+///
+/// Shape: `anet://connect` with the `d:<label>` account mark (import UIs show "issued by <C>"),
+/// `server`/`fp` = the primary entry, `entry`/`entryfp` = the full disaster set in failover
+/// order (per-entry relay fingerprints; an empty item falls back to TOFU). The token lives in
+/// `password` — a delegated credential is a pure data-plane key: the client dials the relay
+/// directly (no API roundtrip), so the server param always carries an explicit relay port.
+pub fn build_delegate_url(
+    primary_addr: &str,
+    label: &str,
+    token: &str,
+    entries: &[(String, String)],
+) -> String {
+    debug_assert!(
+        entries.iter().any(|(a, _)| a == primary_addr),
+        "primary entry must be part of the disaster set"
+    );
+    let server = server_query(primary_addr, DEFAULT_RELAY_PORT);
+    let primary_fp = entries
+        .iter()
+        .find(|(a, _)| a == primary_addr)
+        .map(|(_, f)| f.clone())
+        .unwrap_or_default();
+    let mut url = format!(
+        "anet://connect?{server}&account={}&password={}",
+        url_encode(&format!("d:{label}")),
+        url_encode(token),
+    );
+    if !primary_fp.is_empty() {
+        url.push_str(&format!("&fp={primary_fp}"));
+    }
+    if entries.len() > 1 {
+        let addrs = entries
+            .iter()
+            .map(|(a, _)| a.as_str())
+            .collect::<Vec<_>>()
+            .join(",");
+        let fps = entries
+            .iter()
+            .map(|(_, f)| f.as_str())
+            .collect::<Vec<_>>()
+            .join(",");
+        url.push_str(&format!("&entry={}&entryfp={}", url_encode(&addrs), url_encode(&fps)));
+    }
+    url
+}
+
 /// `server=H&port=P` query fragment for an addr (full-scheme addrs collapse to a single server param).
 fn server_query(addr: &str, default_port: u16) -> String {
     let a = addr.trim().trim_end_matches('/');
@@ -345,5 +430,47 @@ mod tests {
         let url = build_connect_url("h:1", "u", "p&=x%", None);
         let p = parse_connect_url(&url).unwrap();
         assert_eq!(p.password, "p&=x%");
+    }
+
+    #[test]
+    fn delegate_url_roundtrip_with_disaster_set() {
+        let entries = vec![
+            ("b1.example.com:54430".to_string(), "aa11".to_string()),
+            ("b2.example.com:54430".to_string(), "".to_string()),
+            ("10.0.0.3:54430".to_string(), "cc33".to_string()),
+        ];
+        let url = build_delegate_url("b1.example.com:54430", "alice-laptop", "psk_secret", &entries);
+        let p = parse_connect_url(&url).expect("parse delegate link");
+        assert!(p.is_delegated());
+        assert_eq!(p.delegated_label(), Some("alice-laptop"));
+        assert_eq!(p.addr, "b1.example.com:54430");
+        assert_eq!(p.password, "psk_secret");
+        assert_eq!(p.pinned_fingerprint.as_deref(), Some("aa11"));
+        assert_eq!(
+            p.entries(),
+            vec![
+                "b1.example.com:54430".to_string(),
+                "b2.example.com:54430".to_string(),
+                "10.0.0.3:54430".to_string()
+            ]
+        );
+        assert_eq!(p.entry_fps, vec!["aa11".to_string(), "".to_string(), "cc33".to_string()]);
+    }
+
+    #[test]
+    fn delegate_url_single_entry_omits_entry_params() {
+        let entries = vec![("b1.example.com:54430".to_string(), "aa11".to_string())];
+        let url = build_delegate_url("b1.example.com:54430", "bob", "psk_x", &entries);
+        assert!(!url.contains("entry="));
+        let p = parse_connect_url(&url).unwrap();
+        assert_eq!(p.entries(), vec!["b1.example.com:54430".to_string()]);
+    }
+
+    #[test]
+    fn plain_connect_link_has_single_entry_and_no_delegation() {
+        let p = parse_connect_url("anet://connect?server=h:1&account=u&password=p").unwrap();
+        assert!(!p.is_delegated());
+        assert_eq!(p.entries(), vec!["h:1".to_string()]);
+        assert!(p.entry_fps.is_empty());
     }
 }
