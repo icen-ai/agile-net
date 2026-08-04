@@ -352,6 +352,7 @@ impl ConnectorManager {
             tasks.push(tokio::spawn(async move {
                 let mut interval = tokio::time::interval(Duration::from_secs(2));
                 interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                let mut last_key: Option<String> = None;
                 loop {
                     interval.tick().await;
                     match c.control_offer() {
@@ -368,11 +369,14 @@ impl ConnectorManager {
                             if stale {
                                 tracing::info!(upstream = %key, api = %format!("{:?}:{}", offer.api_host, offer.api_port), "manageable upstream discovered");
                             }
-                            registry.insert(key, offer);
+                            registry.insert(key.clone(), offer);
+                            last_key = Some(key);
                         }
                         None => {
-                            if !registry.is_empty() {
-                                registry.clear();
+                            // remove only this connector's own entry — a global clear()
+                            // would wipe upstreams discovered by sibling connectors
+                            if let Some(k) = last_key.take() {
+                                registry.remove(&k);
                             }
                         }
                     }
@@ -499,6 +503,26 @@ impl ConnectorManager {
     /// Federation P2/P3: rebuild the delegation E2E key cache (call after issue/revoke).
     pub fn refresh_delegation_keys(&self) {
         self.delegation.refresh_keys(&self.db);
+    }
+
+    /// Open a stream toward a discovered manageable upstream (handshake v2): the connector
+    /// whose current control offer names this upstream dials the offered control endpoint
+    /// through the fan-out session. None = upstream not discovered / connector offline.
+    pub async fn open_manageable_stream(
+        &self,
+        upstream: &str,
+        target_addr: &str,
+        target_port: u16,
+    ) -> Option<agile_net_core::relay::MuxChannel> {
+        for h in self.handles.iter() {
+            if let Some(o) = h.connector.control_offer()
+                && o.exposed
+                && o.node_name == upstream
+            {
+                return h.connector.open_stream(target_addr, target_port).await.ok();
+            }
+        }
+        None
     }
 
     /// Federation P2: revoke a delegated token — delete locally and send the revocation frame to

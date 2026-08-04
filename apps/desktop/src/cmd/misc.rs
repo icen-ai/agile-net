@@ -83,7 +83,8 @@ pub(crate) async fn console_url(
         (Some(node_id), None) => {
             // Admin bootstrap ticket (one-time, 10 min TTL; the node side checks admin_console authorization)
             let (ticket, api_port) = state.client.console_ticket(&node_id).await.map_err(map_err)?;
-            let local_port = ensure_console_forwarder(&state, &node_id, "127.0.0.1", api_port).await?;
+            let opener = state.client.opener(&node_id).ok_or("节点未连接")?;
+            let local_port = ensure_console_forwarder(&state, &node_id, opener, "127.0.0.1", api_port).await?;
             roles::audit(
                 "admin.console_access",
                 serde_json::json!({"target": node_id, "path": "本机→客户端隧道", "identity": "管理链接"}),
@@ -99,7 +100,8 @@ pub(crate) async fn console_url(
                 .await
                 .map_err(map_err)?;
             let fwd_key = format!("{node_id}|{upstream}");
-            let local_port = ensure_console_forwarder(&state, &fwd_key, &api_host, api_port).await?;
+            let opener = state.client.opener(&node_id).ok_or("节点未连接")?;
+            let local_port = ensure_console_forwarder(&state, &fwd_key, opener, &api_host, api_port).await?;
             roles::audit(
                 "admin.console_access",
                 serde_json::json!({
@@ -112,17 +114,114 @@ pub(crate) async fn console_url(
                 "http://127.0.0.1:{local_port}/{embed}#boot={ticket}"
             ))
         }
-        (None, Some(_)) => Err("缺少端点参数".into()),
+        (None, Some(upstream)) => {
+            // Manage a fan-out upstream through the embedded server role (handshake v2 offer):
+            // ticket + control endpoint from the manageable registry, channels dialed by the connector
+            let (offer, cm) = {
+                let slot = state.server.lock().await;
+                let s = slot.as_ref().ok_or("服务端角色未运行")?;
+                let offer = s
+                    .runtime()
+                    .manageable
+                    .get(&upstream)
+                    .map(|o| o.clone())
+                    .ok_or("上游管理面未暴露（对端未开启控制面或扇出离线）")?;
+                (offer, s.connector_manager())
+            };
+            let api_host = offer.api_host.clone().unwrap_or_else(|| "127.0.0.1".into());
+            let opener: std::sync::Arc<dyn agile_net_core::tunnel::opener::ChannelOpener> =
+                std::sync::Arc::new(ServerUpstreamOpener {
+                    cm,
+                    upstream: upstream.clone(),
+                });
+            let fwd_key = format!("local|{upstream}");
+            let local_port =
+                ensure_console_forwarder(&state, &fwd_key, opener, &api_host, offer.api_port).await?;
+            roles::audit(
+                "admin.console_access",
+                serde_json::json!({
+                    "target": upstream,
+                    "path": "本机→服务端扇出→relay",
+                    "identity": format!("relay 票据（scope={}）", offer.scope),
+                }),
+            );
+            Ok(format!(
+                "http://127.0.0.1:{local_port}/{embed}#boot={}",
+                offer.ticket
+            ))
+        }
     }
 }
 
 // ==================== Console channels (manage this node) ====================
 
-/// Console loopback forwarder: local loopback port → target node tunnel → target API.
-/// Deduped by key (node_id or node_id|upstream); the caller cleans up and rebuilds after reconnect.
+/// Fan-out upstreams discovered by the embedded server role (handshake v2; sanitized: no tickets).
+#[tauri::command]
+pub(crate) async fn server_manageable(
+    state: State<'_, AppState>,
+) -> Result<Vec<serde_json::Value>, String> {
+    let slot = state.server.lock().await;
+    let Some(s) = slot.as_ref() else {
+        return Ok(Vec::new());
+    };
+    Ok(s
+        .runtime()
+        .manageable
+        .iter()
+        .map(|item| {
+            let o = item.value();
+            serde_json::json!({
+                "node_name": o.node_name,
+                "api": format!("{}:{}", o.api_host.as_deref().unwrap_or("?"), o.api_port),
+                "scope": o.scope,
+            })
+        })
+        .collect())
+}
+
+/// Fan-out upstream opener (handshake v2 manageability): channels are dialed through the
+/// embedded server's connector whose control offer names the upstream (manage this relay
+/// through the local server role's fan-out session).
+struct ServerUpstreamOpener {
+    cm: std::sync::Arc<agile_net_node::service::connectors::ConnectorManager>,
+    upstream: String,
+}
+
+impl agile_net_core::tunnel::opener::ChannelOpener for ServerUpstreamOpener {
+    fn open<'a>(
+        &'a self,
+        _node_id: &'a str,
+        target_host: &'a str,
+        target_port: u16,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = agile_net_core::error::Result<agile_net_core::tunnel::opener::BoxedChannel>,
+                > + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            let ch = self
+                .cm
+                .open_manageable_stream(&self.upstream, target_host, target_port)
+                .await
+                .ok_or_else(|| {
+                    agile_net_core::error::Error::Other(
+                        "上游管理面未暴露或扇出离线".into(),
+                    )
+                })?;
+            Ok(Box::new(ch) as agile_net_core::tunnel::opener::BoxedChannel)
+        })
+    }
+}
+
+/// Console loopback forwarder: local loopback port → opener channel → target API.
+/// Deduped by key (node_id / node_id|upstream / local|upstream); the caller cleans up and rebuilds after reconnect.
 pub(crate) async fn ensure_console_forwarder(
     state: &State<'_, AppState>,
     key: &str,
+    opener: std::sync::Arc<dyn agile_net_core::tunnel::opener::ChannelOpener>,
     target_host: &str,
     target_port: u16,
 ) -> Result<u16, String> {
@@ -130,9 +229,6 @@ pub(crate) async fn ensure_console_forwarder(
     if let Some(p) = map.get(key) {
         return Ok(*p);
     }
-    // The first segment of key is always node_id
-    let node_id = key.split('|').next().unwrap_or(key);
-    let opener = state.client.opener(node_id).ok_or("节点未连接")?;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .map_err(map_err)?;

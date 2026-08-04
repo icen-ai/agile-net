@@ -66,6 +66,7 @@ AgI18n.register({
   'views.delegated-set': { zh: '容灾 {n} 入口', en: '{n} failover entries' },
   'views.tier-dedicated': { zh: '专线', en: 'Dedicated' },
   'views.tier-split': { zh: '分流', en: 'Split' },
+  'views.admin-lup-sub': { zh: '经本机服务端扇出管理', en: 'Via local server fan-out' },
   'views.connect': { zh: '连接', en: 'Connect' },
   'views.manage': { zh: '管理', en: 'Manage' },
   'views.unsaved': { zh: '未保存', en: 'Unsaved' },

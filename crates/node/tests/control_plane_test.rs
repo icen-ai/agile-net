@@ -111,6 +111,34 @@ async fn handshake_v2_control_offer_and_manageable_discovery() {
     assert_eq!(offer.api_port, a.api_addr().port());
     assert!(offer.ticket.starts_with("adt_"));
 
+    // 1b. B dials A's control endpoint through the fan-out session (manageable stream opener,
+    // the path the desktop server-role console forwarder uses); unknown upstreams miss
+    assert!(
+        b.connector_manager()
+            .open_manageable_stream("no-such-node", "127.0.0.1", 1)
+            .await
+            .is_none()
+    );
+    let mut ch = b
+        .connector_manager()
+        .open_manageable_stream("node-root", "127.0.0.1", offer.api_port)
+        .await
+        .expect("fan-out connector should open a stream to the discovered upstream");
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    ch.write_all(b"GET /api/v1/admin/node/status HTTP/1.0\r\nHost: x\r\n\r\n")
+        .await
+        .unwrap();
+    let mut buf = vec![0u8; 256];
+    let n = tokio::time::timeout(Duration::from_secs(3), ch.read(&mut buf))
+        .await
+        .unwrap()
+        .unwrap();
+    let head = String::from_utf8_lossy(&buf[..n]);
+    assert!(
+        head.starts_with("HTTP/1.1") || head.starts_with("HTTP/1.0"),
+        "A's API answered through the fan-out session: {head}"
+    );
+
     // 2. Relay ticket exchanges on A for an admin session (rules tier: GET ok, rule write ok, group write denied)
     let http = reqwest::Client::new();
     let base_a = format!("http://{}", a.api_addr());

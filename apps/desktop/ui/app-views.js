@@ -639,6 +639,13 @@ async function refreshAdminEntry() {
   } catch (e) {}
   const nodes = window._nodes || [];
   const remotes = [];
+  // embedded server role: fan-out upstreams discovered via handshake v2 (manage the relay through this machine's fan-out)
+  try {
+    const ups = await invoke('server_manageable');
+    for (const m of (ups || [])) {
+      remotes.push({ kind: 'lup', up: m.node_name, label: m.node_name, sub: AgI18n.t('views.admin-lup-sub') });
+    }
+  } catch (e) {}
   for (const n of nodes) {
     if (n.admin_console && n.status === 'Connected') {
       remotes.push({ kind: 'node', id: n.node_id, label: n.node_name + (n.username ? ' · ' + n.username : ''), sub: n.addr });
@@ -703,6 +710,7 @@ function initAdminMode() {
     if (!it) return;
     if (it.kind === 'local') enterAdmin(null, null, it.label);
     else if (it.kind === 'node') enterAdmin(it.id, null, it.label);
+    else if (it.kind === 'lup') enterAdmin(null, it.up, it.label);
     else enterAdmin(it.id, it.up, it.label);
   });
 }

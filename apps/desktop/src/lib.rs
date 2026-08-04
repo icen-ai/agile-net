@@ -184,6 +184,7 @@ pub fn run() {
             set_web_password,
             set_web_role,
             console_url,
+            server_manageable,
             broadcast_theme,
             list_server_connectors,
             add_server_connector,
