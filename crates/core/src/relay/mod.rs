@@ -19,5 +19,5 @@ pub use listener::{
     AuthIdentity, PeerEvent, RelayListener, StaticTokenValidator, TokenValidator, build_acl_router,
     constant_time_eq,
 };
-pub use mux::{MuxChannel, MuxSession};
+pub use mux::{MuxChannel, MuxSession, SessionEvents};
 pub use transit::{FROM_PROXY, TO_LOCAL, TransitMeter, TransitPair};

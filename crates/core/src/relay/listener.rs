@@ -15,7 +15,7 @@ use crate::proto::message::{
 use crate::proxy::router::{Outbound, ProxyRouter};
 use crate::relay::acl::PeerAcl;
 use crate::relay::limit::TokenBucket;
-use crate::relay::mux::{MuxChannel, MuxSession, OpenRequest};
+use crate::relay::mux::{MuxChannel, MuxSession, OpenRequest, SessionEvents};
 use crate::relay::transit::{TO_LOCAL, TransitMeter};
 use crate::tunnel::tls::TlsConfigBuilder;
 use crate::util::sha256_hex;
@@ -672,7 +672,7 @@ impl RelayListener {
 
         let (open_tx, mut open_rx) = tokio::sync::mpsc::channel::<OpenRequest>(64);
         let (mux, reader_handle) =
-            MuxSession::start(tls_stream, 1, Some(open_tx), flow_control, limiter);
+            MuxSession::start(tls_stream, 1, SessionEvents::open(open_tx), flow_control, limiter);
 
         self.peers.insert(
             node_id.clone(),
@@ -745,7 +745,7 @@ impl RelayListener {
         let acl_router = build_acl_router(&acl);
         let (open_tx, mut open_rx) = tokio::sync::mpsc::channel::<OpenRequest>(64);
         let (mux, reader_handle) =
-            MuxSession::start(tls_stream, 1, Some(open_tx), flow_control, limiter);
+            MuxSession::start(tls_stream, 1, SessionEvents::open(open_tx), flow_control, limiter);
 
         self.clients
             .entry(account_id.clone())
@@ -995,11 +995,8 @@ impl RelayListener {
             .get(node_id)
             .ok_or_else(|| Error::NotFound(format!("peer node {node_id} not connected")))?;
 
-        let payload = serde_json::to_vec(&OpenChannel {
-            target_addr: target_addr.to_string(),
-            target_port,
-        })
-        .map_err(|e| Error::Protocol(e.to_string()))?;
+        let payload = serde_json::to_vec(&OpenChannel::new(target_addr, target_port))
+            .map_err(|e| Error::Protocol(e.to_string()))?;
 
         peer.mux.open_channel(Bytes::from(payload)).await
     }

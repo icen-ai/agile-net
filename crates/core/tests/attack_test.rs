@@ -12,7 +12,7 @@ use agile_net_core::relay::connector::RelayConnector;
 use agile_net_core::relay::listener::{
     AuthIdentity, MAX_INBOUND_OPENS_PER_SESSION, RelayListener, StaticTokenValidator, TokenValidator,
 };
-use agile_net_core::relay::mux::MuxSession;
+use agile_net_core::relay::mux::{MuxSession, SessionEvents};
 use agile_net_core::tunnel::tls::{TlsConfigBuilder, generate_self_signed};
 use arc_swap::ArcSwap;
 use bytes::Bytes;
@@ -271,7 +271,7 @@ async fn channel_hijack_dropped() -> Result<()> {
     // injecting forged Data frames into an authenticated session is hard to build over a manual TLS
     // session; verify MuxSession behavior directly instead: Data for unknown channels is dropped
     let (s1, _s2) = tokio::io::duplex(4096);
-    let (mux, _h) = MuxSession::start(s1, 1, None, false, None);
+    let (mux, _h) = MuxSession::start(s1, 1, SessionEvents::default(), false, None);
     // channel 999 is not registered; closing it must not panic
     mux.close_channel(999);
     assert_eq!(mux.channel_count(), 0);
@@ -662,13 +662,7 @@ async fn open_flood_capped() -> Result<()> {
     // flood: cap + 64 Opens all aimed at the blackhole (first 256 stall holding permits, last 64 must be refused)
     const EXTRA: usize = 64;
     let total = MAX_INBOUND_OPENS_PER_SESSION + EXTRA;
-    let open_payload = Bytes::from(
-        serde_json::to_vec(&OpenChannel {
-            target_addr: "127.0.0.1".into(),
-            target_port: bh_port,
-        })
-        .unwrap(),
-    );
+    let open_payload = Bytes::from(serde_json::to_vec(&OpenChannel::new("127.0.0.1", bh_port)).unwrap());
     for i in 0..total {
         let channel_id = (2 * i + 1) as u32;
         Frame::new(FrameType::Open, channel_id, open_payload.clone())

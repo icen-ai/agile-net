@@ -15,7 +15,7 @@ use crate::proxy::router::{Outbound, ProxyRouter};
 use crate::relay::acl::PeerAcl;
 use crate::relay::bridge::bridge;
 use crate::relay::listener::{AUTH_TIMEOUT, PeerEvent, RelayListener};
-use crate::relay::mux::{MuxChannel, MuxSession, OpenRequest};
+use crate::relay::mux::{MuxChannel, MuxSession, OpenRequest, SessionEvents};
 use crate::relay::transit::{TO_LOCAL, TransitMeter};
 use crate::tunnel::opener::ChannelOpener;
 use crate::tunnel::tls::TlsConfigBuilder;
@@ -23,7 +23,7 @@ use crate::tunnel::tls::TlsConfigBuilder;
 use bytes::Bytes;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 use std::time::Duration;
 use tokio::net::TcpStream;
 use tokio::sync::{Notify, broadcast, mpsc};
@@ -80,6 +80,8 @@ pub struct RelayConnector {
     acl: Option<Arc<PeerAcl>>,
     /// Current session mux handle (available while connected; used by control-plane diagnostics to open streams)
     current_mux: Arc<arc_swap::ArcSwapOption<MuxSession>>,
+    /// Negotiated upstream protocol version (0 = not connected / unknown; gates v3 delegation features)
+    upstream_version: Arc<AtomicU32>,
     /// Relay transit metering (meter + source label = connector name; reverse flows from upstream booked with from=this label)
     transit: Option<(Arc<TransitMeter>, String)>,
     /// Observable events such as restriction denials (subscribed by the control plane for audit)
@@ -131,6 +133,7 @@ impl RelayConnector {
             openers: None,
             acl: None,
             current_mux: Arc::new(arc_swap::ArcSwapOption::from_pointee(None)),
+            upstream_version: Arc::new(AtomicU32::new(0)),
             transit: None,
             events,
             state: Arc::new(AtomicU8::new(ConnectionState::Disconnected as u8)),
@@ -203,11 +206,8 @@ impl RelayConnector {
         let mux = self
             .current_mux()
             .ok_or_else(|| Error::NotFound("connector not connected".into()))?;
-        let payload = serde_json::to_vec(&OpenChannel {
-            target_addr: target_addr.to_string(),
-            target_port,
-        })
-        .map_err(|e| Error::Protocol(e.to_string()))?;
+        let payload = serde_json::to_vec(&OpenChannel::new(target_addr, target_port))
+            .map_err(|e| Error::Protocol(e.to_string()))?;
         mux.open_channel(Bytes::from(payload)).await
     }
 
@@ -241,6 +241,13 @@ impl RelayConnector {
 
     pub fn is_connected(&self) -> bool {
         self.state() == ConnectionState::Connected
+    }
+
+    /// Negotiated upstream protocol version of the current session (0 = not connected / unknown).
+    /// Federation P2 delegation features (Ctrl-frame token register/revoke) require
+    /// `>= PROTOCOL_VERSION_DELEGATION` — the issuer must stay silent towards older upstreams.
+    pub fn upstream_version(&self) -> u32 {
+        self.upstream_version.load(Ordering::Relaxed)
     }
 
     /// Single connection: TLS handshake + auth + spawn the session maintenance task.
@@ -350,6 +357,8 @@ impl RelayConnector {
 
         // flow control negotiation: enable per-channel window flow control when both sides are >= v2
         let flow_control = server_version >= PROTOCOL_VERSION_FLOW_CONTROL;
+        // publish the negotiated version (gates v3 delegation: Ctrl-frame token register/revoke)
+        self.upstream_version.store(server_version, Ordering::Relaxed);
         debug!(
             server_version,
             flow_control, "mux session flow control negotiated"
@@ -357,7 +366,13 @@ impl RelayConnector {
 
         let (open_tx, mut open_rx) = mpsc::channel::<OpenRequest>(64);
         // no session rate limiting on the connector side (limits are injected by the listener per identity)
-        let (mux, reader_handle) = MuxSession::start(tls_stream, 2, Some(open_tx), flow_control, None);
+        let (mux, reader_handle) = MuxSession::start(
+            tls_stream,
+            2,
+            SessionEvents::open(open_tx),
+            flow_control,
+            None,
+        );
 
         // background maintenance loop: heartbeat (with jitter), idle timeout detection, Open channel requests
         let shutdown_notify = self.shutdown_notify.clone();
@@ -372,6 +387,7 @@ impl RelayConnector {
         let peer_label = self.upstream_addr.to_string();
         let mux_task = mux.clone();
         let current_mux = self.current_mux.clone();
+        let upstream_version = self.upstream_version.clone();
 
         tokio::spawn(async move {
             let mut ping_timeout = next_ping_delay();
@@ -432,6 +448,7 @@ impl RelayConnector {
             {
                 current_mux.store(None);
             }
+            upstream_version.store(0, Ordering::Relaxed);
             state.store(ConnectionState::Disconnected as u8, Ordering::Relaxed);
         });
 

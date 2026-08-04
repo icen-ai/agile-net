@@ -9,7 +9,7 @@
 //! assert lower bound 2.8s (tolerates CI scheduling jitter), upper bound 15s (anti-hang).
 
 use agile_net_core::relay::limit::TokenBucket;
-use agile_net_core::relay::mux::MuxSession;
+use agile_net_core::relay::mux::{MuxSession, SessionEvents};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -29,8 +29,8 @@ async fn mux_pair(
     let connect = tokio::spawn(async move { tokio::net::TcpStream::connect(addr).await.unwrap() });
     let (server, _) = listener.accept().await.unwrap();
     let client = connect.await.unwrap();
-    let (a, _h1) = MuxSession::start(client, 1, None, false, limiter_a);
-    let (b, _h2) = MuxSession::start(server, 2, None, false, limiter_b);
+    let (a, _h1) = MuxSession::start(client, 1, SessionEvents::default(), false, limiter_a);
+    let (b, _h2) = MuxSession::start(server, 2, SessionEvents::default(), false, limiter_b);
     (a, b)
 }
 

@@ -4,7 +4,7 @@
 //! - a slow reader stalls only its own channel, no head-of-line blocking for others
 //! - v1 fallback mode (no flow control) behavior unchanged
 
-use agile_net_core::relay::mux::{CHANNEL_WINDOW, MuxSession};
+use agile_net_core::relay::mux::{CHANNEL_WINDOW, MuxSession, SessionEvents};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -15,8 +15,8 @@ async fn mux_pair(flow_control: bool) -> (Arc<MuxSession>, Arc<MuxSession>) {
     let connect = tokio::spawn(async move { tokio::net::TcpStream::connect(addr).await.unwrap() });
     let (server, _) = listener.accept().await.unwrap();
     let client = connect.await.unwrap();
-    let (a, _h1) = MuxSession::start(client, 1, None, flow_control, None);
-    let (b, _h2) = MuxSession::start(server, 2, None, flow_control, None);
+    let (a, _h1) = MuxSession::start(client, 1, SessionEvents::default(), flow_control, None);
+    let (b, _h2) = MuxSession::start(server, 2, SessionEvents::default(), flow_control, None);
     (a, b)
 }
 

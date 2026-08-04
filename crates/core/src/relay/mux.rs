@@ -260,6 +260,36 @@ pub struct OpenRequest {
     pub payload: Bytes,
 }
 
+/// Inbound session-level event channels (control plane).
+///
+/// `open_tx` receives peer-initiated Open requests (data plane entry); `ctrl_tx` receives raw
+/// Ctrl frame payloads (protocol v3 session control plane, JSON — decoded by the upper layer).
+/// Both are optional: a pure client endpoint typically subscribes to neither, a relay/connector
+/// subscribes to Open, and federation-aware endpoints additionally subscribe to Ctrl.
+#[derive(Default)]
+pub struct SessionEvents {
+    pub open_tx: Option<mpsc::Sender<OpenRequest>>,
+    pub ctrl_tx: Option<mpsc::Sender<Bytes>>,
+}
+
+impl SessionEvents {
+    /// Subscribe to Open requests only.
+    pub fn open(tx: mpsc::Sender<OpenRequest>) -> Self {
+        Self {
+            open_tx: Some(tx),
+            ctrl_tx: None,
+        }
+    }
+
+    /// Subscribe to both Open requests and Ctrl frames.
+    pub fn open_and_ctrl(open: mpsc::Sender<OpenRequest>, ctrl: mpsc::Sender<Bytes>) -> Self {
+        Self {
+            open_tx: Some(open),
+            ctrl_tx: Some(ctrl),
+        }
+    }
+}
+
 /// Channel registry entry
 struct ChannelEntry {
     data_tx: mpsc::Sender<Bytes>,
@@ -287,13 +317,14 @@ pub struct MuxSession {
 impl MuxSession {
     /// Start a mux session: split the stream and spawn the background read/write tasks.
     ///
+    /// `events`: inbound event subscriptions (Open requests / v3 Ctrl frames), see `SessionEvents`.
     /// `flow_control`: enable per-channel window flow control (requires a protocol v2 peer).
     /// `limiter`: session-level bandwidth token bucket (shared by both directions, None = unlimited);
     /// pure data-plane throttling, no frame format change, fully compatible with old peers (see relay::limit module docs).
     pub fn start<S>(
         stream: S,
         starting_id: u32,
-        open_tx: Option<mpsc::Sender<OpenRequest>>,
+        events: SessionEvents,
         flow_control: bool,
         limiter: Option<Arc<TokenBucket>>,
     ) -> (Arc<Self>, tokio::task::JoinHandle<()>)
@@ -302,6 +333,7 @@ impl MuxSession {
     {
         let (mut reader, mut writer) = tokio::io::split(stream);
         let (tx_frames, mut rx_frames) = mpsc::channel::<Frame>(1024);
+        let SessionEvents { open_tx, ctrl_tx } = events;
 
         let channels: Arc<DashMap<u32, ChannelEntry>> = Arc::new(DashMap::new());
         let open_waiters: Arc<DashMap<u32, oneshot::Sender<Result<()>>>> = Arc::new(DashMap::new());
@@ -397,6 +429,12 @@ impl MuxSession {
                                     payload: frame.payload,
                                 })
                                 .await;
+                        }
+                    }
+                    FrameType::Ctrl => {
+                        // v3 session control plane: raw JSON payload handed to the upper layer
+                        if let Some(ref tx) = ctrl_tx {
+                            let _ = tx.send(frame.payload).await;
                         }
                     }
                     FrameType::Ping => {

@@ -173,11 +173,8 @@ pub struct BandwidthSample {
 
 /// Open a bandwidth-diagnostic stream to the peer (target = reserved address).
 pub async fn open_stream(mux: &MuxSession) -> Result<MuxChannel> {
-    let payload = serde_json::to_vec(&OpenChannel {
-        target_addr: MAGIC_HOST.to_string(),
-        target_port: 0,
-    })
-    .map_err(|e| Error::Protocol(e.to_string()))?;
+    let payload = serde_json::to_vec(&OpenChannel::new(MAGIC_HOST, 0))
+        .map_err(|e| Error::Protocol(e.to_string()))?;
     mux.open_channel(Bytes::from(payload)).await
 }
 

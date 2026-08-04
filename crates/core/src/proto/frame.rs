@@ -42,6 +42,9 @@ pub enum FrameType {
     Ping = 0x30,
     Pong = 0x31,
     Close = 0x40,
+    /// Session control plane (protocol v3): JSON payload on channel 0, e.g. delegated-token
+    /// register/revoke (federation P2). Unknown to v1/v2 peers — never sent to them.
+    Ctrl = 0x04,
 }
 
 impl FrameType {
@@ -59,6 +62,7 @@ impl FrameType {
             0x30 => Some(Self::Ping),
             0x31 => Some(Self::Pong),
             0x40 => Some(Self::Close),
+            0x04 => Some(Self::Ctrl),
             _ => None,
         }
     }

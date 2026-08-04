@@ -175,7 +175,13 @@ impl ClientTunnel {
         // the client is the only side issuing Open on this session; use even channel_ids
         let flow_control = server_version >= PROTOCOL_VERSION_FLOW_CONTROL;
         // no session rate limit on the client side (if limited, the peer listener's injected bucket back-pressures at ingress)
-        let (mux, reader_handle) = MuxSession::start(tls_stream, 2, None, flow_control, None);
+        let (mux, reader_handle) = MuxSession::start(
+            tls_stream,
+            2,
+            crate::relay::mux::SessionEvents::default(),
+            flow_control,
+            None,
+        );
 
         // session maintenance task: heartbeat (with jitter) + idle timeout detection
         let shutdown_notify = self.shutdown_notify.clone();
@@ -238,11 +244,8 @@ impl ClientTunnel {
         }
         .ok_or_else(|| Error::Other("tunnel not connected".into()))?;
 
-        let payload = serde_json::to_vec(&OpenChannel {
-            target_addr: target_host.to_string(),
-            target_port,
-        })
-        .map_err(|e| Error::Protocol(e.to_string()))?;
+        let payload = serde_json::to_vec(&OpenChannel::new(target_host, target_port))
+            .map_err(|e| Error::Protocol(e.to_string()))?;
 
         session.open_channel(Bytes::from(payload)).await
     }

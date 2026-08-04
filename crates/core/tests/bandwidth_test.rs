@@ -14,7 +14,7 @@ use agile_net_core::relay::bandwidth::{
     self, MAGIC_HOST, MODE_ECHO, MODE_SINK, MODE_SOURCE,
 };
 use agile_net_core::relay::listener::{AuthIdentity, TokenValidator};
-use agile_net_core::relay::mux::MuxSession;
+use agile_net_core::relay::mux::{MuxSession, SessionEvents};
 use agile_net_core::relay::{PeerAcl, PeerEvent, RelayConnector, RelayListener, constant_time_eq};
 use agile_net_core::tunnel::tls::TlsConfigBuilder;
 use bytes::Bytes;
@@ -95,7 +95,7 @@ async fn connect_raw_peer(relay_addr: SocketAddr, node_id: &str, token: &str) ->
         server_version = v["version"].as_u64().unwrap_or(1) as u32;
     }
     let flow_control = server_version >= PROTOCOL_VERSION_FLOW_CONTROL;
-    let (mux, _reader) = MuxSession::start(tls, 2, None, flow_control, None);
+    let (mux, _reader) = MuxSession::start(tls, 2, SessionEvents::default(), flow_control, None);
     mux
 }
 
@@ -221,11 +221,7 @@ async fn bandwidth_listener_side_serves_before_acl() {
     }
 
     // ACL decisions unaffected: a normal missing target from the fan-in peer still OpenFails
-    let payload = serde_json::to_vec(&agile_net_core::proto::message::OpenChannel {
-        target_addr: "8.8.8.8".to_string(),
-        target_port: 443,
-    })
-    .unwrap();
+    let payload = serde_json::to_vec(&agile_net_core::proto::message::OpenChannel::new("8.8.8.8", 443)).unwrap();
     let denied = mux.open_channel(Bytes::from(payload)).await;
     assert!(denied.is_err(), "non-magic target must still be denied by ACL");
 }
