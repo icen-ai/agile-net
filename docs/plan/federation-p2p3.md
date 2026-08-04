@@ -20,11 +20,19 @@
 - 被否方案：自包含签名令牌 + TTL + 吊销列表（B 可离线验签，但吊销传播与密钥轮换复杂度显著上升）；
   完整迷你 CA（身份最强，但引入密钥仪式与证书生命周期管理，与 relay token 信任根重复）。
 
-### 1.2 P2 多上游入口：**v1 单入口选择**（推荐）
+### 1.2 P2 多上游入口：**容灾集合 + 主入口（v1 正式范围）**
 
-- M 多宿主扇出 B1/B2/B3 时，签发对话框按**扇出会话勾选注册目标**（默认全部在线上游，可单选）；
-  一条链接一个入口（入口地址 = 该扇出会话的 upstream 地址）。多入口容灾由「发多条链接」解决。
-- 多入口链接（入口列表 + 客户端测速选路）留作延伸项，链接格式已为其预留扩展位（§2.6）。
+- M 多宿主扇出 B1/B2/B3 时，签发对话框两层选择：**注册目标多选（容灾集合，默认全选在线上游）**
+  + **主入口单选**（链接首连地址；其余为容灾备援，按 C 侧扇出会话延迟/优先级排序）。
+- **容灾集合语义**：委托令牌逐 B 注册（各 B 会话级注册表独立）；吊销逐 B 发送；
+  C 与某 B 断线 → 该 B 注册自动失效——集合语义与会话级生命周期自洽，零跨 B 对账。
+- **信任含义（签发 UI 明示）**：透明档下容灾集合 = 「让谁看见流量」的集合（任一活 B 可见）；
+  E2E 档下集合仅是可用性/成本决策（B 只见 hint）。
+- **容灾是重连级**：B 离线 → 隧道断开 → 客户端按入口列表故障切换，在飞 TCP 连接断开由应用层
+  重试（与一切 VPN 行为一致；不同 B 不同 IP，TCP 级无缝迁移不可能）。
+- **E2E 与入口无关**：密钥 = HKDF(令牌明文)，漫游换 B 不换密钥，C 照解——HKDF 方案天然容灾就绪。
+- 被否/延期方案：v1 只单入口（被用户场景否决：主入口离线应可漫游活节点）；
+  TCP 级无缝漫游（物理不可能，不立项）。
 
 ### 1.3 P3 E2E 密钥：**HKDF(令牌明文) PSK，零握手**（推荐）
 
@@ -60,10 +68,13 @@
 
 - C 生成 `psk_` + 48 位（与本地 relay token 同熵）；明文仅进链接，C 库存哈希：
   **表 `delegated_token`（DB v10）**：`id, token_hash UNIQUE, token_prefix, label, groups (JSON 组名数组),
-  hint_map (JSON), connector_id→connector, created_at`。
-- **自动重注册**：connector 每次（重）连成功（AuthOk v3+）后，把该 connector 名下的全部
-  `delegated_token` 逐条重发 `token_register`——B 侧无状态，重连即恢复，无需对账。
-- 吊销：C 删除本地记录并（若在线）发 `token_revoke`；上游断线天然吊销。
+  hint_map (JSON), created_at`；
+  **表 `delegated_token_reg`**：容灾集合逐上游一行（`token_id→delegated_token, connector_id→connector,
+  is_primary`），主入口一行 `is_primary=1`。
+- **自动重注册**：connector 每次（重）连成功（AuthOk v3+）后，把**该 connector 名下**的全部
+  `delegated_token` 逐条重发 `token_register`——B 侧无状态，重连即恢复，无需对账；
+  容灾集合内各上游独立注册、独立失效。
+- 吊销：C 删除本地记录并向集合内**每个在线上游**发 `token_revoke`；上游断线天然吊销（仅该上游）。
 - hint_map 语义：**路由词表**——B 只拿 hint（粗规则），A 的真实目标经 E2E blob 或透明档组规则到达；
   透明档令牌的 hint_map 由 C 从所引用组的上送规则自动生成（与 B 代执法词表一致）；
   E2E 令牌的 hint_map 由 C 管理员（或签发 UI 默认）选粗规则，细规则 R1 可以只存 C 本地（§4.3）。
@@ -90,27 +101,33 @@
 
 ### 2.5 签发 UI（共享管理端 SPA，双端自动获得）
 
-- 扇出页新增「签发委托」页签：签发表单（选上游会话多选 → 选本地组多选 → 备注 → 生成）→
-  复用 P1 分享卡片（链接入口 = 所选上游地址；多上游时每上游一张卡片/一条链接）；
-  列表（label / 组 / 上游 / 注册状态 / 创建时间 / 吊销按钮）。
-- API（C）：`GET/POST /api/v1/admin/delegation/tokens`、`DELETE .../:id`（+ 在线状态于响应内）；
+- 扇出页新增「签发委托」页签：签发表单（**注册目标多选** = 容灾集合（默认全选在线上游）→
+  **主入口单选**（默认集合第一个）→ 选本地组多选 → 备注 → 生成）→
+  复用 P1 分享卡片（链接入口 = 主入口地址，`entry=` 携带容灾集合全量地址与逐入口指纹）；
+  列表（label / 组 / 容灾集合（主入口徽标 + 各 B 在线状态）/ 创建时间 / 吊销按钮）。
+- 信任含义明示：透明档集合 = 流量可见集合；E2E 档集合 = 可用性集合（签发卡片 ahelp 固定文案）。
+- API（C）：`GET/POST /api/v1/admin/delegation/tokens`、`DELETE .../:id`（响应携带逐上游注册状态）；
   审计事件 `delegation.issue` / `delegation.revoke` / `delegation.register(上游回执失败)`。
 - 桌面端：嵌入式控制台 iframe 自动获得；扇出页「企业联邦对接」条目文案更新为签发委托入口。
 
-### 2.6 链接格式扩展
+### 2.6 链接格式扩展（多入口容灾）
 
-- 委托链接沿用 `anet://connect`（账号语义 = 客户端接入），`server` = 上游地址，
-  `account` = `d:<label>`（委托标记，导入 UI 显示「由 <C> 签发」），`password` = psk_ 令牌；
-  `fp` = **上游**证书指纹（注册回执携带上游指纹，C 转发进链接）；
-  预留 `entry=B1,B2` 参数位（多入口链接延伸项，v1 不产出）。
-- 解析无需变更（aglink.js / core::link 已兼容未知参数）。
+- 委托链接沿用 `anet://connect`（账号语义 = 客户端接入），`password` = psk_ 令牌，
+  `account` = `d:<label>`（委托标记，导入 UI 显示「由 <C> 签发」）；
+- `server` + `fp` = **主入口**地址与 relay 证书指纹（与 P1 链接同构）；
+- `entry` = 逗号分隔的 `host:port` 全量入口列表（含主入口，容灾顺序即优先级）；
+- `entryfp` = 与 `entry` 平行的逐入口 relay 指纹列表（C 签发时本就钉着每个 B 的指纹，
+  全部内嵌；单项可空 = 该入口回退 TOFU 并随凭据持久化）；
+- 解析扩展（aglink.js / core::link 同步）：`entry/entryfp` 新参数（旧解析器忽略未知参数，
+  旧客户端打开多入口链接 = 只用主入口，优雅降级）。
 
 ### 2.7 P2 验收（端到端测试）
 
-`federation_p2_test.rs`：C 签发委托令牌（git 组）→ 注册到 B → 链接发 A →
-A 以 kind=Client 认证 B（委托注册表命中）→ ACL = C 的 git 组规则 →
-B 路由至 C（Open 带 groups）→ C 按本地 git 组放行；
-C 吊销 → B 注册表清除 + A 会话即断；C 断线 → 委托自动失效、重连自动重注册恢复。
+`federation_p2_test.rs`：C 签发委托令牌（git 组，容灾集合 = B1/B2 双注册）→ 链接发 A →
+A 以 kind=Client 认证 B1（委托注册表命中）→ ACL = C 的 git 组规则 →
+B1 路由至 C（Open 带 groups）→ C 按本地 git 组放行；
+**容灾**：B1 停掉 → A 按 entry 列表切换 B2 → 同样认证成功、路由至 C；
+C 吊销 → B1/B2 注册表同时清除 + A 会话即断；C 断线 → 委托自动失效、重连自动重注册恢复。
 
 ---
 
@@ -125,10 +142,16 @@ CREATE TABLE delegated_token (
     label        TEXT NOT NULL DEFAULT '',
     groups       TEXT NOT NULL DEFAULT '[]',   -- JSON 组名数组（C 本地组名）
     hint_map     TEXT NOT NULL DEFAULT '[]',   -- JSON [{hint, groups}]（E2E 路由词表）
-    connector_id TEXT NOT NULL REFERENCES connector(id) ON DELETE CASCADE,
     created_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
-CREATE INDEX idx_delegated_token_conn ON delegated_token(connector_id);
+
+-- 容灾集合：逐上游注册一行（主入口 is_primary=1；随扇出会话自动重注册）
+CREATE TABLE delegated_token_reg (
+    token_id     TEXT NOT NULL REFERENCES delegated_token(id) ON DELETE CASCADE,
+    connector_id TEXT NOT NULL REFERENCES connector(id) ON DELETE CASCADE,
+    is_primary   INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (token_id, connector_id)
+);
 
 -- E2E 强制标记（federation P3：按权限组；不可挂本地账号/relay token/connector）
 ALTER TABLE "group" ADD COLUMN e2e_required INTEGER NOT NULL DEFAULT 0;
@@ -158,10 +181,14 @@ ALTER TABLE "group" ADD COLUMN e2e_required INTEGER NOT NULL DEFAULT 0;
 - C 侧 e2e 解包后：按 blob.groups 的**本地组规则全集**（含 R1）执法 → 连接 R1。
 - B 全程无感知：授权集合（blob 内）与目标（blob 内）都不可见。
 
-### 4.4 客户端改造
+### 4.4 客户端改造（多入口容灾 + E2E 包装）
 
 - 委托链接导入即标记委托凭据（`account` 前缀 `d:`）；配置下发携带 e2e_required 组词表
   （B 转发 C 的组标记）与 hint 词表。
+- **入口候选列表**：凭据保存 `entry/entryfp`（无 entry 参数 = 单入口，现状兼容）；
+  首连 = 主入口；隧道断开 → 按 entry 顺序故障切换（逐入口指数回退 + full jitter，
+  切换事件上报日志/灵动岛；全部失败回主入口重试循环）。
+- 逐入口指纹钉值：`entryfp` 平行列表；缺项 TOFU 并随凭据持久化（与 P1 钉值语义一致）。
 - opener 对命中 e2e_required 的目标走 §4.1 包装；密钥 = HKDF(凭据密码)。
 - 非委托凭据 / 非 e2e 目标：零行为变化。
 
@@ -185,19 +212,20 @@ ALTER TABLE "group" ADD COLUMN e2e_required INTEGER NOT NULL DEFAULT 0;
 ## 6. 实施切片（顺序；1–5 = 完整 P2，可独立交付）
 
 1. 协议 v3：Ctrl 帧 + OpenChannel 扩展 + 版本协商（core；兼容矩阵测试）
-2. C 侧：delegated_token 表（v10）+ 签发/吊销/重注册（db + connectors 钩子）
+2. C 侧：delegated_token + delegated_token_reg 表（v10）+ 签发/吊销/容灾集合重注册（db + connectors 钩子）
 3. B 侧：委托注册表 + validate 扩展 + hint 校验 + 会话踢出（listener + relay_auth）
 4. 会话组标识：OpenChannel.groups 传递 + C 侧 per-open 组执法（core connector）
-5. 签发 UI：管理端扇出页「签发委托」页签 + API + 分享卡片复用（含桌面 iframe 自动获得）
-6. E2E 编解码与转发：relay::e2e + B 盲转 + C 解包执法 + 客户端包装（core + client）
-7. e2e_required 组标记全链：组 DB/UI + 上送传播 + 四入口校验 + 客户端词表
-8. 环合收尾：同身份踢旧 + 同 B 多连接身份后缀 + 审计
-9. 验收：federation_p2_test.rs / federation_p3_test.rs + 全量回归
-10. 文档：docs/todo/federation.md 状态、AGENTS.md、docs/api、wiki 双语
+5. 签发 UI：管理端扇出页「签发委托」页签（容灾集合多选 + 主入口单选）+ API + 分享卡片复用（含桌面 iframe 自动获得）
+6. 链接与客户端容灾：`entry/entryfp` 解析（aglink.js + core::link）+ 凭据候选列表 + 故障切换（client）
+7. E2E 编解码与转发：relay::e2e + B 盲转 + C 解包执法 + 客户端包装（core + client）
+8. e2e_required 组标记全链：组 DB/UI + 上送传播 + 四入口校验 + 客户端词表
+9. 环合收尾：同身份踢旧 + 同 B 多连接身份后缀 + 审计
+10. 验收：federation_p2_test.rs（含容灾切换）/ federation_p3_test.rs + 全量回归
+11. 文档：docs/todo/federation.md 状态、AGENTS.md、docs/api、wiki 双语
 
 ## 7. 非目标（本期）
 
-- 多入口链接（entry 列表 + 客户端选路）——链接格式已预留；
+- TCP 级无缝漫游（物理不可能；容灾 = 重连级故障切换，见 §1.2）；
 - Noise_NK 前向安全性握手（P3.5，§8）；
 - B-local 账号的 E2E（无语义：B 即终点）；
 - NAT 穿透（原 P4，仍为非必需）。
