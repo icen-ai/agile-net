@@ -797,6 +797,16 @@ async fn relay_tokens_lifecycle() {
     assert!(full_token.starts_with("psk_"));
     let token_id = body["data"]["id"].as_str().unwrap().to_string();
 
+    // Federation P1 share link: anet://fanout, parses back to the same token; endpoint candidates present
+    let share_url = body["data"]["share_url"].as_str().expect("share_url");
+    assert!(share_url.starts_with("anet://fanout?"), "share_url: {share_url}");
+    let parsed = agile_net_core::link::parse_fanout_url(share_url).expect("share_url parses");
+    assert_eq!(parsed.token, full_token);
+    assert!(
+        !body["data"]["endpoints"].as_array().unwrap().is_empty(),
+        "endpoints should never be empty (loopback fallback)"
+    );
+
     // List shows prefix only
     let (status, body) = req(
         &app,
