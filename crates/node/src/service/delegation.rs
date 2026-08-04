@@ -142,16 +142,24 @@ struct GroupEntry {
     e2e_required: bool,
 }
 
+/// One issued token in the E2E key cache.
+struct KeyEntry {
+    key: [u8; 32],
+    /// Local group names the token may use (empty-sealed blobs inherit this set — a consumer
+    /// client knows no group names and seals "all groups of my token")
+    groups: Vec<String>,
+}
+
 /// In-memory delegation enforcement engine (federation P2/P3, issuer side).
 ///
 /// Two hot-swappable caches, rebuilt from the DB on every relevant change (issue/revoke,
 /// group/rule edit) — the data plane never touches the database on the Open hot path:
-/// - `keys`: kid -> E2E master key of every issued delegated token (E2E unwrap);
+/// - `keys`: kid -> E2E master key + group set of every issued delegated token (E2E unwrap);
 /// - `groups`: local group name -> compiled rules + e2e_required flag (per-open enforcement
 ///   and the fail-close check).
 #[derive(Default)]
 pub struct DelegationEngine {
-    keys: arc_swap::ArcSwap<std::collections::HashMap<String, [u8; 32]>>,
+    keys: arc_swap::ArcSwap<std::collections::HashMap<String, KeyEntry>>,
     groups: arc_swap::ArcSwap<std::collections::HashMap<String, std::sync::Arc<GroupEntry>>>,
 }
 
@@ -167,9 +175,15 @@ impl DelegationEngine {
         for rec in db.list_delegated_tokens().unwrap_or_default() {
             match e2e_key_of(db, &rec) {
                 Ok(key) => {
+                    // resolve the token's group IDs to names once (empty-sealed blobs inherit them)
+                    let group_ids: Vec<String> = serde_json::from_str(&rec.groups).unwrap_or_default();
+                    let groups = group_ids
+                        .iter()
+                        .filter_map(|gid| db.get_group(gid).ok().flatten().map(|g| g.name))
+                        .collect();
                     map.insert(
                         agile_net_core::relay::e2e::kid_of(&rec.token_hash).to_string(),
-                        key,
+                        KeyEntry { key, groups },
                     );
                 }
                 Err(e) => {
@@ -235,10 +249,15 @@ impl agile_net_core::relay::DelegationHooks for DelegationEngine {
         )>,
     > {
         let cache = self.keys.load();
-        let Some(key) = cache.get(&e2e.kid) else {
+        let Some(entry) = cache.get(&e2e.kid) else {
             return Ok(None); // transit role: not our token
         };
-        let (payload, cipher) = agile_net_core::relay::e2e::open_open(key, e2e)?;
+        let (mut payload, cipher) = agile_net_core::relay::e2e::open_open(&entry.key, e2e)?;
+        // an empty sealed group set means "all groups of my token" — the consumer client
+        // knows no group names; inherit the token's set for local enforcement
+        if payload.groups.is_empty() {
+            payload.groups = entry.groups.clone();
+        }
         Ok(Some((payload, cipher)))
     }
 }

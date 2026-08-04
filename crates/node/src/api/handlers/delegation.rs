@@ -227,7 +227,12 @@ fn build_share_url(
         .first()
         .map(|(a, _)| a.clone())
         .unwrap_or_else(|| "127.0.0.1:54430".to_string());
-    agile_net_core::link::build_delegate_url(&primary, &rec.label, plaintext, &entries)
+    // federation P3: the first hint of the map rides the link — the consumer client seals
+    // every Open into an E2E envelope when it is present (transparent tier when absent)
+    let hint_map: Vec<agile_net_core::proto::message::HintEntry> =
+        serde_json::from_str(&rec.hint_map).unwrap_or_default();
+    let ehint = hint_map.first().map(|h| h.hint.as_str());
+    agile_net_core::link::build_delegate_url(&primary, &rec.label, plaintext, &entries, ehint)
 }
 
 /// Render one token for the API (group names resolved, per-upstream state folded in).

@@ -884,9 +884,14 @@ function renderCredList(creds, statusMap) {
       ? '<button class="ghost small" data-act="disconnect" data-key="' + esc(key) + '">' + AgI18n.t('views.disconnect') + '</button>'
       : '<button class="small" data-act="reconnect" data-key="' + esc(key) + '">' + AgI18n.t(st ? 'views.reconnect' : 'views.connect') + '</button>';
     const epName = key.includes('@') ? key.slice(0, key.indexOf('@')) : key;
+    // federation P2: delegated credentials badged; the live failover entry shown when connected
+    const delegBadge = c.delegated ? ' <span class="badge b-info">' + AgI18n.t('views.delegated-badge') + '</span>' : '';
+    const addrLine = (c.delegated && n && n.current_entry && st === 'Connected')
+      ? esc(n.current_entry) + ' · <span class="dim">' + AgI18n.t('views.delegated-set', { n: (c.entries || []).length || 1 }) + '</span>'
+      : esc(c.addr);
     return '<div class="node-card' + (live(st) ? '' : ' down') + '"><div class="info">' +
-      '<div class="name">' + esc(epName) + ' <span class="dim">· ' + esc(c.username) + '</span> ' + badge + '</div>' +
-      '<div class="addr mono">' + esc(c.addr) + (c.insecure ? ' · <span class="badge b-warn">insecure</span>' : '') + '</div>' +
+      '<div class="name">' + esc(epName) + ' <span class="dim">· ' + esc(c.username) + '</span> ' + badge + delegBadge + '</div>' +
+      '<div class="addr mono">' + addrLine + (c.insecure ? ' · <span class="badge b-warn">insecure</span>' : '') + '</div>' +
       '</div><div class="card-actions">' +
       (n && n.admin_console && st === 'Connected' && !HTTP_MODE
         ? '<button class="ghost small" data-act="console" data-id="' + esc(key) + '">' + AgIcon('monitor', 13) + ' ' + AgI18n.t('views.manage') + '</button>' : '') +
@@ -912,6 +917,8 @@ async function reconnectSaved(key, btn) {
     addr: c.addr, username: c.username, password: c.password,
     insecure: c.insecure, pinned_cert_path: null, pinned_fingerprint: c.pinned_fingerprint || null,
     manage_hosts: false, save_credential: true,
+    // federation P2/P3: keep the delegated fields on reconnect (failover set, E2E hint)
+    delegated: !!c.delegated, entries: c.entries || [], entry_fps: c.entry_fps || [], ehint: c.ehint || null,
   }, btn || null);
 }
 async function exportCred(key) {

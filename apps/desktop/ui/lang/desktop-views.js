@@ -62,6 +62,8 @@ AgI18n.register({
   // ---- fan-in list (saved credentials + unsaved live connections) ----
   'views.disconnect': { zh: '断开', en: 'Disconnect' },
   'views.reconnect': { zh: '重连', en: 'Reconnect' },
+  'views.delegated-badge': { zh: '委托', en: 'Delegated' },
+  'views.delegated-set': { zh: '容灾 {n} 入口', en: '{n} failover entries' },
   'views.connect': { zh: '连接', en: 'Connect' },
   'views.manage': { zh: '管理', en: 'Manage' },
   'views.unsaved': { zh: '未保存', en: 'Unsaved' },

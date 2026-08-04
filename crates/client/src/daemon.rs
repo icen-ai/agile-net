@@ -70,6 +70,10 @@ pub async fn run(config_path: &str) -> Result<()> {
             pinned_cert_path: node.pinned_cert_path.clone(),
             pinned_fingerprint: node.pinned_fingerprint.clone(),
             manage_hosts: config.manage_hosts,
+            delegated: false,
+            entries: Vec::new(),
+            entry_fps: Vec::new(),
+            ehint: None,
         };
         match client.connect(params).await {
             Ok(state) => {

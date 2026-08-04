@@ -21,6 +21,19 @@ pub struct Credential {
     pub insecure: bool,
     #[serde(default)]
     pub pinned_fingerprint: Option<String>,
+    /// Federation P2: delegated credential mark (`d:` account prefix in the link) — pure
+    /// data-plane key, dials the relay directly without any API roundtrip
+    #[serde(default)]
+    pub delegated: bool,
+    /// Disaster-set entry list (failover order; empty = single entry `addr`)
+    #[serde(default)]
+    pub entries: Vec<String>,
+    /// Per-entry relay cert fingerprints (parallel to `entries`; "" = TOFU)
+    #[serde(default)]
+    pub entry_fps: Vec<String>,
+    /// Federation P3: E2E routing hint (every Open is sealed when set)
+    #[serde(default)]
+    pub ehint: Option<String>,
 }
 
 /// Service name in the OS keyring (shared by Windows Credential Manager / macOS Keychain).
@@ -240,6 +253,10 @@ mod tests {
             password: password.into(),
             insecure: false,
             pinned_fingerprint: None,
+            delegated: false,
+            entries: Vec::new(),
+            entry_fps: Vec::new(),
+            ehint: None,
         }
     }
 

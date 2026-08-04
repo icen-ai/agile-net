@@ -42,6 +42,10 @@ pub struct ConnectLink {
     /// Per-entry relay cert fingerprints (parallel to `entries`; "" = fall back to TOFU)
     #[serde(default)]
     pub entry_fps: Vec<String>,
+    /// Federation P3 E2E routing hint (delegated links only): when present the client seals
+    /// every Open into an E2E envelope addressed by this hint; absent = transparent tier
+    #[serde(default)]
+    pub ehint: Option<String>,
 }
 
 impl ConnectLink {
@@ -124,6 +128,7 @@ pub fn parse_connect_url(url: &str) -> std::result::Result<ConnectLink, String> 
     let mut admin = false;
     let mut entries: Vec<String> = Vec::new();
     let mut entry_fps: Vec<String> = Vec::new();
+    let mut ehint: Option<String> = None;
     for pair in rest.split('&') {
         let mut kv = pair.splitn(2, '=');
         let (k, v) = (kv.next().unwrap_or(""), kv.next().unwrap_or(""));
@@ -140,6 +145,8 @@ pub fn parse_connect_url(url: &str) -> std::result::Result<ConnectLink, String> 
             "entry" => entries = v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
             // parallel per-entry fingerprints (empty item = TOFU for that entry)
             "entryfp" => entry_fps = v.split(',').map(|s| s.trim().to_string()).collect(),
+            // federation P3: E2E routing hint (delegated links; client seals every Open when set)
+            "ehint" => ehint = Some(v),
             _ => {}
         }
     }
@@ -157,6 +164,7 @@ pub fn parse_connect_url(url: &str) -> std::result::Result<ConnectLink, String> 
         admin,
         entries,
         entry_fps,
+        ehint,
     })
 }
 
@@ -292,6 +300,7 @@ pub fn build_delegate_url(
     label: &str,
     token: &str,
     entries: &[(String, String)],
+    ehint: Option<&str>,
 ) -> String {
     debug_assert!(
         entries.iter().any(|(a, _)| a == primary_addr),
@@ -310,6 +319,9 @@ pub fn build_delegate_url(
     );
     if !primary_fp.is_empty() {
         url.push_str(&format!("&fp={primary_fp}"));
+    }
+    if let Some(hint) = ehint.filter(|s| !s.is_empty()) {
+        url.push_str(&format!("&ehint={}", url_encode(hint)));
     }
     if entries.len() > 1 {
         let addrs = entries
@@ -439,13 +451,14 @@ mod tests {
             ("b2.example.com:54430".to_string(), "".to_string()),
             ("10.0.0.3:54430".to_string(), "cc33".to_string()),
         ];
-        let url = build_delegate_url("b1.example.com:54430", "alice-laptop", "psk_secret", &entries);
+        let url = build_delegate_url("b1.example.com:54430", "alice-laptop", "psk_secret", &entries, Some("relay.internal"));
         let p = parse_connect_url(&url).expect("parse delegate link");
         assert!(p.is_delegated());
         assert_eq!(p.delegated_label(), Some("alice-laptop"));
         assert_eq!(p.addr, "b1.example.com:54430");
         assert_eq!(p.password, "psk_secret");
         assert_eq!(p.pinned_fingerprint.as_deref(), Some("aa11"));
+        assert_eq!(p.ehint.as_deref(), Some("relay.internal"));
         assert_eq!(
             p.entries(),
             vec![
@@ -460,10 +473,12 @@ mod tests {
     #[test]
     fn delegate_url_single_entry_omits_entry_params() {
         let entries = vec![("b1.example.com:54430".to_string(), "aa11".to_string())];
-        let url = build_delegate_url("b1.example.com:54430", "bob", "psk_x", &entries);
+        let url = build_delegate_url("b1.example.com:54430", "bob", "psk_x", &entries, None);
         assert!(!url.contains("entry="));
+        assert!(!url.contains("ehint="));
         let p = parse_connect_url(&url).unwrap();
         assert_eq!(p.entries(), vec!["b1.example.com:54430".to_string()]);
+        assert_eq!(p.ehint, None);
     }
 
     #[test]

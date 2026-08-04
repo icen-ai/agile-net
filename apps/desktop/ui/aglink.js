@@ -88,6 +88,8 @@ function parse(url) {
       delegated, label: delegated ? p.account.slice(2) : '',
       entries: entries.length ? entries : [sv.addr],
       entryFps: entries.length ? entryFps : [p.fp || ''],
+      // federation P3: E2E routing hint (delegated links; the client seals every Open when set)
+      ehint: p.ehint || '',
     };
   }
   const sv = resolveServer(p, 54430);
@@ -127,6 +129,7 @@ function buildConnect(f) {
     params.push(['entry', entries.map(e => e.addr).join(',')]);
     params.push(['entryfp', entries.map(e => e.fp || '').join(',')]);
   }
+  if (f.ehint) params.push(['ehint', f.ehint]);
   return 'anet://connect?' + qs(params);
 }
 

@@ -132,6 +132,10 @@ async fn client_connect_and_pull_config() {
             pinned_cert_path: None,
             pinned_fingerprint: None,
             manage_hosts: false,
+            delegated: false,
+            entries: Vec::new(),
+            entry_fps: Vec::new(),
+            ehint: None,
         })
         .await
         .unwrap();
@@ -162,6 +166,10 @@ async fn client_socks5_through_tunnel_to_echo() {
             pinned_cert_path: None,
             pinned_fingerprint: None,
             manage_hosts: false,
+            delegated: false,
+            entries: Vec::new(),
+            entry_fps: Vec::new(),
+            ehint: None,
         })
         .await
         .unwrap();
@@ -210,6 +218,10 @@ async fn disable_account_kicks_active_tunnel() {
             pinned_cert_path: None,
             pinned_fingerprint: None,
             manage_hosts: false,
+            delegated: false,
+            entries: Vec::new(),
+            entry_fps: Vec::new(),
+            ehint: None,
         })
         .await
         .unwrap();
@@ -277,6 +289,10 @@ async fn disconnect_removes_routes() {
             pinned_cert_path: None,
             pinned_fingerprint: None,
             manage_hosts: false,
+            delegated: false,
+            entries: Vec::new(),
+            entry_fps: Vec::new(),
+            ehint: None,
         })
         .await
         .unwrap();
@@ -338,6 +354,10 @@ async fn credentials_persist() {
                 password: "secret".into(),
                 insecure: false,
                 pinned_fingerprint: None,
+                delegated: false,
+                entries: Vec::new(),
+                entry_fps: Vec::new(),
+                ehint: None,
             },
         )
         .await;

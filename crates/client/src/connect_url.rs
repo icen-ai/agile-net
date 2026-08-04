@@ -30,11 +30,24 @@ pub struct ParsedConnect {
     /// Admin connect URL flag (admin=1: the holder can manage this node; strong warning on import)
     #[serde(default)]
     pub admin: Option<String>,
+    /// Federation P2: delegated credential mark (d: account prefix)
+    #[serde(default)]
+    pub delegated: bool,
+    /// Disaster-set relay entries (failover order; empty = single entry)
+    #[serde(default)]
+    pub entries: Vec<String>,
+    /// Per-entry relay cert fingerprints (parallel to `entries`; "" = TOFU)
+    #[serde(default)]
+    pub entry_fps: Vec<String>,
+    /// Federation P3: E2E routing hint
+    #[serde(default)]
+    pub ehint: Option<String>,
 }
 
 /// Parse an `anet://connect?...` URL (legacy `agilenet://` accepted).
 pub fn parse_connect_url(url: &str) -> std::result::Result<ParsedConnect, String> {
     let link = agile_net_core::link::parse_connect_url(url)?;
+    let delegated = link.is_delegated();
     Ok(ParsedConnect {
         addr: link.addr,
         username: link.account,
@@ -45,6 +58,10 @@ pub fn parse_connect_url(url: &str) -> std::result::Result<ParsedConnect, String
         manage_hosts: false,
         save_credential: true,
         admin: link.admin.then(|| "1".to_string()),
+        delegated,
+        entries: link.entries,
+        entry_fps: link.entry_fps,
+        ehint: link.ehint,
     })
 }
 
@@ -92,6 +109,10 @@ mod tests {
             password: "p".into(),
             insecure: false,
             pinned_fingerprint: Some("ab".into()),
+            delegated: false,
+            entries: Vec::new(),
+            entry_fps: Vec::new(),
+            ehint: None,
         };
         let url = connect_url_of(&c);
         assert!(url.starts_with("anet://connect?"));

@@ -8,11 +8,22 @@
 
 use crate::error::Result;
 use crate::relay::listener::RelayListener;
-use crate::relay::mux::MuxChannel;
 use crate::tunnel::client_tunnel::ClientTunnel;
 
 use std::future::Future;
 use std::pin::Pin;
+use tokio::io::{AsyncRead, AsyncWrite};
+
+/// Any bidirectional async stream usable as a data channel.
+pub trait AsyncChannel: AsyncRead + AsyncWrite {}
+impl<T: AsyncRead + AsyncWrite> AsyncChannel for T {}
+
+/// Boxed data channel (consumers only need AsyncRead + AsyncWrite + Send + Unpin).
+///
+/// The opener returns boxed streams rather than concrete `MuxChannel`s, so implementations may
+/// wrap the raw channel — federation P3's delegated opener seals E2E record encryption around
+/// it (`E2eStream`) transparently to every consumer.
+pub type BoxedChannel = Box<dyn AsyncChannel + Send + Unpin>;
 
 /// Open a logical channel to a target address.
 ///
@@ -25,7 +36,7 @@ pub trait ChannelOpener: Send + Sync {
         node_id: &'a str,
         target_host: &'a str,
         target_port: u16,
-    ) -> Pin<Box<dyn Future<Output = Result<MuxChannel>> + Send + 'a>>;
+    ) -> Pin<Box<dyn Future<Output = Result<BoxedChannel>> + Send + 'a>>;
 
     /// Destination label for transit accounting (defaults to the rule's node_id; auto-routing openers override with the actual peer).
     fn transit_label<'a>(&'a self, node_id: &'a str, _target_host: &'a str) -> String {
@@ -39,8 +50,11 @@ impl ChannelOpener for RelayListener {
         node_id: &'a str,
         target_host: &'a str,
         target_port: u16,
-    ) -> Pin<Box<dyn Future<Output = Result<MuxChannel>> + Send + 'a>> {
-        Box::pin(async move { self.open_channel(node_id, target_host, target_port).await })
+    ) -> Pin<Box<dyn Future<Output = Result<BoxedChannel>> + Send + 'a>> {
+        Box::pin(async move {
+            let ch = self.open_channel(node_id, target_host, target_port).await?;
+            Ok(Box::new(ch) as BoxedChannel)
+        })
     }
 }
 
@@ -50,8 +64,11 @@ impl ChannelOpener for ClientTunnel {
         _node_id: &'a str,
         target_host: &'a str,
         target_port: u16,
-    ) -> Pin<Box<dyn Future<Output = Result<MuxChannel>> + Send + 'a>> {
-        Box::pin(async move { self.open_channel(target_host, target_port).await })
+    ) -> Pin<Box<dyn Future<Output = Result<BoxedChannel>> + Send + 'a>> {
+        Box::pin(async move {
+            let ch = self.open_channel(target_host, target_port).await?;
+            Ok(Box::new(ch) as BoxedChannel)
+        })
     }
 }
 
@@ -72,7 +89,7 @@ impl ChannelOpener for PeerAutoOpener {
         node_id: &'a str,
         target_host: &'a str,
         target_port: u16,
-    ) -> Pin<Box<dyn Future<Output = Result<MuxChannel>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<BoxedChannel>> + Send + 'a>> {
         Box::pin(async move {
             // prefer the rule-specified node, otherwise auto-resolve via advertised routes
             let peer = if !node_id.is_empty() {
@@ -84,9 +101,11 @@ impl ChannelOpener for PeerAutoOpener {
                     ))
                 })?
             };
-            self.listener
+            let ch = self
+                .listener
                 .open_channel(&peer, target_host, target_port)
-                .await
+                .await?;
+            Ok(Box::new(ch) as BoxedChannel)
         })
     }
 

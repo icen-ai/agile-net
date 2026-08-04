@@ -18,6 +18,10 @@ pub(crate) async fn connect_node(state: State<'_, AppState>, input: ConnectInput
         pinned_cert_path: input.pinned_cert_path.clone(),
         pinned_fingerprint: input.pinned_fingerprint.clone(),
         manage_hosts: input.manage_hosts,
+        delegated: input.delegated,
+        entries: input.entries.clone(),
+        entry_fps: input.entry_fps.clone(),
+        ehint: input.ehint.clone(),
     };
     let node_state = state.client.connect(params).await.map_err(map_err)?;
 
@@ -32,6 +36,10 @@ pub(crate) async fn connect_node(state: State<'_, AppState>, input: ConnectInput
                         password: input.password,
                         insecure: input.insecure,
                         pinned_fingerprint: input.pinned_fingerprint,
+                        delegated: input.delegated,
+                        entries: input.entries,
+                        entry_fps: input.entry_fps,
+                        ehint: input.ehint,
                     },
                 )
                 .await;

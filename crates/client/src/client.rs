@@ -3,7 +3,7 @@
 use agile_net_core::proxy::inbound::ProxyInbound;
 use agile_net_core::proxy::router::{Outbound, ProxyRouter};
 use agile_net_core::tunnel::client_tunnel::ClientTunnel;
-use agile_net_core::tunnel::opener::ChannelOpener;
+use agile_net_core::tunnel::opener::{BoxedChannel, ChannelOpener};
 use agile_net_core::tunnel::tls::TlsConfigBuilder;
 
 use anyhow::{Result, anyhow};
@@ -12,6 +12,7 @@ use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tracing::{debug, info, warn};
 
 use crate::config_cache::{CachedNodeConfig, ConfigCache};
@@ -44,6 +45,19 @@ pub struct ConnectParams {
     /// Whether to auto-maintain system hosts (resolve rules)
     #[serde(default)]
     pub manage_hosts: bool,
+    /// Federation P2: delegated credential — pure data-plane key; the engine dials the relay
+    /// entries directly (no API login/config), fails over across the disaster set
+    #[serde(default)]
+    pub delegated: bool,
+    /// Disaster-set relay entries (failover order; empty = single entry `addr`)
+    #[serde(default)]
+    pub entries: Vec<String>,
+    /// Per-entry relay cert fingerprints (parallel to `entries`; "" = TOFU)
+    #[serde(default)]
+    pub entry_fps: Vec<String>,
+    /// Federation P3: E2E routing hint (every Open sealed when set; empty/None = transparent)
+    #[serde(default)]
+    pub ehint: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -80,6 +94,12 @@ pub struct NodeState {
     /// Tunnel traffic: downstream bytes (from the node; per-session counter, reset on reconnect, 0 when not connected)
     #[serde(default)]
     pub bytes_down: u64,
+    /// Federation P2: this node is a delegated credential (direct relay access, no API account)
+    #[serde(default)]
+    pub delegated: bool,
+    /// Delegated failover: the entry currently dialed (display only; empty for regular nodes)
+    #[serde(default)]
+    pub current_entry: String,
 }
 
 /// Manageable node (local machine / connected node / upstream chain auto-discovery).
@@ -110,6 +130,133 @@ struct NodeHandle {
     params: ConnectParams,
     /// Current access token (synced after config long-poll refresh; used for console ticket issuance)
     access_token: Arc<ArcSwap<String>>,
+    /// Federation P2: delegated connection runtime (failover opener; None = regular API account)
+    delegated: Option<Arc<DelegatedOpener>>,
+}
+
+// ==================== Delegated connections (federation P2/P3) ====================
+
+/// Delegated connection opener (federation P2/P3): the proxy inbound opens channels through
+/// the currently live failover tunnel; with an E2E hint every Open is sealed into an envelope
+/// addressed by the hint (the relay stays blind), otherwise Opens go out transparently.
+struct DelegatedOpener {
+    /// Currently live tunnel (swapped by the supervisor on failover; None while redialing)
+    current: arc_swap::ArcSwapOption<ClientTunnel>,
+    /// Delegated token plaintext (PSK; also the E2E key material)
+    token: String,
+    /// E2E routing hint (None/empty = transparent tier)
+    ehint: Option<String>,
+    /// Cumulative traffic across failover tunnels (closed-session bytes are folded in)
+    total_up: AtomicU64,
+    total_down: AtomicU64,
+    /// Current entry address (display; the supervisor updates it on every switch)
+    current_entry: arc_swap::ArcSwap<String>,
+}
+
+impl DelegatedOpener {
+    fn new(token: String, ehint: Option<String>) -> Arc<Self> {
+        Arc::new(Self {
+            current: arc_swap::ArcSwapOption::from_pointee(None),
+            token,
+            ehint: ehint.filter(|h| !h.trim().is_empty()),
+            total_up: AtomicU64::new(0),
+            total_down: AtomicU64::new(0),
+            current_entry: arc_swap::ArcSwap::from_pointee(String::new()),
+        })
+    }
+
+    fn is_connected(&self) -> bool {
+        self.current
+            .load()
+            .as_ref()
+            .map(|t| t.is_connected())
+            .unwrap_or(false)
+    }
+
+    /// Cumulative traffic (closed sessions + the live one).
+    async fn traffic(&self) -> (u64, u64) {
+        let (mut up, mut down) = (
+            self.total_up.load(Ordering::Relaxed),
+            self.total_down.load(Ordering::Relaxed),
+        );
+        if let Some(t) = self.current.load_full() {
+            let (u, d) = t.traffic().await;
+            up += u;
+            down += d;
+        }
+        (up, down)
+    }
+
+    /// Fold a closed tunnel's session counters into the cumulative totals (failover bookkeeping).
+    async fn note_tunnel_closed(&self, tunnel: &ClientTunnel) {
+        let (up, down) = tunnel.traffic().await;
+        self.total_up.fetch_add(up, Ordering::Relaxed);
+        self.total_down.fetch_add(down, Ordering::Relaxed);
+    }
+
+    async fn disconnect_now(&self) {
+        if let Some(t) = self.current.load_full() {
+            t.disconnect().await;
+        }
+    }
+}
+
+impl ChannelOpener for DelegatedOpener {
+    fn open<'a>(
+        &'a self,
+        _node_id: &'a str,
+        target_host: &'a str,
+        target_port: u16,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = agile_net_core::error::Result<BoxedChannel>> + Send + 'a>> {
+        Box::pin(async move {
+            let tunnel = self
+                .current
+                .load_full()
+                .ok_or_else(|| agile_net_core::error::Error::Other("delegated tunnel not connected".into()))?;
+            match self.ehint.as_deref() {
+                Some(hint) => {
+                    use agile_net_core::relay::e2e;
+                    let key = e2e::derive_key(&self.token);
+                    let hash = agile_net_core::util::sha256_hex(self.token.as_bytes());
+                    let (env, cipher) =
+                        e2e::seal_open(&key, e2e::kid_of(&hash), hint, target_host, target_port, &[]);
+                    let open = agile_net_core::proto::message::OpenChannel {
+                        target_addr: hint.to_string(),
+                        target_port: 0,
+                        groups: Vec::new(),
+                        e2e: Some(env),
+                    };
+                    let payload = serde_json::to_vec(&open)
+                        .map_err(|e| agile_net_core::error::Error::Protocol(e.to_string()))?;
+                    let ch = tunnel.open_channel_raw(payload).await?;
+                    Ok(Box::new(e2e::E2eStream::new(ch, cipher)) as BoxedChannel)
+                }
+                None => {
+                    let ch = tunnel.open_channel(target_host, target_port).await?;
+                    Ok(Box::new(ch) as BoxedChannel)
+                }
+            }
+        })
+    }
+}
+
+/// Delegated nodes route everything through the tunnel (the consumer's whole purpose is the
+/// issuer's network): IPv4 catch-all plus the wildcard host suffix as the domain catch-all.
+fn delegated_rules() -> Vec<ClientRule> {
+    vec![
+        ClientRule {
+            id: String::new(),
+            rule_type: "ip-cidr".into(),
+            value: "0.0.0.0/0".into(),
+            resolve: false,
+        },
+        ClientRule {
+            id: String::new(),
+            rule_type: "host".into(),
+            value: "*".into(),
+            resolve: false,
+        },
+    ]
 }
 
 /// Shared inner state (background tasks access it safely via Arc).
@@ -301,6 +448,10 @@ impl AgileNetClient {
 
     /// Connect to a node: login → pull config → establish tunnel → merge routes → background maintenance tasks.
     pub async fn connect(&self, params: ConnectParams) -> Result<NodeState> {
+        // Federation P2: delegated credentials skip the API entirely (direct relay failover)
+        if params.delegated {
+            return self.connect_delegated(params).await;
+        }
         let base_url = api_base_url(&params.addr);
 
         // 1. Login (fall back to the offline cache when the network is unreachable)
@@ -384,6 +535,8 @@ impl AgileNetClient {
             manageable,
             bytes_up: 0,
             bytes_down: 0,
+            delegated: false,
+            current_entry: String::new(),
         };
 
         // 4. Background tasks: tunnel auto-reconnect + heartbeat + config long-poll
@@ -434,6 +587,7 @@ impl AgileNetClient {
             manage_hosts: params.manage_hosts,
             params: params.clone(),
             access_token: access_shared,
+            delegated: None,
         };
         self.inner.nodes.insert(node_id.clone(), handle);
         self.inner
@@ -496,6 +650,8 @@ impl AgileNetClient {
             manageable: Vec::new(),
             bytes_up: 0,
             bytes_down: 0,
+            delegated: false,
+            current_entry: String::new(),
         };
 
         let mut tasks = Vec::new();
@@ -519,6 +675,7 @@ impl AgileNetClient {
             manage_hosts: params.manage_hosts,
             params: params.clone(),
             access_token: Arc::new(ArcSwap::from_pointee(String::new())),
+            delegated: None,
         };
         self.inner.nodes.insert(node_id.clone(), handle);
         self.inner
@@ -531,6 +688,85 @@ impl AgileNetClient {
         Ok(state)
     }
 
+    /// Federation P2: connect a delegated credential — no API roundtrip at all. The engine
+    /// dials the primary relay entry directly (fail-fast on a bad token/address, same UX as a
+    /// regular connect), registers the failover opener, and the supervisor rotates through the
+    /// disaster set on every drop (P3: with an ehint every Open is E2E-sealed by the opener).
+    async fn connect_delegated(&self, params: ConnectParams) -> Result<NodeState> {
+        let label = params.username.trim_start_matches("d:").trim().to_string();
+        if label.is_empty() || label.len() > 128 {
+            return Err(anyhow!("invalid delegated label (expected the d:<label> account mark)"));
+        }
+        let entries: Vec<String> = if params.entries.is_empty() {
+            vec![params.addr.clone()]
+        } else {
+            params.entries.clone()
+        };
+
+        let account_id = format!("d:{label}");
+        // dial the primary entry synchronously (fail fast on unreachable address / bad token)
+        let first_fp = params
+            .entry_fps
+            .first()
+            .filter(|s| !s.is_empty())
+            .or(params.pinned_fingerprint.as_ref());
+        let tunnel = connect_delegated_entry(&params, &entries[0], first_fp, &account_id).await?;
+
+        let node_id = format!("{label}@delegated:{}", entries[0]);
+        let opener = DelegatedOpener::new(params.password.clone(), params.ehint.clone());
+        opener.current.store(Some(tunnel.clone()));
+        opener.current_entry.store(Arc::new(entries[0].clone()));
+        self.inner
+            .openers
+            .insert(node_id.clone(), opener.clone() as Arc<dyn ChannelOpener>);
+
+        let state = NodeState {
+            node_id: node_id.clone(),
+            addr: params.addr.clone(),
+            node_name: label.clone(),
+            username: params.username.clone(),
+            status: NodeStatus::Connected,
+            rules: delegated_rules(),
+            config_version: 0,
+            admin_console: false,
+            manageable: Vec::new(),
+            bytes_up: 0,
+            bytes_down: 0,
+            delegated: true,
+            current_entry: entries[0].clone(),
+        };
+
+        let supervisor = spawn_delegated_supervisor(
+            self.inner.clone(),
+            node_id.clone(),
+            params.clone(),
+            entries,
+            opener.clone(),
+            tunnel.clone(),
+            account_id,
+        );
+
+        let handle = NodeHandle {
+            state: state.clone(),
+            tunnel,
+            tasks: vec![supervisor],
+            manage_hosts: params.manage_hosts,
+            params: params.clone(),
+            access_token: Arc::new(ArcSwap::from_pointee(String::new())),
+            delegated: Some(opener),
+        };
+        self.inner.nodes.insert(node_id.clone(), handle);
+        self.inner
+            .node_order
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(node_id.clone());
+        self.inner.rebuild_merged_router();
+
+        info!(node = %node_id, "delegated credential connected");
+        Ok(state)
+    }
+
     /// Disconnect a node: stop tasks, tear down the tunnel, remove routes and hosts.
     pub async fn disconnect(&self, node_id: &str) {
         if let Some((_, handle)) = self.inner.nodes.remove(node_id) {
@@ -538,6 +774,9 @@ impl AgileNetClient {
                 t.abort();
             }
             handle.tunnel.disconnect().await;
+            if let Some(d) = &handle.delegated {
+                d.disconnect_now().await;
+            }
             self.inner.openers.remove(node_id);
             self.inner
                 .node_order
@@ -565,10 +804,18 @@ impl AgileNetClient {
         // Fix status and take tunnel handles synchronously first, then read traffic async (avoid holding dashmap guards across await)
         let mut states = Vec::with_capacity(self.inner.nodes.len());
         let mut tunnels = Vec::with_capacity(self.inner.nodes.len());
+        let mut delegateds = Vec::with_capacity(self.inner.nodes.len());
         for mut r in self.inner.nodes.iter_mut() {
-            // Correct the cached status from the tunnel's live state:
+            // Correct the cached status from the live data-plane state:
             // on remote close / network loss the cached Connected is never rewritten (control-plane buttons toggle on it)
-            let live = if r.tunnel.is_connected() {
+            let live = if let Some(d) = &r.delegated {
+                // delegated connections: the supervisor owns the status; a live tunnel wins
+                if d.is_connected() {
+                    NodeStatus::Connected
+                } else {
+                    r.state.status.clone()
+                }
+            } else if r.tunnel.is_connected() {
                 NodeStatus::Connected
             } else {
                 match r.tunnel.state() {
@@ -584,9 +831,13 @@ impl AgileNetClient {
             }
             states.push(r.state.clone());
             tunnels.push(r.tunnel.clone());
+            delegateds.push(r.delegated.clone());
         }
-        for (state, tunnel) in states.iter_mut().zip(tunnels) {
-            let (up, down) = tunnel.traffic().await;
+        for ((state, tunnel), delegated) in states.iter_mut().zip(tunnels).zip(delegateds) {
+            let (up, down) = match delegated {
+                Some(d) => d.traffic().await,
+                None => tunnel.traffic().await,
+            };
             state.bytes_up = up;
             state.bytes_down = down;
         }
@@ -598,6 +849,13 @@ impl AgileNetClient {
             .nodes
             .get(node_id)
             .map(|r| {
+                if let Some(d) = &r.delegated {
+                    return if d.is_connected() {
+                        NodeStatus::Connected
+                    } else {
+                        r.state.status.clone()
+                    };
+                }
                 if r.tunnel.is_connected() {
                     NodeStatus::Connected
                 } else {
@@ -1240,6 +1498,130 @@ async fn resolve_addr(host: &str, port: u16) -> Result<SocketAddr> {
         .or_else(|| resolved.first())
         .copied()
         .ok_or_else(|| anyhow!("cannot resolve tunnel server: {direct}"))
+}
+
+// ==================== Delegated failover (federation P2) ====================
+
+/// Failover supervisor of a delegated connection: watches the live tunnel; on a drop it folds
+/// the session traffic into the cumulative counters, clears the opener slot, and redials the
+/// next entry of the disaster set (per-entry fingerprint pinning, exponential backoff + jitter,
+/// same cadence as tunnels). The task is simply aborted on disconnect.
+fn spawn_delegated_supervisor(
+    inner: Arc<ClientInner>,
+    node_id: String,
+    params: ConnectParams,
+    entries: Vec<String>,
+    opener: Arc<DelegatedOpener>,
+    first: Arc<ClientTunnel>,
+    account_id: String,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut idx = 0usize;
+        let mut attempt: u32 = 0;
+        let mut live: Option<Arc<ClientTunnel>> = Some(first);
+        loop {
+            // wait for the live tunnel to die
+            if let Some(t) = &live {
+                while t.is_connected() {
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                }
+                opener.note_tunnel_closed(t).await;
+                if let Some(cur) = opener.current.load_full()
+                    && Arc::ptr_eq(&cur, t)
+                {
+                    opener.current.store(None);
+                }
+                t.disconnect().await;
+                live = None;
+                idx = idx.saturating_add(1);
+                set_delegated_status(&inner, &node_id, NodeStatus::Reconnecting, None);
+            }
+
+            let entry = entries[idx % entries.len()].clone();
+            let fp = params
+                .entry_fps
+                .get(idx % entries.len())
+                .filter(|s| !s.is_empty())
+                .or(params.pinned_fingerprint.as_ref());
+            match connect_delegated_entry(&params, &entry, fp, &account_id).await {
+                Ok(t) => {
+                    attempt = 0;
+                    opener.current.store(Some(t.clone()));
+                    opener.current_entry.store(Arc::new(entry.clone()));
+                    set_delegated_status(&inner, &node_id, NodeStatus::Connected, Some(&entry));
+                    info!(node = %node_id, entry = %entry, "delegated entry connected");
+                    live = Some(t);
+                }
+                Err(e) => {
+                    debug!(node = %node_id, entry = %entry, error = %e, "delegated entry connect failed");
+                    idx = idx.saturating_add(1);
+                    attempt = attempt.saturating_add(1);
+                    set_delegated_status(&inner, &node_id, NodeStatus::Reconnecting, None);
+                    // exponential backoff 1s -> 2s -> ... -> 60s cap, full jitter
+                    let backoff_ms = (1000u64 << attempt.min(6)).min(60_000);
+                    let jitter = (std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .subsec_millis() as u64)
+                        % backoff_ms;
+                    tokio::time::sleep(std::time::Duration::from_millis(jitter.max(500))).await;
+                }
+            }
+        }
+    })
+}
+
+fn set_delegated_status(
+    inner: &ClientInner,
+    node_id: &str,
+    status: NodeStatus,
+    entry: Option<&str>,
+) {
+    if let Some(mut n) = inner.nodes.get_mut(node_id) {
+        n.state.status = status;
+        if let Some(entry) = entry {
+            n.state.current_entry = entry.to_string();
+        }
+    }
+}
+
+/// Dial one disaster-set entry (per-entry fingerprint pinning; TOFU for unpinned entries).
+async fn connect_delegated_entry(
+    params: &ConnectParams,
+    entry: &str,
+    fp: Option<&String>,
+    account_id: &str,
+) -> Result<Arc<ClientTunnel>> {
+    let addr = resolve_host_port(entry).await?;
+    let mut tls = TlsConfigBuilder::new();
+    tls = match fp.filter(|s| !s.is_empty()) {
+        Some(fp) => tls.pinned_fingerprint(fp.clone()),
+        None if params.insecure => tls.allow_self_signed(true),
+        None => tls,
+    };
+    let tunnel = Arc::new(ClientTunnel::with_tls_builder(
+        addr,
+        account_id,
+        params.password.clone(),
+        tls,
+    )?);
+    tunnel.connect().await?;
+    Ok(tunnel)
+}
+
+/// Resolve a `host:port` entry into a SocketAddr (IPv4 preferred; IPv6 literals bracketed).
+async fn resolve_host_port(entry: &str) -> Result<SocketAddr> {
+    let entry = entry.trim();
+    if let Ok(a) = entry.parse::<SocketAddr>() {
+        return Ok(a);
+    }
+    let (host, port) = entry
+        .rsplit_once(':')
+        .ok_or_else(|| anyhow!("entry missing port: {entry}"))?;
+    let port: u16 = port
+        .parse()
+        .map_err(|_| anyhow!("bad entry port: {entry}"))?;
+    resolve_addr(host, port).await
 }
 
 /// Extract sub from a JWT (no signature verification; local identification only).

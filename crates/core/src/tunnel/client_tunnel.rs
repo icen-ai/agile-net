@@ -238,16 +238,21 @@ impl ClientTunnel {
 
     /// Open a channel to a target address over the tunnel.
     pub async fn open_channel(&self, target_host: &str, target_port: u16) -> Result<MuxChannel> {
+        let payload = serde_json::to_vec(&OpenChannel::new(target_host, target_port))
+            .map_err(|e| Error::Protocol(e.to_string()))?;
+        self.open_channel_raw(Bytes::from(payload)).await
+    }
+
+    /// Open a channel with a caller-built Open payload (federation P3: E2E envelopes and
+    /// delegated group tags need fields beyond the plain target pair).
+    pub async fn open_channel_raw(&self, payload: impl Into<Bytes>) -> Result<MuxChannel> {
         let session = {
             let guard = self.session.lock().await;
             guard.clone()
         }
         .ok_or_else(|| Error::Other("tunnel not connected".into()))?;
 
-        let payload = serde_json::to_vec(&OpenChannel::new(target_host, target_port))
-            .map_err(|e| Error::Protocol(e.to_string()))?;
-
-        session.open_channel(Bytes::from(payload)).await
+        session.open_channel(payload.into()).await
     }
 
     /// Run forever: auto-reconnect on disconnect (exponential backoff + jitter) until shutdown.

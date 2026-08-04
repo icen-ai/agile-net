@@ -179,6 +179,10 @@ async fn export_requires_confirm() {
                 password: "sk-test".into(),
                 insecure: false,
                 pinned_fingerprint: None,
+                delegated: false,
+                entries: Vec::new(),
+                entry_fps: Vec::new(),
+                ehint: None,
             },
         )
         .await;

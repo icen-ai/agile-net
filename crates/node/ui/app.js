@@ -289,6 +289,8 @@ function shareCardBind(root, opts) {
           insecure: parsed.insecure, admin: parsed.admin,
           // federation P2: keep the disaster set of a delegated credential across rebuilds
           entries: (parsed.entries || []).map((a, i) => ({ addr: a, fp: (parsed.entryFps || [])[i] || '' })),
+          // federation P3: keep the E2E routing hint
+          ehint: parsed.ehint || '',
         });
   }
   function render() {

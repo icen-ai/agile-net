@@ -480,6 +480,15 @@ struct ConnectInput {
     manage_hosts: bool,
     #[serde(default)]
     save_credential: bool,
+    /// Federation P2/P3 delegated credential fields (all optional, plain accounts unaffected)
+    #[serde(default)]
+    delegated: bool,
+    #[serde(default)]
+    entries: Vec<String>,
+    #[serde(default)]
+    entry_fps: Vec<String>,
+    #[serde(default)]
+    ehint: Option<String>,
 }
 
 async fn connect_node(State(state): State<ApiState>, Json(input): Json<ConnectInput>) -> Response {
@@ -491,6 +500,10 @@ async fn connect_node(State(state): State<ApiState>, Json(input): Json<ConnectIn
         pinned_cert_path: input.pinned_cert_path.clone(),
         pinned_fingerprint: input.pinned_fingerprint.clone(),
         manage_hosts: input.manage_hosts,
+        delegated: input.delegated,
+        entries: input.entries.clone(),
+        entry_fps: input.entry_fps.clone(),
+        ehint: input.ehint.clone(),
     };
     let node_state = match state.client.connect(params).await {
         Ok(s) => s,
@@ -508,6 +521,10 @@ async fn connect_node(State(state): State<ApiState>, Json(input): Json<ConnectIn
                     password: input.password,
                     insecure: input.insecure,
                     pinned_fingerprint: input.pinned_fingerprint,
+                    delegated: input.delegated,
+                    entries: input.entries,
+                    entry_fps: input.entry_fps,
+                    ehint: input.ehint,
                 },
             )
             .await;
