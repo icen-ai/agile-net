@@ -23,6 +23,7 @@
     "items": [
       { "title": { "zh": "anet-gui 图形客户端", "en": "anet-gui Client" }, "path": "guides/gui", "icon": "monitor" },
       { "title": { "zh": "anet-svc 服务器", "en": "anet-svc Server" }, "path": "guides/svc", "icon": "server" },
+      { "title": { "zh": "联邦：签发委托与 E2E", "en": "Federation & E2E" }, "path": "guides/federation", "icon": "network" },
       { "title": { "zh": "命令行 anet", "en": "anet CLI" }, "path": "guides/cli", "icon": "terminal" },
       { "title": { "zh": "Docker 链路与演示", "en": "Docker Chains & Demos" }, "path": "guides/docker", "icon": "box" },
       { "title": { "zh": "Clash / FlClash 共存", "en": "Coexisting with Clash / FlClash" }, "path": "guides/clash", "icon": "route" },

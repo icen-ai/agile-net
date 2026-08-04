@@ -211,6 +211,38 @@ CREATE INDEX idx_audit_time ON audit_log(created_at);
 | `relay_token.create` | 创建 relay token |
 | `relay_token.delete` | 删除 relay token |
 | `node.update_settings` | 更新节点设置 |
+| `federation.adopt` | 一键采纳上送组（federation P1） |
+| `delegation.issue` | 签发委托令牌（federation P2，不记明文） |
+| `delegation.revoke` | 吊销委托令牌（签发端/中继端均落） |
+| `delegation.register` | 扇出会话注册委托令牌（中继端，issuer + label） |
+
+### delegated_token — 委托令牌（v10，federation P2/P3）
+
+```sql
+CREATE TABLE delegated_token (
+    id           TEXT PRIMARY KEY,            -- UUIDv4
+    token_hash   TEXT NOT NULL UNIQUE,        -- sha256(token)，不存明文
+    token_prefix TEXT NOT NULL,               -- 展示用前缀 "psk_xxxx"
+    label        TEXT NOT NULL DEFAULT '',    -- 备注（导入方可见，链接 account=d:<label>）
+    groups       TEXT NOT NULL DEFAULT '[]',  -- JSON 组 ID 数组（注册时 resolve 为组名）
+    hint_map     TEXT NOT NULL DEFAULT '[]',  -- JSON [{hint, groups}]（E2E 粗路由词表）
+    e2e_key_enc  TEXT NOT NULL DEFAULT '',    -- E2E 主密钥 AES-256-GCM（可逆例外②）
+    created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE delegated_token_reg (
+    token_id     TEXT NOT NULL REFERENCES delegated_token(id) ON DELETE CASCADE,
+    connector_id TEXT NOT NULL REFERENCES connector(id) ON DELETE CASCADE,
+    is_primary   INTEGER NOT NULL DEFAULT 0,  -- 主入口标记（每令牌恰一行 = 1）
+    PRIMARY KEY (token_id, connector_id)
+);
+
+-- v10 同时：ALTER TABLE "group" ADD COLUMN e2e_required INTEGER NOT NULL DEFAULT 0;
+-- e2e_required 组仅可挂委托令牌（账号/扇入令牌/扇出连接四写入口统一拦截）
+```
+
+注册走扇出会话控制帧（协议 v3 Ctrl）：生命周期随会话（吊销即断），中继侧零落库；
+容灾集合逐上游一行，connector 重连自动重注册。
 
 ### traffic_log — 流量统计（按小时聚合）
 

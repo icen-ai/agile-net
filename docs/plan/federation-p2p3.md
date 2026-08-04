@@ -1,7 +1,9 @@
 # 联邦模型 P2+P3 实施计划（域内身份与签发委托 + E2E 载荷加密）
 
 > 设计蓝本：`docs/todo/federation.md`（§2 关键设计决策为约束）；前置：P1 已落地（`docs/plan/federation.md`）
-> 状态：**设计定稿待实施**（2026-08-04；四个关键决策已锁定，见 §1）
+> 状态：**已实施**（2026-08-04；切片 1–11 全部落地，`cargo test --workspace` 377 全绿 +
+> 双 workspace clippy 零告警；端到端验收 `crates/node/tests/federation_p2_test.rs` /
+> `federation_p3_test.rs`；实施偏差见 §9）
 > 交付约定：P2 与 P3 一次实施、一份验收；切片 1–5 构成可独立交付的完整 P2（§6）
 
 ---
@@ -256,3 +258,35 @@ ALTER TABLE "group" ADD COLUMN e2e_required INTEGER NOT NULL DEFAULT 0;
   前向安全性覆盖「B 录流量 + 事后令牌泄露」窗口。
 - **一次性 ticket 委托**：委托令牌加 max_uses/expires（注册帧携带，B 侧计数），
   面向「临时外部专家」场景。
+
+## 9. 实施偏差记录（落地时收敛，2026-08-04）
+
+以下为实施过程中对设计的有意收敛，与上述章节冲突时以本节为准：
+
+1. **blob 随机 nonce（纪律①的彻底化）**：§4.1 原写 `blob = AES-256-GCM(e2e_key, nonce=0, ...)`——
+   同一 e2e_key 下多信道 blob 会撞 nonce。落地改为 `blob = base64(nonce12 ‖ ct)`（逐信道随机
+   nonce），chan_salt 仍在 blob JSON 内派生信道子密钥。
+2. **`ehint` 链接参数 + A 侧「全部 E2E」模型**：A 不知道组词表（链接只含地址/凭据/指纹）。
+   落地形态：hint_map 非空的委托链接携带 `ehint=<hint>`，A 侧全部 Open 走 E2E 包装
+   （透明组流量同受保护，C 解包后统一执法）；无 ehint = 全透明档。旧客户端忽略 ehint——
+   透明组仍可用，E2E 组被 C fail-close 拒绝（优雅降级成立）。
+3. **空 blob.groups = 令牌全集**：消费端不知道组名；C 侧 DelegationEngine 的 kid 缓存携带
+   令牌组名集，空 blob.groups 解包后继承填充——R1 细组（不上送）由此对 B 完全隐形。
+4. **MuxSession 事件通道**：`start(...)` 的 `open_tx` 参数升级为 `SessionEvents{open_tx, ctrl_tx}`
+   （Ctrl 帧固定走 channel 0 投递），未来控制面扩展不再加参数。
+5. **ChannelOpener 返回 BoxedChannel**：`AsyncChannel` blanket trait + boxed stream，
+   DelegatedOpener 的 E2eStream 包装对所有消费方（SOCKS/HTTP 入站、多跳转发）透明。
+6. **委托节点路由模型**：委托凭据注册全量路由（`0.0.0.0/0` + 通配域名 `*`）——消费者整机
+   流量即目的；多节点冲突遵循既有 first-connected-wins 语义。
+7. **同身份踢旧的清理条件化**：旧会话退出路径按 mux 指针 `remove_if` 匹配——修掉重连抖动下
+   旧会话误删新会话路由/上送组/委托注册的并发 bug（存量缺陷，随本批次修复）。
+8. **`NodeServer::stop` 关闭已建会话**：新增 `RelayListener::shutdown_all()`——原实现只杀
+   accept loop，同进程 stop 后旧 TLS 会话残存（GUI 角色停止语义同步正确化）。
+9. **委托会话键**：`delegated:<token_hash>` 复用 clients 表与 disconnect_client 踢出路径；
+   委托流量不经账号流量日志（account_id 非本地账号，JOIN 自然落空，无异常）。
+10. **hint 校验语义**：注册时逐 hint 验证 `resolve_peer(hint) == issuer`（可直接路由回签发者），
+    比「命中 advertised routes 词表」更严且实现更简。
+11. **存储**：delegated_token.groups 存**组 ID** JSON 数组（原计划组名）——改名安全；
+    注册帧构建时 resolve 为组名（悬空跳过 + warn）。e2e_key 恒推导并加密落库
+    （AES-256-GCM，同 connector token 机器密钥，第二可逆例外），避免「透明令牌后挂 E2E 组」
+    的补签窗口。
