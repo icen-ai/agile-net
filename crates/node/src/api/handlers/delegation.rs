@@ -162,8 +162,10 @@ pub async fn issue_token(
         Err(e) => return err(StatusCode::BAD_REQUEST, codes::VALIDATION_FAILED, e.to_string()),
     };
 
-    // warm the E2E key cache immediately; session registration rides the connector sync task
+    // warm the enforcement caches immediately (the group may have been created seconds ago,
+    // ahead of the config_version watcher tick); session registration rides the connector sync task
     state.runtime.connector_manager.refresh_delegation_keys();
+    state.runtime.connector_manager.refresh_push_groups();
 
     audit(
         &state,

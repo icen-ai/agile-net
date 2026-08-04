@@ -442,6 +442,20 @@ impl RelayListener {
         count
     }
 
+    /// Force-close every session (peers and clients) — server shutdown / role stop.
+    /// Mux shutdown drops the TLS streams, so the remote ends see a clean disconnect and can
+    /// fail over immediately instead of waiting out the idle timeout.
+    pub fn shutdown_all(&self) {
+        let peers: Vec<String> = self.peers.iter().map(|p| p.key().clone()).collect();
+        for id in peers {
+            self.disconnect_peer(&id);
+        }
+        let clients: Vec<String> = self.clients.iter().map(|c| c.key().clone()).collect();
+        for id in clients {
+            self.disconnect_client(&id);
+        }
+    }
+
     /// Per-downstream-node data-plane traffic stats (node_id, egress bytes, ingress bytes).
     pub fn peer_traffic(&self) -> Vec<(String, u64, u64)> {
         self.peers

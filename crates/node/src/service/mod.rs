@@ -640,6 +640,11 @@ impl NodeServer {
             handle.graceful_shutdown(Some(std::time::Duration::from_secs(2)));
         }
         self.connector_manager.shutdown().await;
+        // close live relay sessions too — aborting the accept loop alone leaves established
+        // tunnels alive (each session task holds its own listener Arc)
+        if let Some(l) = &self.runtime.listener {
+            l.shutdown_all();
+        }
         for t in &self.tasks {
             t.abort();
         }
