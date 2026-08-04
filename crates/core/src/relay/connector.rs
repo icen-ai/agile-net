@@ -8,12 +8,13 @@
 use crate::error::{Error, Result};
 use crate::proto::frame::{Frame, FrameType};
 use crate::proto::message::{
-    AuthKind, AuthRequest, ControlOffer, CtrlMessage, OpenChannel, PROTOCOL_VERSION,
+    AuthKind, AuthRequest, ControlOffer, CtrlMessage, E2eOpen, OpenChannel, PROTOCOL_VERSION,
     PROTOCOL_VERSION_FLOW_CONTROL, PushedGroupMsg,
 };
 use crate::proxy::router::{Outbound, ProxyRouter};
 use crate::relay::acl::PeerAcl;
 use crate::relay::bridge::bridge;
+use crate::relay::e2e::{ChannelCipher, E2eOpenPayload, E2eStream};
 use crate::relay::listener::{AUTH_TIMEOUT, PeerEvent, RelayListener};
 use crate::relay::mux::{MuxChannel, MuxSession, OpenRequest, SessionEvents};
 use crate::relay::transit::{TO_LOCAL, TransitMeter};
@@ -43,6 +44,28 @@ pub enum ConnectionState {
     Connecting = 1,
     Connected = 2,
     Reconnecting = 3,
+}
+
+/// Federation P2/P3 delegation hooks (injected by the node crate, issuer side):
+/// per-open group enforcement + E2E envelope unwrap + fail-close.
+///
+/// The connector is the endpoint of delegated traffic: Opens stamped with group tags (P2) are
+/// enforced against the issuer's *local* same-named groups; E2E envelopes (P3) are unwrapped
+/// and enforced against the sealed group set. Everything stays in-memory on the hot path.
+pub trait DelegationHooks: Send + Sync {
+    /// ACL check for an Open carrying group tags against the issuer's local groups (unknown
+    /// names ignored). Returns None when every named group is unknown (caller rejects + audits).
+    fn group_acl_allows(&self, groups: &[String], target: &str) -> Option<bool>;
+
+    /// Whether an unencrypted Open towards `target` must be refused because it hits a local
+    /// e2e_required group rule (fail-close, hard discipline 3 — a relay stripping the
+    /// e2e_required flag degrades to DoS, never to plaintext).
+    fn e2e_required_hit(&self, target: &str) -> bool;
+
+    /// Unwrap an E2E envelope. Ok(Some) = this issuer's token (endpoint role, enforce and
+    /// unwrap); Ok(None) = unknown kid (transit role — forward the envelope verbatim);
+    /// Err = forged/corrupt envelope (reject the Open).
+    fn e2e_unwrap(&self, e2e: &E2eOpen) -> Result<Option<(E2eOpenPayload, ChannelCipher)>>;
 }
 
 impl From<u8> for ConnectionState {
@@ -78,6 +101,8 @@ pub struct RelayConnector {
     openers: Option<Arc<dashmap::DashMap<String, Arc<dyn ChannelOpener>>>>,
     /// Fan-out restriction: allowlist for peer-initiated reverse target connections (None = unrestricted, allow all)
     acl: Option<Arc<PeerAcl>>,
+    /// Federation P2/P3: delegation hooks (group enforcement + E2E unwrap; None = feature off)
+    hooks: Option<Arc<dyn DelegationHooks>>,
     /// Current session mux handle (available while connected; used by control-plane diagnostics to open streams)
     current_mux: Arc<arc_swap::ArcSwapOption<MuxSession>>,
     /// Negotiated upstream protocol version (0 = not connected / unknown; gates v3 delegation features)
@@ -134,6 +159,7 @@ impl RelayConnector {
             client_router: None,
             openers: None,
             acl: None,
+            hooks: None,
             current_mux: Arc::new(arc_swap::ArcSwapOption::from_pointee(None)),
             upstream_version: Arc::new(AtomicU32::new(0)),
             delegation_acks: Arc::new(dashmap::DashMap::new()),
@@ -217,6 +243,12 @@ impl RelayConnector {
     /// Fan-out restriction: set the allowlist for peer-initiated reverse target connections (None = unrestricted, allow all).
     pub fn with_acl(mut self, acl: Option<Arc<PeerAcl>>) -> Self {
         self.acl = acl;
+        self
+    }
+
+    /// Federation P2/P3: inject delegation hooks (per-open group enforcement + E2E unwrap).
+    pub fn with_delegation_hooks(mut self, hooks: Arc<dyn DelegationHooks>) -> Self {
+        self.hooks = Some(hooks);
         self
     }
 
@@ -404,6 +436,7 @@ impl RelayConnector {
         let current_mux = self.current_mux.clone();
         let upstream_version = self.upstream_version.clone();
         let delegation_acks = self.delegation_acks.clone();
+        let hooks = self.hooks.clone();
 
         tokio::spawn(async move {
             let mut ping_timeout = next_ping_delay();
@@ -448,8 +481,9 @@ impl RelayConnector {
                         let events = events.clone();
                         let transit = transit.clone();
                         let peer_label = peer_label.clone();
+                        let hooks = hooks.clone();
                         tokio::spawn(async move {
-                            if let Err(e) = Self::handle_open(mux_inner, req, peer_router, client_router, openers, acl, events, transit, peer_label).await {
+                            if let Err(e) = Self::handle_open(mux_inner, req, peer_router, client_router, openers, acl, events, transit, peer_label, hooks).await {
                                 debug!(error = %e, "open channel handling finished with error");
                             }
                         });
@@ -564,7 +598,8 @@ impl RelayConnector {
             .store(ConnectionState::Disconnected as u8, Ordering::Relaxed);
     }
 
-    /// On an Open frame: fan-out restriction -> downstream routing (multi-hop) -> client tunnel routes (re-advertise) -> local direct connect.
+    /// On an Open frame: delegation enforcement (federation P2/P3) -> fan-out restriction ->
+    /// downstream routing (multi-hop) -> client tunnel routes (re-advertise) -> local direct connect.
     #[allow(clippy::too_many_arguments)]
     async fn handle_open(
         mux: Arc<MuxSession>,
@@ -576,19 +611,83 @@ impl RelayConnector {
         events: broadcast::Sender<PeerEvent>,
         transit: Option<(Arc<TransitMeter>, String)>,
         peer_label: String,
+        hooks: Option<Arc<dyn DelegationHooks>>,
     ) -> Result<()> {
-        let open_req: OpenChannel = serde_json::from_slice(&req.payload)
+        let mut open_req: OpenChannel = serde_json::from_slice(&req.payload)
             .map_err(|e| Error::Protocol(format!("invalid open channel payload: {e}")))?;
 
-        let target_addr = format!("{}:{}", open_req.target_addr, open_req.target_port);
-        debug!(channel_id = req.channel_id, target = %target_addr, "handling open request");
-
-        // bandwidth-diagnostic reserved address: intercept before the restriction check
+        // bandwidth-diagnostic reserved address: intercept before any enforcement
         // (protocol-level diagnostic service, same tier as heartbeat; answered locally,
         // no routing capability, restricted nodes equally testable, not an ACL bypass)
         if crate::relay::bandwidth::intercept(&mux, &req, &open_req.target_addr).await {
             return Ok(());
         }
+
+        // federation P2/P3: delegation enforcement (issuer endpoint) / blind transit (middle hop)
+        let mut e2e_cipher: Option<ChannelCipher> = None;
+        if let Some(hooks) = &hooks {
+            match &open_req.e2e {
+                Some(env) => match hooks.e2e_unwrap(env) {
+                    Ok(Some((payload, cipher))) => {
+                        // endpoint role: the sealed group set is enforced against *local* rules
+                        // (the relay never saw the target nor the fine-grained rules)
+                        let target = format!("{}:{}", payload.target_addr, payload.target_port);
+                        if hooks.group_acl_allows(&payload.groups, &target) != Some(true) {
+                            warn!(target = %target, "e2e open denied by local group rules");
+                            let _ = events.send(PeerEvent::AclDenied {
+                                peer_label: peer_label.clone(),
+                                target,
+                            });
+                            mux.send_frame(Frame::empty(FrameType::OpenFail, req.channel_id))
+                                .await?;
+                            return Ok(());
+                        }
+                        e2e_cipher = Some(cipher);
+                        open_req = OpenChannel::new(payload.target_addr, payload.target_port);
+                    }
+                    Ok(None) => {
+                        // transit role: unknown kid — forward the envelope verbatim (stay blind)
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "e2e unwrap failed, rejecting open");
+                        mux.send_frame(Frame::empty(FrameType::OpenFail, req.channel_id))
+                            .await?;
+                        return Ok(());
+                    }
+                },
+                None => {
+                    let target = format!("{}:{}", open_req.target_addr, open_req.target_port);
+                    // fail-close (hard discipline 3): a plaintext Open hitting an e2e_required
+                    // group is refused — a flag-stripping relay degrades to DoS, never to plaintext
+                    if hooks.e2e_required_hit(&target) {
+                        warn!(target = %target, "plaintext open hits an e2e_required group, refusing (fail-close)");
+                        let _ = events.send(PeerEvent::AclDenied {
+                            peer_label: peer_label.clone(),
+                            target,
+                        });
+                        mux.send_frame(Frame::empty(FrameType::OpenFail, req.channel_id))
+                            .await?;
+                        return Ok(());
+                    }
+                    // transparent tier: per-open group enforcement against local same-named groups
+                    if !open_req.groups.is_empty()
+                        && hooks.group_acl_allows(&open_req.groups, &target) != Some(true)
+                    {
+                        warn!(target = %target, groups = ?open_req.groups, "delegated open denied by local group rules");
+                        let _ = events.send(PeerEvent::AclDenied {
+                            peer_label: peer_label.clone(),
+                            target,
+                        });
+                        mux.send_frame(Frame::empty(FrameType::OpenFail, req.channel_id))
+                            .await?;
+                        return Ok(());
+                    }
+                }
+            }
+        }
+
+        let target_addr = format!("{}:{}", open_req.target_addr, open_req.target_port);
+        debug!(channel_id = req.channel_id, target = %target_addr, "handling open request");
 
         // fan-out restriction: with a restriction table, reverse-initiated targets must hit the allowlist (None = unrestricted, allow all)
         if let Some(acl) = &acl
@@ -610,15 +709,16 @@ impl RelayConnector {
         if let Some(listener) = &peer_router
             && let Some(next_peer) = listener.resolve_peer(&open_req.target_addr)
         {
-            match listener
-                .open_channel(&next_peer, &open_req.target_addr, open_req.target_port)
-                .await
-            {
+            match listener.open_channel_full(&next_peer, &open_req).await {
                 Ok(peer_channel) => {
                     mux.send_frame(Frame::empty(FrameType::OpenOk, req.channel_id))
                         .await?;
-                    // bridge(channel, peer): up = upstream->downstream peer (transit from=this connector)
-                    let (up, down) = bridge(channel, peer_channel).await?;
+                    // bridge(channel, peer): up = upstream->downstream peer (transit from=this connector);
+                    // E2E record layer wraps the mux side when this endpoint unwrapped the Open
+                    let (up, down) = match e2e_cipher {
+                        Some(c) => bridge(E2eStream::new(channel, c), peer_channel).await?,
+                        None => bridge(channel, peer_channel).await?,
+                    };
                     if let Some((m, f)) = &transit {
                         m.record(f, &next_peer, up, down);
                     }
@@ -654,7 +754,10 @@ impl RelayConnector {
                                 mux.send_frame(Frame::empty(FrameType::OpenOk, req.channel_id))
                                     .await?;
                                 // bridge(channel, tunnel): up = upstream->client tunnel
-                                let (up, down) = bridge(channel, tunnel_channel).await?;
+                                let (up, down) = match e2e_cipher {
+                                    Some(c) => bridge(E2eStream::new(channel, c), tunnel_channel).await?,
+                                    None => bridge(channel, tunnel_channel).await?,
+                                };
                                 if let Some((m, f)) = &transit {
                                     m.record(f, &node_id, up, down);
                                 }
@@ -688,8 +791,12 @@ impl RelayConnector {
                 mux.send_frame(Frame::empty(FrameType::OpenOk, req.channel_id))
                     .await?;
                 // bridge(local, channel): bytes_ab = local->upstream, bytes_ba = upstream->local;
-                // transit up = from(upstream)->to(local) direction, i.e. bytes_ba
-                let (bytes_ab, bytes_ba) = bridge(local_stream, channel).await?;
+                // transit up = from(upstream)->to(local) direction, i.e. bytes_ba;
+                // E2E record layer wraps the mux side when this endpoint unwrapped the Open
+                let (bytes_ab, bytes_ba) = match e2e_cipher {
+                    Some(c) => bridge(local_stream, E2eStream::new(channel, c)).await?,
+                    None => bridge(local_stream, channel).await?,
+                };
                 if let Some((m, f)) = &transit {
                     m.record(f, TO_LOCAL, bytes_ba, bytes_ab);
                 }

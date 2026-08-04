@@ -8,7 +8,7 @@ use crate::db::Database;
 use crate::db::models::ConnectorRecord;
 use crate::relay_auth::ManageableRegistry;
 use crate::service::acl::PeerAclRegistry;
-use crate::service::delegation::build_register_msg;
+use crate::service::delegation::{DelegationEngine, build_register_msg};
 use crate::service::{ClientRoutes, load_pem_certs, resolve_upstream};
 use agile_net_core::proto::frame::{Frame, FrameType};
 use agile_net_core::proto::message::{CtrlMessage, PROTOCOL_VERSION_DELEGATION, PushedGroupMsg};
@@ -48,6 +48,9 @@ pub struct ConnectorManager {
     /// Federation P2: delegated-token registration state, (token_id, connector_id) ->
     /// "pending" / "registered" / "failed: <reason>" / "offline" / "unsupported" (upstream < v3)
     delegation_states: Arc<DashMap<(String, String), String>>,
+    /// Federation P2/P3: data-plane enforcement engine (group ACL / E2E unwrap / fail-close),
+    /// shared by every connector this node runs
+    delegation: Arc<DelegationEngine>,
     handles: DashMap<String, ConnectorHandle>,
 }
 
@@ -63,6 +66,7 @@ impl ConnectorManager {
             manageable: Arc::new(DashMap::new()),
             transit: None,
             delegation_states: Arc::new(DashMap::new()),
+            delegation: DelegationEngine::new(),
             handles: DashMap::new(),
         }
     }
@@ -100,6 +104,9 @@ impl ConnectorManager {
 
     /// Startup assembly: bring up all enabled connectors from the DB (a single failure is logged only).
     pub async fn start_all(&self) {
+        // federation P2/P3: warm the delegation caches before any Open can arrive
+        self.delegation.refresh_keys(&self.db);
+        self.delegation.refresh_groups(&self.db);
         let views = match self.db.list_connectors() {
             Ok(v) => v,
             Err(e) => {
@@ -291,7 +298,8 @@ impl ConnectorManager {
             tls_builder,
         )?
         .with_advertise(parse_advertise(&rec.advertise))
-        .with_acl(self.acl.handle(rec.group_id.as_deref()));
+        .with_acl(self.acl.handle(rec.group_id.as_deref()))
+        .with_delegation_hooks(self.delegation.clone());
 
         // Federation P1: assemble the pushed policy groups (connector.push_groups -> name + rules)
         let push_slot = Arc::new(arc_swap::ArcSwap::from_pointee(
@@ -476,6 +484,8 @@ impl ConnectorManager {
     /// Federation P1: refresh every connector's pushed-group slot from the DB (config_version watcher;
     /// a content change reconnects the connector to re-push upstream).
     pub fn refresh_push_groups(&self) {
+        // federation P2/P3: group/rule edits also invalidate the delegation enforcement cache
+        self.delegation.refresh_groups(&self.db);
         for h in self.handles.iter() {
             if let Ok(Some(rec)) = self.db.get_connector(h.key()) {
                 let groups = self.pushed_groups_of(&rec);
@@ -484,6 +494,11 @@ impl ConnectorManager {
                 }
             }
         }
+    }
+
+    /// Federation P2/P3: rebuild the delegation E2E key cache (call after issue/revoke).
+    pub fn refresh_delegation_keys(&self) {
+        self.delegation.refresh_keys(&self.db);
     }
 
     /// Federation P2: revoke a delegated token — delete locally and send the revocation frame to

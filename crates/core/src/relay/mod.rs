@@ -14,7 +14,7 @@ pub mod transit;
 
 pub use acl::PeerAcl;
 pub use bridge::bridge;
-pub use connector::{ConnectionState, RelayConnector};
+pub use connector::{ConnectionState, DelegationHooks, RelayConnector};
 pub use limit::TokenBucket;
 pub use listener::{
     AuthIdentity, DelegatedRegistry, DelegatedStamp, DelegatedToken, PeerEvent, RelayListener,
