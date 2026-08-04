@@ -91,8 +91,9 @@ pub async fn issue_token(
         return err(StatusCode::BAD_REQUEST, codes::VALIDATION_FAILED, "容灾集合必须恰好一个主入口");
     }
 
-    // auto-derive the E2E hint from the primary connector's advertised routes when the caller
-    // did not provide one explicitly; mandatory once any referenced group is e2e_required
+    // auto-derive the E2E hint from the primary connector's effective advertise set (manual
+    // advertise + pushed group rules — the same set the upstream route table will carry) when
+    // the caller did not provide one explicitly; mandatory once any referenced group is e2e_required
     let mut hint_map = req.hint_map.clone();
     let db_groups = state
         .db_call(|db| db.list_groups(1, 10000, None).map(|(g, _)| g))
@@ -112,23 +113,19 @@ pub async fn issue_token(
             .expect("exactly one primary checked above");
         let advertise = state
             .db_call(move |db| {
-                db.get_connector(&primary_id)
-                    .map(|c| c.map(|c| c.advertise))
+                db.get_connector(&primary_id).map(|c| {
+                    c.map(|c| crate::service::connectors::effective_advertise_of(db, &c))
+                })
             })
             .await
             .ok()
             .flatten()
             .unwrap_or_default();
-        let advertise: Vec<String> = advertise
-            .split(',')
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect();
         let Some(hint) = delegation::derive_hint(&advertise) else {
             return err(
                 StatusCode::BAD_REQUEST,
                 codes::VALIDATION_FAILED,
-                "引用组含端到端加密组，但主入口扇出未声明任何可路由的 advertise（无法生成路由词）",
+                "引用组含端到端加密组，但主入口扇出没有任何可路由项（路由宣告与上送组规则均为空），无法生成路由词——请先为该扇出配置上送组或路由宣告",
             );
         };
         let group_names: Vec<String> = req

@@ -979,7 +979,7 @@
       <label class="chk" style="margin-top:12px"><input type="checkbox" id="fo-insecure"> <span data-i18n="fanout.insecure">跳过 TLS 证书校验（insecure，仅调试用）</span></label>
       <label><span data-i18n="fanout.pushLabel">上送权限组</span> <span class="hint inline" data-i18n="fanout.pushHint">随握手推送给上游，对端可一键采纳授权（可空）</span></label>
       <div id="fo-push-list" style="max-height:110px;overflow-y:auto"></div>
-      <label data-i18n="fanout.advertiseLabel">路由再发布 advertise（每行一条 CIDR/域名，可空）</label>
+      <label><span data-i18n="fanout.advertiseLabel">路由再发布 advertise（每行一条 CIDR/域名，可空）</span> <span class="hint inline" data-i18n="fanout.advertiseHint">上送组规则自动并集，此处仅填额外路由</span></label>
       <textarea id="fo-advertise" class="mono" rows="3" placeholder="10.12.0.0/16&#10;git.internal"></textarea>
       <label data-i18n="common.remark">备注</label>
       <input id="fo-remark" placeholder="可空" data-i18n-ph="common.optional">

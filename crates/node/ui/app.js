@@ -1504,7 +1504,7 @@ function connectorFormHtml(c) {
     '<label>' + T('fanout.sniHostLabel') + '</label><input id="cf-sni" class="mono" style="width:100%" value="' + esc(c.sni_hostname||'') + '">' +
     '<label>' + T('fanout.fpLabel') + ' <span class="hint">' + T('fanout.fpHint') + '</span></label><input id="cf-fp" class="mono" style="width:100%" value="' + esc(c.pinned_fingerprint||'') + '" placeholder="sha256...">' +
     '<label class="chk" style="display:flex;align-items:center;gap:6px;margin-top:8px"><input type="checkbox" id="cf-insecure" ' + (c.insecure?'checked':'') + '> ' + T('fanout.insecure') + '</label>' +
-    '<label>' + T('fanout.advertiseLabel') + '</label><textarea id="cf-advertise" class="mono" style="width:100%;height:90px" placeholder="10.12.0.0/16&#10;git.internal">' + esc((c.advertise||'').split(',').filter(Boolean).join('\n')) + '</textarea>' +
+    '<label>' + T('fanout.advertiseLabel') + ' <span class="hint">' + T('fanout.advertiseHint') + '</span></label><textarea id="cf-advertise" class="mono" style="width:100%;height:90px" placeholder="10.12.0.0/16&#10;git.internal">' + esc((c.advertise||'').split(',').filter(Boolean).join('\n')) + '</textarea>' +
     '<label>' + T('adm.groupLabel') + '</label><select id="cf-group" style="width:100%">' +
       '<option value="">' + T('adm.noRestrictOpt') + '</option>' +
       S.groups.map(g => '<option value="' + esc(g.id) + '" ' + (c.group_id===g.id?'selected':'') + '>' + esc(g.name) + '</option>').join('') + '</select>' +

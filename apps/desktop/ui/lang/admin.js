@@ -268,6 +268,7 @@ AgI18n.register({
   'fanout.fpLabel': { zh: '证书指纹钉值', en: 'Cert Fingerprint Pinning' },
   'fanout.fpHint': { zh: '可空；对端节点状态页复制，64 位 hex，优先于 insecure', en: 'Optional; copy from the peer node status page, 64 hex chars, takes priority over insecure' },
   'fanout.advertiseLabel': { zh: '路由再发布 advertise（每行一条 CIDR/域名，可空）', en: 'Route re-advertise (one CIDR/domain per line, optional)' },
+  'fanout.advertiseHint': { zh: '上送组规则自动并集，此处仅填额外路由', en: 'Pushed group rules are unioned automatically; add only extra routes here' },
   'fanout.needAll': { zh: '名称、上游地址与 token 必填', en: 'Name, upstream address and token are required' },
   'fanout.createdToast': { zh: '已创建（隧道开始连接）', en: 'Created (tunnel is connecting)' },
   'fanout.notFound': { zh: '扇出对端不存在', en: 'Fan-out peer not found' },

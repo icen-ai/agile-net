@@ -257,9 +257,15 @@ impl RelayConnector {
         self.events.subscribe()
     }
 
-    /// Current effective advertise set = static config + client tunnel rule values (route re-advertise).
+    /// Current effective advertise set = static config + pushed policy group rules (federation:
+    /// offering a group implies those targets are reachable through this endpoint — the route
+    /// table is what makes adopted groups and delegated tokens actually servable) + client
+    /// tunnel rule values (route re-advertise).
     fn effective_advertise(&self) -> Vec<String> {
         let mut set: std::collections::BTreeSet<String> = self.advertise.iter().cloned().collect();
+        for g in self.push_groups.load().iter() {
+            set.extend(g.rules.iter().cloned());
+        }
         if let Some(r) = &self.client_router {
             set.extend(r.load().rule_values());
         }
@@ -833,4 +839,34 @@ impl RelayConnector {
 fn next_ping_delay() -> Duration {
     let sample = -30.0 * (1.0 - rand::random::<f64>()).ln();
     Duration::from_secs_f64(sample.clamp(5.0, 90.0))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Effective advertise = static config ∪ pushed group rules ∪ client tunnel rules (deduped,
+    /// sorted by the BTreeSet). The pushed-group union is what makes adopted groups and
+    /// delegated E2E hints routable without a hand-maintained advertise list.
+    #[test]
+    fn effective_advertise_unions_pushed_group_rules() {
+        let c = RelayConnector::new("127.0.0.1:54430".parse().unwrap(), "n1", "t")
+            .unwrap()
+            .with_advertise(vec!["corp.example.com".to_string()]);
+        let slot = Arc::new(arc_swap::ArcSwap::from_pointee(vec![PushedGroupMsg {
+            name: "dev".into(),
+            remark: String::new(),
+            rules: vec!["10.12.0.0/16".into(), "git.internal".into()],
+            e2e_required: false,
+        }]));
+        let c = c.with_push_groups(slot);
+        assert_eq!(
+            c.effective_advertise(),
+            vec![
+                "10.12.0.0/16".to_string(),
+                "corp.example.com".to_string(),
+                "git.internal".to_string()
+            ]
+        );
+    }
 }

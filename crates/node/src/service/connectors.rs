@@ -478,25 +478,7 @@ impl ConnectorManager {
 
     /// Assemble the pushed policy groups of a connector record (push_groups ids -> name + rule values).
     fn pushed_groups_of(&self, rec: &ConnectorRecord) -> Vec<PushedGroupMsg> {
-        rec.push_groups
-            .split(',')
-            .map(|s| s.trim())
-            .filter(|s| !s.is_empty())
-            .filter_map(|gid| {
-                let g = self.db.get_group(gid).ok()??;
-                let rules = self
-                    .db
-                    .rules_of_group(gid)
-                    .map(|rs| rs.into_iter().map(|r| r.value).collect())
-                    .unwrap_or_default();
-                Some(PushedGroupMsg {
-                    name: g.name,
-                    remark: g.remark,
-                    rules,
-                    e2e_required: g.e2e_required,
-                })
-            })
-            .collect()
+        pushed_group_msgs(&self.db, rec)
     }
 
     /// Federation P1: refresh every connector's pushed-group slot from the DB (config_version watcher;
@@ -648,6 +630,51 @@ fn parse_advertise(advertise: &str) -> Vec<String> {
         .collect()
 }
 
+/// Assemble the pushed policy groups of a connector record (push_groups ids -> name + rule values).
+fn pushed_group_msgs(db: &Database, rec: &ConnectorRecord) -> Vec<PushedGroupMsg> {
+    rec.push_groups
+        .split(',')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .filter_map(|gid| {
+            let g = db.get_group(gid).ok()??;
+            let rules = db
+                .rules_of_group(gid)
+                .map(|rs| rs.into_iter().map(|r| r.value).collect())
+                .unwrap_or_default();
+            Some(PushedGroupMsg {
+                name: g.name,
+                remark: g.remark,
+                rules,
+                e2e_required: g.e2e_required,
+            })
+        })
+        .collect()
+}
+
+/// Effective advertise set of a connector record, mirroring `RelayConnector::effective_advertise`
+/// (minus client-tunnel re-advertise): manual advertise + pushed group rules, deduped with the
+/// first occurrence kept (manual entries first). Delegation E2E hints are derived from this set
+/// so the hint always matches what the upstream route table will actually carry.
+pub fn effective_advertise_of(db: &Database, rec: &ConnectorRecord) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    let mut push = |e: String| {
+        if seen.insert(e.clone()) {
+            out.push(e);
+        }
+    };
+    for e in parse_advertise(&rec.advertise) {
+        push(e);
+    }
+    for g in pushed_group_msgs(db, rec) {
+        for r in g.rules {
+            push(r);
+        }
+    }
+    out
+}
+
 /// Connection state literal (matches the API display).
 fn state_str(state: ConnectionState) -> &'static str {
     match state {
@@ -674,5 +701,61 @@ impl std::fmt::Display for BandwidthPeerError {
                 write!(f, "{m}")
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rec(advertise: &str, push_groups: &str) -> ConnectorRecord {
+        ConnectorRecord {
+            id: "c1".into(),
+            name: "c1".into(),
+            upstream_addr: "127.0.0.1:54430".into(),
+            token_enc: String::new(),
+            sni_hostname: String::new(),
+            insecure: false,
+            ca_cert_path: String::new(),
+            pinned_cert_path: String::new(),
+            pinned_fingerprint: String::new(),
+            advertise: advertise.into(),
+            group_id: None,
+            push_groups: push_groups.into(),
+            enabled: true,
+            remark: String::new(),
+            created_at: String::new(),
+            updated_at: String::new(),
+        }
+    }
+
+    #[test]
+    fn effective_advertise_unions_pushed_group_rules() {
+        let db = Database::in_memory().unwrap();
+        let gid = db.create_group("dev", "").unwrap().id;
+        let r1 = db.create_rule("ip-cidr", "10.12.0.0/16", false, "").unwrap().id;
+        let r2 = db.create_rule("host", "git.internal", false, "").unwrap().id;
+        db.set_group_rules(&gid, &[r1, r2]).unwrap();
+
+        // manual advertise first, pushed rules appended, duplicates dropped (first occurrence kept)
+        let v = effective_advertise_of(&db, &rec("10.12.0.0/16, corp.example.com", &gid));
+        assert_eq!(
+            v,
+            vec![
+                "10.12.0.0/16".to_string(),
+                "corp.example.com".to_string(),
+                "git.internal".to_string()
+            ]
+        );
+
+        // empty manual advertise: pushed rules alone make the endpoint routable (rule order is
+        // DB-defined — compare as a set)
+        let mut v = effective_advertise_of(&db, &rec("", &gid));
+        v.sort();
+        assert_eq!(v, vec!["10.12.0.0/16".to_string(), "git.internal".to_string()]);
+
+        // no push groups: manual advertise only
+        let v = effective_advertise_of(&db, &rec("10.0.0.0/8", ""));
+        assert_eq!(v, vec!["10.0.0.0/8".to_string()]);
     }
 }

@@ -26,6 +26,12 @@ Admin UI → **Fan-out** → **Delegation** tab → **Issue Delegation**:
 4. Add a label and generate — you get a full link (or a downloadable `.anet` credential
    file, optionally PIN-encrypted).
 
+Route advertisement needs no hand maintenance: a fan-out's pushed group rules are unioned
+into the routes it declares upstream (offering implies reachability), and the E2E routing
+hint is derived from that same set — the hint always lands within what the peer's route
+table actually carries. Fill the advertise field only for extra segments beyond the pushed
+groups.
+
 **Trust semantics** (pinned in the dialog): in transparent tier the failover set is exactly
 *who can see the traffic*; with E2E it is a pure availability set (upstreams only see
 routing hints).

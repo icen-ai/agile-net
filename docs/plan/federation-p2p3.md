@@ -290,3 +290,10 @@ ALTER TABLE "group" ADD COLUMN e2e_required INTEGER NOT NULL DEFAULT 0;
     注册帧构建时 resolve 为组名（悬空跳过 + warn）。e2e_key 恒推导并加密落库
     （AES-256-GCM，同 connector token 机器密钥，第二可逆例外），避免「透明令牌后挂 E2E 组」
     的补签窗口。
+12. **advertise 自动并集上送组规则（2026-08-04 补充）**：原设计要求扇出方手工维护 advertise
+    路由宣告，hint 从其中派生——实践中只配上送组（push_groups）的端点会导致整条数据面
+    （采纳组流量、透明/E2E 委托）在上游路由表无回程路由，签发 E2E 委托直接 400。落地收敛：
+    `RelayConnector::effective_advertise()` = 手工 advertise ∪ 上送组规则（∪ 客户端隧道
+    再发布路由，既有）；语义即「上送组 = 资源邀约 = 路由声明」。上送组变更本就走重连重推，
+    advertise 随之热更新，无新帧无新槽位。签发侧 hint 派生走同一并集
+    （`connectors::effective_advertise_of`），保证 hint 恒落在对方路由表实际承载的集合内。

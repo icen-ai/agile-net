@@ -95,6 +95,7 @@ AgI18n.register({
   'fanout.noRestrictOpt': { zh: '不收敛（放行一切）', en: 'No restriction (allow all)' },
   'fanout.insecure': { zh: '跳过 TLS 证书校验（insecure，仅调试用）', en: 'Skip TLS certificate verification (insecure, debug only)' },
   'fanout.advertiseLabel': { zh: '路由再发布 advertise（每行一条 CIDR/域名，可空）', en: 'Route re-advertise (one CIDR/domain per line, optional)' },
+  'fanout.advertiseHint': { zh: '上送组规则自动并集，此处仅填额外路由', en: 'Pushed group rules are unioned automatically; add only extra routes here' },
   // ---- paste-to-import + shared link parser errors (identical values as lang/admin.js, both ends aligned) ----
   'fanout.pastePh': { zh: '粘贴扇出链接自动填充技术字段（anet://fanout?...）', en: 'Paste a fan-out link to autofill technical fields (anet://fanout?...)' },
   'fanout.pasted': { zh: '已从链接填充技术字段，请补全名称等业务字段', en: 'Technical fields filled from the link; complete the business fields (name etc.)' },

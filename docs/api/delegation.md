@@ -7,8 +7,9 @@
   （离线上游随断线天然失效）；注册状态实时可见；
 - **容灾集合**：同一令牌可注册多个上游（恰好一个主入口）；链接内嵌全量入口与逐入口
   证书指纹，客户端断开按序故障切换；
-- **E2E（federation P3）**：引用组含 `e2e_required` 组时自动从主入口 advertise 推导路由词
-  （hint），链接携带 `ehint`——消费者全部 Open 端到端加密，中继只见路由词；
+- **E2E（federation P3）**：引用组含 `e2e_required` 组时自动从主入口有效 advertise 集
+  （手工 advertise ∪ 上送组规则）推导路由词（hint），链接携带 `ehint`——消费者全部
+  Open 端到端加密，中继只见路由词；
   E2E 主密钥（HKDF(token)）AES-256-GCM 加密落库（第二个、也是最后一个可逆例外）。
 
 ---
@@ -72,9 +73,10 @@
 - `label`：必填，≤128 字符（导入方可见，链接 `account=d:<label>` 标记）。
 - `group_ids`：至少一个本地权限组 ID；组必须存在。
 - `regs`：容灾集合，至少一条且**恰好一个主入口**；connector 必须存在。
-- `hint_map`：可空。引用组含 `e2e_required` 组且未显式提供时，自动从主入口
-  advertise 推导单条路由词（CIDR → 网络号+1，`*.suffix` → `relay<suffix>`，具体主机 → 自身）；
-  advertise 为空时报错（无法生成可路由的词）。
+- `hint_map`：可空。引用组含 `e2e_required` 组且未显式提供时，自动从主入口的**有效
+  advertise 集**（手工 advertise ∪ 上送组规则，与上游路由表实际承载一致）推导单条路由词
+  （CIDR → 网络号+1，`*.suffix` → `relay<suffix>`，具体主机 → 自身）；
+  有效集为空时报错（无法生成可路由的词——请先为该扇出配置上送组或路由宣告）。
 
 ### 响应 201
 
