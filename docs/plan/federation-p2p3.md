@@ -306,3 +306,12 @@ ALTER TABLE "group" ADD COLUMN e2e_required INTEGER NOT NULL DEFAULT 0;
     （有效密钥即授权，应答内容恒为令牌自身词表，无越权面）；C 改规则后 A 重连/故障切换即
     刷新。分流档要求引用组含 e2e_required 组（签发 400 拦截）；DB v11
     `delegated_token.mode` 落库（徽标展示与链接重建）。
+14. **委托管理授权 + 穿透管理（2026-08-05 补充）**：E2E 配置通道升级为 `DelegationConfig`
+    （rules + admin + upstreams）。`delegated_token.admin_scope`（DB v13，''/ro/rules/full）
+    非空即管理档：票据经配置通道下发（**仅限 E2E**——票据绝不明文过 B，签发 400 拦截），
+    消费端桌面经保留目标 `__anet_delegation_admin__` 桥接签发端 loopback API 打开控制台
+    （票据 kind 沿用 `relay`——admin_ticket CHECK 仅允许 account/relay，attribution 靠
+    `deleg:<label>@<kid>` subject）。full 档额外收到签发端 manageable 注册表的上游报价，
+    经 blob 目标 `upstream:<node_name>` 让签发端在同一会话上开嵌套信道直拨上游控制端点
+    （A→E2E→C→扇出会话→B API 全链，B 依旧只见 hint）。链接新增 `eadmin=1` 能力提示
+    （旧端忽略，仅丢管理入口）。旧端兼容性不变；「先复制再编辑」语义同采纳镜像。

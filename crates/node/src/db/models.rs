@@ -246,6 +246,10 @@ pub struct DelegatedTokenRecord {
     /// Consumer mode: `dedicated` (专线, default) or `split` (分流 — E2E rule delivery)
     #[serde(default = "default_delegated_mode")]
     pub mode: String,
+    /// Admin capability: '' = data-plane only; ro/rules/full = manage this issuer over the
+    /// E2E admin channel (full additionally unlocks transit management of upstreams)
+    #[serde(default)]
+    pub admin_scope: String,
     pub created_at: String,
     /// Disaster-set registration rows (one per upstream connector)
     #[serde(default)]

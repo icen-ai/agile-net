@@ -66,6 +66,11 @@ pub struct IssueRequest {
     /// delivered E2E-sealed on pull; requires at least one e2e_required group)
     #[serde(default)]
     pub mode: String,
+    /// Admin capability: '' (default) or ro/rules/full — the consumer pulls a bootstrap ticket
+    /// over the E2E config channel and manages this issuer; `full` additionally unlocks transit
+    /// management of discovered upstreams. Requires at least one e2e_required group.
+    #[serde(default)]
+    pub admin_scope: String,
 }
 
 #[derive(Deserialize)]
@@ -97,6 +102,9 @@ pub async fn issue_token(
     let mode = if req.mode.is_empty() { "dedicated" } else { req.mode.as_str() };
     if mode != "dedicated" && mode != "split" {
         return err(StatusCode::BAD_REQUEST, codes::VALIDATION_FAILED, "接入模式只能是 dedicated（专线）或 split（分流）");
+    }
+    if !["", "ro", "rules", "full"].contains(&req.admin_scope.as_str()) {
+        return err(StatusCode::BAD_REQUEST, codes::VALIDATION_FAILED, "管理授权档位只能是 ro / rules / full");
     }
 
     // auto-derive the E2E hint from the primary connector's effective advertise set (manual
@@ -157,6 +165,14 @@ pub async fn issue_token(
             "分流档要求引用组含端到端加密组（规则经 E2E 通道下发）",
         );
     }
+    // a bootstrap ticket must never cross a relay in plaintext — admin requires the E2E channel
+    if !req.admin_scope.is_empty() && hint_map.is_empty() {
+        return err(
+            StatusCode::BAD_REQUEST,
+            codes::VALIDATION_FAILED,
+            "授权管理要求引用组含端到端加密组（票据经 E2E 通道下发）",
+        );
+    }
 
     let regs: Vec<(String, bool)> = req
         .regs
@@ -166,9 +182,10 @@ pub async fn issue_token(
     let label = req.label.trim().to_string();
     let group_ids = req.group_ids.clone();
     let mode_owned = mode.to_string();
+    let admin_scope = req.admin_scope.clone();
     let issued = state
         .db_call(move |db| {
-            delegation::issue_token(db, &label, &group_ids, &hint_map, &regs, &mode_owned)
+            delegation::issue_token(db, &label, &group_ids, &hint_map, &regs, &mode_owned, &admin_scope)
                 .map_err(|e| agile_net_core::error::Error::Other(e.to_string()))
         })
         .await;
@@ -250,7 +267,7 @@ fn build_share_url(
         serde_json::from_str(&rec.hint_map).unwrap_or_default();
     let ehint = hint_map.first().map(|h| h.hint.as_str());
     let emode = (rec.mode == "split").then_some("split");
-    agile_net_core::link::build_delegate_url(&primary, &rec.label, plaintext, &entries, ehint, emode)
+    agile_net_core::link::build_delegate_url(&primary, &rec.label, plaintext, &entries, ehint, emode, !rec.admin_scope.is_empty())
 }
 
 /// Render one token for the API (group names resolved, per-upstream state folded in).
@@ -297,6 +314,7 @@ fn token_json(
         "label": rec.label,
         "groups": groups,
         "mode": rec.mode,
+        "admin_scope": rec.admin_scope,
         "hint_map": serde_json::from_str::<Vec<HintEntry>>(&rec.hint_map).unwrap_or_default(),
         "regs": regs,
         "created_at": rec.created_at,

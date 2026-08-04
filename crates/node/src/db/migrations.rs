@@ -284,6 +284,17 @@ const MIGRATIONS: &[(u32, &str, &str)] = &[
     ALTER TABLE "group" ADD COLUMN adopted_name TEXT NOT NULL DEFAULT '';
     "#,
     ),
+    (
+        13,
+        "delegated_token_admin_scope",
+        r#"
+    -- Delegated admin capability (federation P3): '' = data-plane only; ro/rules/full =
+    -- the consumer may pull a bootstrap ticket over the E2E config channel and manage this
+    -- issuer (full additionally unlocks transit management of discovered upstreams).
+    -- Requires an E2E hint at issuance — a ticket must never cross a relay in plaintext.
+    ALTER TABLE delegated_token ADD COLUMN admin_scope TEXT NOT NULL DEFAULT '';
+    "#,
+    ),
 ];
 
 impl Database {
@@ -626,7 +637,7 @@ mod tests {
             db.set_group_e2e_required("g-old", true).expect("free group can be marked");
 
             let tok = db
-                .create_delegated_token(&"ab".repeat(32), "psk_test01", "legacy-issue", "[]", "[]", "v1:AAAA:CCCC", "dedicated")
+                .create_delegated_token(&"ab".repeat(32), "psk_test01", "legacy-issue", "[]", "[]", "v1:AAAA:CCCC", "dedicated", "")
                 .expect("create delegated token");
             assert_eq!(tok.mode, "dedicated");
             db.set_delegated_token_regs(&tok.id, &[("conn-old".to_string(), true)])

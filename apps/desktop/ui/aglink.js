@@ -93,6 +93,8 @@ function parse(url) {
       // federation P3 consumer tier: 'split' = E2E rule delivery (route selectively);
       // absent = dedicated 专线 (whole machine captured)
       emode: p.emode || '',
+      // federation P3 delegated admin capability hint (ticket pull via the E2E config channel)
+      eadmin: truthy(p.eadmin),
     };
   }
   const sv = resolveServer(p, 54430);
@@ -134,6 +136,7 @@ function buildConnect(f) {
   }
   if (f.ehint) params.push(['ehint', f.ehint]);
   if (f.emode === 'split') params.push(['emode', 'split']);
+  if (f.eadmin) params.push(['eadmin', '1']);
   return 'anet://connect?' + qs(params);
 }
 

@@ -35,7 +35,12 @@ Admin UI → **Fan-out** → **Delegation** tab → **Issue Delegation**:
    its whole machine into the tunnel and never sees the rule vocabulary (dedicated-line use);
    **Split** — the vocabulary is delivered E2E-sealed and only authorized targets enter the
    tunnel, leaving daily traffic untouched. Either way the relay sees only the coarse hint.
-5. Add a label and generate — you get a full link (or a downloadable `.anet` credential
+5. **Management grant** (optional, requires an E2E group): the consumer receives a bootstrap
+   ticket over the E2E channel (never in relay plaintext) and can open this endpoint's admin
+   console — read-only / rules / full. **Full** additionally unlocks transit management of the
+   upstreams this endpoint has discovered (console path: consumer → E2E → this endpoint →
+   fan-out session → upstream), with the relay blind beyond the routing hint.
+6. Add a label and generate — you get a full link (or a downloadable `.anet` credential
    file, optionally PIN-encrypted).
 
 Route advertisement needs no hand maintenance: a fan-out's pushed group rules are unioned

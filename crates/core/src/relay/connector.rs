@@ -52,6 +52,35 @@ pub enum ConnectionState {
 /// The connector is the endpoint of delegated traffic: Opens stamped with group tags (P2) are
 /// enforced against the issuer's *local* same-named groups; E2E envelopes (P3) are unwrapped
 /// and enforced against the sealed group set. Everything stays in-memory on the hot path.
+/// Split-tier config answer (federation P3): the token's rule vocabulary plus, for
+/// admin-capable tokens, a bootstrap ticket into the issuer's loopback admin API and
+/// (full scope) the manageable upstream offers for transit management.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct DelegationConfig {
+    pub rules: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub admin: Option<DelegationAdmin>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub upstreams: Vec<DelegationUpstream>,
+}
+
+/// Admin capability of a delegated token: a fresh bootstrap ticket + the issuer's API port.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct DelegationAdmin {
+    pub ticket: String,
+    pub port: u16,
+}
+
+/// Manageable upstream offer passed through to a full-admin consumer (transit management).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct DelegationUpstream {
+    pub node_name: String,
+    pub ticket: String,
+    pub api_host: String,
+    pub api_port: u16,
+    pub scope: String,
+}
+
 pub trait DelegationHooks: Send + Sync {
     /// ACL check for an Open carrying group tags against the issuer's local groups (unknown
     /// names ignored). Returns None when every named group is unknown (caller rejects + audits).
@@ -67,11 +96,21 @@ pub trait DelegationHooks: Send + Sync {
     /// Err = forged/corrupt envelope (reject the Open).
     fn e2e_unwrap(&self, e2e: &E2eOpen) -> Result<Option<(E2eOpenPayload, ChannelCipher)>>;
 
-    /// Split-tier rule delivery (federation P3): the effective rule vocabulary of the token the
-    /// kid belongs to — answered to a config-fetch open (reserved target, E2E-sealed) so the
-    /// consumer routes selectively instead of capturing the whole machine. None = unknown kid
-    /// or feature unsupported (default).
-    fn delegation_rules(&self, _kid: &str) -> Option<Vec<String>> {
+    /// Split-tier config answer (federation P3): rule vocabulary + admin capability +
+    /// upstream offers of the token the kid belongs to — answered to a config-fetch open
+    /// (reserved target, E2E-sealed). None = unknown kid or feature unsupported (default).
+    fn delegation_config(&self, _kid: &str) -> Option<DelegationConfig> {
+        None
+    }
+
+    /// Admin bridge port for the token the kid belongs to (None = no admin capability).
+    fn delegation_admin_port(&self, _kid: &str) -> Option<u16> {
+        None
+    }
+
+    /// Transit management: the discovered upstream offer a full-admin token may dial
+    /// through this fan-out session (None = not full scope / upstream not discovered).
+    fn delegation_upstream(&self, _kid: &str, _node_name: &str) -> Option<DelegationUpstream> {
         None
     }
 }
@@ -648,16 +687,70 @@ impl RelayConnector {
                         // payload, never dialed; the working key is the authorization (the
                         // rules are the token's own), so no group-ACL gate applies here
                         if payload.target_addr == crate::relay::e2e::DELEGATION_CONFIG_TARGET {
-                            let rules = hooks.delegation_rules(&env.kid).unwrap_or_default();
+                            let cfg = hooks.delegation_config(&env.kid).unwrap_or_default();
                             mux.send_frame(Frame::empty(FrameType::OpenOk, req.channel_id))
                                 .await?;
                             let channel = mux.accept_channel(req.channel_id);
                             let mut stream = E2eStream::new(channel, cipher);
-                            let body = serde_json::to_vec(&serde_json::json!({ "rules": rules }))
+                            let body = serde_json::to_vec(&cfg)
                                 .map_err(|e| Error::Protocol(e.to_string()))?;
                             use tokio::io::AsyncWriteExt;
                             let _ = stream.write_all(&body).await;
                             let _ = stream.shutdown().await;
+                            mux.close_channel(req.channel_id);
+                            return Ok(());
+                        }
+                        // delegated admin: bridge to the issuer's loopback admin API (the ticket
+                        // rides the config channel above — this channel carries HTTP only)
+                        if payload.target_addr == crate::relay::e2e::DELEGATION_ADMIN_TARGET {
+                            let Some(port) = hooks.delegation_admin_port(&env.kid) else {
+                                mux.send_frame(Frame::empty(FrameType::OpenFail, req.channel_id))
+                                    .await?;
+                                return Ok(());
+                            };
+                            let channel = mux.accept_channel(req.channel_id);
+                            match tokio::net::TcpStream::connect(("127.0.0.1", port)).await {
+                                Ok(local) => {
+                                    mux.send_frame(Frame::empty(FrameType::OpenOk, req.channel_id))
+                                        .await?;
+                                    bridge(local, E2eStream::new(channel, cipher)).await?;
+                                }
+                                Err(e) => {
+                                    warn!(error = %e, "delegated admin bridge: local API unreachable");
+                                    mux.send_frame(Frame::empty(FrameType::OpenFail, req.channel_id))
+                                        .await?;
+                                }
+                            }
+                            mux.close_channel(req.channel_id);
+                            return Ok(());
+                        }
+                        // transit management: `upstream:<node_name>` dials a discovered upstream's
+                        // control endpoint through a nested channel on this very fan-out session
+                        if let Some(up_name) = payload
+                            .target_addr
+                            .strip_prefix(crate::relay::e2e::DELEGATION_UPSTREAM_PREFIX)
+                        {
+                            let Some(up) = hooks.delegation_upstream(&env.kid, up_name) else {
+                                mux.send_frame(Frame::empty(FrameType::OpenFail, req.channel_id))
+                                    .await?;
+                                return Ok(());
+                            };
+                            let channel = mux.accept_channel(req.channel_id);
+                            let nested_open = OpenChannel::new(up.api_host.clone(), up.api_port);
+                            let nested_payload = serde_json::to_vec(&nested_open)
+                                .map_err(|e| Error::Protocol(e.to_string()))?;
+                            match mux.open_channel(Bytes::from(nested_payload)).await {
+                                Ok(nested) => {
+                                    mux.send_frame(Frame::empty(FrameType::OpenOk, req.channel_id))
+                                        .await?;
+                                    bridge(E2eStream::new(channel, cipher), nested).await?;
+                                }
+                                Err(e) => {
+                                    warn!(upstream = %up_name, error = %e, "transit management: nested open failed");
+                                    mux.send_frame(Frame::empty(FrameType::OpenFail, req.channel_id))
+                                        .await?;
+                                }
+                            }
                             mux.close_channel(req.channel_id);
                             return Ok(());
                         }

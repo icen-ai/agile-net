@@ -25,14 +25,15 @@ impl Database {
         hint_map_json: &str,
         e2e_key_enc: &str,
         mode: &str,
+        admin_scope: &str,
     ) -> Result<DelegatedTokenRecord> {
         let conn = self.conn();
         let id = uuid::Uuid::new_v4().to_string();
         let now = now_rfc3339();
         conn.execute(
-            "INSERT INTO delegated_token (id, token_hash, token_prefix, label, groups, hint_map, e2e_key_enc, mode, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            params![id, token_hash, token_prefix, label, groups_json, hint_map_json, e2e_key_enc, mode, now],
+            "INSERT INTO delegated_token (id, token_hash, token_prefix, label, groups, hint_map, e2e_key_enc, mode, admin_scope, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![id, token_hash, token_prefix, label, groups_json, hint_map_json, e2e_key_enc, mode, admin_scope, now],
         )
         .map_err(db_err)?;
         Ok(DelegatedTokenRecord {
@@ -44,6 +45,7 @@ impl Database {
             hint_map: hint_map_json.to_string(),
             e2e_key_enc: e2e_key_enc.to_string(),
             mode: mode.to_string(),
+            admin_scope: admin_scope.to_string(),
             created_at: now,
             regs: Vec::new(),
         })
@@ -54,7 +56,7 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn
             .prepare(
-                "SELECT id, token_hash, token_prefix, label, groups, hint_map, e2e_key_enc, mode, created_at
+                "SELECT id, token_hash, token_prefix, label, groups, hint_map, e2e_key_enc, mode, admin_scope, created_at
                  FROM delegated_token ORDER BY created_at DESC",
             )
             .map_err(db_err)?;
@@ -77,7 +79,7 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn
             .prepare(
-                "SELECT id, token_hash, token_prefix, label, groups, hint_map, e2e_key_enc, mode, created_at
+                "SELECT id, token_hash, token_prefix, label, groups, hint_map, e2e_key_enc, mode, admin_scope, created_at
                  FROM delegated_token WHERE id = ?1",
             )
             .map_err(db_err)?;
@@ -151,7 +153,7 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn
             .prepare(
-                "SELECT t.id, t.token_hash, t.token_prefix, t.label, t.groups, t.hint_map, t.e2e_key_enc, t.mode, t.created_at
+                "SELECT t.id, t.token_hash, t.token_prefix, t.label, t.groups, t.hint_map, t.e2e_key_enc, t.mode, t.admin_scope, t.created_at
                  FROM delegated_token t
                  JOIN delegated_token_reg r ON r.token_id = t.id
                  WHERE r.connector_id = ?1
@@ -176,7 +178,7 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn
             .prepare(
-                "SELECT id, token_hash, token_prefix, label, groups, hint_map, e2e_key_enc, mode, created_at
+                "SELECT id, token_hash, token_prefix, label, groups, hint_map, e2e_key_enc, mode, admin_scope, created_at
                  FROM delegated_token WHERE substr(token_hash, 1, 8) = ?1",
             )
             .map_err(db_err)?;
@@ -199,7 +201,8 @@ fn map_delegated_row(r: &rusqlite::Row) -> rusqlite::Result<DelegatedTokenRecord
         hint_map: r.get(5)?,
         e2e_key_enc: r.get(6)?,
         mode: r.get(7)?,
-        created_at: r.get(8)?,
+        admin_scope: r.get(8)?,
+        created_at: r.get(9)?,
         regs: Vec::new(),
     })
 }
@@ -215,7 +218,7 @@ mod tests {
     }
 
     fn mk_token(db: &Database, hash: &str, label: &str) -> DelegatedTokenRecord {
-        db.create_delegated_token(hash, "psk_test01", label, "[\"g1\",\"g2\"]", "[{\"hint\":\"*.internal\",\"groups\":[\"git\"]}]", "v1:AAAA:BBBB", "split")
+        db.create_delegated_token(hash, "psk_test01", label, "[\"g1\",\"g2\"]", "[{\"hint\":\"*.internal\",\"groups\":[\"git\"]}]", "v1:AAAA:BBBB", "split", "full")
             .expect("create delegated token")
     }
 

@@ -184,6 +184,7 @@ async fn export_requires_confirm() {
                 entry_fps: Vec::new(),
                 ehint: None,
                 emode: None,
+                eadmin: false,
             },
         )
         .await;

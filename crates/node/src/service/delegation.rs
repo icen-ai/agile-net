@@ -20,12 +20,20 @@ pub fn issue_token(
     hint_map: &[HintEntry],
     regs: &[(String, bool)],
     mode: &str,
+    admin_scope: &str,
 ) -> Result<(DelegatedTokenRecord, String)> {
     if label.len() > 128 {
         bail!("备注过长（≤128 字符）");
     }
     if mode != "dedicated" && mode != "split" {
         bail!("未知的接入模式: {mode}");
+    }
+    if !["", "ro", "rules", "full"].contains(&admin_scope) {
+        bail!("未知的管理授权档位: {admin_scope}");
+    }
+    // a bootstrap ticket must never cross a relay in plaintext — admin requires the E2E channel
+    if !admin_scope.is_empty() && hint_map.is_empty() {
+        bail!("授权管理要求引用组含端到端加密组（票据经 E2E 通道下发）");
     }
     if regs.is_empty() {
         bail!("容灾集合不能为空（至少选择一个扇出上游）");
@@ -62,6 +70,7 @@ pub fn issue_token(
         &hint_json,
         &e2e_key_enc,
         mode,
+        admin_scope,
     )?;
     db.set_delegated_token_regs(&rec.id, regs)?;
     let rec = db.get_delegated_token(&rec.id)?.expect("just created");
@@ -155,6 +164,17 @@ struct KeyEntry {
     /// Local group names the token may use (empty-sealed blobs inherit this set — a consumer
     /// client knows no group names and seals "all groups of my token")
     groups: Vec<String>,
+    /// Admin capability ('' = data-plane only; ro/rules/full)
+    admin_scope: String,
+    /// Token label (ticket subject attribution)
+    label: String,
+}
+
+/// Runtime wiring for admin-capable tokens (issuer API endpoint + upstream registry + ticket minter).
+struct AdminRuntime {
+    db: Database,
+    control_api: std::sync::Arc<arc_swap::ArcSwapOption<(String, u16)>>,
+    manageable: crate::relay_auth::ManageableRegistry,
 }
 
 /// In-memory delegation enforcement engine (federation P2/P3, issuer side).
@@ -168,12 +188,28 @@ struct KeyEntry {
 pub struct DelegationEngine {
     keys: arc_swap::ArcSwap<std::collections::HashMap<String, KeyEntry>>,
     groups: arc_swap::ArcSwap<std::collections::HashMap<String, std::sync::Arc<GroupEntry>>>,
+    admin_runtime: arc_swap::ArcSwapOption<AdminRuntime>,
 }
 
 impl DelegationEngine {
     /// Empty engine (nothing unwraps, nothing enforces, nothing fails closed).
     pub fn new() -> std::sync::Arc<Self> {
         std::sync::Arc::new(Self::default())
+    }
+
+    /// Wire the admin runtime (issuer API endpoint + upstream registry + ticket minter);
+    /// called once at service assembly. Without it, admin-capable tokens stay data-plane only.
+    pub fn set_admin_runtime(
+        &self,
+        db: Database,
+        control_api: std::sync::Arc<arc_swap::ArcSwapOption<(String, u16)>>,
+        manageable: crate::relay_auth::ManageableRegistry,
+    ) {
+        self.admin_runtime.store(Some(std::sync::Arc::new(AdminRuntime {
+            db,
+            control_api,
+            manageable,
+        })));
     }
 
     /// Rebuild the kid -> E2E key cache from the DB (call on issue/revoke and at startup).
@@ -190,7 +226,12 @@ impl DelegationEngine {
                         .collect();
                     map.insert(
                         agile_net_core::relay::e2e::kid_of(&rec.token_hash).to_string(),
-                        KeyEntry { key, groups },
+                        KeyEntry {
+                            key,
+                            groups,
+                            admin_scope: rec.admin_scope.clone(),
+                            label: rec.label.clone(),
+                        },
                     );
                 }
                 Err(e) => {
@@ -269,21 +310,97 @@ impl agile_net_core::relay::DelegationHooks for DelegationEngine {
         Ok(Some((payload, cipher)))
     }
 
-    fn delegation_rules(&self, kid: &str) -> Option<Vec<String>> {
+    fn delegation_config(&self, kid: &str) -> Option<agile_net_core::relay::DelegationConfig> {
+        use agile_net_core::relay::{DelegationAdmin, DelegationConfig, DelegationUpstream};
         let keys = self.keys.load();
         let entry = keys.get(kid)?;
         let groups = self.groups.load();
-        let mut out: Vec<String> = Vec::new();
+        let mut rules: Vec<String> = Vec::new();
         for name in &entry.groups {
             if let Some(g) = groups.get(name) {
                 for r in &g.rules {
-                    if !out.contains(r) {
-                        out.push(r.clone());
+                    if !rules.contains(r) {
+                        rules.push(r.clone());
                     }
                 }
             }
         }
-        Some(out)
+        let mut cfg = DelegationConfig {
+            rules,
+            ..Default::default()
+        };
+        if !entry.admin_scope.is_empty()
+            && let Some(rt) = self.admin_runtime.load_full()
+        {
+            if let Some(port) = rt.control_api.load().as_ref().map(|a| a.1) {
+                // a fresh bootstrap ticket per config pull (per fan-out session); the exchange
+                // on the issuer API attributes the session to deleg:<label>@<kid>
+                // (kind stays 'relay' — the admin_ticket CHECK constraint only allows account/relay;
+                // the deleg: subject prefix carries the attribution)
+                let subject = format!("deleg:{}@{}", entry.label, &kid[..8.min(kid.len())]);
+                if let Ok(ticket) = rt.db.create_admin_ticket(
+                    "relay",
+                    &subject,
+                    &entry.admin_scope,
+                    crate::relay_auth::RELAY_TICKET_MAX_USES,
+                    crate::relay_auth::RELAY_TICKET_TTL_SECS,
+                ) {
+                    cfg.admin = Some(DelegationAdmin { ticket, port });
+                } else {
+                    tracing::warn!(kid, "delegated admin ticket mint failed");
+                }
+            }
+            // transit management: full-scope tokens additionally receive the discovered
+            // upstream offers (tickets rotate with the issuer's own fan-out handshakes)
+            if entry.admin_scope == "full" {
+                cfg.upstreams = rt
+                    .manageable
+                    .iter()
+                    .map(|o| {
+                        let v = o.value();
+                        DelegationUpstream {
+                            node_name: v.node_name.clone(),
+                            ticket: v.ticket.clone(),
+                            api_host: v.api_host.clone().unwrap_or_default(),
+                            api_port: v.api_port,
+                            scope: v.scope.clone(),
+                        }
+                    })
+                    .collect();
+            }
+        }
+        Some(cfg)
+    }
+
+    fn delegation_admin_port(&self, kid: &str) -> Option<u16> {
+        let keys = self.keys.load();
+        let entry = keys.get(kid)?;
+        if entry.admin_scope.is_empty() {
+            return None;
+        }
+        let rt = self.admin_runtime.load_full()?;
+        rt.control_api.load().as_ref().map(|a| a.1)
+    }
+
+    fn delegation_upstream(
+        &self,
+        kid: &str,
+        node_name: &str,
+    ) -> Option<agile_net_core::relay::DelegationUpstream> {
+        let keys = self.keys.load();
+        if keys.get(kid)?.admin_scope != "full" {
+            return None;
+        }
+        let rt = self.admin_runtime.load_full()?;
+        let o = rt.manageable.get(node_name)?;
+        let v = o.value();
+        Some(agile_net_core::relay::DelegationUpstream {
+            node_name: v.node_name.clone(),
+            ticket: v.ticket.clone(),
+            api_host: v.api_host.clone().unwrap_or_default(),
+            api_port: v.api_port,
+            scope: v.scope.clone(),
+        })
     }
 }
 
@@ -307,7 +424,7 @@ mod tests {
         let gid = mk_group(&db, "git");
         let cid = mk_connector(&db, "up-1");
 
-        let (rec, plaintext) = issue_token(&db, "alice", std::slice::from_ref(&gid), &[], &[(cid.clone(), true)], "dedicated").unwrap();
+        let (rec, plaintext) = issue_token(&db, "alice", std::slice::from_ref(&gid), &[], &[(cid.clone(), true)], "dedicated", "").unwrap();
         assert!(plaintext.starts_with("psk_"));
         assert_eq!(plaintext.len(), 4 + 48);
         assert_eq!(rec.token_prefix, plaintext[..8]);
@@ -330,15 +447,15 @@ mod tests {
         let cid = mk_connector(&db, "up-1");
 
         // empty disaster set
-        assert!(issue_token(&db, "a", &[gid.clone()], &[], &[], "dedicated").is_err());
+        assert!(issue_token(&db, "a", &[gid.clone()], &[], &[], "dedicated", "").is_err());
         // no primary entry
-        assert!(issue_token(&db, "a", &[gid.clone()], &[], &[(cid.clone(), false)], "dedicated").is_err());
+        assert!(issue_token(&db, "a", &[gid.clone()], &[], &[(cid.clone(), false)], "dedicated", "").is_err());
         // missing group
-        assert!(issue_token(&db, "a", &["no-such-group".into()], &[], &[(cid.clone(), true)], "dedicated").is_err());
+        assert!(issue_token(&db, "a", &["no-such-group".into()], &[], &[(cid.clone(), true)], "dedicated", "").is_err());
         // missing connector
-        assert!(issue_token(&db, "a", &[gid.clone()], &[], &[("no-such-conn".into(), true)], "dedicated").is_err());
+        assert!(issue_token(&db, "a", &[gid.clone()], &[], &[("no-such-conn".into(), true)], "dedicated", "").is_err());
         // oversized label
-        assert!(issue_token(&db, &"x".repeat(200), &[gid], &[], &[(cid, true)], "dedicated").is_err());
+        assert!(issue_token(&db, &"x".repeat(200), &[gid], &[], &[(cid, true)], "dedicated", "").is_err());
     }
 
     #[test]
@@ -351,18 +468,50 @@ mod tests {
         db.set_group_rules(&g1, &[r1.clone(), r2]).unwrap();
         db.set_group_rules(&g2, &[r1]).unwrap(); // same value bound to both groups -> dedup
         let cid = mk_connector(&db, "up-1");
-        let (rec, _) = issue_token(&db, "alice", &[g1, g2], &[], &[(cid, true)], "dedicated").unwrap();
+        let (rec, _) = issue_token(&db, "alice", &[g1, g2], &[], &[(cid, true)], "dedicated", "").unwrap();
 
         let engine = DelegationEngine::new();
         engine.refresh_keys(&db);
         engine.refresh_groups(&db);
         use agile_net_core::relay::DelegationHooks;
         let kid = agile_net_core::relay::e2e::kid_of(&rec.token_hash).to_string();
-        let rules = engine.delegation_rules(&kid).expect("known kid");
+        let rules = engine.delegation_config(&kid).expect("known kid").rules;
         assert!(rules.contains(&"10.12.0.0/16".to_string()));
         assert!(rules.contains(&"*.internal".to_string()));
         assert_eq!(rules.len(), 2, "values deduped: {rules:?}");
-        assert!(engine.delegation_rules("deadbeef").is_none());
+        assert!(engine.delegation_config("deadbeef").is_none());
+    }
+
+    #[test]
+    fn engine_admin_config_ticket_and_scope() {
+        let db = Database::in_memory().unwrap();
+        let gid = mk_group(&db, "db-fine");
+        let cid = mk_connector(&db, "up-1");
+        let (rec, _) = issue_token(
+            &db,
+            "root-laptop",
+            &[gid],
+            &[HintEntry { hint: "relay.internal".into(), groups: vec!["db-fine".into()] }],
+            &[(cid, true)],
+            "dedicated",
+            "full",
+        )
+        .unwrap();
+        let engine = DelegationEngine::new();
+        engine.refresh_keys(&db);
+        engine.refresh_groups(&db);
+        let slot = std::sync::Arc::new(arc_swap::ArcSwapOption::from_pointee(Some((
+            "127.0.0.1".to_string(),
+            59999u16,
+        ))));
+        engine.set_admin_runtime(db.clone(), slot, Default::default());
+        use agile_net_core::relay::DelegationHooks;
+        let kid = agile_net_core::relay::e2e::kid_of(&rec.token_hash).to_string();
+        let cfg = engine.delegation_config(&kid).expect("config");
+        let admin = cfg.admin.expect("admin capability");
+        assert_eq!(admin.port, 59999);
+        assert!(admin.ticket.starts_with("adt_"));
+        assert_eq!(engine.delegation_admin_port(&kid), Some(59999));
     }
 
     #[test]
@@ -371,7 +520,7 @@ mod tests {
         let g1 = mk_group(&db, "git");
         let g2 = mk_group(&db, "ops");
         let cid = mk_connector(&db, "up-1");
-        let (rec, _) = issue_token(&db, "alice", &[g1.clone(), g2.clone()], &[], &[(cid, true)], "dedicated").unwrap();
+        let (rec, _) = issue_token(&db, "alice", &[g1.clone(), g2.clone()], &[], &[(cid, true)], "dedicated", "").unwrap();
 
         let msg = build_register_msg(&db, &rec);
         let CtrlMessage::TokenRegister { token_hash, label, groups, hint_map } = msg else {
@@ -396,7 +545,7 @@ mod tests {
         let db = Database::in_memory().unwrap();
         let gid = mk_group(&db, "git");
         let cid = mk_connector(&db, "up-1");
-        let (rec, _) = issue_token(&db, "alice", &[gid], &[], &[(cid, true)], "dedicated").unwrap();
+        let (rec, _) = issue_token(&db, "alice", &[gid], &[], &[(cid, true)], "dedicated", "").unwrap();
 
         let revoked = revoke_token(&db, &rec.id).unwrap().expect("existed");
         assert_eq!(revoked.token_hash, rec.token_hash);
@@ -458,7 +607,7 @@ mod tests {
         let db = Database::in_memory().unwrap();
         let gid = mk_group(&db, "db-prod");
         let cid = mk_connector(&db, "up-1");
-        let (rec, plaintext) = issue_token(&db, "alice", &[gid], &[], &[(cid, true)], "dedicated").unwrap();
+        let (rec, plaintext) = issue_token(&db, "alice", &[gid], &[], &[(cid, true)], "dedicated", "").unwrap();
 
         let engine = DelegationEngine::new();
         engine.refresh_keys(&db);

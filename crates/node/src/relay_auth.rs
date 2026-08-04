@@ -24,8 +24,8 @@ pub type ManageableRegistry = Arc<dashmap::DashMap<String, ControlOffer>>;
 /// Security boundary equals the relay token itself: a psk holder can reconnect
 /// for a fresh ticket anytime; TTL only bounds the leak window. Revoking the
 /// token and kicking sessions recovers everything (refresh tokens revocable separately).
-const RELAY_TICKET_TTL_SECS: i64 = 7 * 24 * 3600;
-const RELAY_TICKET_MAX_USES: i32 = 10000;
+pub(crate) const RELAY_TICKET_TTL_SECS: i64 = 7 * 24 * 3600;
+pub(crate) const RELAY_TICKET_MAX_USES: i32 = 10000;
 
 pub struct DbTokenValidator {
     db: Database,

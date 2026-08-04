@@ -324,6 +324,13 @@ impl NodeServer {
                 .with_manageable(manageable_registry.clone())
                 .with_transit_meter(transit_meter.clone()),
         );
+        // federation P3 delegated admin: wire the issuer API endpoint + upstream registry +
+        // ticket minter into the enforcement engine (config-channel answers, admin bridges)
+        connector_manager.delegation_engine().set_admin_runtime(
+            db.clone(),
+            control_api_slot.clone(),
+            manageable_registry.clone(),
+        );
         connector_manager.start_all().await;
         startup.connectors = Some(connector_manager.clone());
 

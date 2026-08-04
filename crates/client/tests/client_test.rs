@@ -137,6 +137,7 @@ async fn client_connect_and_pull_config() {
             entry_fps: Vec::new(),
             ehint: None,
             emode: None,
+            eadmin: false,
         })
         .await
         .unwrap();
@@ -172,6 +173,7 @@ async fn client_socks5_through_tunnel_to_echo() {
             entry_fps: Vec::new(),
             ehint: None,
             emode: None,
+            eadmin: false,
         })
         .await
         .unwrap();
@@ -225,6 +227,7 @@ async fn disable_account_kicks_active_tunnel() {
             entry_fps: Vec::new(),
             ehint: None,
             emode: None,
+            eadmin: false,
         })
         .await
         .unwrap();
@@ -297,6 +300,7 @@ async fn disconnect_removes_routes() {
             entry_fps: Vec::new(),
             ehint: None,
             emode: None,
+            eadmin: false,
         })
         .await
         .unwrap();
@@ -363,6 +367,7 @@ async fn credentials_persist() {
                 entry_fps: Vec::new(),
                 ehint: None,
                 emode: None,
+                eadmin: false,
             },
         )
         .await;

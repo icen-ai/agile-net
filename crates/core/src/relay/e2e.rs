@@ -46,6 +46,15 @@ pub const MAX_BLOCK: usize = 16 * 1024;
 /// locally (never dialed, never ACL-gated — the working key is the authorization).
 pub const DELEGATION_CONFIG_TARGET: &str = "__anet_delegation_config__";
 
+/// Delegated admin channel (federation P3): bridges to the issuer's loopback admin API —
+/// E2E-sealed end to end, so the bootstrap ticket never crosses a relay in plaintext.
+pub const DELEGATION_ADMIN_TARGET: &str = "__anet_delegation_admin__";
+
+/// Transit management prefix (federation P3): a blob target of `upstream:<node_name>` asks the
+/// issuer (full-admin tokens only) to dial a discovered upstream's control endpoint through
+/// the fan-out session — nested channel on the same mux, E2E on the consumer side only.
+pub const DELEGATION_UPSTREAM_PREFIX: &str = "upstream:";
+
 const NONCE_LEN: usize = 12;
 const TAG_LEN: usize = 16;
 const LEN_PREFIX: usize = 4;

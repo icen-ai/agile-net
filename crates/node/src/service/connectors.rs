@@ -505,6 +505,11 @@ impl ConnectorManager {
         self.delegation.refresh_keys(&self.db);
     }
 
+    /// The shared delegation engine (admin runtime wiring lives on it).
+    pub fn delegation_engine(&self) -> Arc<DelegationEngine> {
+        self.delegation.clone()
+    }
+
     /// Open a stream toward a discovered manageable upstream (handshake v2): the connector
     /// whose current control offer names this upstream dials the offered control endpoint
     /// through the fan-out session. None = upstream not discovered / connector offline.

@@ -51,6 +51,11 @@ pub struct ConnectLink {
     /// captured, the 专线 tier). Older clients ignore it and stay on dedicated.
     #[serde(default)]
     pub emode: Option<String>,
+    /// Federation P3 admin capability hint (delegated E2E links only): the token may pull a
+    /// bootstrap ticket over the E2E config channel and manage the issuer. Older clients
+    /// ignore it and simply lose the console entry (data plane unaffected).
+    #[serde(default)]
+    pub eadmin: bool,
 }
 
 impl ConnectLink {
@@ -135,6 +140,7 @@ pub fn parse_connect_url(url: &str) -> std::result::Result<ConnectLink, String> 
     let mut entry_fps: Vec<String> = Vec::new();
     let mut ehint: Option<String> = None;
     let mut emode: Option<String> = None;
+    let mut eadmin = false;
     for pair in rest.split('&') {
         let mut kv = pair.splitn(2, '=');
         let (k, v) = (kv.next().unwrap_or(""), kv.next().unwrap_or(""));
@@ -155,6 +161,8 @@ pub fn parse_connect_url(url: &str) -> std::result::Result<ConnectLink, String> 
             "ehint" => ehint = Some(v),
             // federation P3 split tier: pull the rule vocabulary and route selectively
             "emode" => emode = Some(v),
+            // federation P3 delegated admin: the token may manage the issuer (ticket via config channel)
+            "eadmin" => eadmin = truthy(&v),
             _ => {}
         }
     }
@@ -174,6 +182,7 @@ pub fn parse_connect_url(url: &str) -> std::result::Result<ConnectLink, String> 
         entry_fps,
         ehint,
         emode,
+        eadmin,
     })
 }
 
@@ -311,6 +320,7 @@ pub fn build_delegate_url(
     entries: &[(String, String)],
     ehint: Option<&str>,
     emode: Option<&str>,
+    eadmin: bool,
 ) -> String {
     debug_assert!(
         entries.iter().any(|(a, _)| a == primary_addr),
@@ -336,6 +346,9 @@ pub fn build_delegate_url(
     // dedicated is the default tier — only the split tier is spelled out
     if let Some(mode) = emode.filter(|m| *m == "split") {
         url.push_str(&format!("&emode={mode}"));
+    }
+    if eadmin {
+        url.push_str("&eadmin=1");
     }
     if entries.len() > 1 {
         let addrs = entries
@@ -465,7 +478,7 @@ mod tests {
             ("b2.example.com:54430".to_string(), "".to_string()),
             ("10.0.0.3:54430".to_string(), "cc33".to_string()),
         ];
-        let url = build_delegate_url("b1.example.com:54430", "alice-laptop", "psk_secret", &entries, Some("relay.internal"), Some("split"));
+        let url = build_delegate_url("b1.example.com:54430", "alice-laptop", "psk_secret", &entries, Some("relay.internal"), Some("split"), true);
         let p = parse_connect_url(&url).expect("parse delegate link");
         assert!(p.is_delegated());
         assert_eq!(p.delegated_label(), Some("alice-laptop"));
@@ -474,6 +487,7 @@ mod tests {
         assert_eq!(p.pinned_fingerprint.as_deref(), Some("aa11"));
         assert_eq!(p.ehint.as_deref(), Some("relay.internal"));
         assert_eq!(p.emode.as_deref(), Some("split"));
+        assert!(p.eadmin);
         assert_eq!(
             p.entries(),
             vec![
@@ -488,10 +502,11 @@ mod tests {
     #[test]
     fn delegate_url_single_entry_omits_entry_params() {
         let entries = vec![("b1.example.com:54430".to_string(), "aa11".to_string())];
-        let url = build_delegate_url("b1.example.com:54430", "bob", "psk_x", &entries, None, None);
+        let url = build_delegate_url("b1.example.com:54430", "bob", "psk_x", &entries, None, None, false);
         assert!(!url.contains("entry="));
         assert!(!url.contains("ehint="));
         assert!(!url.contains("emode="));
+        assert!(!url.contains("eadmin="));
         let p = parse_connect_url(&url).unwrap();
         assert_eq!(p.entries(), vec!["b1.example.com:54430".to_string()]);
         assert_eq!(p.ehint, None);

@@ -38,6 +38,9 @@ pub struct Credential {
     /// selectively; None = `dedicated` (专线 — whole machine captured)
     #[serde(default)]
     pub emode: Option<String>,
+    /// Federation P3 delegated admin capability hint
+    #[serde(default)]
+    pub eadmin: bool,
 }
 
 /// Service name in the OS keyring (shared by Windows Credential Manager / macOS Keychain).
@@ -262,6 +265,7 @@ mod tests {
             entry_fps: Vec::new(),
             ehint: None,
             emode: None,
+            eadmin: false,
         }
     }
 

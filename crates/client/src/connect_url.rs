@@ -45,6 +45,9 @@ pub struct ParsedConnect {
     /// Federation P3 consumer mode (`split` = E2E rule delivery; None = dedicated 专线)
     #[serde(default)]
     pub emode: Option<String>,
+    /// Federation P3 delegated admin capability hint (ticket pull via the E2E config channel)
+    #[serde(default)]
+    pub eadmin: bool,
 }
 
 /// Parse an `anet://connect?...` URL (legacy `agilenet://` accepted).
@@ -66,6 +69,7 @@ pub fn parse_connect_url(url: &str) -> std::result::Result<ParsedConnect, String
         entry_fps: link.entry_fps,
         ehint: link.ehint,
         emode: link.emode,
+        eadmin: link.eadmin,
     })
 }
 
@@ -118,6 +122,7 @@ mod tests {
             entry_fps: Vec::new(),
             ehint: None,
             emode: None,
+            eadmin: false,
         };
         let url = connect_url_of(&c);
         assert!(url.starts_with("anet://connect?"));

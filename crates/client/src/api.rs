@@ -491,6 +491,8 @@ struct ConnectInput {
     ehint: Option<String>,
     #[serde(default)]
     emode: Option<String>,
+    #[serde(default)]
+    eadmin: bool,
 }
 
 async fn connect_node(State(state): State<ApiState>, Json(input): Json<ConnectInput>) -> Response {
@@ -507,6 +509,7 @@ async fn connect_node(State(state): State<ApiState>, Json(input): Json<ConnectIn
         entry_fps: input.entry_fps.clone(),
         ehint: input.ehint.clone(),
         emode: input.emode.clone(),
+        eadmin: input.eadmin,
     };
     let node_state = match state.client.connect(params).await {
         Ok(s) => s,
@@ -529,6 +532,7 @@ async fn connect_node(State(state): State<ApiState>, Json(input): Json<ConnectIn
                     entry_fps: input.entry_fps,
                     ehint: input.ehint,
                     emode: input.emode,
+                    eadmin: input.eadmin,
                 },
             )
             .await;

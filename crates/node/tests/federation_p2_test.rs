@@ -11,7 +11,8 @@ use agile_net_node::service::{NodeServer, NodeServerOptions};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 fn temp_dir(tag: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("anet-fedp2-test-{}-{}", tag, uuid::Uuid::new_v4()));
+    let dir =
+        std::env::temp_dir().join(format!("anet-fedp2-test-{}-{}", tag, uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }
@@ -67,7 +68,9 @@ async fn admin_token(base: &str) -> String {
 
 /// Echo server (one accepted connection per task spawn is fine for these tests)
 async fn start_echo_server(port: u16) {
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await.unwrap();
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
+        .await
+        .unwrap();
     tokio::spawn(async move {
         loop {
             let Ok((mut sock, _)) = listener.accept().await else {
@@ -138,6 +141,7 @@ fn delegated_params(entries: Vec<String>, label: &str, token: &str) -> ConnectPa
         entry_fps: Vec::new(),
         ehint: None,
         emode: None,
+        eadmin: false,
     }
 }
 
@@ -217,7 +221,10 @@ async fn boot_resource_owner(
             .expect("connector")
             .id;
         c.db().set_connector_push_groups(&cid, &gid).expect("push");
-        c.connector_manager().upsert_from_db(&cid).await.expect("upsert");
+        c.connector_manager()
+            .upsert_from_db(&cid)
+            .await
+            .expect("upsert");
         cids.push(cid);
     }
     (c, base, token, gid, echo_port, cids)
@@ -299,16 +306,40 @@ async fn p2_full_chain_and_failover() {
     assert_eq!(status, 201, "issue: {body}");
     let token = body["data"]["token"].as_str().unwrap().to_string();
     let share_url = body["data"]["share_url"].as_str().unwrap().to_string();
-    assert!(share_url.contains("account=d%3Aalice"), "delegated mark in link: {share_url}");
-    assert!(share_url.contains("entry="), "disaster set in link: {share_url}");
+    assert!(
+        share_url.contains("account=d%3Aalice"),
+        "delegated mark in link: {share_url}"
+    );
+    assert!(
+        share_url.contains("entry="),
+        "disaster set in link: {share_url}"
+    );
 
     // registration rides the fan-out sessions onto both relays
     wait_registered(&c_base, &c_token, 2).await;
     let token_hash = agile_net_node::db::sha256_hex(token.as_bytes());
-    let b1_reg = b1.server.runtime().listener.as_ref().unwrap().delegated_registry();
-    assert!(b1_reg.contains_key(&token_hash), "B1 holds the registration");
-    let b2_reg = b2.server.runtime().listener.as_ref().unwrap().delegated_registry();
-    assert!(b2_reg.contains_key(&token_hash), "B2 holds the registration");
+    let b1_reg = b1
+        .server
+        .runtime()
+        .listener
+        .as_ref()
+        .unwrap()
+        .delegated_registry();
+    assert!(
+        b1_reg.contains_key(&token_hash),
+        "B1 holds the registration"
+    );
+    let b2_reg = b2
+        .server
+        .runtime()
+        .listener
+        .as_ref()
+        .unwrap()
+        .delegated_registry();
+    assert!(
+        b2_reg.contains_key(&token_hash),
+        "B2 holds the registration"
+    );
 
     // ---- A: consumer connects with the delegated link fields (primary = B1) ----
     let entries = vec![
@@ -343,7 +374,11 @@ async fn p2_full_chain_and_failover() {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
     let nodes = a.list_nodes().await;
-    assert_eq!(nodes[0].status, NodeStatus::Connected, "A reconnected after failover");
+    assert_eq!(
+        nodes[0].status,
+        NodeStatus::Connected,
+        "A reconnected after failover"
+    );
     assert_eq!(nodes[0].current_entry, entries[1], "A failed over to B2");
     assert!(
         socks_echo(proxy_port, [127, 0, 0, 1], echo_port, b"p2-via-b2").await,
@@ -359,8 +394,11 @@ async fn p2_full_chain_and_failover() {
 async fn p2_revoke_kicks_and_reconnect_reregisters() {
     let b1 = boot_fanout("b1", "psk_b1-shared-token-0123456789").await;
     let echo_port = free_port();
-    let (c, c_base, c_token, gid, _, cids) =
-        boot_resource_owner(&[("b1-rendezvous", b1.port, "psk_b1-shared-token-0123456789")], echo_port).await;
+    let (c, c_base, c_token, gid, _, cids) = boot_resource_owner(
+        &[("b1-rendezvous", b1.port, "psk_b1-shared-token-0123456789")],
+        echo_port,
+    )
+    .await;
     wait_connected(&c, &cids).await;
 
     let http = reqwest::Client::new();
@@ -391,7 +429,11 @@ async fn p2_revoke_kicks_and_reconnect_reregisters() {
 
     let a = AgileNetClient::new();
     let state = a
-        .connect(delegated_params(vec![format!("127.0.0.1:{}", b1.port)], "carol", &token))
+        .connect(delegated_params(
+            vec![format!("127.0.0.1:{}", b1.port)],
+            "carol",
+            &token,
+        ))
         .await
         .expect("delegated connect");
     a.start_proxy(0).await.unwrap();
@@ -400,7 +442,9 @@ async fn p2_revoke_kicks_and_reconnect_reregisters() {
 
     // ---- revoke: the registry entry dies and A's session is kicked ----
     let resp = http
-        .delete(format!("{c_base}/api/v1/admin/delegation/tokens/{token_id}"))
+        .delete(format!(
+            "{c_base}/api/v1/admin/delegation/tokens/{token_id}"
+        ))
         .bearer_auth(&c_token)
         .send()
         .await
@@ -408,14 +452,23 @@ async fn p2_revoke_kicks_and_reconnect_reregisters() {
     assert!(resp.status().is_success());
 
     let token_hash = agile_net_node::db::sha256_hex(token.as_bytes());
-    let b1_reg = b1.server.runtime().listener.as_ref().unwrap().delegated_registry();
+    let b1_reg = b1
+        .server
+        .runtime()
+        .listener
+        .as_ref()
+        .unwrap()
+        .delegated_registry();
     for _ in 0..50 {
         if !b1_reg.contains_key(&token_hash) {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
-    assert!(!b1_reg.contains_key(&token_hash), "revocation cleared B1's registry");
+    assert!(
+        !b1_reg.contains_key(&token_hash),
+        "revocation cleared B1's registry"
+    );
 
     // A's live session was kicked; further opens fail (auth keeps failing on redial)
     tokio::time::sleep(std::time::Duration::from_millis(800)).await;

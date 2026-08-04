@@ -11,7 +11,8 @@ use agile_net_node::service::{NodeServer, NodeServerOptions};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 fn temp_dir(tag: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("anet-fedp3-test-{}-{}", tag, uuid::Uuid::new_v4()));
+    let dir =
+        std::env::temp_dir().join(format!("anet-fedp3-test-{}-{}", tag, uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }
@@ -66,7 +67,9 @@ async fn admin_token(base: &str) -> String {
 }
 
 async fn start_echo_server(port: u16) {
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await.unwrap();
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
+        .await
+        .unwrap();
     tokio::spawn(async move {
         loop {
             let Ok((mut sock, _)) = listener.accept().await else {
@@ -163,8 +166,12 @@ async fn p3_e2e_blind_relay_and_fail_close() {
         .create_rule("ip-cidr", "127.0.0.1/32", false, "")
         .expect("rule fine")
         .id;
-    c.db().set_group_rules(&gid_fine, &[rid_fine]).expect("bind fine");
-    c.db().set_group_e2e_required(&gid_fine, true).expect("e2e flag");
+    c.db()
+        .set_group_rules(&gid_fine, &[rid_fine])
+        .expect("bind fine");
+    c.db()
+        .set_group_e2e_required(&gid_fine, true)
+        .expect("e2e flag");
 
     // fan out with a domain-suffix advertise (hint source) plus the coarse CIDR (so B routes
     // R1's IP to C instead of dialing it locally); push only the coarse group
@@ -185,8 +192,13 @@ async fn p3_e2e_blind_relay_and_fail_close() {
         )
         .expect("connector")
         .id;
-    c.db().set_connector_push_groups(&cid, &gid_pub).expect("push");
-    c.connector_manager().upsert_from_db(&cid).await.expect("upsert");
+    c.db()
+        .set_connector_push_groups(&cid, &gid_pub)
+        .expect("push");
+    c.connector_manager()
+        .upsert_from_db(&cid)
+        .await
+        .expect("upsert");
     c.db().bump_config_version().expect("bump");
     for _ in 0..60 {
         if c.connector_manager().state_of(&cid) == Some("connected") {
@@ -235,8 +247,15 @@ async fn p3_e2e_blind_relay_and_fail_close() {
     // ---- B-side assertions (blind relay): vocabulary holds the coarse hint only ----
     let token_hash = agile_net_node::db::sha256_hex(token.as_bytes());
     let registry = b.runtime().listener.as_ref().unwrap().delegated_registry();
-    let entry = registry.get(&token_hash).expect("registration on B").clone();
-    assert_eq!(entry.groups, vec!["git-pub".to_string()], "B never sees the fine group");
+    let entry = registry
+        .get(&token_hash)
+        .expect("registration on B")
+        .clone();
+    assert_eq!(
+        entry.groups,
+        vec!["git-pub".to_string()],
+        "B never sees the fine group"
+    );
     assert_eq!(entry.hint_map.len(), 1);
     assert_eq!(entry.hint_map[0].hint, "relay.internal");
     assert!(
@@ -264,6 +283,7 @@ async fn p3_e2e_blind_relay_and_fail_close() {
             entry_fps: parsed.entry_fps,
             ehint: parsed.ehint,
             emode: parsed.emode,
+            eadmin: parsed.eadmin,
         })
         .await
         .expect("delegated connect");
@@ -293,7 +313,10 @@ async fn p3_e2e_blind_relay_and_fail_close() {
     assert_eq!(resp.status(), 201);
     let body: serde_json::Value = resp.json().await.unwrap();
     let mallory_url = body["data"]["share_url"].as_str().unwrap().to_string();
-    assert!(!mallory_url.contains("ehint="), "transparent tier has no hint");
+    assert!(
+        !mallory_url.contains("ehint="),
+        "transparent tier has no hint"
+    );
     // wait for the second token's registration before dialing (the sync task polls every 2s)
     for _ in 0..60 {
         let resp = http
@@ -329,6 +352,7 @@ async fn p3_e2e_blind_relay_and_fail_close() {
         entry_fps: parsed2.entry_fps,
         ehint: parsed2.ehint,
         emode: parsed2.emode,
+        eadmin: parsed2.eadmin,
     })
     .await
     .expect("transparent delegated connect");
@@ -338,7 +362,13 @@ async fn p3_e2e_blind_relay_and_fail_close() {
     // the plaintext Open towards R1 hits C's e2e_required group -> refused (fail-close),
     // even though B's transparent ACL would have routed it
     assert!(
-        !socks_echo(proxy_port2, [127, 0, 0, 1], echo_port, b"p3-plaintext-downgrade").await,
+        !socks_echo(
+            proxy_port2,
+            [127, 0, 0, 1],
+            echo_port,
+            b"p3-plaintext-downgrade"
+        )
+        .await,
         "plaintext downgrade must fail closed"
     );
 
@@ -394,8 +424,12 @@ async fn p3_split_tier_rule_delivery() {
         .create_rule("ip-cidr", "127.0.0.1/32", false, "")
         .expect("rule fine")
         .id;
-    c.db().set_group_rules(&gid_fine, &[rid_fine]).expect("bind fine");
-    c.db().set_group_e2e_required(&gid_fine, true).expect("e2e flag");
+    c.db()
+        .set_group_rules(&gid_fine, &[rid_fine])
+        .expect("bind fine");
+    c.db()
+        .set_group_e2e_required(&gid_fine, true)
+        .expect("e2e flag");
 
     let cid = c
         .db()
@@ -414,8 +448,13 @@ async fn p3_split_tier_rule_delivery() {
         )
         .expect("connector")
         .id;
-    c.db().set_connector_push_groups(&cid, &gid_pub).expect("push");
-    c.connector_manager().upsert_from_db(&cid).await.expect("upsert");
+    c.db()
+        .set_connector_push_groups(&cid, &gid_pub)
+        .expect("push");
+    c.connector_manager()
+        .upsert_from_db(&cid)
+        .await
+        .expect("upsert");
     c.db().bump_config_version().expect("bump");
     for _ in 0..60 {
         if c.connector_manager().state_of(&cid) == Some("connected") {
@@ -439,7 +478,11 @@ async fn p3_split_tier_rule_delivery() {
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), 400, "split without an e2e group must be rejected");
+    assert_eq!(
+        resp.status(),
+        400,
+        "split without an e2e group must be rejected"
+    );
 
     // ---- issue the split token over both groups ----
     let resp = http
@@ -458,7 +501,10 @@ async fn p3_split_tier_rule_delivery() {
     let body: serde_json::Value = resp.json().await.unwrap();
     let token = body["data"]["token"].as_str().unwrap().to_string();
     let share_url = body["data"]["share_url"].as_str().unwrap().to_string();
-    assert!(share_url.contains("emode=split"), "split tier rides the link: {share_url}");
+    assert!(
+        share_url.contains("emode=split"),
+        "split tier rides the link: {share_url}"
+    );
     assert_eq!(body["data"]["mode"].as_str(), Some("split"));
 
     // registration arrives at B
@@ -493,6 +539,7 @@ async fn p3_split_tier_rule_delivery() {
         entry_fps: parsed.entry_fps,
         ehint: parsed.ehint,
         emode: parsed.emode,
+        eadmin: parsed.eadmin,
     })
     .await
     .expect("split delegated connect");
@@ -522,7 +569,10 @@ async fn p3_split_tier_rule_delivery() {
     // B stays blind: the delivered fine rule never enters B's delegated vocabulary
     let token_hash = agile_net_node::db::sha256_hex(token.as_bytes());
     let registry = b.runtime().listener.as_ref().unwrap().delegated_registry();
-    let entry = registry.get(&token_hash).expect("registration on B").clone();
+    let entry = registry
+        .get(&token_hash)
+        .expect("registration on B")
+        .clone();
     assert!(
         !entry.acl_rules.iter().any(|r| r.contains("127.0.0.1")),
         "B must not learn R1 from rule delivery: {:?}",
@@ -536,6 +586,255 @@ async fn p3_split_tier_rule_delivery() {
         socks_echo(proxy_port, [127, 0, 0, 1], echo_port, b"p3-split-secret").await,
         "E2E channel reaches R1 through selective routes"
     );
+
+    a.disconnect_all().await;
+    c.stop().await;
+    b.stop().await;
+}
+
+/// Delegated admin + transit management (federation P3): a full-scope token pulls its
+/// bootstrap ticket over the E2E config channel, manages the issuer through the reserved
+/// admin bridge, and reaches a discovered upstream's API through the issuer's fan-out session.
+#[tokio::test]
+async fn p3_delegated_admin_and_transit_management() {
+    // ---- B: the rendezvous, control plane exposed to C ----
+    let relay_port = free_port();
+    let (b, _bdir) = boot("b-admin", Some(relay_port)).await;
+    b.db()
+        .set_config("node_name", "b-relay")
+        .expect("node name");
+    let b_base = format!("http://{}", b.api_addr());
+    let psk = "psk_p3-admin-token-0123456789abc";
+    b.db()
+        .create_relay_token_with_quota(
+            &agile_net_node::db::sha256_hex(psk.as_bytes()),
+            "psk_test",
+            "for peer-c",
+            true, // expose_control: B offers its control endpoint to C
+            "full",
+            None,
+            None,
+        )
+        .expect("create relay token");
+
+    // ---- C: one e2e_required group + fan-out ----
+    let (c, _cdir) = boot("c-admin", None).await;
+    let c_base = format!("http://{}", c.api_addr());
+    let c_token = admin_token(&c_base).await;
+    let gid_fine = c.db().create_group("db-fine", "fine").expect("group").id;
+    // a host wildcard keeps every 127.x address out of C's advertised set — pushed rules union
+    // into advertise, and an entry covering B's loopback would swallow the nested transit open
+    let rid_fine = c
+        .db()
+        .create_rule("host", "*.internal", false, "")
+        .expect("rule")
+        .id;
+    c.db()
+        .set_group_rules(&gid_fine, &[rid_fine])
+        .expect("bind");
+    c.db()
+        .set_group_e2e_required(&gid_fine, true)
+        .expect("e2e flag");
+    let cid = c
+        .db()
+        .create_connector(
+            "b-rendezvous",
+            &format!("127.0.0.1:{relay_port}"),
+            psk,
+            "fed.test",
+            true,
+            "",
+            "",
+            "",
+            // only the wildcard suffix: a 127/8 advertise would swallow B's own loopback API
+            // in the nested transit-management open (B must dial it locally)
+            "*.internal",
+            None,
+            "fan out to B",
+        )
+        .expect("connector")
+        .id;
+    c.db()
+        .set_connector_push_groups(&cid, &gid_fine)
+        .expect("push");
+    c.connector_manager()
+        .upsert_from_db(&cid)
+        .await
+        .expect("upsert");
+    c.db().bump_config_version().expect("bump");
+    for _ in 0..60 {
+        if c.connector_manager().state_of(&cid) == Some("connected") {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+
+    let http = reqwest::Client::new();
+
+    // admin on a transparent token is rejected (a ticket must never cross a relay in plaintext)
+    let gid_plain = c.db().create_group("plain", "no e2e").expect("group").id;
+    let resp = http
+        .post(format!("{c_base}/api/v1/admin/delegation/tokens"))
+        .bearer_auth(&c_token)
+        .json(&serde_json::json!({
+            "label": "bad-admin",
+            "group_ids": [gid_plain],
+            "regs": [{ "connector_id": cid.clone(), "is_primary": true }],
+            "admin_scope": "ro",
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400, "admin requires an e2e group");
+
+    // ---- issue the full-admin token ----
+    let resp = http
+        .post(format!("{c_base}/api/v1/admin/delegation/tokens"))
+        .bearer_auth(&c_token)
+        .json(&serde_json::json!({
+            "label": "root-laptop",
+            "group_ids": [gid_fine.clone()],
+            "regs": [{ "connector_id": cid, "is_primary": true }],
+            "admin_scope": "full",
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 201, "issue admin token: {:?}", resp);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let share_url = body["data"]["share_url"].as_str().unwrap().to_string();
+    assert!(
+        share_url.contains("eadmin=1"),
+        "admin hint rides the link: {share_url}"
+    );
+    assert_eq!(body["data"]["admin_scope"].as_str(), Some("full"));
+
+    // registration must reach B before A dials (the sync task registers over the fan-out session)
+    for _ in 0..60 {
+        let resp = http
+            .get(format!("{c_base}/api/v1/admin/delegation/tokens"))
+            .bearer_auth(&c_token)
+            .send()
+            .await
+            .unwrap();
+        let body: serde_json::Value = resp.json().await.unwrap();
+        if body["data"]["items"][0]["regs"][0]["state"].as_str() == Some("registered") {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+
+    // ---- A connects (eadmin) and pulls the config: admin ticket + upstream offer ----
+    let parsed = agile_net_client::parse_connect_url(&share_url).expect("parse admin link");
+    assert!(parsed.eadmin);
+    let a = AgileNetClient::new();
+    let state = a
+        .connect(ConnectParams {
+            addr: parsed.addr,
+            username: parsed.username,
+            password: parsed.password,
+            insecure: true,
+            pinned_cert_path: None,
+            pinned_fingerprint: parsed.pinned_fingerprint,
+            manage_hosts: false,
+            delegated: parsed.delegated,
+            entries: parsed.entries,
+            entry_fps: parsed.entry_fps,
+            ehint: parsed.ehint,
+            emode: parsed.emode,
+            eadmin: parsed.eadmin,
+        })
+        .await
+        .expect("delegated admin connect");
+    let node_id = state.node_id.clone();
+    let mut admin_ready = false;
+    let mut last_seen = String::new();
+    for _ in 0..60 {
+        let n = a.get_node(&node_id).await.unwrap();
+        last_seen = format!(
+            "admin_console={} manageable={:?} deleg_admin={}",
+            n.admin_console,
+            n.manageable.iter().map(|m| m.node_name.clone()).collect::<Vec<_>>(),
+            a.delegated_console_ticket(&node_id).is_some(),
+        );
+        if n.admin_console && n.manageable.iter().any(|m| m.node_name == "b-relay") {
+            admin_ready = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert!(
+        admin_ready,
+        "config channel should deliver the ticket + upstream offer; last: {last_seen}"
+    );
+
+    // admin bridge: bootstrap through the reserved channel straight into C's API
+    let opener = a.opener(&node_id).expect("delegated opener");
+    let (ticket, _) = a
+        .delegated_console_ticket(&node_id)
+        .expect("admin ticket stashed");
+    let payload = serde_json::json!({ "ticket": ticket }).to_string();
+    let mut ch = opener
+        .open("", agile_net_core::relay::e2e::DELEGATION_ADMIN_TARGET, 0)
+        .await
+        .expect("admin bridge open");
+    let req = format!(
+        "POST /api/v1/auth/admin-bootstrap HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        payload.len(),
+        payload
+    );
+    ch.write_all(req.as_bytes()).await.unwrap();
+    let mut buf = Vec::new();
+    tokio::time::timeout(std::time::Duration::from_secs(5), ch.read_to_end(&mut buf))
+        .await
+        .unwrap()
+        .unwrap();
+    let resp_text = String::from_utf8_lossy(&buf);
+    assert!(
+        resp_text.contains("access_token"),
+        "issuer API answered through the E2E admin bridge: {}",
+        &resp_text[..resp_text.len().min(200)]
+    );
+    assert!(resp_text.contains("\"full\""), "scope honored: {resp_text}");
+
+    // transit management: A dials B's API through C's fan-out session (nested channel)
+    let (uticket, _, _, _) = a
+        .delegated_upstream_ticket(&node_id, "b-relay")
+        .expect("upstream offer stashed");
+    let mut ch2 = opener
+        .open("", "upstream:b-relay", 0)
+        .await
+        .expect("transit management open");
+    let payload2 = serde_json::json!({ "ticket": uticket }).to_string();
+    let req2 = format!(
+        "POST /api/v1/auth/admin-bootstrap HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        payload2.len(),
+        payload2
+    );
+    ch2.write_all(req2.as_bytes()).await.unwrap();
+    let mut buf2 = Vec::new();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        ch2.read_to_end(&mut buf2),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let resp2 = String::from_utf8_lossy(&buf2);
+    assert!(
+        resp2.contains("access_token"),
+        "B's API answered through the transit path (A->E2E->C->fan-out->B): {}",
+        &resp2[..resp2.len().min(200)]
+    );
+
+    // sanity: the same ticket also exchanges directly against B (it is a real relay ticket)
+    let r = http
+        .post(format!("{b_base}/api/v1/auth/admin-bootstrap"))
+        .json(&serde_json::json!({ "ticket": a.delegated_upstream_ticket(&node_id, "b-relay").unwrap().0 }))
+        .send()
+        .await
+        .unwrap();
+    assert!(r.status().is_success(), "upstream ticket valid on B");
 
     a.disconnect_all().await;
     c.stop().await;
