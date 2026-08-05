@@ -163,6 +163,9 @@ struct DelegatedOpener {
     total_down: AtomicU64,
     /// Current entry address (display; the supervisor updates it on every switch)
     current_entry: arc_swap::ArcSwap<String>,
+    /// Named group matchers from the split-tier config channel (§7.2.1): empty until a v4+
+    /// issuer answers; the seal path fills per-target accurate group identities with it.
+    group_map: arc_swap::ArcSwap<Vec<(String, std::sync::Arc<agile_net_core::proxy::router::ProxyRouter>)>>,
 }
 
 impl DelegatedOpener {
@@ -175,7 +178,27 @@ impl DelegatedOpener {
             total_up: AtomicU64::new(0),
             total_down: AtomicU64::new(0),
             current_entry: arc_swap::ArcSwap::from_pointee(String::new()),
+            group_map: arc_swap::ArcSwap::from_pointee(Vec::new()),
         })
+    }
+
+    /// Store the named group matchers of the latest config answer (split-tier pulls).
+    fn set_group_map(&self, groups: Vec<(String, std::sync::Arc<agile_net_core::proxy::router::ProxyRouter>)>) {
+        self.group_map.store(std::sync::Arc::new(groups));
+    }
+
+    /// Per-target group identities for the E2E seal (§7.2.1): the names whose vocabulary the
+    /// target hits; empty = inherit the token's full set (dedicated tier / pre-v4 issuer /
+    /// no match — the issuer's union check stays the fallback).
+    fn match_groups(&self, target_host: &str) -> Vec<String> {
+        let map = self.group_map.load();
+        if map.is_empty() {
+            return Vec::new();
+        }
+        map.iter()
+            .filter(|(_, r)| r.matches(target_host))
+            .map(|(n, _)| n.clone())
+            .collect()
     }
 
     fn is_connected(&self) -> bool {
@@ -243,8 +266,11 @@ impl ChannelOpener for DelegatedOpener {
                     use agile_net_core::relay::e2e;
                     let key = e2e::derive_key(&self.token);
                     let hash = agile_net_core::util::sha256_hex(self.token.as_bytes());
+                    // §7.2.1: seal the per-target group identities (matched against the
+                    // config-channel vocabulary), not always the token's full set
+                    let groups = self.match_groups(target_host);
                     let (env, cipher) =
-                        e2e::seal_open(&key, e2e::kid_of(&hash), hint, target_host, target_port, &[]);
+                        e2e::seal_open(&key, e2e::kid_of(&hash), hint, target_host, target_port, &groups);
                     let open = agile_net_core::proto::message::OpenChannel {
                         target_addr: hint.to_string(),
                         target_port: 0,
@@ -1678,7 +1704,8 @@ fn maybe_spawn_config_fetch(
     opener: &Arc<DelegatedOpener>,
 ) {
     let split = params.emode.as_deref() == Some("split");
-    if params.ehint.is_none() || (!split && !params.eadmin) {
+    // the E2E routing word may be the entrust word (en) or the legacy hint — either qualifies
+    if (params.ehint.is_none() && params.en.is_none()) || (!split && !params.eadmin) {
         return;
     }
     let inner = inner.clone();
@@ -1692,6 +1719,8 @@ fn maybe_spawn_config_fetch(
                 return;
             }
         };
+        // named group matchers (§7.2.1): the seal path fills per-target identities with them
+        opener.set_group_map(cfg.groups);
         if split {
             if cfg.rules.is_empty() {
                 warn!(node = %node_id, "split-tier config empty — keeping catch-all routes");
@@ -1746,6 +1775,8 @@ fn maybe_spawn_config_fetch(
 struct DelegConfigWire {
     #[serde(default)]
     rules: Vec<String>,
+    #[serde(default)]
+    groups: Vec<agile_net_core::relay::DelegationGroupEntry>,
     admin: Option<agile_net_core::relay::DelegationAdmin>,
     #[serde(default)]
     upstreams: Vec<agile_net_core::relay::DelegationUpstream>,
@@ -1754,6 +1785,8 @@ struct DelegConfigWire {
 /// Parsed config answer with rules mapped to client rules.
 struct DelegConfig {
     rules: Vec<ClientRule>,
+    /// Named group breakdown (§7.2.1): per-group compiled matcher for per-target sealing
+    groups: Vec<(String, std::sync::Arc<agile_net_core::proxy::router::ProxyRouter>)>,
     admin: Option<agile_net_core::relay::DelegationAdmin>,
     upstreams: Vec<agile_net_core::relay::DelegationUpstream>,
 }
@@ -1781,6 +1814,11 @@ async fn fetch_deleg_config(opener: &Arc<DelegatedOpener>) -> Result<DelegConfig
                     value: value.clone(),
                     resolve: false,
                 })
+                .collect(),
+            groups: wire
+                .groups
+                .iter()
+                .map(|g| (g.name.clone(), agile_net_core::relay::build_acl_router(&g.rules)))
                 .collect(),
             admin: wire.admin,
             upstreams: wire.upstreams,
@@ -1985,5 +2023,28 @@ mod tests {
             router.route_target("app.corp.internal:443"),
             Outbound::Direct
         ));
+    }
+
+    #[test]
+    fn delegated_opener_match_groups_per_target() {
+        let opener = DelegatedOpener::new("psk_x".into(), Some("en_abc".into()), None);
+        // no config answer yet -> inherit-all (empty)
+        assert!(opener.match_groups("10.1.2.3").is_empty());
+
+        opener.set_group_map(vec![
+            (
+                "dev".to_string(),
+                agile_net_core::relay::build_acl_router(&["10.1.0.0/16".to_string()]),
+            ),
+            (
+                "ops".to_string(),
+                agile_net_core::relay::build_acl_router(&["10.2.0.0/16".to_string(), "ops.internal".to_string()]),
+            ),
+        ]);
+        // per-target identities: only the matching group is sealed
+        assert_eq!(opener.match_groups("10.1.2.3"), vec!["dev".to_string()]);
+        assert_eq!(opener.match_groups("ops.internal"), vec!["ops".to_string()]);
+        // no match -> empty (the issuer's union check stays the fallback)
+        assert!(opener.match_groups("8.8.8.8").is_empty());
     }
 }

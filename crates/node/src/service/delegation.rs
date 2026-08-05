@@ -242,6 +242,25 @@ impl DelegationEngine {
         std::sync::Arc::new(Self::default())
     }
 
+    /// kid lookup (prefix-unique): cache keys are 12-char since protocol v4, but envelopes from
+    /// pre-v4 clients carry 8-char kids — accept any unique prefix ≥ 8 chars, else fail closed.
+    fn key_entry<'a>(
+        cache: &'a std::collections::HashMap<String, KeyEntry>,
+        kid: &str,
+    ) -> Option<&'a KeyEntry> {
+        if kid.len() < 8 || !kid.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return None;
+        }
+        if let Some(e) = cache.get(kid) {
+            return Some(e);
+        }
+        let mut hits = cache.iter().filter(|(k, _)| k.starts_with(kid));
+        match (hits.next(), hits.next()) {
+            (Some((_, e)), None) => Some(e),
+            _ => None,
+        }
+    }
+
     /// Wire the admin runtime (issuer API endpoint + upstream registry + ticket minter);
     /// called once at service assembly. Without it, admin-capable tokens stay data-plane only.
     pub fn set_admin_runtime(
@@ -356,7 +375,7 @@ impl agile_net_core::relay::DelegationHooks for DelegationEngine {
         )>,
     > {
         let cache = self.keys.load();
-        let Some(entry) = cache.get(&e2e.kid) else {
+        let Some(entry) = Self::key_entry(&cache, &e2e.kid) else {
             return Ok(None); // transit role: not our token
         };
         // token lifecycle gate (expired / usage cap reached — the in-session backstop of the
@@ -381,14 +400,20 @@ impl agile_net_core::relay::DelegationHooks for DelegationEngine {
     fn delegation_config(&self, kid: &str) -> Option<agile_net_core::relay::DelegationConfig> {
         use agile_net_core::relay::{DelegationAdmin, DelegationConfig, DelegationUpstream};
         let keys = self.keys.load();
-        let entry = keys.get(kid)?;
+        let entry = Self::key_entry(&keys, kid)?;
         if !entry.alive() {
             return None; // dead tokens pull no vocabulary / tickets
         }
         let groups = self.groups.load();
         let mut rules: Vec<String> = Vec::new();
+        let mut group_entries: Vec<agile_net_core::relay::DelegationGroupEntry> = Vec::new();
         for name in &entry.groups {
             if let Some(g) = groups.get(name) {
+                // named breakdown (§7.2.1): the consumer seals per-target group identities
+                group_entries.push(agile_net_core::relay::DelegationGroupEntry {
+                    name: name.clone(),
+                    rules: g.rules.clone(),
+                });
                 for r in &g.rules {
                     if !rules.contains(r) {
                         rules.push(r.clone());
@@ -398,6 +423,7 @@ impl agile_net_core::relay::DelegationHooks for DelegationEngine {
         }
         let mut cfg = DelegationConfig {
             rules,
+            groups: group_entries,
             ..Default::default()
         };
         if !entry.admin_scope.is_empty()
@@ -445,7 +471,7 @@ impl agile_net_core::relay::DelegationHooks for DelegationEngine {
 
     fn delegation_admin_port(&self, kid: &str) -> Option<u16> {
         let keys = self.keys.load();
-        let entry = keys.get(kid)?;
+        let entry = Self::key_entry(&keys, kid)?;
         if entry.admin_scope.is_empty() || !entry.alive() {
             return None;
         }
@@ -459,7 +485,7 @@ impl agile_net_core::relay::DelegationHooks for DelegationEngine {
         node_name: &str,
     ) -> Option<agile_net_core::relay::DelegationUpstream> {
         let keys = self.keys.load();
-        let entry = keys.get(kid)?;
+        let entry = Self::key_entry(&keys, kid)?;
         if entry.admin_scope != "full" || !entry.alive() {
             return None;
         }

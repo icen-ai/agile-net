@@ -93,9 +93,11 @@ pub fn derive_key(token_plaintext: &str) -> [u8; 32] {
     hkdf32(E2E_SALT, token_plaintext.as_bytes(), &[])
 }
 
-/// Key id carried in the E2E envelope: first 8 hex chars of the token SHA-256 hash.
+/// Key id carried in the E2E envelope: first 12 hex chars of the token SHA-256 hash
+/// (48-bit space; issuer-side lookups accept any unique prefix ≥ 8 chars, so envelopes
+/// sealed by pre-v4 clients with 8-char kids still resolve).
 pub fn kid_of(token_hash: &str) -> &str {
-    token_hash.get(..8).unwrap_or(token_hash)
+    token_hash.get(..12).unwrap_or(token_hash)
 }
 
 /// Per-channel sub-key (discipline 1: random salt per channel -> zero nonce reuse).
@@ -128,6 +130,10 @@ pub struct E2eOpenPayload {
 
 /// Client side: seal an Open envelope for `target` and return it with the channel cipher
 /// already initialized (send direction 0 = client -> issuer).
+///
+/// CSPRNG note: `rand::random()` backs onto OsRng on every supported target. A future WASM
+/// client build must re-verify entropy availability (getrandom's wasm backend) before sealing —
+/// tracked in docs/todo/e2e.md §7.3.3.
 pub fn seal_open(
     e2e_key: &[u8; 32],
     kid: &str,
@@ -136,8 +142,7 @@ pub fn seal_open(
     target_port: u16,
     groups: &[String],
 ) -> (E2eOpen, ChannelCipher) {
-    let chan_salt: [u8; CHAN_SALT_LEN] = rand::random();
-    let payload = E2eOpenPayload {
+    let chan_salt: [u8; CHAN_SALT_LEN] = rand::random();    let payload = E2eOpenPayload {
         target_addr: target_addr.to_string(),
         target_port,
         groups: groups.to_vec(),
@@ -227,7 +232,15 @@ impl ChannelCipher {
     }
 
     /// Seal one plaintext block into a framed record `[u32 ct_len][ct+tag]`.
-    pub fn seal(&mut self, plaintext: &[u8]) -> Vec<u8> {
+    ///
+    /// Sequence discipline: send_seq must never wrap (a u64 wrap would restart the nonce
+    /// sequence — catastrophic for AES-GCM). The counter is physically unreachable within a
+    /// channel's lifetime (2^64 records × 16KB); the check is belt-and-suspenders documentation
+    /// of the contract, failing the channel instead of ever reusing a nonce.
+    pub fn seal(&mut self, plaintext: &[u8]) -> Result<Vec<u8>> {
+        if self.send_seq == u64::MAX {
+            return Err(Error::Protocol("e2e send sequence exhausted".into()));
+        }
         let mut buf = plaintext.to_vec();
         self.key
             .seal_in_place_append_tag(
@@ -240,12 +253,15 @@ impl ChannelCipher {
         let mut out = Vec::with_capacity(LEN_PREFIX + buf.len());
         out.extend_from_slice(&(buf.len() as u32).to_be_bytes());
         out.extend_from_slice(&buf);
-        out
+        Ok(out)
     }
 
     /// Open one framed record. The record's implicit sequence number must equal the expected
     /// receive counter — any replay/reorder fails authentication and is fatal to the channel.
     pub fn open(&mut self, record: &[u8]) -> Result<Vec<u8>> {
+        if self.recv_seq == u64::MAX {
+            return Err(Error::Protocol("e2e receive sequence exhausted".into()));
+        }
         let recv_dir = 1 - self.send_dir;
         let mut buf = record.to_vec();
         let plain = self
@@ -367,7 +383,10 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for E2eStream<S> {
         // the accepted plaintext length is fixed at seal time and reported on completion)
         if self.pending_write.is_none() {
             let block_len = buf.len().min(MAX_BLOCK);
-            let sealed = self.cipher.seal(&buf[..block_len]);
+            let sealed = self
+                .cipher
+                .seal(&buf[..block_len])
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
             self.pending_write = Some((Bytes::from(sealed), 0, block_len));
         }
 
@@ -443,7 +462,7 @@ mod tests {
             5432,
             &["db".to_string()],
         );
-        assert_eq!(env.kid, hash[..8]);
+        assert_eq!(env.kid, hash[..12]);
         assert_eq!(env.hint, "git.internal");
 
         let (payload, mut issuer_cipher) = open_open(&key, &env).expect("unwrap");
@@ -452,13 +471,24 @@ mod tests {
         assert_eq!(payload.groups, vec!["db".to_string()]);
 
         // data plane: client -> issuer
-        let rec = client_cipher.seal(b"SELECT 1");
+        let rec = client_cipher.seal(b"SELECT 1").unwrap();
         let plain = issuer_cipher.open(&rec[LEN_PREFIX..]).unwrap();
         assert_eq!(plain, b"SELECT 1");
         // issuer -> client
-        let rec = issuer_cipher.seal(b"row1");
+        let rec = issuer_cipher.seal(b"row1").unwrap();
         let plain = client_cipher.open(&rec[LEN_PREFIX..]).unwrap();
         assert_eq!(plain, b"row1");
+    }
+
+    #[test]
+    fn sequence_exhaustion_fails_closed() {
+        // the nonce sequence must never wrap: at u64::MAX the channel dies instead of reusing one
+        let key = test_key();
+        let mut c = ChannelCipher::new(key, 0);
+        c.send_seq = u64::MAX;
+        assert!(c.seal(b"x").is_err());
+        c.recv_seq = u64::MAX;
+        assert!(c.open(b"xxxx").is_err());
     }
 
     #[test]
@@ -473,8 +503,8 @@ mod tests {
         let key = test_key();
         let (env, mut a) = seal_open(&key, "kid", "h", "a", 1, &[]);
         let (_, mut b) = open_open(&key, &env).unwrap();
-        let rec1 = a.seal(b"first");
-        let rec2 = a.seal(b"second");
+        let rec1 = a.seal(b"first").unwrap();
+        let rec2 = a.seal(b"second").unwrap();
         // out-of-order delivery: the later record fails against the expected sequence 0
         assert!(b.open(&rec2[LEN_PREFIX..]).is_err());
         // a failed open must not advance the sequence (legitimate in-order record still passes)

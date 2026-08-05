@@ -19,13 +19,17 @@ use std::sync::Arc;
 /// Manageable fan-out registry: upstream node name → control endpoint (handshake v2 discovery, maintained by the connector sync task).
 pub type ManageableRegistry = Arc<dashmap::DashMap<String, ControlOffer>>;
 
-/// Admin bootstrap ticket parameters: TTL 7 days, max 10000 uses.
+/// Admin bootstrap ticket parameters: TTL 1 hour, max 100 uses.
 ///
 /// Security boundary equals the relay token itself: a psk holder can reconnect
 /// for a fresh ticket anytime; TTL only bounds the leak window. Revoking the
 /// token and kicking sessions recovers everything (refresh tokens revocable separately).
-pub(crate) const RELAY_TICKET_TTL_SECS: i64 = 7 * 24 * 3600;
-pub(crate) const RELAY_TICKET_MAX_USES: i32 = 10000;
+///
+/// docs/todo/e2e.md §7.2.2: tickets are minted per handshake / per config pull and consumed
+/// immediately (console-ticket endpoint or the E2E config channel), so a 1-hour window is
+/// operationally invisible while shrinking the post-compromise admin-API exposure from 7 days.
+pub(crate) const RELAY_TICKET_TTL_SECS: i64 = 3600;
+pub(crate) const RELAY_TICKET_MAX_USES: i32 = 100;
 
 pub struct DbTokenValidator {
     db: Database,

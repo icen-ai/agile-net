@@ -214,18 +214,19 @@ impl Database {
         Ok(out)
     }
 
-    /// Resolve a token by the E2E key id (first 8 hex chars of the token hash; federation P3).
-    /// Collisions are theoretically possible at 32 bits — match against the full set and only
-    /// accept a unique hit (fail closed on ambiguity).
+    /// Resolve a token by the E2E key id (federation P3): any unique hex prefix of the token
+    /// hash ≥ 8 chars (12 since protocol v4; 8-char prefixes from pre-v4 clients still resolve
+    /// when unambiguous). Ambiguity fails closed (None).
     pub fn find_delegated_token_by_kid(&self, kid: &str) -> Result<Option<DelegatedTokenRecord>> {
-        if kid.len() != 8 || !kid.chars().all(|c| c.is_ascii_hexdigit()) {
+        if kid.len() < 8 || kid.len() > 64 || !kid.chars().all(|c| c.is_ascii_hexdigit()) {
             return Ok(None);
         }
         let conn = self.conn();
+        // prefix match in SQL (LIKE with an anchored pattern — hex chars carry no wildcards)
         let mut stmt = conn
             .prepare(
                 "SELECT id, token_hash, token_prefix, label, groups, hint_map, e2e_key_enc, mode, admin_scope, expires_at, max_uses, used_count, created_at
-                 FROM delegated_token WHERE substr(token_hash, 1, 8) = ?1",
+                 FROM delegated_token WHERE token_hash LIKE ?1 || '%'",
             )
             .map_err(db_err)?;
         let mut rows = stmt.query(params![kid]).map_err(db_err)?;

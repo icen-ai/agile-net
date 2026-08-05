@@ -1173,7 +1173,13 @@ impl RelayListener {
                 let mut o = open_req;
                 match &o.e2e {
                     Some(e2e) => {
-                        if e2e.kid != crate::relay::e2e::kid_of(&token_hash)
+                        // kid check is prefix-aware: v4+ clients seal 12-char kids, pre-v4
+                        // clients 8-char ones — both must resolve against the same token hash
+                        let kid_ok = e2e.kid.len() >= 8
+                            && e2e.kid.len() <= 64
+                            && e2e.kid.bytes().all(|b| b.is_ascii_hexdigit())
+                            && crate::relay::e2e::kid_of(&token_hash).starts_with(&e2e.kid);
+                        if !kid_ok
                             || e2e.hint != o.target_addr
                             || !stamp.hints.contains(&o.target_addr)
                         {

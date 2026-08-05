@@ -58,10 +58,22 @@ pub enum ConnectionState {
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct DelegationConfig {
     pub rules: Vec<String>,
+    // Named group breakdown of the vocabulary (docs/todo/e2e.md §7.2.1): lets the consumer
+    // seal per-target accurate group identities instead of always inheriting the token's full
+    // set. Absent on pre-v4 issuers — the consumer falls back to the inherit-all behavior.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<DelegationGroupEntry>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub admin: Option<DelegationAdmin>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub upstreams: Vec<DelegationUpstream>,
+}
+
+/// One named group of the token's vocabulary (split-tier delivery).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct DelegationGroupEntry {
+    pub name: String,
+    pub rules: Vec<String>,
 }
 
 /// Admin capability of a delegated token: a fresh bootstrap ticket + the issuer's API port.
