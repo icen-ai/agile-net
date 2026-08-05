@@ -44,7 +44,13 @@ pub struct Credential {
 }
 
 /// Service name in the OS keyring (shared by Windows Credential Manager / macOS Keychain).
-const KEYRING_SERVICE: &str = "agile-net";
+/// Short brand `anet` — matches the data directory `~/.anet` and the link scheme.
+const KEYRING_SERVICE: &str = "anet";
+
+/// Legacy keyring service name (pre-rename). Used as a read-only fallback so
+/// existing users upgrading from `agile-net`-keyring entries are picked up
+/// automatically and migrated to the new service on next write.
+const KEYRING_SERVICE_LEGACY: &str = "agile-net";
 
 pub struct CredentialStore {
     path: PathBuf,
@@ -117,9 +123,9 @@ impl CredentialStore {
         Self::open_inner(temp, KEYRING_SERVICE.to_string(), false)
     }
 
-    /// Default store path (~/.agile-net/credentials.json)
+    /// Default store path (~/.anet/credentials.json — shared with the CLI `anet client` subcommand)
     pub fn open_default() -> Result<Self> {
-        let dir = crate::home_dir().join(".agile-net");
+        let dir = agile_net_core::util::brand_root();
         std::fs::create_dir_all(&dir)?;
         Self::open(dir.join("credentials.json"))
     }
@@ -164,8 +170,21 @@ impl CredentialStore {
             let key = item.key().clone();
             let cred = item.value_mut();
             if cred.password.is_empty() {
-                // Migrated entry: fetch the plaintext back from the keyring into memory (if lost, keep it empty; reconnect then fails auth)
-                match os_keyring::get(&self.service, &key) {
+                // Migrated entry: fetch the plaintext back from the keyring into memory.
+                // Production store also falls back to the legacy `agile-net` service so
+                // existing users upgrading from the pre-rename layout keep working; the
+                // entry is transparently rewritten under the new service (lazy migration).
+                let restored = os_keyring::get(&self.service, &key).or_else(|| {
+                    if self.service != KEYRING_SERVICE {
+                        return None;
+                    }
+                    let pw = os_keyring::get(KEYRING_SERVICE_LEGACY, &key)?;
+                    if os_keyring::set(&self.service, &key, &pw).is_ok() {
+                        os_keyring::delete(KEYRING_SERVICE_LEGACY, &key);
+                    }
+                    Some(pw)
+                });
+                match restored {
                     Some(pw) => cred.password = pw,
                     None => warn!(key = %key, "keyring 中未找到凭据密码，需重新保存"),
                 }

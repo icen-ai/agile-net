@@ -22,7 +22,7 @@ anet init -y       # 非交互（自动化）：密码经 AGILE_ADMIN_PASSWORD �
 
 ```bash
 anet start [config.toml] [-d]   # 启动（默认前台；-d 后台守护）
-anet stop                       # 停止（PID 文件 ~/.agile-net/anet-svc.pid）
+anet stop                       # 停止（PID 文件 ~/.anet/svc/anet-svc.pid）
 anet restart [config.toml]      # 重启
 anet status                     # 运行状态（进程/配置/API 可达性，无需登录）
 ```

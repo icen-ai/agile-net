@@ -9,7 +9,7 @@ switched by argv[0]: `anet` = management commands, `anet-svc` = server process).
 | Command | Description |
 | --- | --- |
 | `anet-svc start [config.toml] [-d]` | Start the node (foreground by default; `-d` daemonizes; a bare `anet-svc` is equivalent to start) |
-| `anet-svc stop` | Stop the running node (PID file `~/.agile-net/anet-svc.pid`) |
+| `anet-svc stop` | Stop the running node (PID file `~/.anet/svc/anet-svc.pid`) |
 | `anet-svc restart [config.toml]` | Restart |
 | `anet-svc status` | Runtime status (process / config / API reachability; no login required) |
 | `anet-svc init` | First-install setup wizard (config / admin / system service / launch; see "The anet CLI") |

@@ -15,8 +15,6 @@
 //! - `custom_rules`: custom rules (GUI bypass / hosts mapping)
 //! - `hosts`: system hosts file management
 
-use std::path::PathBuf;
-
 pub mod api;
 pub mod daemon;
 
@@ -38,10 +36,3 @@ pub use custom_rules::{CustomBypassRule, CustomRules};
 pub use hosts::HostsManager;
 
 pub use agile_net_core::proxy::router::wildcard_match;
-
-fn home_dir() -> PathBuf {
-    std::env::var("USERPROFILE")
-        .or_else(|_| std::env::var("HOME"))
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("."))
-}

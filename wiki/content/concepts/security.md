@@ -58,7 +58,7 @@ AgileNet 的安全设计假设：中继节点不可信、令牌会泄露、管�
 | `peer.acl_denied` | 对端流量被收敛拒绝（对端身份 + 目标 + 来源，每分钟去重） |
 | `admin.session_via_relay` | 中继令牌换得管理会话 |
 | `admin.console_access` | 经控制台通道访问某节点管理面 |
-| `gui.role_toggle` | GUI 三路开关变更（JSONL 落 `~/.agile-net/gui-audit.jsonl`） |
+| `gui.role_toggle` | GUI 三路开关变更（JSONL 落 `~/.anet/gui/gui-audit.jsonl`） |
 | `web.exposure_change` | Web 面监听地址/启停变更 |
 
 原则：每条管理操作必须能回答「谁、从哪条路径（本机/隧道第几级/经哪个中继）、对哪台设备、做了什么」；

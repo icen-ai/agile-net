@@ -105,6 +105,6 @@ insecure = false
 # pinned_cert_path = "certs/node-a.pem" # 证书固定（推荐）
 ```
 
-凭据缓存（GUI/Tauri 客户端）存于 `~/.agile-net/credentials.json`（Unix 权限 0600）。
+凭据缓存（GUI/Tauri 客户端）存于 `~/.anet/credentials.json`（Unix 权限 0600）。
 
 规则缓存：客户端把最近一次的配置保存在内存中并支持离线合并路由（断网重连期间沿用旧规则，长轮询恢复后自动更新）。

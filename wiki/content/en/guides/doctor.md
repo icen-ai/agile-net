@@ -212,7 +212,7 @@ data are involved); it is only reported, with recovery guidance.
 
 **Manual resolution**:
 
-- Configuration and data live in `~/.agile-net/` by default (`%USERPROFILE%\.agile-net\` on Windows).
+- Configuration and data live in `~/.anet/gui/` by default (`%USERPROFILE%\.anet\gui\` on Windows).
 - After an automatic reset, manually merge still-valid custom sections (such as ports and subscription links) from the `.bak` file back into the new configuration.
 - Corrupted database: stop AgileNet and restore from the backup directory; with no backup, delete the database file, re-initialize, then log in to the server again to pull the configuration.
 

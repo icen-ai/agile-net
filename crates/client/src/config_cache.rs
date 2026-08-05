@@ -23,14 +23,14 @@ pub struct CachedNodeConfig {
     pub updated_at: String,
 }
 
-/// Cache directory (~/.agile-net/cache/), file mode 0600.
+/// Cache directory (~/.anet/cache/), file mode 0600.
 pub struct ConfigCache {
     dir: PathBuf,
 }
 
 impl ConfigCache {
     pub fn new() -> Result<Self> {
-        let dir = crate::home_dir().join(".agile-net").join("cache");
+        let dir = agile_net_core::util::brand_root().join("cache");
         std::fs::create_dir_all(&dir)?;
         Ok(Self { dir })
     }

@@ -20,7 +20,7 @@ in real time; events such as successful connections and errors pop up as spring-
 
 Connect to upstreams, local proxy, rule routing — the full set of client capabilities. Turning it
 off disconnects all nodes and stops the proxy (pure forwarder scenario). All changes are recorded
-as `gui.role_toggle` audit entries (`~/.agile-net/gui-audit.jsonl`).
+as `gui.role_toggle` audit entries (`~/.anet/gui/gui-audit.jsonl`).
 
 ### Switch B: Server Role (off by default)
 
@@ -29,7 +29,7 @@ accounts / rules / tokens / audit, SQLite.
 
 - **First enable requires setting an admin password** (stored as argon2id), after which the embedded node starts automatically
 - Default ports avoid local standalone nodes and the Docker demo chain (59290): API `127.0.0.1:59293`, Relay `0.0.0.0:54431`
-- Data directory `~/.agile-net/embedded-node/`
+- Data directory `~/.anet/gui/embedded-node/`
 - "Open Console" manages the embedded node in a separate window (reusing the node management SPA)
 - The "Fan-out" menu manages the embedded node's connectors (database-backed CRUD + enable/disable + group
   restriction dropdown, unrestricted by default); once connected to an upstream, the rules of the local
@@ -39,7 +39,7 @@ accounts / rules / tokens / audit, SQLite.
 
 Exposes the local management UI over HTTP — the browser experience is identical to sitting in front of the machine:
 
-- **Setting an admin password is mandatory first** (argon2id hash stored in `~/.agile-net/web-auth.json`)
+- **Setting an admin password is mandatory first** (argon2id hash stored in `~/.anet/gui/web-auth.json`)
 - Defaults to `127.0.0.1:59291` only; switching to a LAN address is an explicit action and recorded as a `web.exposure_change` audit entry
 - Authentication matches server-side strength: login rate limiting (5 attempts/minute, 15-minute lockout after consecutive failures), 12-hour JWT, login/export auditing
 - Credential export requires a second confirmation on the Web side
@@ -57,8 +57,8 @@ Both open the full management SPA in a separate window with ticket-bootstrap log
 
 ## Credentials and Privacy
 
-- Credentials are stored in `~/.agile-net/credentials.json` (Unix 0600); exported connect links contain plaintext passwords — share with care
-- Offline node-config cache `~/.agile-net/cache/`: when offline, the last known rules keep the network running; it upgrades seamlessly once connectivity returns
+- Credentials are stored in `~/.anet/credentials.json` (Unix 0600); exported connect links contain plaintext passwords — share with care
+- Offline node-config cache `~/.anet/cache/`: when offline, the last known rules keep the network running; it upgrades seamlessly once connectivity returns
 - Closing the main window minimizes to the system tray; the tray menu can show the window, start/stop the proxy, and quit
 
 ## Mobile (Android)

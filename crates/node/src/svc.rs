@@ -1,6 +1,6 @@
 //! Node service process management: start / stop / restart / status (single-instance model).
 //!
-//! - PID file `~/.agile-net/anet-svc.pid` (JSON: pid / config / api_addr / started_at)
+//! - PID file `~/.anet/svc/anet-svc.pid` (JSON: pid / config / api_addr / started_at)
 //! - PID written only after a successful bind (no phantom records on bind failure);
 //!   removed on clean exit (Ctrl-C)
 //! - Process probe/termination via `sysinfo` (cross-platform, Term first then Kill)
@@ -18,14 +18,7 @@ pub struct PidRecord {
 }
 
 fn pid_path() -> PathBuf {
-    home_dir().join(".agile-net").join("anet-svc.pid")
-}
-
-fn home_dir() -> PathBuf {
-    std::env::var("USERPROFILE")
-        .or_else(|_| std::env::var("HOME"))
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("."))
+    agile_net_core::util::svc_data_dir().join("anet-svc.pid")
 }
 
 pub fn read_pid() -> Option<PidRecord> {

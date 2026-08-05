@@ -10,7 +10,7 @@
 //! - PIN: 4 digits (obfuscation-grade encryption explicitly requested by users) or empty for no encryption. **PIN is never persisted**;
 //!   pin_set in sync-config.json is only a UI hint (without storing the PIN we cannot check "is it the same PIN")
 //! - Version is monotonic: upload = max(remote version, local version)+1; comparison lets the frontend tell newer/same/older
-//! - State goes to `~/.agile-net/sync-state.json` (0600), channel config to `sync-config.json` (0600)
+//! - State goes to `~/.anet/gui/sync-state.json` (0600), channel config to `sync-config.json` (0600)
 //! - Audit gui.sync_config / gui.sync_upload / gui.sync_restore (never records plaintext or ciphertext content)
 
 use agile_net_node::db::sha256_hex;

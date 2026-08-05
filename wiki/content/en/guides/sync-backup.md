@@ -118,13 +118,13 @@ not a determined attacker who downloads the archive and brute-forces it offline.
 automatically backs up the current configuration in full to:
 
 ```
-~/.agile-net/backup-pre-restore-<timestamp>/
+~/.anet/gui/backup-pre-restore-<timestamp>/
 ```
 
 After the restore completes, the app **restarts automatically** to apply the configuration.
 
 **Manual rollback**: if the restore result is unsatisfying, quit AgileNet, copy the files from the
-backup directory with the corresponding timestamp back over `~/.agile-net/`, and start again. Backup
+backup directory with the corresponding timestamp back over `~/.anet/gui/`, and start again. Backup
 directories are ordered by timestamp, so you can recover the state before any restore in history;
 delete older directories yourself if space runs tight.
 

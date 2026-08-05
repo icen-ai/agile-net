@@ -17,9 +17,9 @@ pub struct InitArgs {
     /// Skip confirmation and use defaults (password still required via AGILE_ADMIN_PASSWORD or TTY)
     #[arg(short = 'y', long)]
     pub yes: bool,
-    /// Config file path
-    #[arg(long, default_value = "agile-net.toml")]
-    pub config: String,
+    /// Config file path (defaults to ~/.anet/svc/agile-net.toml)
+    #[arg(long)]
+    pub config: Option<String>,
     /// Endpoint name (defaults to local hostname)
     #[arg(long)]
     pub name: Option<String>,
@@ -154,20 +154,25 @@ pub async fn run(args: InitArgs) -> Result<()> {
     println!("AgileNet 初始化向导");
     println!("────────────────────");
 
-    // 1. Config file
-    let config_path = PathBuf::from(&args.config);
+    // 1. Config file — default to ~/.anet/svc/agile-net.toml (single-machine
+    //    demo default; production deployments override with --config).
+    let config_default = agile_net_core::util::default_config_path();
+    let config_str = args
+        .config
+        .unwrap_or_else(|| config_default.to_string_lossy().to_string());
+    let config_path = PathBuf::from(&config_str);
     if config_path.exists() {
-        if interactive && !prompt_yes_no(&format!("配置文件 {} 已存在，在其基础上继续初始化？", args.config), true)? {
+        if interactive && !prompt_yes_no(&format!("配置文件 {} 已存在，在其基础上继续初始化？", config_str), true)? {
             bail!("已取消");
         }
-        println!("① 配置文件: {}（已存在，保留）", args.config);
+        println!("① 配置文件: {}（已存在，保留）", config_str);
     } else if interactive {
-        let p = prompt("① 配置文件路径", &args.config)?;
+        let p = prompt("① 配置文件路径", &config_str)?;
         println!("① 配置文件: {p}");
     } else {
-        println!("① 配置文件: {}", args.config);
+        println!("① 配置文件: {}", config_str);
     }
-    let config_path = PathBuf::from(&args.config);
+    let config_path = PathBuf::from(&config_str);
     let config_parent = config_path.parent().unwrap_or(Path::new("."));
     let config_parent_abs = if config_parent.is_absolute() {
         config_parent.to_path_buf()
@@ -261,6 +266,12 @@ pub async fn run(args: InitArgs) -> Result<()> {
                 toml_path(&certs_dir.join("relay-cert.pem").to_string_lossy()),
                 toml_path(&certs_dir.join("relay-key.pem").to_string_lossy())
             ));
+        }
+        // Ensure the parent directory exists (default path ~/.anet/svc/ may not
+        // exist on a fresh install where the legacy migration was a no-op).
+        if let Some(parent) = config_path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("创建配置目录失败: {}", parent.display()))?;
         }
         std::fs::write(&config_path, &toml)
             .with_context(|| format!("写入配置失败: {}", config_path.display()))?;

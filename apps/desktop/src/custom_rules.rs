@@ -1,6 +1,6 @@
 //! Custom rules (bypass / hosts mapping / combos): model, persistence, system hosts management, effective union.
 //!
-//! - Persisted to `~/.agile-net/gui-custom-rules.json` (serde JSON, temp file + rename atomic write)
+//! - Persisted to `~/.anet/gui/gui-custom-rules.json` (serde JSON, temp file + rename atomic write)
 //! - Bypass: wildcard pattern (semantics see `agile_net_client::wildcard_match`); hits go direct by default
 //!   (not even via the subscription, taking precedence over subscription fallback and endpoint rules); optional "via subscription" uses the mihomo fallback
 //! - hosts mapping: hostname→IP (SwitchHosts semantics); written to the system hosts when writable

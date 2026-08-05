@@ -67,7 +67,7 @@ plaintext is strictly forbidden. Management-plane events include:
 | `peer.acl_denied` | Peer traffic rejected by restriction (peer identity + destination + source, deduplicated per minute) |
 | `admin.session_via_relay` | Management session obtained via a relay token |
 | `admin.console_access` | Management plane of a node accessed through the console channel |
-| `gui.role_toggle` | GUI three-way switch changed (JSONL written to `~/.agile-net/gui-audit.jsonl`) |
+| `gui.role_toggle` | GUI three-way switch changed (JSONL written to `~/.anet/gui/gui-audit.jsonl`) |
 | `web.exposure_change` | Web panel listen address or start/stop changed |
 
 The principle: every management operation must be able to answer "who, via which path (local /

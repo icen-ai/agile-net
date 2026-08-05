@@ -111,7 +111,7 @@ rtk cargo run -p agile-net-node
 # 首装初始化向导（配置/管理员/系统服务/启动，交互式）
 rtk cargo run -p agile-net-node --bin anet -- init
 
-# 服务管理（PID 文件 ~/.agile-net/anet-svc.pid）
+# 服务管理（PID 文件 ~/.anet/svc/anet-svc.pid）
 rtk cargo run -p agile-net-node --bin anet -- start target/tmp/test-node.toml -d
 rtk cargo run -p agile-net-node --bin anet -- status
 rtk cargo run -p agile-net-node --bin anet -- stop

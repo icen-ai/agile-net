@@ -15,7 +15,7 @@ on the spot. This page focuses on cross-machine scenarios: links, certificates, 
    - Defaults to standard output (`stdout`).
    - With `[log] dir = "logs"` set in the config file or via environment variable (`AGILE_LOG_DIR=logs`), daily log files are generated.
 2. **anet-gui audit logs**:
-   - Role-switch and exposure-change audits are written to `~/.agile-net/gui-audit.jsonl` (`%USERPROFILE%\.agile-net\gui-audit.jsonl` on Windows).
+   - Role-switch and exposure-change audits are written to `~/.anet/gui/gui-audit.jsonl` (`%USERPROFILE%\.anet\gui\gui-audit.jsonl` on Windows).
 3. **Node database audit**:
    - The SQLite `audit_log` table records all management operations and login events, viewable via the Web console, `anet-svc cli audit list`, or `anet-svc tui`.
 

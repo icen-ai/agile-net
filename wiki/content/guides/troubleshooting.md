@@ -12,7 +12,7 @@
    - 默认标准输出（`stdout`）。
    - 配置文件或环境变量设置 `[log] dir = "logs"`（或 `AGILE_LOG_DIR=logs`）后，按天生成日志文件。
 2. **anet-gui 审计日志**：
-   - 角色切换与暴露操作审计落盘于 `~/.agile-net/gui-audit.jsonl`（Windows 下为 `%USERPROFILE%\.agile-net\gui-audit.jsonl`）。
+   - 角色切换与暴露操作审计落盘于 `~/.anet/gui/gui-audit.jsonl`（Windows 下为 `%USERPROFILE%\.anet\gui\gui-audit.jsonl`）。
 3. **节点数据库审计**：
    - SQLite `audit_log` 表记录全量管理操作与登录事件，可通过 Web 后台、`anet-svc cli audit list` 或 `anet-svc tui` 查看。
 

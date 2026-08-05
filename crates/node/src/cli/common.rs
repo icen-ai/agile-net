@@ -45,14 +45,7 @@ pub struct Session {
 }
 
 fn session_path() -> PathBuf {
-    home_dir().join(".anet").join("session.json")
-}
-
-fn home_dir() -> PathBuf {
-    std::env::var("USERPROFILE")
-        .or_else(|_| std::env::var("HOME"))
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("."))
+    agile_net_core::util::brand_root().join("session.json")
 }
 
 impl Session {

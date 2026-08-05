@@ -95,12 +95,26 @@ enum Cmd {
 
 #[derive(Args, Debug)]
 struct StartArgs {
-    /// 配置文件路径
-    #[arg(default_value = "agile-net.toml")]
-    config: String,
+    /// 配置文件路径（位置参数；缺省：~/.anet/svc/agile-net.toml → ./agile-net.toml 兼容回退）
+    #[arg()]
+    config: Option<String>,
     /// 后台守护（分离进程后立即返回；PID 文件由子进程写入）
     #[arg(short = 'd', long)]
     daemon: bool,
+}
+
+impl StartArgs {
+    /// Resolve the config path: explicit `--config` wins; otherwise prefer the
+    /// brand default `~/.anet/svc/agile-net.toml`, falling back to `./agile-net.toml`
+    /// for compatibility with existing server deployments.
+    fn resolve_config(&self) -> String {
+        match &self.config {
+            Some(p) => p.clone(),
+            None => agile_net_core::util::resolve_default_config()
+                .to_string_lossy()
+                .to_string(),
+        }
+    }
 }
 
 #[derive(Args, Debug)]
@@ -158,6 +172,11 @@ fn shim_legacy_config(args: &mut Vec<String>) {
 }
 
 pub async fn run() -> Result<()> {
+    // One-shot data layout migration (~/.agile-net → ~/.anet/{svc,gui,root}).
+    // Idempotent: no-op if legacy dir absent or new dir already exists.
+    if let Err(e) = agile_net_core::util::migrate_legacy_layout() {
+        eprintln!("warn: legacy layout migration failed: {e}; continuing");
+    }
     let mut args: Vec<String> = std::env::args().collect();
     // Dual persona: entry point decided by the argv[0] file name (anet = admin commands, anet-svc = server).
     let prog = std::path::Path::new(args.first().map(|s| s.as_str()).unwrap_or("anet-svc"))
@@ -184,14 +203,22 @@ pub async fn run() -> Result<()> {
                 println!();
                 Ok(())
             } else {
-                run_server("agile-net.toml".into(), false).await
+                run_server(
+                    agile_net_core::util::resolve_default_config()
+                        .to_string_lossy()
+                        .to_string(),
+                    false,
+                )
+                .await
             }
         }
-        Some(Cmd::Start(a)) | Some(Cmd::Serve(a)) => run_server(a.config, a.daemon).await,
+        Some(Cmd::Start(a)) | Some(Cmd::Serve(a)) => {
+            run_server(a.resolve_config(), a.daemon).await
+        }
         Some(Cmd::Stop) => svc::cmd_stop(),
         Some(Cmd::Restart(a)) => {
             svc::cmd_stop()?;
-            run_server(a.config, a.daemon).await
+            run_server(a.resolve_config(), a.daemon).await
         }
         Some(Cmd::Status) => svc::cmd_status(),
         Some(Cmd::Node(n)) => {

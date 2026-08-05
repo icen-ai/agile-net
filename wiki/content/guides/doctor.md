@@ -180,7 +180,7 @@ anet tool tcping example.com 443   # 单独验证 TCP
 
 **手动处理**：
 
-- 配置与数据默认位于 `~/.agile-net/`（Windows 为 `%USERPROFILE%\.agile-net\`）。
+- 配置与数据默认位于 `~/.anet/gui/`（Windows 为 `%USERPROFILE%\.anet\gui\`）。
 - 自动重置后，从 `.bak` 文件把仍然有效的自定义段落（如端口、订阅链接）人工合并回新配置。
 - 数据库损坏：停止 AgileNet 后从备份目录还原；无备份时删除库文件重新初始化，再从服务端重新登录拉取配置。
 

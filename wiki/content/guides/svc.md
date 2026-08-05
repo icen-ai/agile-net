@@ -8,7 +8,7 @@ anet-svc 是服务器二进制（同一内核无 GUI），角色全靠配置。�
 | 命令 | 说明 |
 | --- | --- |
 | `anet-svc start [config.toml] [-d]` | 启动节点（默认前台；`-d` 后台守护；裸 `anet-svc` 等同 start） |
-| `anet-svc stop` | 停止运行中的节点（PID 文件 `~/.agile-net/anet-svc.pid`） |
+| `anet-svc stop` | 停止运行中的节点（PID 文件 `~/.anet/svc/anet-svc.pid`） |
 | `anet-svc restart [config.toml]` | 重启 |
 | `anet-svc status` | 运行状态（进程/配置/API 可达性，无需登录） |
 | `anet-svc init` | 首装初始化向导（配置/管理员/系统服务/启动，见「命令行 anet」） |

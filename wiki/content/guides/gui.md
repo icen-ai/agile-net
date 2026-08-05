@@ -17,7 +17,7 @@ anet-gui 是全功能图形客户端（Windows / macOS / Android），三路独�
 ### 开关A 客户端角色（默认开）
 
 连上游、本地代理、路由组合——现有全部客户端能力。关闭即断开全部节点并停止代理
-（纯转发机场景）。所有变更落 `gui.role_toggle` 审计（`~/.agile-net/gui-audit.jsonl`）。
+（纯转发机场景）。所有变更落 `gui.role_toggle` 审计（`~/.anet/gui/gui-audit.jsonl`）。
 
 ### 开关B 服务端角色（默认关）
 
@@ -25,7 +25,7 @@ anet-gui 是全功能图形客户端（Windows / macOS / Android），三路独�
 
 - **首开强制设管理密码**（argon2id 落库），随后内嵌节点自动启动
 - 默认端口避让本地独立节点与 Docker 演示链（59290）：API `127.0.0.1:59293`、Relay `0.0.0.0:54431`
-- 数据目录 `~/.agile-net/embedded-node/`
+- 数据目录 `~/.anet/gui/embedded-node/`
 - 「打开控制台」在独立窗口管理内嵌节点（复用节点管理 SPA）
 - 「扇出」菜单管理内嵌节点的 connector（入库 CRUD + 启停 + 权限组收敛下拉，默认不收敛）；
   接入上游后本机客户端隧道的规则将转售给下游（路由再发布）
@@ -34,7 +34,7 @@ anet-gui 是全功能图形客户端（Windows / macOS / Android），三路独�
 
 把本机管理界面经 HTTP 暴露，浏览器访问与坐在本机前同等体验：
 
-- **强制先设管理密码**（argon2id 哈希存 `~/.agile-net/web-auth.json`）
+- **强制先设管理密码**（argon2id 哈希存 `~/.anet/gui/web-auth.json`）
 - 默认仅 `127.0.0.1:59291`；改 LAN 地址为显式操作并记 `web.exposure_change` 审计
 - 鉴权与服务端同强度：登录限流（5 次/分钟、连续失败锁 15 分钟）、JWT 12h、登录/导出审计
 - 凭据导出在 Web 端需二次确认
@@ -52,8 +52,8 @@ anet-gui 是全功能图形客户端（Windows / macOS / Android），三路独�
 
 ## 凭据与隐私
 
-- 凭据存 `~/.agile-net/credentials.json`（Unix 0600）；导出接入链接含明文密码，请谨慎分享
-- 节点配置离线缓存 `~/.agile-net/cache/`：断网时沿用旧规则组网，恢复后无缝升级
+- 凭据存 `~/.anet/credentials.json`（Unix 0600）；导出接入链接含明文密码，请谨慎分享
+- 节点配置离线缓存 `~/.anet/cache/`：断网时沿用旧规则组网，恢复后无缝升级
 - 关闭主窗口最小化到系统托盘；托盘菜单可显示窗口、启停代理、退出
 
 ## 移动端 (Android)

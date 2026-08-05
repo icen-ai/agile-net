@@ -2,7 +2,7 @@
 //!
 //! - Kernel is downloaded only from mihomo's official GitHub Releases (mirrors act as CDN only;
 //!   integrity is enforced by a built-in SHA-256 pin, cross-verified across both mirrors)
-//! - Data layout (~/.agile-net/): mihomo/ holds kernel and config cache; subscriptions.json is the subscription list (0600)
+//! - Data layout (~/.anet/gui/): mihomo/ holds kernel and config cache; subscriptions.json is the subscription list (0600)
 //! - Subscription parsing is fully delegated to kernel proxy-providers; this project never parses subscription content
 //! - external-controller is loopback + secret only; never expose it externally
 //!

@@ -1,10 +1,10 @@
 //! Three-way role toggles (client / server / Web remote UI) and embedded node management.
 //!
-//! - Role state is persisted to `~/.agile-net/gui-settings.json`
-//! - Embedded node data (SQLite / certs) lives in `~/.agile-net/embedded-node/`;
+//! - Role state is persisted to `~/.anet/gui/gui-settings.json`
+//! - Embedded node data (SQLite / certs) lives in `~/.anet/gui/embedded-node/`;
 //!   default ports avoid the local standalone node (API 59290) and the Docker demo chain host mapping (59290) → API 59293 / Relay 54431
-//! - Toggle changes and Web UI exposure changes are appended to `~/.agile-net/gui-audit.jsonl` (audit)
-//! - Web remote UI admin password is stored as an argon2id hash in `~/.agile-net/web-auth.json`
+//! - Toggle changes and Web UI exposure changes are appended to `~/.anet/gui/gui-audit.jsonl` (audit)
+//! - Web remote UI admin password is stored as an argon2id hash in `~/.anet/gui/web-auth.json`
 
 use agile_net_core::config::node::{ApiConfig, ListenerConfig};
 use agile_net_core::config::NodeConfig;
@@ -144,11 +144,7 @@ impl Default for RoleSettings {
 }
 
 pub fn data_dir() -> PathBuf {
-    let home = std::env::var("USERPROFILE")
-        .or_else(|_| std::env::var("HOME"))
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("."));
-    home.join(".agile-net")
+    agile_net_core::util::gui_data_dir()
 }
 
 pub fn embedded_dir() -> PathBuf {

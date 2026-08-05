@@ -24,7 +24,7 @@ sudo instructions; on Windows it registers via sc.exe.
 
 ```bash
 anet start [config.toml] [-d]   # 启动（默认前台；-d 后台守护）
-anet stop                       # 停止（PID 文件 ~/.agile-net/anet-svc.pid）
+anet stop                       # 停止（PID 文件 ~/.anet/svc/anet-svc.pid）
 anet restart [config.toml]      # 重启
 anet status                     # 运行状态（进程/配置/API 可达性，无需登录）
 ```

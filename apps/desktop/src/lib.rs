@@ -121,6 +121,13 @@ pub(crate) fn map_err<E: std::fmt::Display>(e: E) -> String {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // One-shot data layout migration (~/.agile-net → ~/.anet/{svc,gui,root}).
+    // Idempotent: no-op if legacy dir absent or new dir already exists. Must run
+    // before any module loads `~/.anet/...` paths (RoleSettings, credentials, …).
+    if let Err(e) = agile_net_core::util::migrate_legacy_layout() {
+        eprintln!("warn: legacy layout migration failed: {e}; continuing");
+    }
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()

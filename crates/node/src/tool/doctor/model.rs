@@ -53,7 +53,7 @@ pub struct DoctorContext {
     pub gui: bool,
     /// Allow auto-fix (false = diagnose only, never touch; for tests and read-only scenarios)
     pub fix: bool,
-    /// AgileNet data directory (default ~/.agile-net; tests inject a temp dir)
+    /// AgileNet GUI data directory (default ~/.anet/gui; tests inject a temp dir)
     pub data_dir: PathBuf,
     /// Node SQLite path (read-only CIDR conflict check; None or missing = skip)
     pub db_path: Option<PathBuf>,
@@ -95,11 +95,8 @@ impl DoctorContext {
     }
 }
 
-/// Data directory (same rule as apps/desktop roles::data_dir).
+/// Data directory (same rule as apps/desktop roles::data_dir — both resolve to
+/// `~/.anet/gui`, since doctor inspects GUI-side data files and the embedded node DB).
 fn default_data_dir() -> PathBuf {
-    std::env::var("USERPROFILE")
-        .or_else(|_| std::env::var("HOME"))
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("."))
-        .join(".agile-net")
+    agile_net_core::util::gui_data_dir()
 }
