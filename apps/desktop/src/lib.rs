@@ -296,6 +296,9 @@ pub fn run() {
                 restore_server_role(&handle).await;
                 restore_web_role(&handle).await;
                 restore_subscription_role(&handle).await;
+                // Seed the built-in direct presets (LAN/link-local/loopback/CGNAT, first launch only;
+                // no-op when the store already carries presets — deleted presets stay deleted) then restore custom rules.
+                custom_rules::seed_presets();
                 // Restore custom rules (effective union of bypass/hosts mapping/combo → engine hot reload)
                 custom_rules::restore(&handle.state::<AppState>().client);
             });

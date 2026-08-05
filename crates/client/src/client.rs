@@ -1917,6 +1917,7 @@ mod tests {
         CustomBypassRule {
             pattern: pattern.into(),
             via_subscription,
+            sort: 0,
         }
     }
 

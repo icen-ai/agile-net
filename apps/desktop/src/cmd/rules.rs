@@ -15,7 +15,7 @@ use tauri::State;
 /// Custom rules list view (list_custom_rules return shape is the WaveB frontend contract).
 #[derive(Debug, Clone, Serialize)]
 pub struct CustomRulesView {
-    pub bypass: Vec<custom_rules::BypassRule>,
+    pub bypass: Vec<BypassRuleView>,
     pub hosts: Vec<HostRuleView>,
 }
 
@@ -36,9 +36,42 @@ pub struct AddHostResult {
     pub persisted: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct BypassRuleView {
+    pub id: String,
+    pub pattern: String,
+    pub via_subscription: bool,
+    pub enabled: bool,
+    /// user = user-created; preset = built-in direct preset (LAN/link-local/loopback/CGNAT, FlClash standard)
+    pub source: String,
+}
+
+/// Stable view sort: user rules first, presets last (same precedence as the engine first-match).
+pub(crate) fn sort_bypass_view(v: &mut [BypassRuleView]) {
+    v.sort_by_key(|r| if r.source == "preset" { 1 } else { 0 });
+}
+
 #[tauri::command]
 pub(crate) async fn list_custom_rules() -> Result<CustomRulesView, String> {
     let data = custom_rules::snapshot();
+    let mut bypass: Vec<BypassRuleView> = data
+        .bypass
+        .iter()
+        .map(|r| BypassRuleView {
+            id: r.id.clone(),
+            pattern: r.pattern.clone(),
+            via_subscription: r.via_subscription,
+            enabled: r.enabled,
+            source: if r.id.starts_with(custom_rules::PRESET_ID_PREFIX) {
+                "preset"
+            } else {
+                "user"
+            }
+            .into(),
+        })
+        .collect();
+    // Stable precedence: user rules first, presets last (mirrors the engine's sort by custom-bypass key).
+    sort_bypass_view(&mut bypass);
     let mut hosts: Vec<HostRuleView> = data
         .hosts
         .iter()
@@ -64,7 +97,7 @@ pub(crate) async fn list_custom_rules() -> Result<CustomRulesView, String> {
         });
     }
     Ok(CustomRulesView {
-        bypass: data.bypass,
+        bypass,
         hosts,
     })
 }

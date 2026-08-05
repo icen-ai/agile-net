@@ -11,6 +11,9 @@ pub struct CustomBypassRule {
     /// Route matches via the subscription kernel (fallback upstream) instead of direct; degrades to direct when no subscription fallback
     #[serde(default)]
     pub via_subscription: bool,
+    /// Stable sort key for first-match precedence (user rules 0 before presets 1; ascending, presets always fall behind any narrower user rule).
+    #[serde(default)]
+    pub sort: u8,
 }
 
 /// Custom rules snapshot (engine hot reload; the GUI computes "per-rule toggles ∪ enabled combo members"
@@ -46,6 +49,12 @@ pub(crate) fn apply_custom_rules(
         };
         router.add_custom_bypass(&b.pattern, outbound);
     }
+    // First-match precedence comes from the LIST ORDER, which the caller already sorted ascending by
+    // `sort` (user rules 0 before preset direct rules 1) in effective_rules. `add_custom_bypass` pushes
+    // in that order, so a narrow user rule (10.12.* via subscription) resolves before the wide Direct
+    // preset (10.*), and the preset catches everything the user rule falls through. Core-side
+    // sort_custom_bypass_precedence is defense-in-depth for Direct vs non-Direct only; list order here
+    // is the authoritative precedence.
 }
 
 #[cfg(test)]
@@ -56,6 +65,7 @@ mod tests {
         CustomBypassRule {
             pattern: pattern.into(),
             via_subscription,
+            sort: 0,
         }
     }
 

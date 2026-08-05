@@ -24,6 +24,16 @@ pub struct BypassRule {
     pub via_subscription: bool,
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// Whether the rule is managed (GUI custom bypass). Defaults false for old persisted JSON.
+    #[serde(default)]
+    pub managed: bool,
+    /// Stable sort key for the engine-side precedence (user rules before presets; 0 = user, 1 = preset).
+    /// Sorted ascending, so presets (1) always fall behind any narrower user rule in first-match.
+    #[serde(default)]
+    pub sort: u8,
+    /// Creation timestamp (seconds; 0 = built-in preset).
+    #[serde(default)]
+    pub created_at: u64,
 }
 
 /// hosts mapping (user-created; pre-existing unmanaged system mappings are not stored, merged in at read time with source=system).
@@ -54,6 +64,14 @@ fn default_true() -> bool {
     true
 }
 
+/// Current UNIX timestamp in seconds.
+fn now_ts() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
 /// Persisted data (JSON in the GUI data directory).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct StoreData {
@@ -68,6 +86,8 @@ pub struct StoreData {
 /// Effective rule union: individually enabled ∪ members of enabled combos (cross-grouping).
 /// Returns a snapshot the engine can consume directly (combo keys matching no custom rule are ignored —
 /// those are pulled-rule keys, handled separately by the frontend via the pause API).
+/// Effective bypass preserves storage order (user rules then presets; the client engine sorts by
+/// `sort` for first-match precedence — presets always fall behind narrower user rules).
 pub fn effective_rules(data: &StoreData) -> agile_net_client::CustomRules {
     let combo_keys: std::collections::HashSet<&str> = data
         .combos
@@ -76,16 +96,20 @@ pub fn effective_rules(data: &StoreData) -> agile_net_client::CustomRules {
         .flat_map(|c| c.rule_keys.iter().map(|k| k.as_str()))
         .collect();
     let effective = |id: &str, enabled: bool| enabled || combo_keys.contains(id);
+    let mut bypass: Vec<agile_net_client::CustomBypassRule> = data
+        .bypass
+        .iter()
+        .filter(|r| effective(&r.id, r.enabled))
+        .map(|r| agile_net_client::CustomBypassRule {
+            pattern: r.pattern.clone(),
+            via_subscription: r.via_subscription,
+            sort: r.sort,
+        })
+        .collect();
+    // Engine-first-match stability: user rules (sort 0) before presets (sort 1); stable keeps storage order within a key.
+    bypass.sort_by_key(|r| r.sort);
     agile_net_client::CustomRules {
-        bypass: data
-            .bypass
-            .iter()
-            .filter(|r| effective(&r.id, r.enabled))
-            .map(|r| agile_net_client::CustomBypassRule {
-                pattern: r.pattern.clone(),
-                via_subscription: r.via_subscription,
-            })
-            .collect(),
+        bypass,
         hosts: data
             .hosts
             .iter()
@@ -237,6 +261,9 @@ pub fn add_bypass(
         pattern: pattern.to_string(),
         via_subscription,
         enabled: true,
+        managed: true,
+        sort: 0, // user rules first; engine sorts ascending so presets (1) fall behind
+        created_at: now_ts(),
     });
     commit(&mut guard, client)?;
     crate::roles::audit(
@@ -346,7 +373,6 @@ pub fn remove(client: &agile_net_client::AgileNetClient, id: &str) -> Result<(),
     crate::roles::audit("gui.custom_rule", serde_json::json!({"action": "remove", "id": id}));
     Ok(())
 }
-
 // ==================== Combo operations ====================
 
 pub fn add_combo(client: &agile_net_client::AgileNetClient, name: &str) -> Result<String, String> {
@@ -426,6 +452,56 @@ pub fn set_combo_enabled(
 pub fn restore(client: &agile_net_client::AgileNetClient) {
     let data = snapshot();
     client.set_custom_rules(effective_rules(&data));
+}
+
+// ==================== Preset direct rules (first-launch seeding; user deletable, never re-seeded) ====================
+
+/// Preset prefix for the built-in direct rules (LAN/link-local/loopback/CGNAT/domain).
+/// First-launch seeding injects these into the bypass store; the user can toggle/delete them freely
+/// (a deleted preset is never re-seeded — it only appears when the store has no preset yet).
+pub const PRESET_ID_PREFIX: &str = "preset-";
+
+/// FlClash-standard direct preset list, in stable precedence order (most specific first):
+/// loopback → link-local → CGNAT → RFC1918 LAN (10/8, 172.16/12, 192.168/16) → localhost/local domains.
+/// The order must keep `10.0.0.0/8` AFTER the narrower `10.64.0.0/10` (a client dialing 10.64.x.x
+/// would otherwise hit the wide /8 preset first and never reach the user's narrower pull rule for it).
+pub(crate) fn preset_entries() -> Vec<(String, String)> {
+    vec![
+        ("preset-loopback".into(), "127.*".into()),
+        ("preset-link-local".into(), "169.254.*".into()),
+        ("preset-cgnat".into(), "100.64.*".into()),
+        ("preset-lan10".into(), "10.*".into()),
+        ("preset-lan172".into(), "172.*".into()),
+        ("preset-lan192".into(), "192.168.*".into()),
+        ("preset-localhost".into(), "localhost".into()),
+        ("preset-local".into(), "*.local".into()),
+    ]
+}
+
+/// First-launch seeding: inject the preset list once (only when the store carries no preset yet).
+/// No-op on every subsequent startup / restore (a deleted preset stays deleted — the seeding only
+/// detects the absence of ANY preset, so a deliberate full clear would re-seed, which is the documented
+/// escape hatch for a broken or imported store). Idempotent, returns whether anything changed.
+pub fn seed_presets() -> bool {
+    let mut guard = write_store();
+    if guard.data.bypass.iter().any(|r| r.id.starts_with(PRESET_ID_PREFIX)) {
+        return false;
+    }
+    let presets: Vec<BypassRule> = preset_entries()
+        .into_iter()
+        .map(|(id, pattern)| BypassRule {
+            id,
+            pattern,
+            via_subscription: false, // presets are always direct
+            enabled: true,
+            managed: false,
+            sort: 1, // presets sort behind user rules (0)
+            created_at: 0,
+        })
+        .collect();
+    guard.data.bypass.extend(presets);
+    save_to(&guard.path.clone(), &guard.data).map_err(|_| ()).ok();
+    true
 }
 
 // ==================== System hosts ====================
@@ -595,6 +671,9 @@ mod tests {
             pattern: pattern.into(),
             via_subscription: via,
             enabled,
+            managed: true,
+            sort: 0,
+            created_at: 0,
         }
     }
 
@@ -711,6 +790,114 @@ mod tests {
         assert_eq!(pats, vec!["a.com", "b.com"]); // b1 individual ∪ b2 combo; b3/b4 not effective
         let hosts: Vec<&str> = eff.hosts.iter().map(|(h, _)| h.as_str()).collect();
         assert_eq!(hosts, vec!["x.internal", "y.internal"]);
+    }
+
+    #[test]
+    fn effective_sort_presets_after_users() {
+        // Presets (sort 1) always sort behind user rules (sort 0) regardless of storage order,
+        // so the engine first-match resolves the user's narrower rule before the wide preset.
+        let mut bypass = vec![
+            BypassRule {
+                id: "preset-lan10".into(),
+                pattern: "10.*".into(),
+                via_subscription: false,
+                enabled: true,
+                managed: false,
+                sort: 1,
+                created_at: 0,
+            },
+            BypassRule {
+                id: "bypass-user".into(),
+                pattern: "10.12.0.0/16".into(),
+                via_subscription: true,
+                enabled: true,
+                managed: true,
+                sort: 0,
+                created_at: 1,
+            },
+        ];
+        sort_bypass(&mut bypass);
+        assert_eq!(bypass[0].id, "bypass-user");
+        assert_eq!(bypass[1].id, "preset-lan10");
+        // Stable within a key: presets keep their predefined order
+        let mut p = vec![
+            BypassRule { id: "preset-lan10".into(), pattern: "10.*".into(), via_subscription: false, enabled: true, managed: false, sort: 1, created_at: 0 },
+            BypassRule { id: "preset-lan172".into(), pattern: "172.*".into(), via_subscription: false, enabled: true, managed: false, sort: 1, created_at: 0 },
+        ];
+        sort_bypass(&mut p);
+        assert_eq!(p[0].id, "preset-lan10");
+        assert_eq!(p[1].id, "preset-lan172");
+    }
+
+    // ---------- Preset seeding ----------
+
+    #[test]
+    fn seed_presets_injects_once_and_idempotent() {
+        // Fresh store: seeding injects the full FlClash-standard preset list
+        let mut data = StoreData::default();
+        let changed = seed_presets_into(&mut data);
+        assert!(changed);
+        let presets: Vec<&BypassRule> = data
+            .bypass
+            .iter()
+            .filter(|r| r.id.starts_with(PRESET_ID_PREFIX))
+            .collect();
+        assert_eq!(presets.len(), preset_entries().len());
+        // All presets are direct, enabled, sort=1 (behind user rules), not managed
+        assert!(presets.iter().all(|r| !r.via_subscription && r.enabled && r.sort == 1 && !r.managed));
+        // Loopback / link-local / CGNAT before the RFC1918 LAN prefixes (stable precedence)
+        let pats: Vec<&str> = presets.iter().map(|r| r.pattern.as_str()).collect();
+        let i10 = pats.iter().position(|p| *p == "10.*").unwrap();
+        let icgnat = pats.iter().position(|p| *p == "100.64.*").unwrap();
+        let ilink = pats.iter().position(|p| *p == "169.254.*").unwrap();
+        assert!(icgnat < i10, "CGNAT 须在 10.* 之前");
+        assert!(ilink < i10, "链路本地须在 10.* 之前");
+    }
+
+    #[test]
+    fn seed_presets_skips_when_present_and_stays_deleted() {
+        // Store already carries a preset → seeding is a no-op (deleted presets stay deleted)
+        let mut data = StoreData {
+            bypass: vec![BypassRule {
+                id: "preset-lan10".into(),
+                pattern: "10.*".into(),
+                via_subscription: false,
+                enabled: false, // user toggled it off
+                managed: false,
+                sort: 1,
+                created_at: 0,
+            }],
+            hosts: vec![],
+            combos: vec![],
+        };
+        assert!(!seed_presets_into(&mut data));
+        assert_eq!(data.bypass.len(), 1);
+        // All presets removed → the escape-hatch re-seed re-injects the full list
+        data.bypass.clear();
+        assert!(seed_presets_into(&mut data));
+        assert_eq!(
+            data.bypass.iter().filter(|r| r.id.starts_with(PRESET_ID_PREFIX)).count(),
+            preset_entries().len()
+        );
+    }
+
+    /// Test-only seeding into a fresh StoreData (production seed_presets writes the global store).
+    fn seed_presets_into(data: &mut StoreData) -> bool {
+        if data.bypass.iter().any(|r| r.id.starts_with(PRESET_ID_PREFIX)) {
+            return false;
+        }
+        data.bypass.extend(preset_entries().into_iter().map(
+            |(id, pattern)| BypassRule {
+                id,
+                pattern,
+                via_subscription: false,
+                enabled: true,
+                managed: false,
+                sort: 1,
+                created_at: 0,
+            },
+        ));
+        true
     }
 
     #[test]
