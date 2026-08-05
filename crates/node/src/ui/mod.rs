@@ -36,6 +36,8 @@ const AGUTIL_JS: &str = include_str!("../../../../apps/desktop/ui/agutil.js");
 const AGLINK_JS: &str = include_str!("../../../../apps/desktop/ui/aglink.js");
 /// Shared .anet credential file builder/parser (federation P1 §2.8; WebCrypto, both ends).
 const AGANET_JS: &str = include_str!("../../../../apps/desktop/ui/aganet.js");
+/// Shared universal import wizard (blind-plug anet:// link / .anet file / QR image dialog, both ends).
+const AGIMPORT_JS: &str = include_str!("../../../../apps/desktop/ui/agimport.js");
 /// Shared i18n runtime (single source of the bilingual mechanism, embedded the same way).
 const AGI18N_JS: &str = include_str!("../../../../apps/desktop/ui/agi18n.js");
 /// Shared bilingual dictionary (single source for both ends, embedded the same way).
@@ -128,6 +130,12 @@ async fn aganet_js_handler() -> impl IntoResponse {
     resp
 }
 
+async fn agimport_js_handler() -> impl IntoResponse {
+    let mut resp = ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8")], AGIMPORT_JS).into_response();
+    base_headers(&mut resp);
+    resp
+}
+
 async fn agi18n_js_handler() -> impl IntoResponse {
     let mut resp = ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8")], AGI18N_JS).into_response();
     base_headers(&mut resp);
@@ -159,6 +167,7 @@ pub fn create_ui_router() -> Router {
         .route("/ui/agutil.js", get(agutil_js_handler))
         .route("/ui/aglink.js", get(aglink_js_handler))
         .route("/ui/aganet.js", get(aganet_js_handler))
+        .route("/ui/agimport.js", get(agimport_js_handler))
         .route("/ui/agi18n.js", get(agi18n_js_handler))
         .route("/ui/aglang.js", get(aglang_js_handler))
         .route("/ui/lang/admin.js", get(admin_lang_js_handler))

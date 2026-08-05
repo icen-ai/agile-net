@@ -46,6 +46,10 @@ sha2 = { workspace = true }
 ring = "0.17"
 base64 = "0.22"
 qrcode = { workspace = true }
+# QR 图片解码（统一导入组件 agimport.js：管理端 /api/v1/admin/tool/qr-decode 与 anet-gui qr_pick_decode 共用；
+# image 与 qrcode 传递依赖同版 0.25，rqrr 纯 Rust 无 C 依赖）
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+rqrr = "0.10"
 sysinfo = { workspace = true }
 clap = { workspace = true }
 rpassword = "7"

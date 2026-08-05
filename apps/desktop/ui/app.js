@@ -184,6 +184,8 @@ window.addEventListener('DOMContentLoaded', async () => {
   if (TAURI && TAURI.app) { TAURI.app.getVersion().then(v => { const el = $('ver'); if (el) el.textContent = v; const av = $('about-ver'); if (av) av.textContent = v; }).catch(() => {}); }
   $('btn-import').onclick = (e) => importUrl($('connect-url').value, e.target);
   $('btn-import-hero').onclick = (e) => importUrl($('connect-url-hero').value, e.target);
+  // Universal import wizard (titlebar link button): anet:// link / .anet file / QR image — one dialog for all
+  $('btn-agimport').onclick = openUniversalImport;
   $('btn-paste').onclick = pasteFromClipboard;
   // .anet import (file picker entry; drag-drop and file association funnel into the same dialog)
   $('btn-anet').onclick = async () => {

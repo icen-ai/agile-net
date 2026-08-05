@@ -266,6 +266,7 @@ pub fn run() {
             anet_save_file,
             anet_open_file,
             read_text_file,
+            qr_pick_decode,
         ])
         .setup(|app| {
             setup_tray(app)?;

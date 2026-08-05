@@ -502,6 +502,12 @@ pub fn create_app(state: ApiState) -> Router {
             "/api/v1/admin/tool/bandwidth",
             post(handlers::tool::bandwidth_test),
         )
+        .route(
+            "/api/v1/admin/tool/qr-decode",
+            // QR screenshots routinely exceed the 2MB default body limit (decode caps at 20MB)
+            post(handlers::tool::qr_decode)
+                .layer(axum::extract::DefaultBodyLimit::max(21 * 1024 * 1024)),
+        )
         // ---- Admin: Audit ----
         .route(
             "/api/v1/admin/audit-logs",

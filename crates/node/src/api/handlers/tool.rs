@@ -9,6 +9,7 @@ use crate::api::extractors::AdminAuth;
 use crate::api::{ApiState, codes, err, ok};
 use crate::service::connectors::BandwidthPeerError;
 use agile_net_core::relay::bandwidth;
+use axum::body::Bytes;
 use axum::{Json, extract::State, http::StatusCode, response::Response};
 use serde::Deserialize;
 use serde_json::json;
@@ -80,5 +81,17 @@ pub async fn bandwidth_test(
                 MEASURE_TIMEOUT.as_secs()
             ),
         ),
+    }
+}
+
+/// POST /api/v1/admin/tool/qr-decode
+///
+/// Decode the first QR code in an uploaded image (raw PNG/JPEG body, ≤20MB) into its text.
+/// Used by the universal import wizard (agimport.js) QR entry; local-only convenience, no audit.
+/// data: {text}
+pub async fn qr_decode(AdminAuth(_): AdminAuth, body: Bytes) -> Response {
+    match crate::qr::decode_qr_image(&body) {
+        Ok(text) => ok(json!({ "text": text })),
+        Err(msg) => err(StatusCode::BAD_REQUEST, codes::VALIDATION_FAILED, msg),
     }
 }

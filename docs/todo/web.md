@@ -232,7 +232,7 @@ if (HTTP_MODE && !window.confirm(AgI18n.t('views.export-confirm'))) return;
 
 ## 8. 修复状态（2026-08-05 批次）
 
-> 对 §1–§6 逐条核实，并合入本轮新发现问题的修复。`cargo test --workspace` 391 全绿、clippy 干净。
+> 对 §1–§6 逐条核实，并合入本轮新发现问题的修复与统一导入组件落地。`cargo test --workspace` 394 全绿、双 workspace clippy 干净。
 
 ### 8.1 原清单逐条核实
 
@@ -262,3 +262,11 @@ if (HTTP_MODE && !window.confirm(AgI18n.t('views.export-confirm'))) return;
    - API 校验（connectors / relay_tokens POST+PUT / groups 附件展示）与桌面端 `validate_group` 全部 CSV 逐成员校验，E2E 组拒绝挂收敛。
    - 前端：管理端扇入令牌新建/编辑、扇出新建/编辑三处单选 select 改复选列表（E2E 组禁用 + 徽标）；桌面端扇出弹窗同步改复选列表（`GroupOption` 新增 `e2e_required`）。
    - CLI：`--group` 支持逗号分隔多组（`resolve_id_set`），connector update 空值显式解绑。
+5. **统一盲插导入组件落地（用户需求：两端首页一个弹窗兼容全部凭据载体）**：新建共享组件 `apps/desktop/ui/agimport.js`（`AgImport.open(cfg)`，管理端经 `/ui/agimport.js` 内嵌服务，样式收 components.css `.agimp-*`，i18n `import.*` 入 aglang.js 基础层）。
+   - 三载体一弹窗：粘贴 anet:// 链接 / 选 .anet 文件（PIN 加密文件弹窗内输码解密）/ 选二维码图片解码；输入行右平齐「粘贴 / 文件 / 二维码 / 确认」四 icon，确认 icon 灰色直到预览解析合法，随后转 --ok 色 + 呼吸环（`prefers-reduced-motion` 降级）。
+   - 解析预览：类型徽标（扇入链接/扇出链接 + 委托/E2E/分流/管理档/insecure 副徽标）+「来自」（裸链接取入口 host，.anet 取信封 issuer）+ 入口/容灾集合数/账号/目标/SNI/指纹钉值等技术字段。
+   - 角色适用性门：管理端标记扇入不适用（凭据属客户端）、Web 远程面标记扇出不适用，预览说明原因且确认 icon 保持灰。
+   - 扇出细节步：名称/备注；GUI 侧先查本机服务端角色，未运行给「一键启动」（复用 askPassword + 首开管理员引导 + `set_server_role`）。说明：anet://fanout 链接本身不携带对端类型字段（仅 addr/token/sni/fp），「检查服务器还是 GUI」落地为本机环境检查。
+   - 入口：桌面端标题栏指纹 icon 左侧 link icon（`btn-agimport` → `openUniversalImport`）；管理端首页 page-title 行同组件按钮。扇入确认即连，扇出确认入库（桌面 `add_server_connector` / 管理端 POST `/api/v1/admin/connectors`）。
+   - 二维码解码底座：`crates/node/src/qr.rs`（rqrr，20MB 上限）+ 管理 API `POST /api/v1/admin/tool/qr-decode`（octet-stream，DefaultBodyLimit 21MB）+ 桌面 `qr_pick_decode` 命令（原生选图 → 同一 decode 函数）；管理端嵌入控制台走 `ag-anet-open` postMessage 桥选文件。
+   - **未做**：手机摄像头实时扫码（需 tauri-plugin-barcode-scanner + Android manifest 权限，二维码图片导入已全平台可用，留作后续跟进）。

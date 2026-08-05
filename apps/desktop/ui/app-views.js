@@ -1263,6 +1263,92 @@ function foFillFields(p) {
   $('fo-insecure').checked = !!p.insecure;
 }
 
+/* ================= Universal import wizard (blind-plug; titlebar link button) =================
+   One dialog for every credential carrier: anet:// link (fan-in/fan-out/delegated) paste,
+   .anet file, QR image. Shared component agimport.js; this is the desktop adapter.
+   Fan-out rides the local embedded node — the wizard's details step offers a one-click
+   server-role start when it is off (admin password bootstrap included, same as the settings toggle). */
+function openUniversalImport() {
+  AgImport.open({
+    context: 'desktop',
+    // Fan-out is a local embedded-node capability; the browser remote panel imports fan-in only
+    fanoutApplicable: !HTTP_MODE,
+    pickAnetFile: async () => {
+      if (HTTP_MODE) {
+        return await new Promise((resolve) => {
+          const inp = document.createElement('input');
+          inp.type = 'file';
+          inp.accept = '.anet,application/json';
+          inp.onchange = async () => {
+            const f = inp.files[0];
+            resolve(f ? { name: f.name, content: await f.text() } : null);
+          };
+          inp.addEventListener('cancel', () => resolve(null));
+          inp.click();
+        });
+      }
+      try { return await invoke('anet_open_file'); } catch (e) { toast(friendlyError(e), 'err'); return null; }
+    },
+    // QR image pick + rqrr decode (Rust); the browser remote panel has no decoder — button hidden
+    pickQrImage: HTTP_MODE ? undefined : async () => {
+      try { return await invoke('qr_pick_decode'); } catch (e) { toast(friendlyError(e), 'err'); return null; }
+    },
+    checkFanoutReady: HTTP_MODE ? undefined : async () => {
+      let st = null;
+      try { st = await invoke('server_status'); } catch (e) { return { ready: true }; }
+      if (st && st.running) return { ready: true };
+      return {
+        ready: false,
+        start: async () => {
+          try {
+            const cur = await invoke('server_status');
+            if (!cur.has_admin) {
+              // First enable forces setting an admin password (same flow as the settings toggle)
+              const cred = await askPassword({
+                title: AgI18n.t('settings.pwd-server-title'),
+                desc: AgI18n.t('settings.pwd-server-desc'),
+                showUser: true,
+              });
+              if (!cred) return AgI18n.t('common.cancel');
+              await invoke('init_server_admin', { username: cred.user, password: cred.pass });
+            }
+            await invoke('set_server_role', { enabled: true });
+            syncServerSwitch(true);
+            refreshServerPanel();
+            refreshAdminEntry();
+            renderDashFanout();
+            toast(AgI18n.t('settings.server-on'), 'ok');
+            return true;
+          } catch (e) { return friendlyError(e); }
+        },
+      };
+    },
+    applyConnect: async ({ link }) => {
+      // Same path as the connect-view import (shared parse gate + delegated/admin notes + connect)
+      try {
+        const input = await invoke('parse_connect_url', { url: link });
+        if (input.admin) toast(AgI18n.t('views.url-admin-note'), 'info');
+        return (await connectWith(input, null)) ? true : AgI18n.t('common.failed');
+      } catch (e) { return friendlyError(e); }
+    },
+    applyFanout: async ({ parsed }, details) => {
+      try {
+        await invoke('add_server_connector', {
+          name: details.name, upstreamAddr: parsed.addr, token: parsed.token,
+          sniHostname: parsed.sni || 'cdn.cloudflare.com', insecure: !!parsed.insecure,
+          pinnedFingerprint: parsed.fp || '', groupId: null, pushGroups: [], advertise: '', remark: details.remark,
+        });
+        toast(AgI18n.t('views.fo-added'), 'ok');
+        refreshUpstreams();
+        renderDashFanout();
+        return true;
+      } catch (e) { return friendlyError(e); }
+    },
+    onDone: () => { refreshCreds(); refreshNodes(true); },
+    toast: (m, k) => toast(m, k),
+  });
+}
+
 
 /* Language switch: dynamically rendered areas (lists/badges/hints) force re-render in the new language (polling signature unchanged won't self-update; must force) */
 if (window.AgI18n) AgI18n.onChange(() => {

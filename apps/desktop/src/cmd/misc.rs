@@ -739,6 +739,23 @@ pub(crate) async fn read_text_file(path: String) -> Result<String, String> {
     std::fs::read_to_string(&path).map_err(|e| format!("读取文件失败：{e}"))
 }
 
+/// QR import (universal import wizard): native image picker + rqrr decode to the link text; None = cancelled.
+#[tauri::command]
+pub(crate) async fn qr_pick_decode(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let Some(path) = app
+        .dialog()
+        .file()
+        .add_filter("QR 图片", &["png", "jpg", "jpeg"])
+        .blocking_pick_file()
+    else {
+        return Ok(None);
+    };
+    let pb = path.as_path().ok_or("不支持的文件路径")?;
+    let bytes = std::fs::read(pb).map_err(|e| format!("读取文件失败：{e}"))?;
+    agile_net_node::qr::decode_qr_image(&bytes).map(Some)
+}
+
 /// Write the real client proxy state into the embedded node state slot (call after start/stop/mode switch/role shutdown;
 /// the admin "local proxy" card reads it via node status; the mode comes from the GUI proxy settings).
 pub(crate) async fn report_client_proxy(state: &State<'_, AppState>) {

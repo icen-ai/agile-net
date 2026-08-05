@@ -414,6 +414,93 @@ function applyAnetPayload(role, payload) {
   }
 }
 
+/* ================= Universal import wizard (blind-plug; dashboard 「导入」 button) =================
+   One dialog for every credential carrier: anet:// link paste, .anet file, QR image.
+   Shared component agimport.js; this is the admin-console adapter. Fan-in credentials belong
+   to clients — the wizard explains and keeps the confirm icon gray (same rule as applyAnetPayload). */
+function pickAnetFileUniversal() {
+  // Embedded console: the desktop host owns the native open dialog (same bridge as the connectors tab)
+  if (isEmbeddedConsole()) {
+    return new Promise((resolve) => {
+      const onMsg = (e) => {
+        const d = e.data || {};
+        if (d.type === 'ag-anet-open-result') {
+          window.removeEventListener('message', onMsg);
+          resolve(d.content != null ? { name: d.name, content: d.content } : null);
+        }
+      };
+      window.addEventListener('message', onMsg);
+      window.parent.postMessage({ type: 'ag-anet-open' }, '*');
+      setTimeout(() => { window.removeEventListener('message', onMsg); resolve(null); }, 120000);
+    });
+  }
+  return new Promise((resolve) => {
+    const inp = document.createElement('input');
+    inp.type = 'file';
+    inp.accept = '.anet,application/json';
+    inp.onchange = async () => {
+      const f = inp.files[0];
+      resolve(f ? { name: f.name, content: await f.text() } : null);
+    };
+    inp.addEventListener('cancel', () => resolve(null));
+    inp.click();
+  });
+}
+function pickQrImageUniversal() {
+  return new Promise((resolve, reject) => {
+    const inp = document.createElement('input');
+    inp.type = 'file';
+    inp.accept = 'image/png,image/jpeg';
+    inp.onchange = async () => {
+      const f = inp.files[0];
+      if (!f) { resolve(null); return; }
+      try {
+        const buf = await f.arrayBuffer();
+        const post = () => fetch('/api/v1/admin/tool/qr-decode', {
+          method: 'POST',
+          headers: { 'Authorization': 'Bearer ' + S.access, 'Content-Type': 'application/octet-stream' },
+          body: buf,
+        });
+        let res = await post();
+        if (res.status === 401 && await refreshSession()) res = await post();
+        const j = await res.json().catch(() => ({}));
+        if (j.code !== 0) { reject(new Error(j.message || T('import.badLink'))); return; }
+        resolve(j.data.text);
+      } catch (e) { reject(e); }
+    };
+    inp.addEventListener('cancel', () => resolve(null));
+    inp.click();
+  });
+}
+function openUniversalImport() {
+  AgImport.open({
+    context: 'admin',
+    connectApplicable: false, // fan-in credentials are for clients; this console imports fan-out only
+    pickAnetFile: pickAnetFileUniversal,
+    pickQrImage: pickQrImageUniversal,
+    applyFanout: async ({ parsed }, details) => {
+      try {
+        await api('POST', '/api/v1/admin/connectors', {
+          name: details.name || parsed.addr,
+          upstream_addr: parsed.addr,
+          token: parsed.token,
+          sni_hostname: parsed.sni || '',
+          insecure: !!parsed.insecure,
+          pinned_fingerprint: parsed.fp || '',
+          advertise: [],
+          remark: details.remark,
+        });
+        return true;
+      } catch (e) { return e.message; }
+    },
+    onDone: () => {
+      toast(T('fanout.createdToast'), 'ok');
+      if (S.view === 'connectors') loadConnectors();
+    },
+    toast: (m, k) => toast(m, k),
+  });
+}
+
 /* ================= Login/logout ================= */
 async function doLogin() {
   const u = $('login-user').value.trim(), p = $('login-pass').value;
@@ -551,7 +638,8 @@ document.addEventListener('change', (e) => {
 
 /* ================= Dashboard ================= */
 async function renderDashboard() {
-  $('view').innerHTML = '<div class="page-title">' + ic('layout-dashboard', 20) + '<span id="dash-title">' + T('dashboard.title', { name: T('term.endpoint') }) + '</span></div><div class="page-desc">' + T('dashboard.desc') + '</div>' +
+  $('view').innerHTML = '<div class="page-title">' + ic('layout-dashboard', 20) + '<span id="dash-title">' + T('dashboard.title', { name: T('term.endpoint') }) + '</span>' +
+    '<div class="spacer"></div><button class="ghost small" id="dash-import">' + ic('link', 15) + T('import.title') + '</button></div><div class="page-desc">' + T('dashboard.desc') + '</div>' +
     '<div class="stat-grid" id="dash-stats"></div>' +
     '<div class="tf-grid" id="dash-tf">' +
       tfCard('fanin', T('dashboard.tfFanin'), 'fanin') +
@@ -567,6 +655,7 @@ async function renderDashboard() {
   };
   $('dash-stats').onclick = gotoView;
   $('dash-tf').onclick = gotoView;
+  $('dash-import').onclick = openUniversalImport;
 
   async function load() {
     try {
