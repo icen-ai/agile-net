@@ -289,8 +289,10 @@ function shareCardBind(root, opts) {
           insecure: parsed.insecure, admin: parsed.admin,
           // federation P2: keep the disaster set of a delegated credential across rebuilds
           entries: (parsed.entries || []).map((a, i) => ({ addr: a, fp: (parsed.entryFps || [])[i] || '' })),
-          // federation P3: keep the E2E routing hint
+          // federation P3: keep the E2E routing hint, the consumer tier and the admin hint
           ehint: parsed.ehint || '',
+          emode: parsed.emode || '',
+          eadmin: !!parsed.eadmin,
         });
   }
   function render() {
@@ -469,6 +471,12 @@ async function loadGroupsCache() {
 function groupName(id) {
   const g = S.groups.find(g => g.id === id);
   return g ? g.name : (id || '-');
+}
+/* Group-set display: resolve each member of a stored CSV to its cached name (dangling ids verbatim) */
+function groupNamesOf(csv) {
+  const parts = String(csv || '').split(',').filter(Boolean);
+  if (!parts.length) return '-';
+  return parts.map(id => groupName(id)).join(', ');
 }
 /* Proxy mode text (client proxy slot mode: system = system proxy / local = local proxy) */
 function proxyModeText(m) { return ({ system: T('adm.modeSystem'), local: T('adm.modeLocal') })[m] || m || ''; }
@@ -1108,7 +1116,7 @@ async function renderFanIn() {
       '<div class="agtabs-tools"><input id="fanin-q" style="width:230px" placeholder="' + T('fanin.admSearchPh') + '" value="' + esc(S.faninQuery) + '"' + (tab === 'listen' ? ' hidden' : '') + '></div>' +
     '</div>' +
     '<div data-agpanel="listen"><div class="card"><h3>' + T('fanin.listenerTitle') + '</h3><div id="fanin-listener"></div></div></div>' +
-    '<div data-agpanel="peers" hidden><div class="card"><h3>' + T('fanin.peersTitle') + '</h3><div class="table-wrap"><table><thead><tr><th>' + T('fanin.colPeer') + '</th><th>' + T('dashboard.up') + '</th><th>' + T('dashboard.down') + '</th><th>' + T('fanin.colPool') + '</th></tr></thead><tbody id="fanin-peers"></tbody></table></div></div></div>' +
+    '<div data-agpanel="peers" hidden><div class="card"><h3>' + T('fanin.peersTitle') + '</h3><div class="table-wrap"><table><thead><tr><th>' + T('fanin.colPeer') + '</th><th>' + T('dashboard.up') + '</th><th>' + T('dashboard.down') + '</th><th>' + T('fanin.advRoutes') + '</th><th>' + T('fanin.colPool') + '</th></tr></thead><tbody id="fanin-peers"></tbody></table></div></div></div>' +
     '<div data-agpanel="tokens" hidden><div class="card"><h3>' + T('fanin.tokensTitle') + ahelp(T('fanin.tokenHelp')) + '</h3>' +
       '<div class="toolbar"><div class="spacer"></div><button id="tok-create">' + ic('plus', 15) + T('fanin.createToken') + '</button></div>' +
       '<div class="table-wrap"><table><thead><tr><th>' + T('fanin.colPrefix') + '</th><th>' + T('term.group') + '</th><th>' + T('fanin.colRate') + '</th><th>' + T('common.remark') + '</th><th>' + T('fanin.colExpose') + '</th><th>' + T('fanin.colLastUsed') + '</th><th>' + T('common.createdAt') + '</th><th>' + T('common.action') + '</th></tr></thead><tbody id="tok-body"></tbody></table></div></div></div>';
@@ -1133,8 +1141,21 @@ async function loadFaninStatus() {
   try { L = (await api('GET', '/api/v1/admin/node/status')).roles.listener; }
   catch(e) { toast(e.message, 'err'); return; }
   L = L || { enabled: false };
+  // Authorizable pool (federation P1): refreshed with its own signature, ahead of the listener
+  // early-return — pushed groups change without the peer list changing (idle reconnect re-pushes)
+  let poolChanged = false;
+  try {
+    const f = await api('GET', '/api/v1/admin/federation/offered');
+    const psig = JSON.stringify(f.items || []);
+    if (psig !== box.dataset.psig) {
+      box.dataset.psig = psig;
+      FED_OFFERS = {};
+      (f.items || []).forEach(o => { FED_OFFERS[o.node_id] = o; });
+      poolChanged = true;
+    }
+  } catch(e) { /* pool failure never blocks the peer list */ }
   const sig = JSON.stringify(L);
-  if (sig === box.dataset.sig) return;
+  if (sig === box.dataset.sig && !poolChanged) return;
   box.dataset.sig = sig;
   if (!L.enabled) {
     box.innerHTML = '<div class="empty">' + T('fanin.listenerOff') + '</div>';
@@ -1152,12 +1173,6 @@ async function loadFaninStatus() {
   const seen = new Set(traffic.map(t => t.node_id));
   peers.filter(p => !seen.has(p)).forEach(p => rows.push({ node_id: p, bytes_up: 0, bytes_down: 0 }));
   FANIN_PEERS = rows;
-  // Authorizable pool (federation P1): advertised routes + pushed policy groups of online peers
-  try {
-    const f = await api('GET', '/api/v1/admin/federation/offered');
-    FED_OFFERS = {};
-    (f.items || []).forEach(o => { FED_OFFERS[o.node_id] = o; });
-  } catch(e) { /* pool failure never blocks the peer list */ }
   renderFaninPeers();
 }
 /* Pushed-group detail of one peer (source-tagged; one-click adoption into a local group) */
@@ -1182,13 +1197,21 @@ function renderFaninPeers() {
   body.innerHTML = rows.map(t => {
     const o = FED_OFFERS[t.node_id];
     const hasPool = !!(o && ((o.advertise || []).length || (o.groups || []).length));
+    // Advertised route column: always rendered (badges, capped) so an empty set reads as
+    // "无宣告" instead of a missing pool entry — delegation issuance depends on confirming this
+    const adv = (o && o.advertise) || [];
+    const advCell = adv.length
+      ? adv.slice(0, 3).map(a => '<span class="badge b-info mono" style="margin:0 4px 2px 0">' + esc(a) + '</span>').join('') +
+        (adv.length > 3 ? '<span class="hint" title="' + esc(adv.join(', ')) + '">+' + (adv.length - 3) + '</span>' : '')
+      : '<span style="color:var(--dim2)">' + T('fanin.noAdv') + '</span>';
     let html = '<tr><td class="mono"><span class="dot on"></span>' + esc(t.node_id) + '</td>' +
       '<td class="mono">' + fmtBytes(t.bytes_up) + '</td>' +
       '<td class="mono">' + fmtBytes(t.bytes_down) + '</td>' +
+      '<td>' + advCell + '</td>' +
       '<td>' + (hasPool ? '<button class="ghost small" data-act="pool-toggle" data-node="' + esc(t.node_id) + '">' + T('fanin.poolDetail') + '</button>' : '') + '</td></tr>';
-    if (hasPool) html += '<tr data-poolrow="' + esc(t.node_id) + '" hidden><td colspan="4" style="background:var(--bg2)">' + poolDetailHtml(o) + '</td></tr>';
+    if (hasPool) html += '<tr data-poolrow="' + esc(t.node_id) + '" hidden><td colspan="5" style="background:var(--bg2)">' + poolDetailHtml(o) + '</td></tr>';
     return html;
-  }).join('') || '<tr><td colspan="4" class="empty">' + (q ? T('fanin.noMatchPeers') : T('fanin.emptyPeers')) + '</td></tr>';
+  }).join('') || '<tr><td colspan="5" class="empty">' + (q ? T('fanin.noMatchPeers') : T('fanin.emptyPeers')) + '</td></tr>';
 }
 /* One-click adoption: materialize a pushed group into a local group (federation P1 acceptance) */
 async function adoptPushed(nodeId, groupName) {
@@ -1249,11 +1272,11 @@ function renderFaninTokens() {
   const items = q ? FANIN_TOKENS.filter(t =>
     (t.token_prefix || '').toLowerCase().includes(q) ||
     (t.remark || '').toLowerCase().includes(q) ||
-    (t.group_id && (t.group_name || groupName(t.group_id)).toLowerCase().includes(q))
+    (t.group_id && (t.group_name || groupNamesOf(t.group_id)).toLowerCase().includes(q))
   ) : FANIN_TOKENS;
   body.innerHTML = items.map(t =>
     '<tr><td class="mono">' + esc(t.token_prefix) + '</td>' +
-    '<td>' + (t.group_id ? esc(t.group_name || groupName(t.group_id)) : '<span style="color:var(--dim2)">' + T('adm.noRestrict') + '</span>') + '</td>' +
+    '<td>' + (t.group_id ? esc(t.group_name || groupNamesOf(t.group_id)) : '<span style="color:var(--dim2)">' + T('adm.noRestrict') + '</span>') + '</td>' +
     '<td class="mono">' + (t.rate_limit_kbps ? esc(t.rate_limit_kbps) + ' KB/s' : '<span style="color:var(--dim2)">' + T('adm.unlimited') + '</span>') + '</td>' +
     '<td>' + esc(t.remark || '-') + '</td>' +
     '<td><label class="chk" style="display:flex;align-items:center;gap:5px"><input type="checkbox" data-act-chg="tok-expose" data-id="' + esc(t.id) + '"' + (t.expose_control ? ' checked' : '') +
@@ -1284,9 +1307,12 @@ async function setScope(id, scope) {
 function openCreateToken() {
   openModal(T('fanin.createTitle'),
     '<label>' + T('fanin.remarkLabel') + '</label><input id="nt-remark" style="width:100%">' +
-    '<label>' + T('adm.groupLabel') + '</label><select id="nt-group" style="width:100%">' +
-      '<option value="">' + T('adm.noRestrictOpt') + '</option>' +
-      S.groups.map(g => '<option value="' + esc(g.id) + '">' + esc(g.name) + '</option>').join('') + '</select>' +
+    '<label>' + T('adm.groupLabel') + '</label>' +
+    '<div class="rule-check" style="max-height:130px">' +
+      (S.groups.length ? S.groups.map(g =>
+        '<label><input type="checkbox" class="nt-acl" value="' + esc(g.id) + '"' + (g.e2e_required ? ' disabled' : '') + '>' +
+        '<span>' + esc(g.name) + '</span>' + (g.e2e_required ? '<span class="badge b-warn">E2E</span>' : '<span class="badge b-info">' + (g.rule_count || 0) + '</span>') + '</label>'
+      ).join('') : '<div class="empty">' + T('groups.empty') + '</div>') + '</div>' +
     '<label>' + T('fanin.rateLabel') + '</label><input id="nt-rate" type="number" min="1" placeholder="' + T('fanin.ratePh') + '" style="width:100%">' +
     '<div class="hint">' + T('fanin.rateHint') + '</div>' +
     '<label class="chk" style="display:flex;align-items:center;gap:6px;margin-top:8px"><input type="checkbox" id="nt-expose"> ' + T('fanin.exposeLabel') + '</label>' +
@@ -1307,7 +1333,7 @@ function openCreateToken() {
             remark: $('nt-remark').value.trim(),
             expose_control: $('nt-expose').checked,
             control_scope: $('nt-scope').value,
-            group_id: $('nt-group').value || null,
+            group_id: [...document.querySelectorAll('.nt-acl:checked')].map(c => c.value).join(',') || null,
             rate_limit_kbps: rateVal > 0 ? rateVal : null,
           });
           openModal(T('fanin.createdTitle'),
@@ -1331,9 +1357,12 @@ async function delToken(id) {
    editing is an explicit user choice so it is always sent; control-plane exposure is changed directly in the list (group_id not sent = unchanged) */
 function openEditToken(id, groupId, exposeControl, controlScope, rateKbps) {
   openModal(T('fanin.editTitle'),
-    '<label>' + T('fanin.editGroupLabel') + '</label><select id="et-group" style="width:100%">' +
-      '<option value="">' + T('adm.noRestrictOpt') + '</option>' +
-      S.groups.map(g => '<option value="' + esc(g.id) + '" ' + (groupId===g.id?'selected':'') + '>' + esc(g.name) + '</option>').join('') + '</select>' +
+    '<label>' + T('adm.groupLabel') + '</label>' +
+    '<div class="rule-check" style="max-height:130px">' +
+      (S.groups.length ? S.groups.map(g =>
+        '<label><input type="checkbox" class="et-acl" value="' + esc(g.id) + '" ' + ((groupId||'').split(',').includes(g.id)?'checked':'') + (g.e2e_required ? ' disabled' : '') + '>' +
+        '<span>' + esc(g.name) + '</span>' + (g.e2e_required ? '<span class="badge b-warn">E2E</span>' : '<span class="badge b-info">' + (g.rule_count || 0) + '</span>') + '</label>'
+      ).join('') : '<div class="empty">' + T('groups.empty') + '</div>') + '</div>' +
     '<label>' + T('fanin.editRateLabel') + '</label><input id="et-rate" type="number" min="1" value="' + (rateKbps > 0 ? rateKbps : '') + '" placeholder="' + T('adm.unlimited') + '" style="width:100%">' +
     '<div class="hint">' + T('fanin.editHint') + '</div>',
     [
@@ -1343,7 +1372,7 @@ function openEditToken(id, groupId, exposeControl, controlScope, rateKbps) {
           const rateVal = parseInt($('et-rate').value, 10);
           await api('PUT', '/api/v1/admin/node/relay-tokens/' + id, {
             expose_control: exposeControl, control_scope: controlScope,
-            group_id: $('et-group').value || null,
+            group_id: [...document.querySelectorAll('.et-acl:checked')].map(c => c.value).join(',') || null,
             rate_limit_kbps: rateVal > 0 ? rateVal : null,
           });
           closeModal(); toast(T('adm.saved'), 'ok'); loadTokens();
@@ -1409,7 +1438,7 @@ async function loadConnectors() {
       const adv = (c.advertise || '').split(',').filter(Boolean).join(' · ');
       return '<tr><td><b>' + esc(c.name) + '</b><div class="mono" style="color:var(--dim2)">' + (c.token_prefix ? esc(c.token_prefix) : shortId(c.id)) + '</div></td>' +
       '<td class="mono">' + esc(c.upstream_addr) + (adv ? '<div style="color:var(--dim2);font-size:12px">' + esc(adv) + '</div>' : '') + '</td>' +
-      '<td>' + (c.group_id ? esc(c.group_name || groupName(c.group_id)) : '<span style="color:var(--dim2)">' + T('adm.noRestrict') + '</span>') + '</td>' +
+      '<td>' + (c.group_id ? esc(c.group_name || groupNamesOf(c.group_id)) : '<span style="color:var(--dim2)">' + T('adm.noRestrict') + '</span>') + '</td>' +
       '<td>' + connStatusBadge(c.state) + '</td>' +
       '<td>' + (c.enabled ? '<span class="badge b-ok">' + T('adm.stOn') + '</span>' : '<span class="badge b-off">' + T('adm.stOff') + '</span>') + '</td>' +
       '<td style="color:var(--dim)">' + esc(c.remark || '-') + '</td>' +
@@ -1593,9 +1622,12 @@ function connectorFormHtml(c) {
     '<label>' + T('fanout.fpLabel') + ' <span class="hint">' + T('fanout.fpHint') + '</span></label><input id="cf-fp" class="mono" style="width:100%" value="' + esc(c.pinned_fingerprint||'') + '" placeholder="sha256...">' +
     '<label class="chk" style="display:flex;align-items:center;gap:6px;margin-top:8px"><input type="checkbox" id="cf-insecure" ' + (c.insecure?'checked':'') + '> ' + T('fanout.insecure') + '</label>' +
     '<label>' + T('fanout.advertiseLabel') + ' <span class="hint">' + T('fanout.advertiseHint') + '</span></label><textarea id="cf-advertise" class="mono" style="width:100%;height:90px" placeholder="10.12.0.0/16&#10;git.internal">' + esc((c.advertise||'').split(',').filter(Boolean).join('\n')) + '</textarea>' +
-    '<label>' + T('adm.groupLabel') + '</label><select id="cf-group" style="width:100%">' +
-      '<option value="">' + T('adm.noRestrictOpt') + '</option>' +
-      S.groups.map(g => '<option value="' + esc(g.id) + '" ' + (c.group_id===g.id?'selected':'') + '>' + esc(g.name) + '</option>').join('') + '</select>' +
+    '<label>' + T('adm.groupLabel') + '</label>' +
+    '<div class="rule-check" style="max-height:130px">' +
+      (S.groups.length ? S.groups.map(g =>
+        '<label><input type="checkbox" class="cf-acl" value="' + esc(g.id) + '" ' + ((c.group_id||'').split(',').includes(g.id)?'checked':'') + (g.e2e_required ? ' disabled' : '') + '>' +
+        '<span>' + esc(g.name) + '</span>' + (g.e2e_required ? '<span class="badge b-warn">E2E</span>' : '<span class="badge b-info">' + (g.rule_count || 0) + '</span>') + '</label>'
+      ).join('') : '<div class="empty">' + T('groups.empty') + '</div>') + '</div>' +
     '<label>' + T('fanout.pushLabel') + ' <span class="hint">' + T('fanout.pushHint') + '</span></label>' +
     '<div class="rule-check" style="max-height:130px">' +
       (S.groups.length ? S.groups.map(g =>
@@ -1642,7 +1674,7 @@ function connectorFormBody() {
     insecure: $('cf-insecure').checked,
     pinned_fingerprint: $('cf-fp').value.trim(),
     advertise: $('cf-advertise').value.split('\n').map(s => s.trim()).filter(Boolean),
-    group_id: $('cf-group').value || null,
+    group_id: [...document.querySelectorAll('.cf-acl:checked')].map(c => c.value).join(',') || null,
     push_groups: [...document.querySelectorAll('.cf-push:checked')].map(c => c.value),
     remark: $('cf-remark').value.trim(),
   };

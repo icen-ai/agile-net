@@ -295,6 +295,64 @@ const MIGRATIONS: &[(u32, &str, &str)] = &[
     ALTER TABLE delegated_token ADD COLUMN admin_scope TEXT NOT NULL DEFAULT '';
     "#,
     ),
+    (
+        14,
+        "multi_group_acl",
+        r#"
+    -- Multi-group ACL: relay_token.group_id / connector.group_id now hold a comma-separated
+    -- group set (single id = one-element set, fully backward compatible; the ACL is the union
+    -- of member rules). A CSV set cannot satisfy REFERENCES "group"(id), so both tables are
+    -- rebuilt without the single-value FK. Deleting a group now leaves dangling ids in
+    -- token/connector sets on purpose: the ACL registry converges them to deny-all
+    -- (fail-closed), and attachment counting is CSV-aware in Rust (group_attachment_count).
+    PRAGMA foreign_keys=OFF;
+    BEGIN;
+
+    CREATE TABLE relay_token_v14 (
+        id              TEXT PRIMARY KEY,
+        token_hash      TEXT NOT NULL UNIQUE,
+        token_prefix    TEXT NOT NULL,
+        remark          TEXT NOT NULL DEFAULT '',
+        last_used_at    TEXT,
+        expose_control  INTEGER NOT NULL DEFAULT 0,
+        control_scope   TEXT NOT NULL DEFAULT 'full',
+        group_id        TEXT,
+        rate_limit_kbps INTEGER,
+        created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    INSERT INTO relay_token_v14 (id, token_hash, token_prefix, remark, last_used_at, expose_control, control_scope, group_id, rate_limit_kbps, created_at)
+        SELECT id, token_hash, token_prefix, remark, last_used_at, expose_control, control_scope, group_id, rate_limit_kbps, created_at FROM relay_token;
+    DROP TABLE relay_token;
+    ALTER TABLE relay_token_v14 RENAME TO relay_token;
+
+    CREATE TABLE connector_v14 (
+        id                 TEXT PRIMARY KEY,
+        name               TEXT NOT NULL UNIQUE,
+        upstream_addr      TEXT NOT NULL,
+        token_enc          TEXT NOT NULL,
+        sni_hostname       TEXT NOT NULL DEFAULT '',
+        insecure           INTEGER NOT NULL DEFAULT 0,
+        advertise          TEXT NOT NULL DEFAULT '',
+        group_id           TEXT,
+        enabled            INTEGER NOT NULL DEFAULT 1,
+        remark             TEXT NOT NULL DEFAULT '',
+        created_at         TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at         TEXT NOT NULL DEFAULT (datetime('now')),
+        ca_cert_path       TEXT NOT NULL DEFAULT '',
+        pinned_cert_path   TEXT NOT NULL DEFAULT '',
+        pinned_fingerprint TEXT NOT NULL DEFAULT '',
+        push_groups        TEXT NOT NULL DEFAULT ''
+    );
+    INSERT INTO connector_v14 (id, name, upstream_addr, token_enc, sni_hostname, insecure, advertise, group_id, enabled, remark, created_at, updated_at, ca_cert_path, pinned_cert_path, pinned_fingerprint, push_groups)
+        SELECT id, name, upstream_addr, token_enc, sni_hostname, insecure, advertise, group_id, enabled, remark, created_at, updated_at, ca_cert_path, pinned_cert_path, pinned_fingerprint, push_groups FROM connector;
+    DROP TABLE connector;
+    ALTER TABLE connector_v14 RENAME TO connector;
+    CREATE INDEX idx_connector_group ON connector(group_id);
+
+    COMMIT;
+    PRAGMA foreign_keys=ON;
+    "#,
+    ),
 ];
 
 impl Database {
@@ -651,5 +709,38 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(path.with_extension("db-wal"));
         let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    }
+
+    #[test]
+    fn migration_v14_multi_group_acl() {
+        // Fresh DB runs every migration incl. v14: a comma-separated group set must store
+        // on both ACL principals (the old single-value FK would have rejected it).
+        let db = Database::in_memory().expect("in-memory db");
+        let g1 = mk_group(&db, "mg-a");
+        let g2 = mk_group(&db, "mg-b");
+        let set = format!("{g1},{g2}");
+
+        let rec = db
+            .create_connector("mg-conn", "127.0.0.1:54430", "psk_mgtest", "", true, "", "", "", "", Some(&set), "")
+            .expect("connector with group set");
+        assert_eq!(rec.group_id.as_deref(), Some(set.as_str()));
+        let tok = db
+            .create_relay_token_with_quota(&"cd".repeat(32), "psk_mgtest", "", false, "full", Some(&set), None)
+            .expect("relay token with group set");
+        assert_eq!(tok.group_id.as_deref(), Some(set.as_str()));
+
+        // CSV membership counts as an attachment on each member (e2e guard stays closed)
+        assert_eq!(db.group_attachment_count(&g1).unwrap(), 2);
+        assert_eq!(db.group_attachment_count(&g2).unwrap(), 2);
+        assert!(db.set_group_e2e_required(&g1, true).is_err());
+
+        // group names resolve per member for display
+        let view = db
+            .list_connectors()
+            .unwrap()
+            .into_iter()
+            .find(|c| c.id == rec.id)
+            .expect("connector view");
+        assert_eq!(view.group_name.as_deref(), Some("mg-a,mg-b"));
     }
 }

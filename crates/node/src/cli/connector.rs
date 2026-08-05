@@ -4,7 +4,7 @@ use anyhow::{Result, anyhow};
 use clap::{Args, Subcommand};
 use serde_json::json;
 
-use super::common::{AnetClient, IdOnlyArgs, print_json, print_table, resolve_id, split_csv};
+use super::common::{AnetClient, IdOnlyArgs, print_json, print_table, resolve_id, resolve_id_set, split_csv};
 
 #[derive(Args, Debug)]
 pub struct ConnectorArgs {
@@ -51,7 +51,7 @@ pub struct ConnectorAddArgs {
     /// 宣告路由（逗号分隔，如 10.0.0.0/8,git.internal）
     #[arg(long)]
     pub advertise: Option<String>,
-    /// 收敛权限组（名称或 ID；缺省 = 不收敛，放行一切）
+    /// 收敛权限组（名称或 ID，逗号分隔可多组取并集；缺省 = 不收敛，放行一切）
     #[arg(long)]
     pub group: Option<String>,
     #[arg(long)]
@@ -80,7 +80,7 @@ pub struct ConnectorUpdateArgs {
     /// 宣告路由（逗号分隔；缺省 = 保留原值）
     #[arg(long)]
     pub advertise: Option<String>,
-    /// 收敛权限组（名称或 ID；缺省 = 保持原组）
+    /// 收敛权限组（名称或 ID，逗号分隔可多组取并集；缺省 = 保持原组）
     #[arg(long)]
     pub group: Option<String>,
     #[arg(long)]
@@ -129,7 +129,7 @@ pub(super) async fn cmd_connector(
         ConnectorSub::Add(a) => {
             let group_id = match &a.group {
                 Some(g) => {
-                    Some(resolve_id(&mut client, "/api/v1/admin/groups?page_size=100", g).await?)
+                    resolve_id_set(&mut client, "/api/v1/admin/groups?page_size=100", g).await?
                 }
                 None => None,
             };
@@ -182,11 +182,13 @@ pub(super) async fn cmd_connector(
             if let Some(t) = u.token.filter(|t| !t.is_empty()) {
                 body["token"] = json!(t);
             }
-            // Only an explicit --group switches the group (resolved by name or ID)
+            // Only an explicit --group switches the group set (each member resolved by name or
+            // ID; PUT full-replace semantics make an empty value an explicit unbind)
             if let Some(g) = &u.group {
-                body["group_id"] = json!(
-                    resolve_id(&mut client, "/api/v1/admin/groups?page_size=100", g).await?
-                );
+                body["group_id"] = match resolve_id_set(&mut client, "/api/v1/admin/groups?page_size=100", g).await? {
+                    Some(set) => json!(set),
+                    None => json!(null),
+                };
             }
             let d = client
                 .api("PUT", &format!("/api/v1/admin/connectors/{id}"), Some(body))

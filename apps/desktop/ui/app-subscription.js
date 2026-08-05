@@ -112,7 +112,9 @@ const SubTraffic = {
     const total = t.up_total + t.down_total;
     if (this._last !== null) {
       let delta = total - this._last;
-      if (delta < 0) delta = total;
+      // kernel restart zeroes the counters: the new total is a fresh baseline, not traffic —
+      // clamp the reset frame to 0 (same semantics as the direction-rate Math.max(0, …) below)
+      if (delta < 0) delta = 0;
       this.series.push(delta);
       if (this.series.length > 90) this.series.shift();
     }

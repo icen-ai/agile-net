@@ -94,7 +94,21 @@ impl Database {
             recs
         };
         let mut items = Vec::new();
+        // Display names of multi-group sets (comma-separated group_id) resolve per member in
+        // Rust — the SQL LEFT JOIN only covers the legacy single-id case
+        let name_map = self.group_name_map().unwrap_or_default();
         for (rec, group_name) in recs {
+            let group_name = match &rec.group_id {
+                Some(set) if set.contains(',') => Some(
+                    set.split(',')
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(|s| name_map.get(s).cloned().unwrap_or_else(|| s.to_string()))
+                        .collect::<Vec<_>>()
+                        .join(","),
+                ),
+                _ => group_name,
+            };
             // Prefix display: decrypt and take the first 8 chars for identification only; leave empty on decrypt failure (key rotation etc.)
             let token_prefix = self
                 .decrypt_secret(&rec.token_enc)

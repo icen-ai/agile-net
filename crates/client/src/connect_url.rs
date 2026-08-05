@@ -75,6 +75,31 @@ pub fn parse_connect_url(url: &str) -> std::result::Result<ParsedConnect, String
 
 /// Generate an anet://connect URL from a saved credential (contains plaintext password; share with care).
 pub fn connect_url_of(c: &Credential) -> String {
+    // Delegated credentials (federation P2/P3) must keep the failover set and every E2E field
+    // on re-export — the plain builder would silently downgrade them to single-entry transparent.
+    if c.delegated {
+        let mut entries: Vec<(String, String)> = if c.entries.is_empty() {
+            vec![(c.addr.clone(), c.pinned_fingerprint.clone().unwrap_or_default())]
+        } else {
+            c.entries
+                .iter()
+                .enumerate()
+                .map(|(i, a)| (a.clone(), c.entry_fps.get(i).cloned().unwrap_or_default()))
+                .collect()
+        };
+        if !entries.iter().any(|(a, _)| *a == c.addr) {
+            entries.insert(0, (c.addr.clone(), c.pinned_fingerprint.clone().unwrap_or_default()));
+        }
+        return agile_net_core::link::build_delegate_url(
+            &c.addr,
+            c.username.trim_start_matches("d:"),
+            &c.password,
+            &entries,
+            c.ehint.as_deref(),
+            c.emode.as_deref(),
+            c.eadmin,
+        );
+    }
     agile_net_core::link::build_connect_url(
         &c.addr,
         &c.username,

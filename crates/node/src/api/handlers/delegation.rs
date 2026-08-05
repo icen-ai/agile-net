@@ -127,10 +127,31 @@ pub async fn issue_token(
             .find(|r| r.is_primary)
             .map(|r| r.connector_id.clone())
             .expect("exactly one primary checked above");
-        let advertise = state
+        // (effective set, raw manual advertise, per-push-group rule counts) — the diagnostics
+        // make an empty-set failure say exactly which input is missing instead of a flat refusal
+        let (advertise, raw_adv, pushes) = state
             .db_call(move |db| {
                 db.get_connector(&primary_id).map(|c| {
-                    c.map(|c| crate::service::connectors::effective_advertise_of(db, &c))
+                    c.map(|c| {
+                        let effective = crate::service::connectors::effective_advertise_of(db, &c);
+                        let pushes: Vec<String> = c
+                            .push_groups
+                            .split(',')
+                            .map(|s| s.trim())
+                            .filter(|s| !s.is_empty())
+                            .map(|gid| {
+                                let name = db
+                                    .get_group(gid)
+                                    .ok()
+                                    .flatten()
+                                    .map(|g| g.name)
+                                    .unwrap_or_else(|| gid.to_string());
+                                let n = db.rules_of_group(gid).map(|rs| rs.len()).unwrap_or(0);
+                                format!("{name}（{n} 条规则）")
+                            })
+                            .collect();
+                        (effective, c.advertise.clone(), pushes)
+                    })
                 })
             })
             .await
@@ -141,7 +162,11 @@ pub async fn issue_token(
             return err(
                 StatusCode::BAD_REQUEST,
                 codes::VALIDATION_FAILED,
-                "引用组含端到端加密组，但主入口扇出没有任何可路由项（路由宣告与上送组规则均为空），无法生成路由词——请先为该扇出配置上送组或路由宣告",
+                format!(
+                    "引用组含端到端加密组，但主入口扇出没有任何可路由项，无法生成路由词——手工 advertise: [{}]；上送组: [{}]（组内规则自动并入广告路由）。请为该扇出配置路由宣告，或勾选含规则的上送组",
+                    raw_adv,
+                    if pushes.is_empty() { "无".to_string() } else { pushes.join(", ") },
+                ),
             );
         };
         let group_names: Vec<String> = req

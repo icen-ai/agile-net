@@ -371,31 +371,65 @@ impl Database {
     }
 
     pub fn list_relay_tokens(&self) -> Result<Vec<RelayTokenRecord>> {
-        let conn = self.conn();
-        let mut stmt = conn
-            .prepare("SELECT t.id, t.token_prefix, t.remark, t.expose_control, t.control_scope, t.last_used_at, t.created_at, t.group_id, g.name, t.rate_limit_kbps
-                      FROM relay_token t LEFT JOIN \"group\" g ON t.group_id = g.id ORDER BY t.created_at DESC")
-            .map_err(db_err)?;
-        let rows = stmt.query_map([], map_relay_token_row).map_err(db_err)?;
-        let mut items = Vec::new();
-        for r in rows {
-            items.push(r.map_err(db_err)?);
-        }
+        // Fetch all rows and release the connection first (memory pool size is 1; the name-map
+        // fixup below needs another conn)
+        let mut items = {
+            let conn = self.conn();
+            let mut stmt = conn
+                .prepare("SELECT t.id, t.token_prefix, t.remark, t.expose_control, t.control_scope, t.last_used_at, t.created_at, t.group_id, g.name, t.rate_limit_kbps
+                          FROM relay_token t LEFT JOIN \"group\" g ON t.group_id = g.id ORDER BY t.created_at DESC")
+                .map_err(db_err)?;
+            let rows = stmt.query_map([], map_relay_token_row).map_err(db_err)?;
+            let mut items = Vec::new();
+            for r in rows {
+                items.push(r.map_err(db_err)?);
+            }
+            items
+        };
+        // Display names of multi-group sets resolve per member in Rust (the SQL join only
+        // covers the legacy single-id case)
+        self.fixup_group_set_names(&mut items);
         Ok(items)
     }
 
     /// Look up relay token detail by ID (with ACL group ID and group name)
     pub fn get_relay_token(&self, id: &str) -> Result<Option<RelayTokenRecord>> {
-        let conn = self.conn();
-        let mut stmt = conn
-            .prepare("SELECT t.id, t.token_prefix, t.remark, t.expose_control, t.control_scope, t.last_used_at, t.created_at, t.group_id, g.name, t.rate_limit_kbps
-                      FROM relay_token t LEFT JOIN \"group\" g ON t.group_id = g.id WHERE t.id = ?1")
-            .map_err(db_err)?;
-        let mut rows = stmt.query(params![id]).map_err(db_err)?;
-        Ok(match rows.next().map_err(db_err)? {
-            Some(r) => Some(map_relay_token_row(r).map_err(db_err)?),
-            None => None,
-        })
+        let mut rec = {
+            let conn = self.conn();
+            let mut stmt = conn
+                .prepare("SELECT t.id, t.token_prefix, t.remark, t.expose_control, t.control_scope, t.last_used_at, t.created_at, t.group_id, g.name, t.rate_limit_kbps
+                          FROM relay_token t LEFT JOIN \"group\" g ON t.group_id = g.id WHERE t.id = ?1")
+                .map_err(db_err)?;
+            let mut rows = stmt.query(params![id]).map_err(db_err)?;
+            match rows.next().map_err(db_err)? {
+                Some(r) => Some(map_relay_token_row(r).map_err(db_err)?),
+                None => None,
+            }
+        };
+        if let Some(recs) = rec.as_mut() {
+            self.fixup_group_set_names(std::slice::from_mut(recs));
+        }
+        Ok(rec)
+    }
+
+    /// Resolve comma-separated group sets to per-member display names (dangling ids echo verbatim).
+    fn fixup_group_set_names(&self, items: &mut [RelayTokenRecord]) {
+        let mut name_map = None;
+        for it in items.iter_mut() {
+            let Some(set) = &it.group_id else { continue };
+            if !set.contains(',') {
+                continue;
+            }
+            let names = name_map.get_or_insert_with(|| self.group_name_map().unwrap_or_default());
+            it.group_name = Some(
+                set.split(',')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(|s| names.get(s).cloned().unwrap_or_else(|| s.to_string()))
+                    .collect::<Vec<_>>()
+                    .join(","),
+            );
+        }
     }
 
     /// Look up a relay token's ACL group by hash (data-plane fan-in restriction).

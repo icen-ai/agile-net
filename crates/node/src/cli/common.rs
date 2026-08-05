@@ -249,3 +249,17 @@ pub(crate) async fn resolve_id(
         ),
     }
 }
+
+/// Multi-group variant of `resolve_id`: `--group a,b` resolves each member (name or ID
+/// prefix) and returns the comma-joined group set the API stores (empty input → None).
+pub(crate) async fn resolve_id_set(
+    client: &mut AnetClient,
+    list_path: &str,
+    csv: &str,
+) -> Result<Option<String>> {
+    let mut out = Vec::new();
+    for part in split_csv(csv) {
+        out.push(resolve_id(client, list_path, &part).await?);
+    }
+    Ok(if out.is_empty() { None } else { Some(out.join(",")) })
+}

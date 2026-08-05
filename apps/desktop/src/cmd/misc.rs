@@ -336,6 +336,9 @@ pub struct ServerConnectorView {
     pub pinned_fingerprint: String,
     /// Re-advertised routes (stored comma-separated; the edit form echoes them one per line)
     pub advertise: String,
+    /// Effective advertise set (manual ∪ pushed-group rules — what the upstream route table
+    /// will actually carry; delegation E2E hints are derived from this set)
+    pub effective_advertise: Vec<String>,
     /// Restricting group (None = unrestricted, allow everything)
     pub group_id: Option<String>,
     pub group_name: Option<String>,
@@ -352,6 +355,8 @@ pub struct ServerConnectorView {
 pub struct GroupOption {
     pub id: String,
     pub name: String,
+    /// E2E groups only attach to delegated tokens — shown disabled in ACL pickers
+    pub e2e_required: bool,
 }
 
 /// Groups of the local embedded node (the "group" dropdown in the fan-out form; empty = unrestricted).
@@ -361,7 +366,7 @@ pub(crate) async fn list_embedded_groups() -> Result<Vec<GroupOption>, String> {
     let (groups, _) = db.list_groups(1, 1000, None).map_err(map_err)?;
     Ok(groups
         .into_iter()
-        .map(|g| GroupOption { id: g.id, name: g.name })
+        .map(|g| GroupOption { id: g.id, name: g.name, e2e_required: g.e2e_required })
         .collect())
 }
 
@@ -376,11 +381,19 @@ pub(crate) async fn hot_upsert_connector(state: &State<'_, AppState>, id: &str, 
     }
 }
 
-/// Validate the restricting group exists (when Some) so the frontend gets a readable error (DB foreign-key errors are not).
+/// Validate the restricting group set (when Some): comma-separated multi-group sets (union
+/// ACL); each member must exist and must not be E2E-enforced (those hang on delegated tokens
+/// only) so the frontend gets a readable error (DB foreign-key errors are not).
 pub(crate) fn validate_group(db: &agile_net_node::db::Database, group_id: Option<&str>) -> Result<(), String> {
-    if let Some(gid) = group_id {
-        if db.get_group(gid).map_err(map_err)?.is_none() {
-            return Err("权限组不存在".into());
+    if let Some(csv) = group_id {
+        for gid in csv.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+            match db.get_group(gid).map_err(map_err)? {
+                None => return Err(format!("权限组不存在：{gid}")),
+                Some(g) if g.e2e_required => {
+                    return Err(format!("端到端加密组「{}」仅可用于签发委托，不可挂扇出收敛", g.name));
+                }
+                Some(_) => {}
+            }
         }
     }
     Ok(())
@@ -401,7 +414,7 @@ pub(crate) async fn list_server_connectors(
                 .and_then(|s| s.connector_manager().state_of(&v.id))
                 .unwrap_or("disconnected");
             ServerConnectorView {
-                id: v.id,
+                id: v.id.clone(),
                 name: v.name,
                 upstream_addr: v.upstream_addr,
                 token_prefix: v.token_prefix,
@@ -409,6 +422,12 @@ pub(crate) async fn list_server_connectors(
                 insecure: v.insecure,
                 pinned_fingerprint: v.pinned_fingerprint,
                 advertise: v.advertise,
+                effective_advertise: db
+                    .get_connector(&v.id)
+                    .ok()
+                    .flatten()
+                    .map(|rec| agile_net_node::service::connectors::effective_advertise_of(&db, &rec))
+                    .unwrap_or_default(),
                 group_id: v.group_id,
                 group_name: v.group_name,
                 push_groups: v.push_groups,

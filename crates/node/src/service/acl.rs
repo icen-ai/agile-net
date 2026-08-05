@@ -1,11 +1,14 @@
-//! Peer ACL registry (PeerAclRegistry): group_id -> shared `PeerAcl` handle.
+//! Peer ACL registry (PeerAclRegistry): group set -> shared `PeerAcl` handle.
 //!
 //! Fan-in (relay_token.group_id) and fan-out (connector.group_id) share the same ACL tables:
 //! the data plane takes a group handle via `handle` at auth/connect time; the control plane
 //! hot-swaps the group's routes in place via `rebuild` (arc_swap) — established tunnels see
 //! rule changes with zero downtime.
 //!
-//! ACL semantics: group rules compile into a `ProxyRouter` (hit = allow); empty group =
+//! The stored group_id is a comma-separated group set (single id = one-element set, backward
+//! compatible): the ACL is the union of every member group's rules.
+//!
+//! ACL semantics: group rules compile into a `ProxyRouter` (hit = allow); empty set =
 //! empty router = deny all; `handle(None)` = unrestricted (allow everything, compatible with
 //! legacy tokens/connectors).
 
@@ -26,14 +29,16 @@ impl PeerAclRegistry {
         Self::default()
     }
 
-    /// Get a group's ACL handle: `None` = unrestricted; unknown groups lazily get an empty
-    /// table (deny all, fail-closed) — a later rebuild fills in that group's rules.
-    pub fn handle(&self, group_id: Option<&str>) -> Option<Arc<PeerAcl>> {
+    /// Get a group's ACL handle: `None` = unrestricted. Unknown sets are compiled from the DB
+    /// right here (not left as a deny-all placeholder until the next rebuild sweep): a freshly
+    /// created token/connector must converge on first connect, not on the next config bump.
+    /// The key is the stored group set verbatim (comma-separated multi-group sets allowed).
+    pub fn handle(&self, group_id: Option<&str>, db: &Database) -> Option<Arc<PeerAcl>> {
         let gid = group_id?;
         Some(
             self.acls
                 .entry(gid.to_string())
-                .or_insert_with(|| Arc::new(PeerAcl::new(ProxyRouter::new())))
+                .or_insert_with(|| Arc::new(PeerAcl::new(build_group_router(db, gid))))
                 .clone(),
         )
     }
@@ -61,24 +66,27 @@ impl PeerAclRegistry {
     }
 }
 
-/// Compile group rules into an ACL router (sentinel Outbound: only hit-or-miss matters, no real routing).
-fn build_group_router(db: &Database, group_id: &str) -> ProxyRouter {
+/// Compile a group set into an ACL router (comma-separated ids union their rules; unknown ids
+/// contribute nothing — fail-closed per member; sentinel Outbound: only hit-or-miss matters).
+fn build_group_router(db: &Database, group_set: &str) -> ProxyRouter {
     let mut router = ProxyRouter::new();
-    if let Ok(rules) = db.rules_of_group(group_id) {
-        for r in rules {
-            let outbound = Outbound::tunnel("");
-            match r.rule_type.as_str() {
-                "ip-cidr" => {
-                    let _ = router.add_cidr(&r.value, outbound);
-                }
-                "host" => {
-                    if r.value.contains('*') {
-                        router.add_host_suffix(&r.value, outbound);
-                    } else {
-                        router.add_host_exact(&r.value, outbound);
+    for gid in group_set.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+        if let Ok(rules) = db.rules_of_group(gid) {
+            for r in rules {
+                let outbound = Outbound::tunnel("");
+                match r.rule_type.as_str() {
+                    "ip-cidr" => {
+                        let _ = router.add_cidr(&r.value, outbound);
                     }
+                    "host" => {
+                        if r.value.contains('*') {
+                            router.add_host_suffix(&r.value, outbound);
+                        } else {
+                            router.add_host_exact(&r.value, outbound);
+                        }
+                    }
+                    _ => {}
                 }
-                _ => {}
             }
         }
     }
@@ -100,7 +108,8 @@ mod tests {
     #[test]
     fn handle_none_means_unrestricted() {
         let registry = PeerAclRegistry::new();
-        assert!(registry.handle(None).is_none());
+        let db = Database::in_memory().unwrap();
+        assert!(registry.handle(None, &db).is_none());
     }
 
     #[test]
@@ -110,7 +119,7 @@ mod tests {
         let registry = PeerAclRegistry::new();
         registry.rebuild(&db);
 
-        let acl = registry.handle(Some(&gid)).expect("acl handle");
+        let acl = registry.handle(Some(&gid), &db).expect("acl handle");
         assert!(!acl.allowed("10.0.0.1:80"));
         assert!(!acl.allowed("example.com:443"));
     }
@@ -124,7 +133,7 @@ mod tests {
         let registry = PeerAclRegistry::new();
         registry.rebuild(&db);
 
-        let acl = registry.handle(Some(&gid)).expect("acl handle");
+        let acl = registry.handle(Some(&gid), &db).expect("acl handle");
         assert!(acl.allowed("10.12.1.1:8080"));
         assert!(!acl.allowed("8.8.8.8:443"));
 
@@ -142,14 +151,39 @@ mod tests {
     }
 
     #[test]
-    fn unknown_group_fails_closed_then_picks_up_rules() {
+    fn first_handle_compiles_immediately_and_dangling_fails_closed() {
         let db = Database::in_memory().unwrap();
         let gid = mk_group_with_rule(&db, "g1", "172.16.0.0/12");
         let registry = PeerAclRegistry::new();
-        // handle fetched before rebuild: lazily created empty table (deny all)
-        let acl = registry.handle(Some(&gid)).expect("acl handle");
-        assert!(!acl.allowed("172.16.0.1:80"));
-        registry.rebuild(&db);
+        // no rebuild yet: the first handle compiles the set straight from the DB
+        let acl = registry.handle(Some(&gid), &db).expect("acl handle");
         assert!(acl.allowed("172.16.0.1:80"));
+        // dangling set (deleted group): compiles to an empty table, deny all
+        let dead = registry.handle(Some("gone-1,gone-2"), &db).expect("acl handle");
+        assert!(!dead.allowed("172.16.0.1:80"));
+        // a later rebuild converges the dangling handle in place (stays deny all)
+        registry.rebuild(&db);
+        assert!(!dead.allowed("172.16.0.1:80"));
+        assert!(acl.allowed("172.16.0.1:80"));
+    }
+
+    #[test]
+    fn multi_group_set_unions_member_rules() {
+        let db = Database::in_memory().unwrap();
+        let g1 = mk_group_with_rule(&db, "g1", "10.12.0.0/16");
+        let g2 = mk_group_with_rule(&db, "g2", "172.16.0.0/12");
+        let set = format!("{g1},{g2}");
+        let registry = PeerAclRegistry::new();
+        registry.rebuild(&db);
+        let acl = registry.handle(Some(&set), &db).expect("acl handle");
+        assert!(acl.allowed("10.12.1.1:80"));
+        assert!(acl.allowed("172.16.1.1:80"));
+        assert!(!acl.allowed("192.168.1.1:80"));
+
+        // one member cleared -> its routes drop out of the union on rebuild
+        db.set_group_rules(&g1, &[]).unwrap();
+        registry.rebuild(&db);
+        assert!(!acl.allowed("10.12.1.1:80"));
+        assert!(acl.allowed("172.16.1.1:80"));
     }
 }

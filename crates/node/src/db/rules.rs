@@ -445,19 +445,39 @@ impl Database {
         Ok(())
     }
 
+    /// id -> name map of all groups (display resolution for comma-separated group sets).
+    pub fn group_name_map(&self) -> Result<std::collections::HashMap<String, String>> {
+        let (groups, _) = self.list_groups(1, 10000, None)?;
+        Ok(groups.into_iter().map(|g| (g.id, g.name)).collect())
+    }
+
     /// Total references from principals without an E2E key (accounts + relay tokens + connectors).
     /// An e2e_required group must stay attachable to delegated tokens only (federation P3 §1.4).
+    /// relay_token / connector store a comma-separated group set (multi-group ACL) — membership
+    /// is checked in Rust; accounts stay single-group (exact match in SQL).
     pub fn group_attachment_count(&self, group_id: &str) -> Result<i64> {
         let conn = self.conn();
-        let count: i64 = conn
+        let mut count: i64 = conn
             .query_row(
-                "SELECT (SELECT COUNT(*) FROM account WHERE group_id = ?1)
-                      + (SELECT COUNT(*) FROM relay_token WHERE group_id = ?1)
-                      + (SELECT COUNT(*) FROM connector WHERE group_id = ?1)",
+                "SELECT COUNT(*) FROM account WHERE group_id = ?1",
                 params![group_id],
                 |r| r.get(0),
             )
             .map_err(db_err)?;
+        for table in ["relay_token", "connector"] {
+            let mut stmt = conn
+                .prepare(&format!("SELECT group_id FROM {table} WHERE group_id IS NOT NULL"))
+                .map_err(db_err)?;
+            let rows = stmt
+                .query_map([], |r| r.get::<_, String>(0))
+                .map_err(db_err)?;
+            for v in rows {
+                let csv = v.map_err(db_err)?;
+                if csv.split(',').any(|s| s.trim() == group_id) {
+                    count += 1;
+                }
+            }
+        }
         Ok(count)
     }
 

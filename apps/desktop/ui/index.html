@@ -970,10 +970,10 @@
       <input id="fo-addr" class="mono" placeholder="root.example.com:54430">
       <label>Relay Token <span class="hint inline" id="fo-token-hint" style="display:none" data-i18n="fanout.tokenKeep">留空 = 保留原 Token</span></label>
       <input id="fo-token" type="password" class="mono" placeholder="psk_...">
-      <div class="grid2">
-        <div><label data-i18n="fanout.sniLabel">SNI 域名</label><input id="fo-sni" class="mono" placeholder="cdn.cloudflare.com"></div>
-        <div><label><span data-i18n="term.group">权限组</span> <span class="hint inline" data-i18n="fanout.noRestrict">留空 = 不收敛（放行一切）</span></label><select id="fo-group"><option value="" data-i18n="fanout.noRestrictOpt">不收敛（放行一切）</option></select></div>
-      </div>
+      <label data-i18n="fanout.sniLabel">SNI 域名</label>
+      <input id="fo-sni" class="mono" placeholder="cdn.cloudflare.com">
+      <label><span data-i18n="term.group">权限组</span> <span class="hint inline" data-i18n="fanout.noRestrict">可勾多个取并集；不勾 = 不收敛（放行一切）</span></label>
+      <div id="fo-acl-list" style="max-height:110px;overflow-y:auto"></div>
       <label><span data-i18n="fanout.fpLabel">证书指纹钉值</span> <span class="hint inline" data-i18n="fanout.fpHint">可空；对端节点状态页复制，64 位 hex，优先于 insecure</span></label>
       <input id="fo-fp" class="mono" placeholder="sha256...">
       <label class="chk" style="margin-top:12px"><input type="checkbox" id="fo-insecure"> <span data-i18n="fanout.insecure">跳过 TLS 证书校验（insecure，仅调试用）</span></label>

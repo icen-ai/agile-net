@@ -142,12 +142,12 @@ pub async fn get_group_detail(
         .collect();
     let relay_tokens: Vec<_> = relay_tokens
         .into_iter()
-        .filter(|t| t.group_id.as_deref() == Some(id.as_str()))
+        .filter(|t| t.group_id.as_deref().is_some_and(|set| set.split(',').any(|s| s.trim() == id)))
         .map(|t| json!({ "id": t.id, "token_prefix": t.token_prefix, "remark": t.remark }))
         .collect();
     let connectors: Vec<_> = connectors
         .into_iter()
-        .filter(|c| c.group_id.as_deref() == Some(id.as_str()))
+        .filter(|c| c.group_id.as_deref().is_some_and(|set| set.split(',').any(|s| s.trim() == id)))
         .map(|c| json!({ "id": c.id, "name": c.name, "upstream_addr": c.upstream_addr, "enabled": c.enabled }))
         .collect();
 

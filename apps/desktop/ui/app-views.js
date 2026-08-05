@@ -107,12 +107,13 @@ function renderMergedRules(nodes) {
   if (tf === 'all' || tf === 'bypass') {
     for (const r of custom.bypass) {
       const way = r.via_subscription ? AgI18n.t('views.rule-via-sub') : AgI18n.t('views.rule-direct');
-      if (!hit(r.pattern, AgI18n.t('views.rule-bypass'), way, AgI18n.t('views.src-custom'))) continue;
+      if (!hit(r.pattern, AgI18n.t('views.rule-bypass'), way, AgI18n.t('views.src-custom'), AgI18n.t('views.src-preset'))) continue;
+      const src = r.source === 'preset' ? AgI18n.t('views.src-preset') : AgI18n.t('views.src-custom');
       rows.push('<tr class="' + (r.enabled ? '' : 'rule-paused') + '">' +
         '<td><span class="badge b-ok">' + AgI18n.t('views.rule-bypass') + '</span></td>' +
         '<td class="mono">' + esc(r.pattern) + '</td>' +
         '<td>' + way + '</td>' +
-        '<td class="dim">' + AgI18n.t('views.src-custom') + '</td>' +
+        '<td class="dim">' + src + '</td>' +
         '<td><label class="switch"><input type="checkbox" data-cr="' + esc(r.id) + '"' + (r.enabled ? ' checked' : '') + '><span class="slider"></span></label></td>' +
         '<td><button class="danger small icon-btn" title="' + AgI18n.t('views.del-bypass-title') + '" data-crdel="' + esc(r.id) + '">' + AgIcon('trash-2', 13) + '</button></td></tr>');
     }
@@ -828,7 +829,8 @@ function trackFaninTraffic(nodes) {
   const total = up + down;
   if (_tfLast !== null) {
     let delta = total - _tfLast;
-    if (delta < 0) delta = total; // session reconnect resets counters: negative delta uses new baseline
+    // session reconnect resets the counters: the new total is a fresh baseline, not traffic
+    if (delta < 0) delta = 0;
     _tfSeries.push(delta);
     if (_tfSeries.length > 90) _tfSeries.shift();
   }
@@ -894,9 +896,14 @@ function renderCredList(creds, statusMap) {
     const epName = key.includes('@') ? key.slice(0, key.indexOf('@')) : key;
     // federation P2: delegated credentials badged; the live failover entry shown when connected
     const delegBadge = c.delegated ? ' <span class="badge b-info">' + AgI18n.t('views.delegated-badge') + '</span>' : '';
-    // federation P3 tier badge: 专线 (whole machine) vs 分流 (rule delivery) on E2E credentials
+    // federation P3 tier badge: 专线 (whole machine) vs 分流 (rule delivery) on E2E credentials;
+    // split silently degrades to catch-all when the config pull failed — surface that honestly
+    const splitFallback = !!(c.delegated && c.ehint && c.emode === 'split' && st === 'Connected'
+      && n && (n.rules || []).some(r => r.value === '0.0.0.0/0'));
     const tierBadge = (c.delegated && c.ehint)
-      ? ' <span class="badge ' + (c.emode === 'split' ? 'b-info' : 'b-off') + '">' + AgI18n.t(c.emode === 'split' ? 'views.tier-split' : 'views.tier-dedicated') + '</span>'
+      ? ' <span class="badge ' + (splitFallback ? 'b-warn' : (c.emode === 'split' ? 'b-info' : 'b-off')) + '"' +
+        (splitFallback ? ' title="' + AgI18n.t('views.tier-split-fallback-hint') + '"' : '') + '>' +
+        AgI18n.t(splitFallback ? 'views.tier-split-fallback' : (c.emode === 'split' ? 'views.tier-split' : 'views.tier-dedicated')) + '</span>'
       : '';
     const addrLine = (c.delegated && n && n.current_entry && st === 'Connected')
       ? esc(n.current_entry) + ' · <span class="dim">' + AgI18n.t('views.delegated-set', { n: (c.entries || []).length || 1 }) + '</span>'
@@ -971,15 +978,19 @@ function foBadge(c) {
   return '<span class="badge b-gray">' + AgI18n.t('views.not-started') + '</span>';
 }
 
-/** Group dropdown + push-group checkboxes: fetch local embedded node group list (keep current selections; failure doesn't block the list) */
+/** ACL group set + push-group checkboxes: fetch local embedded node group list (keep current selections; failure doesn't block the list) */
 async function foLoadGroups() {
   try {
     const groups = await invoke('list_embedded_groups');
-    const cur = $('fo-group').value;
-    $('fo-group').innerHTML = '<option value="">' + AgI18n.t('views.fo-no-group') + '</option>' +
-      groups.map(g => '<option value="' + esc(g.id) + '">' + esc(g.name) + '</option>').join('');
-    if (groups.some(g => g.id === cur)) $('fo-group').value = cur;
-    agSelectRefresh($('fo-group'));
+    // Peer-ACL convergence: multi-group checkbox set (union), E2E groups disabled (delegation-only)
+    const aclList = $('fo-acl-list');
+    if (aclList) {
+      const checked = FO_ACL_PENDING || new Set([...aclList.querySelectorAll('input:checked')].map(c => c.value));
+      FO_ACL_PENDING = null;
+      aclList.innerHTML = groups.length
+        ? groups.map(g => '<label class="chk"><input type="checkbox" class="fo-acl" value="' + esc(g.id) + '"' + (checked.has(g.id) ? ' checked' : '') + (g.e2e_required ? ' disabled' : '') + '> <span>' + esc(g.name) + '</span>' + (g.e2e_required ? ' <span class="badge b-warn">E2E</span>' : '') + '</label>').join('')
+        : '<div class="hint">' + AgI18n.t('views.fo-no-group') + '</div>';
+    }
     // Policy upload (federation P1): checkbox list, selections kept across re-renders
     const pushList = $('fo-push-list');
     if (pushList) {
@@ -1008,6 +1019,10 @@ async function refreshUpstreams() {
     (c.pinned_fingerprint ? ' · <span class="badge b-ok">pinned</span>' : '') +
     (c.insecure ? ' · <span class="badge b-warn">insecure</span>' : '') +
     AgI18n.t('views.fo-group-fmt', { name: c.group_name ? esc(c.group_name) : AgI18n.t('views.fo-group-none') }) + '</div>' +
+    // effective advertise (manual ∪ pushed-group rules) — the set the upstream route table carries
+    ((c.effective_advertise || []).length
+      ? '<div class="addr mono" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + esc(c.effective_advertise.join(', ')) + '">' + AgI18n.t('views.fo-adv') + ' ' + esc(c.effective_advertise.join(' · ')) + '</div>'
+      : '') +
     '</div><div class="card-actions">' +
     '<button class="ghost small" data-fo-edit="' + esc(c.id) + '">' + AgI18n.t('common.edit') + '</button>' +
     '<button class="danger small" data-fo-del="' + esc(c.id) + '">' + AgI18n.t('common.delete') + '</button>' +
@@ -1016,6 +1031,7 @@ async function refreshUpstreams() {
 }
 
 /* ---- New/edit fan-out modal (fields aligned with admin console 「新建扇出」; advertise one per line, comma-joined on save) ---- */
+let FO_ACL_PENDING = null; // Set<groupId> applied to the ACL group-set list on its next render (null = keep selections)
 let FO_PUSH_PENDING = null; // Set<groupId> applied to the push-group list on its next render (null = keep selections)
 function foOpenModal(c) {
   FO_EDIT_ID = c ? c.id : null;
@@ -1031,9 +1047,8 @@ function foOpenModal(c) {
   $('fo-fp').value = c ? (c.pinned_fingerprint || '') : '';
   $('fo-insecure').checked = c ? !!c.insecure : false;
   $('fo-advertise').value = c ? (c.advertise || '').split(',').filter(Boolean).join('\n') : '';
-  $('fo-group').value = c ? (c.group_id || '') : '';
-  agSelectRefresh($('fo-group'));
-  // Policy upload selections (applied by foLoadGroups' push-list render)
+  // Peer-ACL convergence + policy upload selections (applied by foLoadGroups' list renders)
+  FO_ACL_PENDING = new Set(c ? (c.group_id || '').split(',').filter(Boolean) : []);
   FO_PUSH_PENDING = new Set(c ? (c.push_groups || '').split(',').filter(Boolean) : []);
   foLoadGroups();
   $('fo-remark').value = c ? (c.remark || '') : '';
@@ -1074,7 +1089,7 @@ function initUpstreams() {
     const sni = $('fo-sni').value.trim() || 'cdn.cloudflare.com';
     const fp = $('fo-fp').value.trim();
     const insecure = $('fo-insecure').checked;
-    const groupId = $('fo-group').value || null;
+    const groupId = [...document.querySelectorAll('.fo-acl:checked')].map(c => c.value).join(',') || null;
     const pushGroups = [...document.querySelectorAll('.fo-push:checked')].map(c => c.value);
     const advertise = $('fo-advertise').value.split('\n').map(s => s.trim()).filter(Boolean).join(',');
     const remark = $('fo-remark').value.trim();

@@ -133,7 +133,7 @@ impl TokenValidator for DbTokenValidator {
                 // Fan-in restriction: token's bound group → shared PeerAcl (None = unrestricted, allow all).
                 // Query failure / token deleted mid-race both fail closed (auth rejected).
                 let acl = match self.db.get_relay_token_group(&token_hash) {
-                    Ok(Some(group_id)) => self.acl.handle(group_id.as_deref()),
+                    Ok(Some(group_id)) => self.acl.handle(group_id.as_deref(), &self.db),
                     Ok(None) => return None,
                     Err(_) => return None,
                 };

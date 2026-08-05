@@ -4,7 +4,7 @@ use anyhow::Result;
 use clap::{Args, Subcommand};
 use serde_json::json;
 
-use super::common::{AnetClient, IdOnlyArgs, print_json, print_table, resolve_id};
+use super::common::{AnetClient, IdOnlyArgs, print_json, print_table, resolve_id, resolve_id_set};
 
 #[derive(Args, Debug)]
 pub struct TokenArgs {
@@ -33,7 +33,7 @@ pub struct TokenAddArgs {
     /// 控制面授权档位：ro（只读）/ rules（可改规则）/ full（全权）
     #[arg(long, default_value = "full", value_parser = ["ro", "rules", "full"])]
     pub scope: String,
-    /// 收敛权限组（名称或 ID；缺省 = 不收敛，放行一切）
+    /// 收敛权限组（名称或 ID，逗号分隔可多组取并集；缺省 = 不收敛，放行一切）
     #[arg(long)]
     pub group: Option<String>,
     /// 带宽配额（KB/s；缺省 = 不限，须为正整数）
@@ -84,7 +84,7 @@ pub(super) async fn cmd_token(api: Option<String>, args: TokenArgs, json_out: bo
         TokenSub::Add(a) => {
             let group_id = match &a.group {
                 Some(g) => {
-                    Some(resolve_id(&mut client, "/api/v1/admin/groups?page_size=100", g).await?)
+                    resolve_id_set(&mut client, "/api/v1/admin/groups?page_size=100", g).await?
                 }
                 None => None,
             };

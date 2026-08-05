@@ -315,7 +315,7 @@ impl ConnectorManager {
             tls_builder,
         )?
         .with_advertise(parse_advertise(&rec.advertise))
-        .with_acl(self.acl.handle(rec.group_id.as_deref()))
+        .with_acl(self.acl.handle(rec.group_id.as_deref(), &self.db))
         .with_delegation_hooks(self.delegation.clone());
 
         // Federation P1: assemble the pushed policy groups (connector.push_groups -> name + rules)
