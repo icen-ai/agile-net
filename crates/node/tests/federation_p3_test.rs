@@ -256,8 +256,17 @@ async fn p3_e2e_blind_relay_and_fail_close() {
         vec!["git-pub".to_string()],
         "B never sees the fine group"
     );
-    assert_eq!(entry.hint_map.len(), 1);
-    assert_eq!(entry.hint_map[0].hint, "relay.internal");
+    // the entrust word rides first (zero-disclosure routing), the legacy advertise-derived hint
+    // stays as the old-client fallback — both registered on B (coexistence)
+    assert_eq!(entry.hint_map.len(), 2);
+    assert!(
+        entry.hint_map[0]
+            .hint
+            .starts_with(agile_net_core::relay::e2e::ENTRUST_PREFIX),
+        "the entrust word leads the hint map: {:?}",
+        entry.hint_map
+    );
+    assert_eq!(entry.hint_map[1].hint, "relay.internal");
     assert!(
         !entry.acl_rules.iter().any(|r| r.contains("127.0.0.1")),
         "B's delegated ACL must not contain R1: {:?}",
@@ -282,6 +291,7 @@ async fn p3_e2e_blind_relay_and_fail_close() {
             entries: parsed.entries,
             entry_fps: parsed.entry_fps,
             ehint: parsed.ehint,
+            en: parsed.en,
             emode: parsed.emode,
             eadmin: parsed.eadmin,
         })
@@ -351,6 +361,7 @@ async fn p3_e2e_blind_relay_and_fail_close() {
         entries: parsed2.entries,
         entry_fps: parsed2.entry_fps,
         ehint: parsed2.ehint,
+        en: parsed2.en,
         emode: parsed2.emode,
         eadmin: parsed2.eadmin,
     })
@@ -538,6 +549,7 @@ async fn p3_split_tier_rule_delivery() {
         entries: parsed.entries,
         entry_fps: parsed.entry_fps,
         ehint: parsed.ehint,
+        en: parsed.en,
         emode: parsed.emode,
         eadmin: parsed.eadmin,
     })
@@ -741,6 +753,7 @@ async fn p3_delegated_admin_and_transit_management() {
             entries: parsed.entries,
             entry_fps: parsed.entry_fps,
             ehint: parsed.ehint,
+            en: parsed.en,
             emode: parsed.emode,
             eadmin: parsed.eadmin,
         })
@@ -837,6 +850,205 @@ async fn p3_delegated_admin_and_transit_management() {
     assert!(r.status().is_success(), "upstream ticket valid on B");
 
     a.disconnect_all().await;
+    c.stop().await;
+    b.stop().await;
+}
+
+/// Federation P3 entrust mode (docs/todo/e2e.md §2 en_xxx): an E2E delegated token issues with
+/// NO push_groups and NO advertise on the fan-out — the opaque entrust word (en_xxx) routes the
+/// opens while the relay learns nothing about the issuer's groups or routes (zero disclosure).
+/// Covers: issuance without the legacy 400, link en= param, registration without pushed groups
+/// (§7.2.4), entrust-registry routing, and revoke-by-disconnect of entrust entries.
+#[tokio::test]
+async fn p3_entrust_zero_disclosure() {
+    // ---- B: the public rendezvous ----
+    let relay_port = free_port();
+    let (b, _bdir) = boot("b", Some(relay_port)).await;
+    let b_base = format!("http://{}", b.api_addr());
+    let b_token = admin_token(&b_base).await;
+    let http = reqwest::Client::new();
+    let psk = "psk_p3-entrust-token-0123456789abcdef";
+    b.db()
+        .create_relay_token_with_quota(
+            &agile_net_node::db::sha256_hex(psk.as_bytes()),
+            "psk_ente",
+            "for peer-c",
+            false,
+            "full",
+            None,
+            None,
+        )
+        .expect("create relay token");
+
+    // ---- C: e2e_required group ONLY; connector with NO push_groups and NO advertise ----
+    let echo_port = free_port();
+    start_echo_server(echo_port).await;
+    let (c, _cdir) = boot("c", None).await;
+    let c_base = format!("http://{}", c.api_addr());
+    let c_token = admin_token(&c_base).await;
+    let gid = c.db().create_group("git-e2e", "fine").expect("group").id;
+    let rid = c
+        .db()
+        .create_rule("ip-cidr", "127.0.0.1/32", false, "")
+        .expect("rule")
+        .id;
+    c.db().set_group_rules(&gid, &[rid]).expect("bind");
+    c.db()
+        .set_group_e2e_required(&gid, true)
+        .expect("e2e flag");
+    let cid = c
+        .db()
+        .create_connector(
+            "b-rendezvous",
+            &format!("127.0.0.1:{relay_port}"),
+            psk,
+            "fed.test",
+            true,
+            "",
+            "",
+            "",
+            "",
+            None,
+            "fan out to B",
+        )
+        .expect("connector")
+        .id;
+    c.connector_manager()
+        .upsert_from_db(&cid)
+        .await
+        .expect("upsert");
+
+    // ---- issue an E2E delegated token: previously a 400 without advertise/push, entrust covers it now ----
+    let resp = http
+        .post(format!("{c_base}/api/v1/admin/delegation/tokens"))
+        .bearer_auth(&c_token)
+        .json(&serde_json::json!({
+            "label": "alice",
+            "group_ids": [gid],
+            "regs": [{ "connector_id": cid, "is_primary": true }],
+        }))
+        .send()
+        .await
+        .unwrap();
+    let status = resp.status();
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(
+        status, 201,
+        "entrust issuance needs no advertise/push groups: {body}"
+    );
+    let share_url = body["data"]["share_url"].as_str().unwrap().to_string();
+    let token_id = body["data"]["id"].as_str().unwrap().to_string();
+    assert!(
+        share_url.contains("&en=en_"),
+        "the link carries the entrust word: {share_url}"
+    );
+
+    // ---- wait for the registration ack (the sync task polls every 2s) ----
+    for _ in 0..60 {
+        let resp = http
+            .get(format!("{c_base}/api/v1/admin/delegation/tokens"))
+            .bearer_auth(&c_token)
+            .send()
+            .await;
+        let body: serde_json::Value = resp.unwrap().json().await.unwrap();
+        let registered = body["data"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|t| t["label"].as_str() == Some("alice"))
+            .flat_map(|t| t["regs"].as_array().unwrap().clone())
+            .any(|r| r["state"].as_str() == Some("registered"));
+        if registered {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+
+    // ---- zero disclosure: B's pool for C shows neither groups nor advertise ----
+    let resp = http
+        .get(format!("{b_base}/api/v1/admin/federation/offered"))
+        .bearer_auth(&b_token)
+        .send()
+        .await
+        .unwrap();
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let offer = body["data"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|o| o["node_id"].as_str().is_some())
+        .expect("C online in B's pool")
+        .clone();
+    assert!(
+        offer["groups"].as_array().unwrap().is_empty(),
+        "B sees none of C's groups: {offer}"
+    );
+    assert!(
+        offer["advertise"].as_array().unwrap().is_empty(),
+        "B sees none of C's advertised routes: {offer}"
+    );
+
+    // ---- B's entrust registry routes the word back to C ----
+    let parsed = agile_net_client::parse_connect_url(&share_url).expect("parse entrust link");
+    assert!(parsed.delegated);
+    let en = parsed.en.clone().expect("entrust word parsed");
+    let listener = b.runtime().listener.clone().expect("listener");
+    let issuer = listener
+        .entrust_resolve(&en)
+        .expect("entrust word registered on B");
+    assert_eq!(issuer, offer["node_id"].as_str().unwrap());
+
+    // ---- A: import the link verbatim, connect and reach the segment through the blind relay ----
+    let a = AgileNetClient::new();
+    let state = a
+        .connect(ConnectParams {
+            addr: parsed.addr,
+            username: parsed.username,
+            password: parsed.password,
+            insecure: true,
+            pinned_cert_path: None,
+            pinned_fingerprint: parsed.pinned_fingerprint,
+            manage_hosts: false,
+            delegated: parsed.delegated,
+            entries: parsed.entries,
+            entry_fps: parsed.entry_fps,
+            ehint: parsed.ehint,
+            en: parsed.en,
+            emode: parsed.emode,
+            eadmin: parsed.eadmin,
+        })
+        .await
+        .expect("entrust delegated connect");
+    assert_eq!(state.status, NodeStatus::Connected);
+    a.start_proxy(0).await.unwrap();
+    let proxy_port = a.proxy_port();
+    assert!(
+        socks_echo(proxy_port, [127, 0, 0, 1], echo_port, b"p3-entrust").await,
+        "A reaches C's segment through the entrust-routed blind relay"
+    );
+    a.disconnect_all().await;
+
+    // ---- revoke: the token's entrust words leave B's registry with it ----
+    let resp = http
+        .delete(format!("{c_base}/api/v1/admin/delegation/tokens/{token_id}"))
+        .bearer_auth(&c_token)
+        .send()
+        .await
+        .unwrap();
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["code"].as_u64(), Some(0), "revoke: {body}");
+    for _ in 0..50 {
+        if listener.entrust_resolve(&en).is_none() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert!(
+        listener.entrust_resolve(&en).is_none(),
+        "revocation drops the entrust word from B's registry"
+    );
+    // disconnect death rides the same teardown block as delegated registrations (pre-existing
+    // session semantics — the entrust retain lives in that very block)
     c.stop().await;
     b.stop().await;
 }

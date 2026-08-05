@@ -58,6 +58,10 @@ pub struct ConnectParams {
     /// Federation P3: E2E routing hint (every Open sealed when set; empty/None = transparent)
     #[serde(default)]
     pub ehint: Option<String>,
+    /// Federation P3 entrust word (en_xxx opaque routing ID): preferred over `ehint` whenever the
+    /// currently connected entry negotiates protocol v4+; `ehint` stays the legacy fallback.
+    #[serde(default)]
+    pub en: Option<String>,
     /// Federation P3 consumer mode (`split` = E2E rule delivery; None = dedicated 专线)
     #[serde(default)]
     pub emode: Option<String>,
@@ -150,8 +154,10 @@ struct DelegatedOpener {
     current: arc_swap::ArcSwapOption<ClientTunnel>,
     /// Delegated token plaintext (PSK; also the E2E key material)
     token: String,
-    /// E2E routing hint (None/empty = transparent tier)
+    /// E2E routing hint (None/empty = transparent tier); legacy fallback of the entrust word
     ehint: Option<String>,
+    /// Entrust word (en_xxx opaque routing ID; preferred on protocol v4+ entries)
+    en: Option<String>,
     /// Cumulative traffic across failover tunnels (closed-session bytes are folded in)
     total_up: AtomicU64,
     total_down: AtomicU64,
@@ -160,11 +166,12 @@ struct DelegatedOpener {
 }
 
 impl DelegatedOpener {
-    fn new(token: String, ehint: Option<String>) -> Arc<Self> {
+    fn new(token: String, ehint: Option<String>, en: Option<String>) -> Arc<Self> {
         Arc::new(Self {
             current: arc_swap::ArcSwapOption::from_pointee(None),
             token,
             ehint: ehint.filter(|h| !h.trim().is_empty()),
+            en: en.filter(|h| !h.trim().is_empty()),
             total_up: AtomicU64::new(0),
             total_down: AtomicU64::new(0),
             current_entry: arc_swap::ArcSwap::from_pointee(String::new()),
@@ -219,7 +226,19 @@ impl ChannelOpener for DelegatedOpener {
                 .current
                 .load_full()
                 .ok_or_else(|| agile_net_core::error::Error::Other("delegated tunnel not connected".into()))?;
-            match self.ehint.as_deref() {
+            // version-aware hint selection: the entrust word (zero-disclosure routing) rides
+            // entrust-capable relays (v4+); the legacy advertise-derived hint is the fallback
+            // for older entries of the disaster set (and the only word when no en was issued)
+            let hint = match &self.en {
+                Some(word)
+                    if tunnel.server_version()
+                        >= agile_net_core::proto::message::PROTOCOL_VERSION_ENTRUST =>
+                {
+                    Some(word.as_str())
+                }
+                _ => self.ehint.as_deref().or(self.en.as_deref()),
+            };
+            match hint {
                 Some(hint) => {
                     use agile_net_core::relay::e2e;
                     let key = e2e::derive_key(&self.token);
@@ -742,7 +761,11 @@ impl AgileNetClient {
         let tunnel = connect_delegated_entry(&params, &entries[0], first_fp, &account_id).await?;
 
         let node_id = format!("{label}@delegated:{}", entries[0]);
-        let opener = DelegatedOpener::new(params.password.clone(), params.ehint.clone());
+        let opener = DelegatedOpener::new(
+            params.password.clone(),
+            params.ehint.clone(),
+            params.en.clone(),
+        );
         opener.current.store(Some(tunnel.clone()));
         opener.current_entry.store(Arc::new(entries[0].clone()));
         self.inner

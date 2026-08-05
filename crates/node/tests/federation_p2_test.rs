@@ -140,6 +140,7 @@ fn delegated_params(entries: Vec<String>, label: &str, token: &str) -> ConnectPa
         entries,
         entry_fps: Vec::new(),
         ehint: None,
+        en: None,
         emode: None,
         eadmin: false,
     }

@@ -450,11 +450,22 @@ impl ConnectorManager {
                     }
 
                     // register tokens not yet sent on this session
+                    let entrust_capable =
+                        c.upstream_version() >= agile_net_core::proto::message::PROTOCOL_VERSION_ENTRUST;
                     for rec in tokens {
                         if live.contains_key(&rec.id) {
                             continue;
                         }
                         let msg = build_register_msg(&db, &rec);
+                        // an older relay keeps no entrust registry — strip the opaque en_ words
+                        // so the rest of the hint map still registers (legacy advertise-derived
+                        // hints); an entrust-only map degrades to a relay-side rejection with a
+                        // clear reason instead of poisoning the whole frame
+                        let msg = if entrust_capable {
+                            msg
+                        } else {
+                            strip_entrust_hints(msg)
+                        };
                         let hash = rec.token_hash.clone();
                         let Ok(payload) = serde_json::to_vec(&msg) else {
                             continue;
@@ -483,9 +494,7 @@ impl ConnectorManager {
     /// Assemble the pushed policy groups of a connector record (push_groups ids -> name + rule values).
     fn pushed_groups_of(&self, rec: &ConnectorRecord) -> Vec<PushedGroupMsg> {
         pushed_group_msgs(&self.db, rec)
-    }
-
-    /// Federation P1: refresh every connector's pushed-group slot from the DB (config_version watcher;
+    }    /// Federation P1: refresh every connector's pushed-group slot from the DB (config_version watcher;
     /// a content change reconnects the connector to re-push upstream).
     pub fn refresh_push_groups(&self) {
         // federation P2/P3: group/rule edits also invalidate the delegation enforcement cache
@@ -679,6 +688,31 @@ fn pushed_group_msgs(db: &Database, rec: &ConnectorRecord) -> Vec<PushedGroupMsg
             })
         })
         .collect()
+}
+
+/// Drop entrust hints (en_xxx opaque words) from a registration frame — older relays
+/// (< PROTOCOL_VERSION_ENTRUST) keep no entrust registry and would reject the whole frame
+/// on the unvalidatable word.
+fn strip_entrust_hints(msg: CtrlMessage) -> CtrlMessage {
+    let CtrlMessage::TokenRegister {
+        token_hash,
+        label,
+        groups,
+        hint_map,
+    } = msg
+    else {
+        return msg;
+    };
+    let hint_map = hint_map
+        .into_iter()
+        .filter(|h| !h.hint.starts_with(agile_net_core::relay::e2e::ENTRUST_PREFIX))
+        .collect();
+    CtrlMessage::TokenRegister {
+        token_hash,
+        label,
+        groups,
+        hint_map,
+    }
 }
 
 /// Effective advertise set of a connector record, mirroring `RelayConnector::effective_advertise`

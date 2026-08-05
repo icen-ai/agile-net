@@ -117,6 +117,9 @@ pub const MAX_PUSHED_GROUPS: usize = 32;
 pub const MAX_PUSHED_GROUP_NAME: usize = 128;
 pub const MAX_PUSHED_GROUP_RULES: usize = 256;
 pub const MAX_PUSHED_RULE_LEN: usize = 256;
+/// Cap for entrust registrations per issuer (anti-abuse: en_ words skip route validation, so a
+/// malicious issuer could otherwise fill relay memory with self-minted opaque IDs).
+pub const MAX_ENTRUST_PER_ISSUER: usize = 1024;
 
 /// Sanitize pushed groups before pooling (drop offending entries, never reject the session).
 pub fn sanitize_pushed_groups(
@@ -235,6 +238,11 @@ pub struct RelayListener {
     peer_groups: Arc<DashMap<String, Vec<crate::proto::message::PushedGroupMsg>>>,
     /// Federation P2: delegated tokens registered by online fan-out endpoints (session-scoped)
     delegated: DelegatedRegistry,
+    /// Federation P3 entrust mode: opaque routing words (en_xxx -> issuer node_id). Entries are
+    /// registered from token_register hint_map entries carrying the en_ prefix (no advertised-route
+    /// validation — the word is issuer-self-minted and semantics-free), and die with their issuer
+    /// session exactly like delegated registrations.
+    entrust: Arc<DashMap<String, String>>,
     /// Aggregated queryable route table (RCU hot update)
     routes: Arc<arc_swap::ArcSwap<AdvertisedRoutes>>,
     /// Online client sessions (account_id -> session handle list, for online checks and forced disconnect)
@@ -292,6 +300,7 @@ impl RelayListener {
             peer_advertise: Arc::new(DashMap::new()),
             peer_groups: Arc::new(DashMap::new()),
             delegated: Arc::new(DashMap::new()),
+            entrust: Arc::new(DashMap::new()),
             routes: Arc::new(arc_swap::ArcSwap::from_pointee(AdvertisedRoutes::default())),
             clients: Arc::new(DashMap::new()),
             events,
@@ -485,6 +494,12 @@ impl RelayListener {
     /// Subscribe to online/offline events.
     pub fn subscribe_events(&self) -> broadcast::Receiver<PeerEvent> {
         self.events.subscribe()
+    }
+
+    /// Resolve an entrust word (en_xxx opaque ID) to its issuer node_id (federation P3 entrust
+    /// mode; None = unknown word). Session-scoped like the delegated registry.
+    pub fn entrust_resolve(&self, word: &str) -> Option<String> {
+        self.entrust.get(word).map(|v| v.clone())
     }
 
     /// Resolve the downstream node for a target address (based on the advertised route table).
@@ -849,6 +864,8 @@ impl RelayListener {
                 self.delegated.remove(&hash);
                 self.disconnect_client(&delegated_session_key(&hash));
             }
+            // entrust words die with the issuer session too (same revoke-by-disconnect contract)
+            self.entrust.retain(|_, v| v != &node_id);
         }
         let _ = self.events.send(PeerEvent::NodeDisconnected {
             node_id: node_id.clone(),
@@ -920,9 +937,13 @@ impl RelayListener {
 
     /// Validate and register a delegated token (federation P2):
     /// - the token's groups are intersected with the issuer's pushed policy groups (an empty
-    ///   register set means "all pushed groups"); an empty intersection is rejected
-    /// - every hint must route back to this very issuer via the advertised route table
-    ///   (a hint that routes nowhere — or to another peer — can never serve, fail closed)
+    ///   register set means "all pushed groups"); an empty intersection is rejected — unless the
+    ///   token carries entrust hints (en_ words, federation P3 entrust mode: routing without rule
+    ///   disclosure; the issuer need not push anything, the declared groups are recorded verbatim
+    ///   for observability and the transparent-tier ACL stays empty = fail closed)
+    /// - every non-entrust hint must route back to this very issuer via the advertised route table
+    ///   (a hint that routes nowhere — or to another peer — can never serve, fail closed);
+    ///   entrust hints skip this check (self-minted opaque words, no other node's routes to steal)
     /// - one token_hash belongs to one issuer (a second issuer claiming it is rejected)
     fn register_delegated(
         &self,
@@ -944,6 +965,11 @@ impl RelayListener {
             return Err("token_hash already registered by another issuer".into());
         }
 
+        // entrust hints ride the opaque registry; regular hints keep the route-table validation
+        let (entrust_hints, regular_hints): (Vec<_>, Vec<_>) = hint_map
+            .iter()
+            .partition(|h| h.hint.starts_with(crate::relay::e2e::ENTRUST_PREFIX));
+
         // intersect the token's groups with the issuer's pushed pool; empty set = all pushed
         let pushed = self
             .peer_groups
@@ -955,24 +981,57 @@ impl RelayListener {
         } else {
             pushed.iter().filter(|g| groups.contains(&g.name)).collect()
         };
-        if wanted.is_empty() {
-            return Err("no known groups (push policy groups before registering)".into());
-        }
         let mut names = Vec::with_capacity(wanted.len());
         let mut rules: Vec<String> = Vec::new();
-        for g in &wanted {
-            names.push(g.name.clone());
-            for r in &g.rules {
-                if !rules.contains(r) {
-                    rules.push(r.clone());
+        if wanted.is_empty() {
+            if entrust_hints.is_empty() {
+                return Err("no known groups (push policy groups before registering)".into());
+            }
+            // entrust mode: nothing pushed — record the declared groups verbatim (capped) for
+            // observability; acl_rules stays empty so transparent opens fail closed at this relay
+            names = groups
+                .into_iter()
+                .filter(|g| !g.trim().is_empty() && g.len() <= MAX_PUSHED_GROUP_NAME)
+                .take(MAX_PUSHED_GROUPS)
+                .collect();
+        } else {
+            for g in &wanted {
+                names.push(g.name.clone());
+                for r in &g.rules {
+                    if !rules.contains(r) {
+                        rules.push(r.clone());
+                    }
                 }
             }
         }
 
-        // hints must resolve to this issuer over the advertised route table
-        for h in &hint_map {
+        // regular hints must resolve to this issuer over the advertised route table
+        for h in &regular_hints {
             if self.resolve_peer(&h.hint).as_deref() != Some(node_id) {
                 return Err(format!("hint '{}' does not route to this issuer", h.hint));
+            }
+        }
+
+        // entrust hints: insert into the opaque registry (per-issuer cap — anti-flood)
+        if !entrust_hints.is_empty() {
+            let current = self
+                .entrust
+                .iter()
+                .filter(|e| e.value() == node_id)
+                .count();
+            if current + entrust_hints.len() > MAX_ENTRUST_PER_ISSUER {
+                return Err("entrust registry capacity exceeded for this issuer".into());
+            }
+            for h in &entrust_hints {
+                // one en_ word one issuer: a different issuer's re-registration is rejected, just
+                // like token_hash (deterministic derivation makes cross-issuer collision impossible
+                // in practice; the guard keeps a malicious issuer from squatting another's word)
+                if let Some(existing) = self.entrust.get(&h.hint)
+                    && existing.value() != node_id
+                {
+                    return Err(format!("entrust id '{}' already registered by another issuer", h.hint));
+                }
+                self.entrust.insert(h.hint.clone(), node_id.to_string());
             }
         }
 
@@ -995,6 +1054,12 @@ impl RelayListener {
         let (hash, tok) = self
             .delegated
             .remove_if(token_hash, |_, v| v.issuer == node_id)?;
+        // entrust words of this token leave the opaque registry with it
+        for h in &tok.hint_map {
+            if h.hint.starts_with(crate::relay::e2e::ENTRUST_PREFIX) {
+                self.entrust.remove_if(&h.hint, |_, v| v == node_id);
+            }
+        }
         let label = tok.label;
         self.disconnect_client(&delegated_session_key(&hash));
         Some(label)
@@ -1197,7 +1262,13 @@ impl RelayListener {
         let meter_from = self.transit.clone().zip(from.map(str::to_string));
 
         // prefer downstream-node advertised routes, else local direct connect
-        let bridged = if let Some(peer_id) = self.resolve_peer(&open_req.target_addr) {
+        // (entrust words — en_xxx opaque IDs — resolve through their own registry first)
+        let routed_peer = self
+            .entrust
+            .get(&open_req.target_addr)
+            .map(|r| r.clone())
+            .or_else(|| self.resolve_peer(&open_req.target_addr));
+        let bridged = if let Some(peer_id) = routed_peer {
             match self.open_channel_full(&peer_id, &open_req).await {
                 Ok(peer_channel) => {
                     if mux

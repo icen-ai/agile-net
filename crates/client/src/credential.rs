@@ -34,6 +34,9 @@ pub struct Credential {
     /// Federation P3: E2E routing hint (every Open is sealed when set)
     #[serde(default)]
     pub ehint: Option<String>,
+    /// Federation P3 entrust word (en_xxx; preferred over ehint on protocol v4+ entries)
+    #[serde(default)]
+    pub en: Option<String>,
     /// Federation P3 consumer mode: `split` = pull the rule vocabulary (E2E) and route
     /// selectively; None = `dedicated` (专线 — whole machine captured)
     #[serde(default)]
@@ -283,6 +286,7 @@ mod tests {
             entries: Vec::new(),
             entry_fps: Vec::new(),
             ehint: None,
+            en: None,
             emode: None,
             eadmin: false,
         }

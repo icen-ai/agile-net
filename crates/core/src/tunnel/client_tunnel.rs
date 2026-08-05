@@ -17,7 +17,7 @@ use crate::tunnel::tls::TlsConfigBuilder;
 use bytes::Bytes;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 use std::time::Duration;
 use tokio::net::TcpStream;
 use tokio::sync::{Mutex, Notify};
@@ -41,6 +41,9 @@ pub struct ClientTunnel {
     sni_hostname: String,
     session: Arc<Mutex<Option<Arc<MuxSession>>>>,
     state: Arc<AtomicU8>,
+    /// Negotiated upstream protocol version of the current session (0 = not connected / unknown);
+    /// the delegated E2E opener consults it to pick entrust (en_xxx, v4+) vs legacy hints.
+    server_version: Arc<AtomicU32>,
     shutdown_notify: Arc<Notify>,
     shutdown_flag: Arc<AtomicBool>,
 }
@@ -62,6 +65,7 @@ impl ClientTunnel {
             sni_hostname: tls_builder.sni_hostname,
             session: Arc::new(Mutex::new(None)),
             state: Arc::new(AtomicU8::new(ConnectionState::Disconnected as u8)),
+            server_version: Arc::new(AtomicU32::new(0)),
             shutdown_notify: Arc::new(Notify::new()),
             shutdown_flag: Arc::new(AtomicBool::new(false)),
         })
@@ -91,6 +95,11 @@ impl ClientTunnel {
 
     pub fn is_connected(&self) -> bool {
         self.state() == ConnectionState::Connected
+    }
+
+    /// Negotiated upstream protocol version of the current session (0 = not connected / unknown).
+    pub fn server_version(&self) -> u32 {
+        self.server_version.load(Ordering::Relaxed)
     }
 
     /// Data-plane traffic counters (up bytes, down bytes): up = to the node, down = from the node.
@@ -174,6 +183,7 @@ impl ClientTunnel {
 
         // the client is the only side issuing Open on this session; use even channel_ids
         let flow_control = server_version >= PROTOCOL_VERSION_FLOW_CONTROL;
+        self.server_version.store(server_version, Ordering::Relaxed);
         // no session rate limit on the client side (if limited, the peer listener's injected bucket back-pressures at ingress)
         let (mux, reader_handle) = MuxSession::start(
             tls_stream,

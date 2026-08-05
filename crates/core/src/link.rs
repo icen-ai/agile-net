@@ -46,6 +46,12 @@ pub struct ConnectLink {
     /// every Open into an E2E envelope addressed by this hint; absent = transparent tier
     #[serde(default)]
     pub ehint: Option<String>,
+    /// Federation P3 entrust word (delegated E2E links only): opaque `en_xxx` routing ID — the
+    /// zero-disclosure path (the relay needs no pushed groups / advertised routes). New clients
+    /// prefer it over `ehint` on entrust-capable relays; `ehint` stays as the legacy fallback.
+    /// Older clients ignore it and stay on `ehint`.
+    #[serde(default)]
+    pub en: Option<String>,
     /// Federation P3 consumer mode (delegated E2E links only): `split` = pull the token's rule
     /// vocabulary (E2E-sealed) and route selectively; absent = `dedicated` (whole machine
     /// captured, the 专线 tier). Older clients ignore it and stay on dedicated.
@@ -76,6 +82,12 @@ impl ConnectLink {
     /// Delegated token label (the `d:` mark stripped).
     pub fn delegated_label(&self) -> Option<&str> {
         self.account.strip_prefix("d:")
+    }
+
+    /// Effective E2E routing word for simple consumers (display / version-unaware paths):
+    /// the entrust word when present, else the legacy hint.
+    pub fn effective_hint(&self) -> Option<&str> {
+        self.en.as_deref().or(self.ehint.as_deref())
     }
 }
 
@@ -139,6 +151,7 @@ pub fn parse_connect_url(url: &str) -> std::result::Result<ConnectLink, String> 
     let mut entries: Vec<String> = Vec::new();
     let mut entry_fps: Vec<String> = Vec::new();
     let mut ehint: Option<String> = None;
+    let mut en: Option<String> = None;
     let mut emode: Option<String> = None;
     let mut eadmin = false;
     for pair in rest.split('&') {
@@ -159,6 +172,8 @@ pub fn parse_connect_url(url: &str) -> std::result::Result<ConnectLink, String> 
             "entryfp" => entry_fps = v.split(',').map(|s| s.trim().to_string()).collect(),
             // federation P3: E2E routing hint (delegated links; client seals every Open when set)
             "ehint" => ehint = Some(v),
+            // federation P3 entrust mode: opaque en_xxx routing word (preferred over ehint when set)
+            "en" => en = Some(v),
             // federation P3 split tier: pull the rule vocabulary and route selectively
             "emode" => emode = Some(v),
             // federation P3 delegated admin: the token may manage the issuer (ticket via config channel)
@@ -181,6 +196,7 @@ pub fn parse_connect_url(url: &str) -> std::result::Result<ConnectLink, String> 
         entries,
         entry_fps,
         ehint,
+        en,
         emode,
         eadmin,
     })
@@ -313,12 +329,14 @@ pub fn build_fanout_url(
 /// order (per-entry relay fingerprints; an empty item falls back to TOFU). The token lives in
 /// `password` — a delegated credential is a pure data-plane key: the client dials the relay
 /// directly (no API roundtrip), so the server param always carries an explicit relay port.
+#[allow(clippy::too_many_arguments)] // the delegation word set (ehint/en/emode/eadmin) rides positional to mirror the URL params
 pub fn build_delegate_url(
     primary_addr: &str,
     label: &str,
     token: &str,
     entries: &[(String, String)],
     ehint: Option<&str>,
+    en: Option<&str>,
     emode: Option<&str>,
     eadmin: bool,
 ) -> String {
@@ -342,6 +360,9 @@ pub fn build_delegate_url(
     }
     if let Some(hint) = ehint.filter(|s| !s.is_empty()) {
         url.push_str(&format!("&ehint={}", url_encode(hint)));
+    }
+    if let Some(word) = en.filter(|s| !s.is_empty()) {
+        url.push_str(&format!("&en={}", url_encode(word)));
     }
     // dedicated is the default tier — only the split tier is spelled out
     if let Some(mode) = emode.filter(|m| *m == "split") {
@@ -478,7 +499,7 @@ mod tests {
             ("b2.example.com:54430".to_string(), "".to_string()),
             ("10.0.0.3:54430".to_string(), "cc33".to_string()),
         ];
-        let url = build_delegate_url("b1.example.com:54430", "alice-laptop", "psk_secret", &entries, Some("relay.internal"), Some("split"), true);
+        let url = build_delegate_url("b1.example.com:54430", "alice-laptop", "psk_secret", &entries, Some("relay.internal"), Some("en_a1b2c3d4e5f6"), Some("split"), true);
         let p = parse_connect_url(&url).expect("parse delegate link");
         assert!(p.is_delegated());
         assert_eq!(p.delegated_label(), Some("alice-laptop"));
@@ -486,6 +507,9 @@ mod tests {
         assert_eq!(p.password, "psk_secret");
         assert_eq!(p.pinned_fingerprint.as_deref(), Some("aa11"));
         assert_eq!(p.ehint.as_deref(), Some("relay.internal"));
+        assert_eq!(p.en.as_deref(), Some("en_a1b2c3d4e5f6"));
+        // the entrust word wins as the effective routing word
+        assert_eq!(p.effective_hint(), Some("en_a1b2c3d4e5f6"));
         assert_eq!(p.emode.as_deref(), Some("split"));
         assert!(p.eadmin);
         assert_eq!(
@@ -502,14 +526,16 @@ mod tests {
     #[test]
     fn delegate_url_single_entry_omits_entry_params() {
         let entries = vec![("b1.example.com:54430".to_string(), "aa11".to_string())];
-        let url = build_delegate_url("b1.example.com:54430", "bob", "psk_x", &entries, None, None, false);
+        let url = build_delegate_url("b1.example.com:54430", "bob", "psk_x", &entries, None, None, None, false);
         assert!(!url.contains("entry="));
         assert!(!url.contains("ehint="));
+        assert!(!url.contains("&en="));
         assert!(!url.contains("emode="));
         assert!(!url.contains("eadmin="));
         let p = parse_connect_url(&url).unwrap();
         assert_eq!(p.entries(), vec!["b1.example.com:54430".to_string()]);
         assert_eq!(p.ehint, None);
+        assert_eq!(p.en, None);
         assert_eq!(p.emode, None);
     }
 

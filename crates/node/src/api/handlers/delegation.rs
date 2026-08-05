@@ -107,9 +107,11 @@ pub async fn issue_token(
         return err(StatusCode::BAD_REQUEST, codes::VALIDATION_FAILED, "管理授权档位只能是 ro / rules / full");
     }
 
-    // auto-derive the E2E hint from the primary connector's effective advertise set (manual
-    // advertise + pushed group rules — the same set the upstream route table will carry) when
-    // the caller did not provide one explicitly; mandatory once any referenced group is e2e_required
+    // federation P3 entrust mode: every E2E token automatically carries its opaque entrust word
+    // (en_xxx, prepended inside issue_token) — routing without rule disclosure; push_groups /
+    // advertise are NO LONGER REQUIRED. The advertise-derived legacy hint below is best-effort
+    // only: it rides as a fallback for old clients / old relays when the primary entry happens
+    // to advertise routes (a literal hint an old peer can validate against its route table).
     let mut hint_map = req.hint_map.clone();
     let db_groups = state
         .db_call(|db| db.list_groups(1, 10000, None).map(|(g, _)| g))
@@ -127,63 +129,33 @@ pub async fn issue_token(
             .find(|r| r.is_primary)
             .map(|r| r.connector_id.clone())
             .expect("exactly one primary checked above");
-        // (effective set, raw manual advertise, per-push-group rule counts) — the diagnostics
-        // make an empty-set failure say exactly which input is missing instead of a flat refusal
-        let (advertise, raw_adv, pushes) = state
+        let advertise = state
             .db_call(move |db| {
                 db.get_connector(&primary_id).map(|c| {
-                    c.map(|c| {
-                        let effective = crate::service::connectors::effective_advertise_of(db, &c);
-                        let pushes: Vec<String> = c
-                            .push_groups
-                            .split(',')
-                            .map(|s| s.trim())
-                            .filter(|s| !s.is_empty())
-                            .map(|gid| {
-                                let name = db
-                                    .get_group(gid)
-                                    .ok()
-                                    .flatten()
-                                    .map(|g| g.name)
-                                    .unwrap_or_else(|| gid.to_string());
-                                let n = db.rules_of_group(gid).map(|rs| rs.len()).unwrap_or(0);
-                                format!("{name}（{n} 条规则）")
-                            })
-                            .collect();
-                        (effective, c.advertise.clone(), pushes)
-                    })
+                    c.map(|c| crate::service::connectors::effective_advertise_of(db, &c))
                 })
             })
             .await
             .ok()
             .flatten()
             .unwrap_or_default();
-        let Some(hint) = delegation::derive_hint(&advertise) else {
-            return err(
-                StatusCode::BAD_REQUEST,
-                codes::VALIDATION_FAILED,
-                format!(
-                    "引用组含端到端加密组，但主入口扇出没有任何可路由项，无法生成路由词——手工 advertise: [{}]；上送组: [{}]（组内规则自动并入广告路由）。请为该扇出配置路由宣告，或勾选含规则的上送组",
-                    raw_adv,
-                    if pushes.is_empty() { "无".to_string() } else { pushes.join(", ") },
-                ),
-            );
-        };
-        let group_names: Vec<String> = req
-            .group_ids
-            .iter()
-            .filter_map(|gid| db_groups.iter().find(|g| &g.id == gid))
-            .filter(|g| g.e2e_required)
-            .map(|g| g.name.clone())
-            .collect();
-        hint_map = vec![HintEntry {
-            hint,
-            groups: group_names,
-        }];
+        if let Some(hint) = delegation::derive_hint(&advertise) {
+            let group_names: Vec<String> = req
+                .group_ids
+                .iter()
+                .filter_map(|gid| db_groups.iter().find(|g| &g.id == gid))
+                .filter(|g| g.e2e_required)
+                .map(|g| g.name.clone())
+                .collect();
+            hint_map = vec![HintEntry {
+                hint,
+                groups: group_names,
+            }];
+        }
     }
 
     // split tier rides the E2E config channel — it requires at least one e2e_required group
-    if mode == "split" && hint_map.is_empty() {
+    if mode == "split" && !needs_hint {
         return err(
             StatusCode::BAD_REQUEST,
             codes::VALIDATION_FAILED,
@@ -191,7 +163,7 @@ pub async fn issue_token(
         );
     }
     // a bootstrap ticket must never cross a relay in plaintext — admin requires the E2E channel
-    if !req.admin_scope.is_empty() && hint_map.is_empty() {
+    if !req.admin_scope.is_empty() && !needs_hint {
         return err(
             StatusCode::BAD_REQUEST,
             codes::VALIDATION_FAILED,
@@ -286,13 +258,22 @@ fn build_share_url(
         .first()
         .map(|(a, _)| a.clone())
         .unwrap_or_else(|| "127.0.0.1:54430".to_string());
-    // federation P3: the first hint of the map rides the link — the consumer client seals
-    // every Open into an E2E envelope when it is present (transparent tier when absent)
+    // federation P3: the link carries both routing words — en_xxx (entrust mode, zero-disclosure)
+    // for new clients/relays and the advertise-derived legacy hint (when derivable) as the
+    // old-client/old-relay fallback. The consumer client seals every Open into an E2E envelope
+    // addressed by the selected word (transparent tier when both are absent).
     let hint_map: Vec<agile_net_core::proto::message::HintEntry> =
         serde_json::from_str(&rec.hint_map).unwrap_or_default();
-    let ehint = hint_map.first().map(|h| h.hint.as_str());
+    let en = hint_map
+        .iter()
+        .find(|h| h.hint.starts_with(agile_net_core::relay::e2e::ENTRUST_PREFIX))
+        .map(|h| h.hint.as_str());
+    let ehint = hint_map
+        .iter()
+        .find(|h| !h.hint.starts_with(agile_net_core::relay::e2e::ENTRUST_PREFIX))
+        .map(|h| h.hint.as_str());
     let emode = (rec.mode == "split").then_some("split");
-    agile_net_core::link::build_delegate_url(&primary, &rec.label, plaintext, &entries, ehint, emode, !rec.admin_scope.is_empty())
+    agile_net_core::link::build_delegate_url(&primary, &rec.label, plaintext, &entries, ehint, en, emode, !rec.admin_scope.is_empty())
 }
 
 /// Render one token for the API (group names resolved, per-upstream state folded in).

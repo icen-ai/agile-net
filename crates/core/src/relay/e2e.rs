@@ -55,6 +55,18 @@ pub const DELEGATION_ADMIN_TARGET: &str = "__anet_delegation_admin__";
 /// the fan-out session — nested channel on the same mux, E2E on the consumer side only.
 pub const DELEGATION_UPSTREAM_PREFIX: &str = "upstream:";
 
+/// Entrust ID prefix (federation P3 entrust mode): an opaque, semantics-free routing word
+/// (`en_<12 hex of token_hash>`). Hints with this prefix skip the relay's advertised-route
+/// validation and ride the entrust registry instead — routing without rule disclosure (the
+/// issuer no longer needs to push groups or advertise routes to issue an E2E delegation).
+pub const ENTRUST_PREFIX: &str = "en_";
+
+/// Derive the entrust ID of a token (deterministic: reproducible without extra storage, and the
+/// same token registers the same ID across a failover set of relays).
+pub fn entrust_id_of(token_hash: &str) -> String {
+    format!("{}{}", ENTRUST_PREFIX, &token_hash[..12.min(token_hash.len())])
+}
+
 const NONCE_LEN: usize = 12;
 const TAG_LEN: usize = 16;
 const LEN_PREFIX: usize = 4;

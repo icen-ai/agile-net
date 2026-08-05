@@ -896,11 +896,12 @@ function renderCredList(creds, statusMap) {
     const epName = key.includes('@') ? key.slice(0, key.indexOf('@')) : key;
     // federation P2: delegated credentials badged; the live failover entry shown when connected
     const delegBadge = c.delegated ? ' <span class="badge b-info">' + AgI18n.t('views.delegated-badge') + '</span>' : '';
-    // federation P3 tier badge: 专线 (whole machine) vs 分流 (rule delivery) on E2E credentials;
-    // split silently degrades to catch-all when the config pull failed — surface that honestly
-    const splitFallback = !!(c.delegated && c.ehint && c.emode === 'split' && st === 'Connected'
+    // federation P3 tier badge: 专线 (whole machine) vs 分流 (rule delivery) on E2E credentials
+    // (routing word = entrust en_xxx or legacy ehint); split silently degrades to catch-all when
+    // the config pull failed — surface that honestly
+    const splitFallback = !!(c.delegated && (c.en || c.ehint) && c.emode === 'split' && st === 'Connected'
       && n && (n.rules || []).some(r => r.value === '0.0.0.0/0'));
-    const tierBadge = (c.delegated && c.ehint)
+    const tierBadge = (c.delegated && (c.en || c.ehint))
       ? ' <span class="badge ' + (splitFallback ? 'b-warn' : (c.emode === 'split' ? 'b-info' : 'b-off')) + '"' +
         (splitFallback ? ' title="' + AgI18n.t('views.tier-split-fallback-hint') + '"' : '') + '>' +
         AgI18n.t(splitFallback ? 'views.tier-split-fallback' : (c.emode === 'split' ? 'views.tier-split' : 'views.tier-dedicated')) + '</span>'
@@ -936,8 +937,8 @@ async function reconnectSaved(key, btn) {
     addr: c.addr, username: c.username, password: c.password,
     insecure: c.insecure, pinned_cert_path: null, pinned_fingerprint: c.pinned_fingerprint || null,
     manage_hosts: false, save_credential: true,
-    // federation P2/P3: keep the delegated fields on reconnect (failover set, E2E hint, tier)
-    delegated: !!c.delegated, entries: c.entries || [], entry_fps: c.entry_fps || [], ehint: c.ehint || null, emode: c.emode || null,
+    // federation P2/P3: keep the delegated fields on reconnect (failover set, E2E hint, entrust, tier)
+    delegated: !!c.delegated, entries: c.entries || [], entry_fps: c.entry_fps || [], ehint: c.ehint || null, en: c.en || null, emode: c.emode || null, eadmin: !!c.eadmin,
   }, btn || null);
 }
 async function exportCred(key) {

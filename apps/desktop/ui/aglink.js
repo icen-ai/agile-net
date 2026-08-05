@@ -90,6 +90,8 @@ function parse(url) {
       entryFps: entries.length ? entryFps : [p.fp || ''],
       // federation P3: E2E routing hint (delegated links; the client seals every Open when set)
       ehint: p.ehint || '',
+      // federation P3 entrust word (en_xxx opaque routing ID; preferred over ehint on v4+ relays)
+      en: p.en || '',
       // federation P3 consumer tier: 'split' = E2E rule delivery (route selectively);
       // absent = dedicated 专线 (whole machine captured)
       emode: p.emode || '',
@@ -135,6 +137,7 @@ function buildConnect(f) {
     params.push(['entryfp', entries.map(e => e.fp || '').join(',')]);
   }
   if (f.ehint) params.push(['ehint', f.ehint]);
+  if (f.en) params.push(['en', f.en]);
   if (f.emode === 'split') params.push(['emode', 'split']);
   if (f.eadmin) params.push(['eadmin', '1']);
   return 'anet://connect?' + qs(params);

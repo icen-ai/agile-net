@@ -31,10 +31,6 @@ pub fn issue_token(
     if !["", "ro", "rules", "full"].contains(&admin_scope) {
         bail!("未知的管理授权档位: {admin_scope}");
     }
-    // a bootstrap ticket must never cross a relay in plaintext — admin requires the E2E channel
-    if !admin_scope.is_empty() && hint_map.is_empty() {
-        bail!("授权管理要求引用组含端到端加密组（票据经 E2E 通道下发）");
-    }
     if regs.is_empty() {
         bail!("容灾集合不能为空（至少选择一个扇出上游）");
     }
@@ -56,10 +52,41 @@ pub fn issue_token(
 
     let plaintext = generate_relay_token(); // same entropy as relay tokens (psk_ + 48)
     let token_hash = sha256_hex(plaintext.as_bytes());
+
+    // federation P3 entrust mode: every E2E token carries its opaque entrust word as the FIRST
+    // hint (en_<12 hex of token_hash>) — routing without rule disclosure; the issuer no longer
+    // needs push_groups or advertise to serve E2E delegation. A caller-supplied or
+    // advertise-derived legacy hint stays behind it as the old-client / old-relay fallback.
+    let e2e_names: Vec<String> = group_ids
+        .iter()
+        .filter_map(|gid| db.get_group(gid).ok().flatten())
+        .filter(|g| g.e2e_required)
+        .map(|g| g.name)
+        .collect();
+    let mut hint_map = hint_map.to_vec();
+    if !e2e_names.is_empty()
+        && !hint_map
+            .iter()
+            .any(|h| h.hint.starts_with(agile_net_core::relay::e2e::ENTRUST_PREFIX))
+    {
+        hint_map.insert(
+            0,
+            HintEntry {
+                hint: agile_net_core::relay::e2e::entrust_id_of(&token_hash),
+                groups: e2e_names,
+            },
+        );
+    }
+    // a bootstrap ticket must never cross a relay in plaintext — admin requires the E2E channel
+    // (evaluated after the entrust prepend: any e2e_required group satisfies it)
+    if !admin_scope.is_empty() && hint_map.is_empty() {
+        bail!("授权管理要求引用组含端到端加密组（票据经 E2E 通道下发）");
+    }
+
     let e2e_key = agile_net_core::relay::e2e::derive_key(&plaintext);
     let e2e_key_enc = db.encrypt_secret(&agile_net_core::util::base64_encode(&e2e_key))?;
     let groups_json = serde_json::to_string(group_ids)?;
-    let hint_json = serde_json::to_string(hint_map)?;
+    let hint_json = serde_json::to_string(&hint_map)?;
     let prefix: String = plaintext.chars().take(8).collect();
 
     let rec = db.create_delegated_token(

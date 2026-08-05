@@ -515,6 +515,7 @@ async fn federation_adopted_group_data_plane() {
             entries: Vec::new(),
             entry_fps: Vec::new(),
             ehint: None,
+            en: None,
             emode: None,
             eadmin: false,
         })

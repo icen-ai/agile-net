@@ -1,13 +1,13 @@
-//! Protocol v3 compatibility matrix (federation P2/P3):
+//! Protocol v3/v4 compatibility matrix (federation P2/P3):
 //! - OpenChannel extension fields (groups / e2e) are serde-defaulted: new peers parse legacy
 //!   payloads, legacy peers ignore the new fields
 //! - Ctrl frames flow over the mux session control plane and reach subscribers only
-//! - version constants keep their ordering (flow control v2 <= delegation v3)
+//! - version constants keep their ordering (flow control v2 <= delegation v3 <= entrust v4)
 
 use agile_net_core::proto::frame::{Frame, FrameType};
 use agile_net_core::proto::message::{
     CtrlMessage, E2eOpen, HintEntry, OpenChannel, PROTOCOL_VERSION, PROTOCOL_VERSION_DELEGATION,
-    PROTOCOL_VERSION_FLOW_CONTROL,
+    PROTOCOL_VERSION_ENTRUST, PROTOCOL_VERSION_FLOW_CONTROL,
 };
 use agile_net_core::relay::mux::{MuxSession, SessionEvents};
 use bytes::Bytes;
@@ -21,7 +21,8 @@ struct LegacyOpenChannel {
 
 #[test]
 fn version_constants_ordered() {
-    assert_eq!(PROTOCOL_VERSION, PROTOCOL_VERSION_DELEGATION);
+    assert_eq!(PROTOCOL_VERSION, PROTOCOL_VERSION_ENTRUST);
+    assert!(PROTOCOL_VERSION_ENTRUST > PROTOCOL_VERSION_DELEGATION);
     assert!(PROTOCOL_VERSION_DELEGATION > PROTOCOL_VERSION_FLOW_CONTROL);
 }
 

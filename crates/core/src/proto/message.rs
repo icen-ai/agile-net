@@ -86,9 +86,9 @@ fn default_control_scope() -> String {
     "full".into()
 }
 
-/// Current protocol version (v3: session control plane — Ctrl frames carrying delegated-token
-/// register/revoke for federation P2; OpenChannel group tags + E2E envelope for P3).
-pub const PROTOCOL_VERSION: u32 = 3;
+/// Current protocol version (v4: entrust mode — opaque en_xxx routing words in token_register
+/// hint_map, federation P3 zero-disclosure delegation; v3: session control plane + E2E envelope).
+pub const PROTOCOL_VERSION: u32 = 4;
 
 /// Minimum protocol version supporting per-channel window flow control.
 pub const PROTOCOL_VERSION_FLOW_CONTROL: u32 = 2;
@@ -96,6 +96,11 @@ pub const PROTOCOL_VERSION_FLOW_CONTROL: u32 = 2;
 /// Minimum protocol version supporting the session control plane (Ctrl frames, federation P2/P3).
 /// A side whose peer is older must silently disable delegation features.
 pub const PROTOCOL_VERSION_DELEGATION: u32 = 3;
+
+/// Minimum protocol version whose relay keeps an entrust registry (en_xxx hints register without
+/// advertised-route validation). An issuer facing an older relay strips entrust hints from its
+/// registration frames (the legacy advertise-derived hints still register).
+pub const PROTOCOL_VERSION_ENTRUST: u32 = 4;
 
 /// Open frame payload: listener -> connector, asking to open a data channel to the target.
 #[derive(Debug, Clone, Serialize, Deserialize)]

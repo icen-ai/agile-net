@@ -42,6 +42,9 @@ pub struct ParsedConnect {
     /// Federation P3: E2E routing hint
     #[serde(default)]
     pub ehint: Option<String>,
+    /// Federation P3 entrust word (en_xxx; preferred over ehint on protocol v4+ entries)
+    #[serde(default)]
+    pub en: Option<String>,
     /// Federation P3 consumer mode (`split` = E2E rule delivery; None = dedicated 专线)
     #[serde(default)]
     pub emode: Option<String>,
@@ -68,6 +71,7 @@ pub fn parse_connect_url(url: &str) -> std::result::Result<ParsedConnect, String
         entries: link.entries,
         entry_fps: link.entry_fps,
         ehint: link.ehint,
+        en: link.en,
         emode: link.emode,
         eadmin: link.eadmin,
     })
@@ -96,6 +100,7 @@ pub fn connect_url_of(c: &Credential) -> String {
             &c.password,
             &entries,
             c.ehint.as_deref(),
+            c.en.as_deref(),
             c.emode.as_deref(),
             c.eadmin,
         );
@@ -146,6 +151,7 @@ mod tests {
             entries: Vec::new(),
             entry_fps: Vec::new(),
             ehint: None,
+            en: None,
             emode: None,
             eadmin: false,
         };
