@@ -11,7 +11,8 @@ pub struct CustomBypassRule {
     /// Route matches via the subscription kernel (fallback upstream) instead of direct; degrades to direct when no subscription fallback
     #[serde(default)]
     pub via_subscription: bool,
-    /// Stable sort key for first-match precedence (user rules 0 before presets 1; ascending, presets always fall behind any narrower user rule).
+    /// Tier key (0 = user rule: beats every merged route; 1 = built-in preset: beats only catch-all
+    /// routes and the default outbound — see ProxyRouter::decide_inbound).
     #[serde(default)]
     pub sort: u8,
 }
@@ -47,14 +48,19 @@ pub(crate) fn apply_custom_rules(
         } else {
             Outbound::Direct
         };
-        router.add_custom_bypass(&b.pattern, outbound);
+        // Two tiers (see ProxyRouter::decide_inbound): user rules (sort 0) beat every merged route;
+        // built-in presets (sort 1, the direct LAN/loopback defaults) beat only catch-all routes
+        // and the default outbound — an account/adopted tunnel rule (10.12.0.0/16) is never
+        // shadowed by a wide preset (10.*). Intra-tier first-match keeps the incoming list order
+        // (the caller sorts ascending by `sort`, stable within a key, in effective_rules).
+        if b.sort == 0 {
+            router.add_custom_bypass(&b.pattern, outbound);
+        } else {
+            router.add_preset_bypass(&b.pattern, outbound);
+        }
     }
-    // First-match precedence comes from the LIST ORDER, which the caller already sorted ascending by
-    // `sort` (user rules 0 before preset direct rules 1) in effective_rules. `add_custom_bypass` pushes
-    // in that order, so a narrow user rule (10.12.* via subscription) resolves before the wide Direct
-    // preset (10.*), and the preset catches everything the user rule falls through. Core-side
-    // sort_custom_bypass_precedence is defense-in-depth for Direct vs non-Direct only; list order here
-    // is the authoritative precedence.
+    // Core-side sort_custom_bypass_precedence is defense-in-depth for Direct vs non-Direct inside
+    // the user tier only; the authoritative precedence is the tier split above plus list order.
 }
 
 #[cfg(test)]
@@ -132,5 +138,47 @@ mod tests {
             router2.custom_bypass_match("a.via-sub.com"),
             Some(Outbound::Direct)
         ));
+    }
+
+    /// Tier split (the adopted-group-unreachable fix): sort 1 presets bake into the preset layer,
+    /// which yields to any narrower explicit route; sort 0 user rules keep beating everything.
+    #[test]
+    fn preset_tier_never_shadows_tunnel_routes() {
+        fn preset(pattern: &str) -> CustomBypassRule {
+            CustomBypassRule {
+                pattern: pattern.into(),
+                via_subscription: false,
+                sort: 1,
+            }
+        }
+        let custom = CustomRules {
+            bypass: vec![preset("10.*"), preset("127.*")],
+            hosts: vec![],
+        };
+        let mut router = ProxyRouter::new();
+        // adopted-group / account rule merged as a tunnel route (what the server pushed)
+        router
+            .add_cidr("10.12.0.0/16", Outbound::tunnel("b@rendezvous"))
+            .unwrap();
+        apply_custom_rules(&mut router, &custom, None);
+
+        // the regression: the 10.* preset must NOT shadow the adopted tunnel route
+        assert!(matches!(
+            router.decide_inbound("10.12.3.4"),
+            Outbound::Tunnel { .. }
+        ));
+        // presets still catch the rest of their range (LAN stays direct)
+        assert!(matches!(router.decide_inbound("10.99.0.1"), Outbound::Direct));
+        assert!(matches!(router.decide_inbound("127.0.0.1"), Outbound::Direct));
+        // a narrower USER bypass (sort 0) still wins its own prefix over the tunnel route
+        router
+            .add_cidr("10.13.0.0/16", Outbound::tunnel("b@rendezvous"))
+            .unwrap();
+        let custom2 = CustomRules {
+            bypass: vec![bypass("10.13.*", false), preset("10.*")],
+            hosts: vec![],
+        };
+        apply_custom_rules(&mut router, &custom2, None);
+        assert!(matches!(router.decide_inbound("10.13.1.1"), Outbound::Direct));
     }
 }

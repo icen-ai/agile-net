@@ -324,3 +324,227 @@ async fn federation_push_pool_adopt_grant() {
     c.stop().await;
     b.stop().await;
 }
+
+// ==================== adopted-group data plane (regression: preset bypass shadowing) ====================
+
+use agile_net_client::{AgileNetClient, ConnectParams, CustomBypassRule, CustomRules, NodeStatus};
+use agile_net_core::proxy::router::Outbound;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+async fn start_echo_server(port: u16) {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
+        .await
+        .unwrap();
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut sock, _)) = listener.accept().await else {
+                break;
+            };
+            tokio::spawn(async move {
+                let mut buf = vec![0u8; 64 * 1024];
+                loop {
+                    match sock.read(&mut buf).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            if sock.write_all(&buf[..n]).await.is_err() {
+                                break;
+                            }
+                        }
+                    }
+                }
+            });
+        }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+}
+
+/// SOCKS5 CONNECT through the client's local proxy; returns whether the echo roundtrip worked.
+async fn socks_echo(proxy_port: u16, target_ip: [u8; 4], target_port: u16, payload: &[u8]) -> bool {
+    let Ok(mut sock) = tokio::net::TcpStream::connect(("127.0.0.1", proxy_port)).await else {
+        return false;
+    };
+    if sock.write_all(&[0x05, 0x01, 0x00]).await.is_err() {
+        return false;
+    }
+    let mut resp = [0u8; 2];
+    if sock.read_exact(&mut resp).await.is_err() || resp != [0x05, 0x00] {
+        return false;
+    }
+    let mut req = vec![0x05, 0x01, 0x00, 0x01];
+    req.extend_from_slice(&target_ip);
+    req.extend_from_slice(&target_port.to_be_bytes());
+    if sock.write_all(&req).await.is_err() {
+        return false;
+    }
+    let mut head = [0u8; 10];
+    if sock.read_exact(&mut head).await.is_err() || head[1] != 0x00 {
+        return false;
+    }
+    if sock.write_all(payload).await.is_err() {
+        return false;
+    }
+    let mut buf = vec![0u8; payload.len()];
+    matches!(
+        tokio::time::timeout(std::time::Duration::from_secs(3), sock.read_exact(&mut buf)).await,
+        Ok(Ok(_))
+    ) && buf == payload
+}
+
+/// Regression (user report): C pushes a group, B adopts it and binds it to account A, yet A could
+/// not reach the group's segments. Root cause: the desktop's built-in direct presets (10.*, 127.*,
+/// …) were baked into the custom bypass layer, which the proxy inbound evaluates BEFORE merged
+/// routes — the wide preset shadowed the adopted group's tunnel route and the traffic went direct.
+/// Fix: presets bake into a weaker tier that yields to any narrower explicit route
+/// (ProxyRouter::decide_inbound).
+#[tokio::test]
+async fn federation_adopted_group_data_plane() {
+    // ---- B: the public rendezvous ----
+    let relay_port = free_port();
+    let (b, _bdir) = boot("b", Some(relay_port)).await;
+    let b_base = format!("http://{}", b.api_addr());
+    let b_token = admin_token(&b_base).await;
+    let http = reqwest::Client::new();
+    let psk = "psk_federation-dataplane-0123456789abcdef";
+    b.db()
+        .create_relay_token_with_quota(
+            &agile_net_node::db::sha256_hex(psk.as_bytes()),
+            "psk_fedp",
+            "for peer-c",
+            false,
+            "full",
+            None,
+            None,
+        )
+        .expect("create relay token");
+
+    // ---- C: group with a loopback CIDR (stands in for C's intra-net segment) + echo server ----
+    let echo_port = free_port();
+    start_echo_server(echo_port).await;
+    let (c, _cdir) = boot("c", None).await;
+    let gid = c.db().create_group("git", "代码组").expect("group").id;
+    let rid = c
+        .db()
+        .create_rule("ip-cidr", "127.0.0.1/32", false, "")
+        .expect("rule")
+        .id;
+    c.db().set_group_rules(&gid, &[rid]).expect("bind");
+    let cid = c
+        .db()
+        .create_connector(
+            "b-rendezvous",
+            &format!("127.0.0.1:{relay_port}"),
+            psk,
+            "fed.test",
+            true,
+            "",
+            "",
+            "",
+            "",
+            None,
+            "fan out to B",
+        )
+        .expect("connector")
+        .id;
+    c.db()
+        .set_connector_push_groups(&cid, &gid)
+        .expect("push groups");
+    c.connector_manager()
+        .upsert_from_db(&cid)
+        .await
+        .expect("upsert");
+
+    // Pushed group rules must converge into B's route table (effective advertise = manual ∪ pushed)
+    let mut c_node = None;
+    for _ in 0..50 {
+        c_node = b
+            .runtime()
+            .listener
+            .as_ref()
+            .and_then(|l| l.resolve_peer("127.0.0.1"));
+        if c_node.is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    let c_node = c_node.expect("pushed group rules must converge into B's route table");
+
+    // ---- B: one-click adoption + account A bound to the adopted group ----
+    let resp = http
+        .post(format!("{b_base}/api/v1/admin/federation/adopt"))
+        .bearer_auth(&b_token)
+        .json(&serde_json::json!({ "node_id": c_node, "group": "git" }))
+        .send()
+        .await
+        .unwrap();
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["code"].as_u64(), Some(0), "adopt: {body}");
+    let adopted_gid = body["data"]["id"].as_str().unwrap().to_string();
+
+    let resp = http
+        .post(format!("{b_base}/api/v1/admin/accounts"))
+        .bearer_auth(&b_token)
+        .json(&serde_json::json!({ "username": "consumer-a", "group_id": adopted_gid, "remark": "" }))
+        .send()
+        .await
+        .unwrap();
+    let status = resp.status();
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(status, 201, "create account: {body}");
+    let password = body["data"]["password"].as_str().unwrap().to_string();
+
+    // ---- A: desktop-equivalent preset seed (built-in direct defaults) + full login flow ----
+    let a = AgileNetClient::new();
+    a.set_custom_rules(CustomRules {
+        bypass: vec![CustomBypassRule {
+            pattern: "127.*".into(),
+            via_subscription: false,
+            sort: 1, // built-in preset tier
+        }],
+        hosts: vec![],
+    });
+    let state = a
+        .connect(ConnectParams {
+            addr: b.api_addr().to_string(),
+            username: "consumer-a".into(),
+            password,
+            insecure: true,
+            pinned_cert_path: None,
+            pinned_fingerprint: None,
+            manage_hosts: false,
+            delegated: false,
+            entries: Vec::new(),
+            entry_fps: Vec::new(),
+            ehint: None,
+            emode: None,
+            eadmin: false,
+        })
+        .await
+        .expect("account connect");
+    assert_eq!(state.status, NodeStatus::Connected);
+    assert!(
+        state.rules.iter().any(|r| r.value == "127.0.0.1/32"),
+        "adopted group rules ride the client config: {:?}",
+        state.rules
+    );
+
+    // The regression assertion: the 127.* preset must not shadow the adopted tunnel route
+    assert!(
+        matches!(
+            a.proxy_router().decide_inbound("127.0.0.1"),
+            Outbound::Tunnel { .. }
+        ),
+        "preset bypass must not shadow the adopted group route"
+    );
+
+    // Data plane: A reaches C's segment through B (ACL pass on B, route to C, C dials locally)
+    a.start_proxy(0).await.unwrap();
+    let proxy_port = a.proxy_port();
+    assert!(
+        socks_echo(proxy_port, [127, 0, 0, 1], echo_port, b"adopted-data-plane").await,
+        "A reaches the adopted group's segment through B -> C"
+    );
+
+    a.disconnect_all().await;
+    c.stop().await;
+    b.stop().await;
+}

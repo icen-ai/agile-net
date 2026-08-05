@@ -42,8 +42,11 @@ pub struct ProxyRouter {
     default: Outbound,
     /// Custom rule layer: hosts mapping (lowercase hostname -> IP; evaluated by local proxy inbound only, see map_host)
     hosts_map: HashMap<String, IpAddr>,
-    /// Custom rule layer: bypass rules (wildcard pattern -> outbound; evaluated by local proxy inbound only, see custom_bypass_match)
+    /// Custom rule layer: user bypass rules (wildcard pattern -> outbound; evaluated by local proxy inbound only, see custom_bypass_match)
     custom_bypass: Vec<(String, Outbound)>,
+    /// Preset bypass layer: built-in direct defaults (loopback/LAN/CGNAT; same wildcard semantics as
+    /// the user bypass layer). Weaker than any narrower explicit route — see decide_inbound.
+    preset_bypass: Vec<(String, Outbound)>,
 }
 
 /// Wildcard match (custom bypass rules; case-insensitive):
@@ -84,6 +87,7 @@ impl ProxyRouter {
             default: Outbound::Direct,
             hosts_map: HashMap::new(),
             custom_bypass: Vec::new(),
+            preset_bypass: Vec::new(),
         }
     }
 
@@ -109,8 +113,9 @@ impl ProxyRouter {
     /// Insert a domain-suffix rule (e.g. "*.dev.internal" or ".dev.internal")
     pub fn add_host_suffix(&mut self, pattern: &str, outbound: Outbound) {
         let mut suffix = pattern.trim_start_matches('*').to_lowercase();
-        // normalize to a leading dot so "internal" cannot match "evilinternal"
-        if !suffix.starts_with('.') {
+        // normalize to a leading dot so "internal" cannot match "evilinternal"; the bare "*"
+        // catch-all keeps the empty suffix (ends_with("") is always true — matches every host)
+        if !suffix.is_empty() && !suffix.starts_with('.') {
             suffix = format!(".{suffix}");
         }
         self.host_suffixes.push((suffix, outbound));
@@ -153,11 +158,12 @@ impl ProxyRouter {
 
     // ==================== Custom rule layer (client GUI custom rules) ====================
     //
-    // Evaluated by local proxy inbound (ProxyInbound) only: the hosts mapping rewrites
-    // the resolve target first (map_host); a bypass hit (custom_bypass_match) beats all
-    // merged routes and the default outbound. route_target / rule_values / matches are
-    // unaware of this layer — the relay connector's fan-in data plane and route
-    // re-advertise are unaffected by local custom rules.
+    // Evaluated by local proxy inbound (ProxyInbound) only, via decide_inbound: the hosts mapping
+    // rewrites the resolve target first (map_host); a user bypass hit (custom_bypass_match) beats
+    // all merged routes and the default outbound; preset bypass rules (preset_bypass_match, the
+    // built-in direct defaults) beat only catch-all routes and the default. route_target /
+    // rule_values / matches are unaware of both layers — the relay connector's fan-in data plane
+    // and route re-advertise are unaffected by local custom rules.
 
     /// Replace the whole hosts mapping (keys must be lowercase hostnames; empty = clear).
     pub fn set_hosts_map(&mut self, map: HashMap<String, IpAddr>) {
@@ -189,6 +195,72 @@ impl ProxyRouter {
             }
         }
         None
+    }
+
+    /// Append a built-in preset bypass rule (same wildcard semantics / first-match as the user layer).
+    pub fn add_preset_bypass(&mut self, pattern: &str, outbound: Outbound) {
+        self.preset_bypass.push((pattern.to_lowercase(), outbound));
+    }
+
+    /// Match preset bypass rules (case-insensitive; input is a bare hostname or IP string, no port).
+    pub fn preset_bypass_match(&self, host: &str) -> Option<&Outbound> {
+        if self.preset_bypass.is_empty() {
+            return None;
+        }
+        let target = host.to_lowercase();
+        for (pattern, outbound) in &self.preset_bypass {
+            if wildcard_match(pattern, &target) {
+                return Some(outbound);
+            }
+        }
+        None
+    }
+
+    /// IP route lookup reporting whether the longest match is a catch-all (0.0.0.0/0 or ::/0).
+    fn route_ip_scoped(&self, ip: IpAddr) -> Option<(&Outbound, bool)> {
+        self.cidr_table
+            .longest_match(ip)
+            .map(|(net, out)| (out, net.is_default_route()))
+    }
+
+    /// Host route lookup reporting whether the match is the catch-all wildcard suffix ("*").
+    fn resolve_host_scoped(&self, host: &str) -> Option<(&Outbound, bool)> {
+        let host_lower = host.to_lowercase();
+        if let Some(outbound) = self.host_exact.get(&host_lower) {
+            return Some((outbound, false));
+        }
+        for (suffix, outbound) in &self.host_suffixes {
+            if host_lower.ends_with(suffix) {
+                // add_host_suffix keeps the bare "*" catch-all as the empty suffix
+                return Some((outbound, suffix.is_empty()));
+            }
+        }
+        None
+    }
+
+    /// Local-proxy inbound decision (single source of the precedence semantics):
+    /// user bypass > narrower explicit route > preset bypass (built-in direct defaults) >
+    /// catch-all route / default outbound.
+    ///
+    /// A preset (e.g. direct `10.*`) yields to any explicit route narrower than catch-all, so an
+    /// account / adopted-group rule (e.g. `10.12.0.0/16` via tunnel) is never shadowed by the
+    /// built-in LAN presets. Catch-all routes (`0.0.0.0/0`, `::/0`, wildcard domain — dedicated
+    /// delegated full-tunnel) still let the presets keep loopback/LAN traffic direct.
+    /// Input is a bare hostname or IP string (no port; hosts mapping is applied by the caller).
+    pub fn decide_inbound(&self, host: &str) -> &Outbound {
+        if let Some(o) = self.custom_bypass_match(host) {
+            return o;
+        }
+        let scoped = if let Ok(ip) = host.parse::<IpAddr>() {
+            self.route_ip_scoped(ip)
+        } else {
+            self.resolve_host_scoped(host)
+        };
+        match scoped {
+            Some((out, false)) => out,
+            Some((out, true)) => self.preset_bypass_match(host).unwrap_or(out),
+            None => self.preset_bypass_match(host).unwrap_or(&self.default),
+        }
     }
 
     /// Stability ordering for the custom bypass layer (called by the client engine after baking):
@@ -306,6 +378,7 @@ impl ProxyRouter {
         self.host_suffixes.clear();
         self.hosts_map.clear();
         self.custom_bypass.clear();
+        self.preset_bypass.clear();
     }
 }
 
@@ -506,6 +579,96 @@ mod tests {
         // would shadow it in pure first-match; the engine bakes user rules first, so this is covered.
         // (The core-side sort helper is a guard for the Direct-vs-Direct case and is exercised by
         // custom_bypass_layer — no assertion here, since first-match semantics are authoritative.)
+    }
+
+    /// Inbound precedence (decide_inbound): user bypass > narrower explicit route > preset bypass >
+    /// catch-all route / default. Regression: a built-in LAN preset (10.*, direct) must not shadow an
+    /// account/adopted-group tunnel rule (10.12.0.0/16) — the "adopted group unreachable" bug.
+    #[test]
+    fn decide_inbound_precedence() {
+        let mut router = ProxyRouter::new();
+        router
+            .add_cidr("10.12.0.0/16", Outbound::tunnel("b@rendezvous"))
+            .unwrap();
+        router.add_preset_bypass("10.*", Outbound::Direct);
+        router.add_preset_bypass("127.*", Outbound::Direct);
+        router.add_custom_bypass("debug.corp", Outbound::Direct);
+
+        // narrower explicit tunnel route beats the wide preset
+        assert!(matches!(
+            router.decide_inbound("10.12.3.4"),
+            Outbound::Tunnel { .. }
+        ));
+        // no explicit route: the preset applies (LAN stays direct)
+        assert!(matches!(router.decide_inbound("10.99.0.1"), Outbound::Direct));
+        // user bypass beats everything (even an explicit tunnel route)
+        router
+            .add_cidr("10.13.0.0/16", Outbound::tunnel("b@rendezvous"))
+            .unwrap();
+        router.add_custom_bypass("10.13.*", Outbound::Direct);
+        assert!(matches!(router.decide_inbound("10.13.1.1"), Outbound::Direct));
+        // user bypass exact-host hit over an unrelated preset
+        assert!(matches!(router.decide_inbound("debug.corp"), Outbound::Direct));
+        // nothing matched anywhere: the default outbound
+        assert!(matches!(router.decide_inbound("8.8.8.8"), Outbound::Direct));
+    }
+
+    /// Catch-all routes (dedicated delegated full-tunnel) still let presets keep LAN/loopback direct.
+    #[test]
+    fn decide_inbound_catch_all_yields_to_presets() {
+        let mut router = ProxyRouter::new();
+        router.add_cidr("0.0.0.0/0", Outbound::tunnel("c@delegated")).unwrap();
+        router.add_host_suffix("*", Outbound::tunnel("c@delegated"));
+        router.add_preset_bypass("127.*", Outbound::Direct);
+        router.add_preset_bypass("10.*", Outbound::Direct);
+        router.add_preset_bypass("*.local", Outbound::Direct);
+
+        // loopback/LAN presets beat the catch-all tunnel route (local services stay reachable)
+        assert!(matches!(router.decide_inbound("127.0.0.1"), Outbound::Direct));
+        assert!(matches!(router.decide_inbound("10.5.6.7"), Outbound::Direct));
+        assert!(matches!(router.decide_inbound("printer.local"), Outbound::Direct));
+        // everything else rides the catch-all tunnel
+        assert!(matches!(
+            router.decide_inbound("8.8.8.8"),
+            Outbound::Tunnel { .. }
+        ));
+        assert!(matches!(
+            router.decide_inbound("example.com"),
+            Outbound::Tunnel { .. }
+        ));
+        // but a narrower route inside a preset range still wins (split mode with fetched rules)
+        router
+            .add_cidr("10.12.0.0/16", Outbound::tunnel("c@delegated"))
+            .unwrap();
+        assert!(matches!(
+            router.decide_inbound("10.12.9.9"),
+            Outbound::Tunnel { .. }
+        ));
+    }
+
+    /// The preset layer overrides the default outbound (subscription fallback) but never an explicit route.
+    #[test]
+    fn decide_inbound_preset_over_default_fallback() {
+        let mut router = ProxyRouter::new();
+        let fallback: SocketAddr = "127.0.0.1:57891".parse().unwrap();
+        router.set_default(Outbound::forward(fallback));
+        router.add_preset_bypass("192.168.*", Outbound::Direct);
+        // LAN → direct (not the subscription kernel)
+        assert!(matches!(
+            router.decide_inbound("192.168.1.1"),
+            Outbound::Direct
+        ));
+        // unmatched → fallback default
+        assert!(matches!(
+            router.decide_inbound("1.1.1.1"),
+            Outbound::Forward { addr } if *addr == fallback
+        ));
+        // the preset layer never enters route_target / rule_values (fan-in data plane unaffected)
+        assert!(matches!(router.route_target("192.168.1.1:80"), Outbound::Forward { .. }));
+        assert!(router.rule_values().iter().all(|v| !v.contains("192.168")));
+        // clear() wipes the preset layer too
+        router.clear();
+        assert!(router.preset_bypass_match("192.168.1.1").is_none());
     }
 
     #[test]

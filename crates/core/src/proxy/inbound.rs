@@ -362,7 +362,7 @@ async fn handle_socks5(
     }
 
     // Custom rule layer (GUI custom rules): the hosts mapping rewrites the resolve target first,
-    // a bypass hit beats all merged routes and the fallback;
+    // then decide_inbound applies the precedence (user bypass > narrower route > preset > default);
     // zero cost when the layer is empty (map_host / custom_bypass_match short-circuit on empty tables)
     let (target_host, outbound) = {
         let router_ref = ctx.router.load();
@@ -370,11 +370,7 @@ async fn handle_socks5(
             Some(ip) => ip.to_string(),
             None => target_host,
         };
-        let outbound = match router_ref.custom_bypass_match(&host) {
-            Some(o) => o.clone(),
-            // host/port already split: route by bare hostname, no "host:port" concat or port stripping
-            None => router_ref.route_host(&host).clone(),
-        };
+        let outbound = router_ref.decide_inbound(&host).clone();
         (host, outbound)
     };
     let target_str = format!("{target_host}:{target_port}");
@@ -562,18 +558,14 @@ async fn handle_http(
     }
 
     // Custom rule layer (GUI custom rules): the hosts mapping rewrites the resolve target first,
-    // a bypass hit beats all merged routes and the fallback
+    // then decide_inbound applies the precedence (user bypass > narrower route > preset > default)
     let (target_host, outbound) = {
         let router_ref = ctx.router.load();
         let host = match router_ref.map_host(&target_host) {
             Some(ip) => ip.to_string(),
             None => target_host,
         };
-        let outbound = match router_ref.custom_bypass_match(&host) {
-            Some(o) => o.clone(),
-            // host/port already split: route by bare hostname, no "host:port" concat or port stripping
-            None => router_ref.route_host(&host).clone(),
-        };
+        let outbound = router_ref.decide_inbound(&host).clone();
         (host, outbound)
     };
     let target_str = format!("{target_host}:{target_port}");
