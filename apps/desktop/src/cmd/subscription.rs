@@ -593,7 +593,7 @@ pub(crate) async fn restore_subscription_role(app: &tauri::AppHandle) {
     let mut tun_mode = tun_mode;
     if tun_mode && !tun::SystemElevation.is_admin() {
         tracing::warn!("persisted TUN mode but process is not elevated — abandoning TUN, restore as normal mode");
-        crate::abandon_tun(&state, "需要管理员权限").await;
+        crate::abandon_tun(app, &state, "需要管理员权限").await;
         tun_mode = false;
     }
     if tun_mode {
@@ -601,10 +601,10 @@ pub(crate) async fn restore_subscription_role(app: &tauri::AppHandle) {
             // wintun missing: background download (user re-enables TUN after it completes); other errors likewise only abandon TUN, not blocking normal-mode restore
             if e.starts_with(subscription::NEED_DOWNLOAD_PREFIX) {
                 let _ = state.dl.start(download::Artifact::Wintun);
-                crate::abandon_tun(&state, "wintun 组件未安装，已转为后台下载").await;
+                crate::abandon_tun(app, &state, "wintun 组件未安装，已转为后台下载").await;
             } else {
                 tracing::error!(error = %e, "failed to ensure wintun for persisted TUN mode");
-                crate::abandon_tun(&state, &format!("wintun 组件不可用（{e}）")).await;
+                crate::abandon_tun(app, &state, &format!("wintun 组件不可用（{e}）")).await;
             }
             tun_mode = false;
         }
@@ -623,7 +623,7 @@ pub(crate) async fn restore_subscription_role(app: &tauri::AppHandle) {
             if tun_mode {
                 // TUN config start failed: abandon TUN and retry once in normal mode
                 tracing::error!(error = %e, "failed to restore kernel with TUN, retrying normal mode");
-                crate::abandon_tun(&state, &format!("启动失败（{e}）")).await;
+                crate::abandon_tun(app, &state, &format!("启动失败（{e}）")).await;
                 match state.kernel.start().await {
                     Ok(()) => {
                         tracing::info!("subscription kernel restored in normal mode after TUN failure");

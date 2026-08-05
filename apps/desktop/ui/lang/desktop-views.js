@@ -33,6 +33,7 @@ AgI18n.register({
   'views.combo-empty': { zh: '尚未创建组合（组合 = 成组启停的命名规则集合）', en: 'No combos yet (a combo is a named set of rules toggled as a group)' },
   'views.combo-members': { zh: '成员 {n} 条', en: '{n} members' },
   'views.combo-no-choices': { zh: '暂无可选规则（先连接扇入或新建放行/映射）', en: 'No rules available (connect a fan-in or add a bypass/mapping first)' },
+  'views.combo-dangling': { zh: '已移除 {n} 条失效引用（原规则已删除）', en: '{n} dangling reference(s) removed (rule deleted)' },
   'views.combo-name-required': { zh: '请填写组合名称', en: 'Enter a combo name' },
   'views.combo-saved': { zh: '组合已保存', en: 'Combo saved' },
   'views.combo-enabled-toast': { zh: '组合已启用（成员规则生效）', en: 'Combo enabled (member rules active)' },
@@ -60,6 +61,7 @@ AgI18n.register({
   'views.fanin-conn': { zh: '{n} 已连接', en: '{n} connected' },
   'views.fanin-saved': { zh: '{n} 个已保存', en: '{n} saved' },
   'views.fanin-trying': { zh: ' · {n} 个连接中/重连中', en: ' · {n} connecting/reconnecting' },
+  'views.fanin-idle-hint': { zh: '点卡片去连接', en: 'click the card to connect' },
   // ---- fan-in list (saved credentials + unsaved live connections) ----
   'views.disconnect': { zh: '断开', en: 'Disconnect' },
   'views.reconnect': { zh: '重连', en: 'Reconnect' },

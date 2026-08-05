@@ -791,6 +791,18 @@
   </div>
 </div>
 
+<!-- Generic confirm modal (DOM-based; window.confirm is unreliable in embedded WebViews) -->
+<div class="modal-mask" id="confirm-modal" style="display:none">
+  <div class="modal">
+    <h3 id="confirm-title"></h3>
+    <div class="hint" id="confirm-desc" style="margin:6px 0 12px"></div>
+    <div class="row" style="justify-content:flex-end;margin-top:14px">
+      <button id="confirm-cancel" class="ghost" data-i18n="common.cancel">取消</button>
+      <button id="confirm-ok" data-i18n="common.ok">确定</button>
+    </div>
+  </div>
+</div>
+
 <!-- About modal -->
 <div class="modal-mask" id="about-modal" style="display:none">
   <div class="modal about-modal">

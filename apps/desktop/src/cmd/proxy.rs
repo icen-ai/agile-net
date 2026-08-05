@@ -222,6 +222,7 @@ pub(crate) async fn proxy_mode_set(
                 roles.save()?;
             }
             crate::report_client_proxy(&state).await;
+            crate::emit_settings(&app, &state).await;
             roles::audit("gui.proxy_mode", serde_json::json!({"mode": mode}));
             Ok(mode)
         }

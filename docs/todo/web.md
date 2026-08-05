@@ -2,7 +2,7 @@
 
 > 审查时点：2026-08-05 · 针对 `apps/desktop/ui/*.js`（app.js / app-core.js / app-views.js / app-subscription.js / app-hero.js / app-logs.js / app-settings.js）与部分命令层（Rust）
 > 性质：业务逻辑缺陷清单，非代码风格审查。按「置信度 × 影响」排序。
-> 状态：部分已修复——逐条核实与修复结果见文末「§8 修复状态（2026-08-05 批次）」。
+> 状态：**全部处理完毕**——逐条核实与修复结果见文末「§8 修复状态（2026-08-05 批次 + 2026-08-06 清零批次）」。
 
 ---
 
@@ -270,3 +270,18 @@ if (HTTP_MODE && !window.confirm(AgI18n.t('views.export-confirm'))) return;
    - 入口：桌面端标题栏指纹 icon 左侧 link icon（`btn-agimport` → `openUniversalImport`）；管理端首页 page-title 行同组件按钮。扇入确认即连，扇出确认入库（桌面 `add_server_connector` / 管理端 POST `/api/v1/admin/connectors`）。
    - 二维码解码底座：`crates/node/src/qr.rs`（rqrr，20MB 上限）+ 管理 API `POST /api/v1/admin/tool/qr-decode`（octet-stream，DefaultBodyLimit 21MB）+ 桌面 `qr_pick_decode` 命令（原生选图 → 同一 decode 函数）；管理端嵌入控制台走 `ag-anet-open` postMessage 桥选文件。
    - **未做**：手机摄像头实时扫码（需 tauri-plugin-barcode-scanner + Android manifest 权限，二维码图片导入已全平台可用，留作后续跟进）。
+
+### 8.3 遗留清单清零批次（2026-08-06）
+
+对 §1.1 / §1.2 / §1.3 / §2.2 / §2.3 / §3.x 逐条处理完毕。
+
+| 条目 | 结论 | 说明 |
+|------|------|------|
+| §1.1 卡片 label 点击穿透 | **核实不成立** | 开关 markup 为 `<label class="switch"><input><span class="slider">`——label 激活产生的两次点击（label/slider 上的真实点击 + input 上的合成点击）均命中 `closest('.switch')` 拦截；dash-grid 内不存在 `.switch` 之外的可误触控件（group-tabs/button/select/a 已在拦截表）。原分析把「`.switch` 已在拦截表」误读为「只拦了 input」，其自给的修复建议（拦 `.switch label, .switch span`）反而比现状更窄 |
+| §1.2 空态中间态 | **已修** | 判空逻辑本身正确（文档亦认同）；真实问题是「有保存未连接」时卡片缺乏下一步引导——扇入卡片副行在该状态下追加「点卡片去连接」提示（`updateDashFanin`，i18n `views.fanin-idle-hint`） |
+| §1.3 `_rolesCache` 不同步 | **已修** | 双管齐下：①Rust 模式/角色变更统一广播 `ag-roles`（`cmd/roles.rs::emit_settings`，挂接 proxy_mode_set / set_tun_mode / abandon_tun），主窗监听即刷 `_rolesCache` + `Hero.renderMode`；②10s 轮询低频 `refreshRolesCache()`（签名守卫）兜底一切遗漏路径（悬浮球与主窗为独立 JS 上下文，事件是唯一即时通道） |
+| §2.2 proxy-sub-desc 双写 | **已修** | 单一写者规则：cached 态归 `refreshGroups`、正常态归 `refreshSubs`（后者仅在 `!PROXY_CACHED` 时写），注释双侧标明 |
+| §2.3 裸 confirm | **已修** | 桌面端新增 DOM 确认模态 `#confirm-modal` + Promise 化 `askConfirm()`（app-settings.js），`exportCred` 改走它——嵌入式 WebView 中 `window.confirm` 可能恒真，明文导出不再依赖原生返回值；全仓桌面侧裸 confirm 清零 |
+| §3.1 combo 预置悬空 | **已修** | `allRuleChoices` 排除 `preset-*`（系统预置非组合成员）；编辑弹窗打开时检测并摘除失效引用，提示「已移除 N 条失效引用」（`views.combo-dangling`） |
+| §3.2 空态双份 + 重绘 | **已修** | `refreshCreds` 尾部不再二次 `invoke('list_nodes')`（复用 `window._nodes`；`refreshNodes` 自行按 cadence 刷新并调 `updateOnboarding`）；`renderCredList` 加签名守卫（creds+statusMap+filter+nodes 相同则跳过全量重绘） |
+| §3.3 server_status ×3 | **已修** | 新增 `serverStatusFresh()`（在途去重 + 1.5s TTL），轮询路径三处调用（refreshAdminEntry / renderDashFanout / refreshServerPanel）收敛为一发；用户操作路径（开关/盲插导入）仍直连求准 |

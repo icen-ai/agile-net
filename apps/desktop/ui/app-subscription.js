@@ -40,9 +40,13 @@ async function refreshSubs() {
   try { SUBS = await invoke('list_subscriptions'); } catch (e) { SUBS = []; }
   const list = $('subs-list');
   const active = SUBS.find(s => s.active);
-  $('proxy-sub-desc').textContent = active
-    ? AgI18n.t('sub.descActive', { name: active.name, n: active.node_count })
-    : AgI18n.t('sub.descActivateFirst');
+  // proxy-sub-desc single-writer rule (web.md §2.2): cached state belongs to refreshGroups,
+  // normal state to refreshSubs — never both in one poll cycle
+  if (!PROXY_CACHED) {
+    $('proxy-sub-desc').textContent = active
+      ? AgI18n.t('sub.descActive', { name: active.name, n: active.node_count })
+      : AgI18n.t('sub.descActivateFirst');
+  }
   updateDashSub();
   if (!SUBS.length) {
     list.innerHTML = '<div class="empty">' + AgI18n.t('sub.emptySubs') + '</div>';
@@ -240,7 +244,7 @@ async function refreshGroups() {
       '<button class="group-tab' + (n === CUR_GROUP ? ' active' : '') + '" data-group-tab="' + esc(n) + '">' + esc(GROUP_LABELS[n] ? AgI18n.t(GROUP_LABELS[n]) : n) + '</button>'
     ).join('');
   }
-  // cached state: read-only display, override desc copy (normal-state copy maintained by refreshSubs)
+  // cached state: read-only display, override desc copy (proxy-sub-desc single-writer rule, web.md §2.2: cached belongs here, normal to refreshSubs)
   if (PROXY_CACHED) setText('proxy-sub-desc', AgI18n.t('sub.cachedDesc'));
   syncSortTabs();
   syncTestUI();

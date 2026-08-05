@@ -20,6 +20,25 @@ function closePwdModal(result) {
   $('pwd-modal').style.display = 'none';
   if (pwdResolver) { const r = pwdResolver; pwdResolver = null; r(result); }
 }
+
+/** Generic Promise confirm modal (web.md §2.3: window.confirm is unreliable / style-inconsistent
+   in embedded WebViews — never trust its return for secrets). */
+let confirmResolver = null;
+function askConfirm(opts) {
+  return new Promise((resolve) => {
+    $('confirm-title').innerHTML = (opts.icon ? AgIcon(opts.icon, 16) + ' ' : '') + esc(opts.title || '');
+    $('confirm-desc').textContent = opts.desc || '';
+    const ok = $('confirm-ok');
+    ok.textContent = opts.okText || AgI18n.t('common.ok');
+    ok.classList.toggle('danger', !!opts.danger);
+    $('confirm-modal').style.display = 'flex';
+    confirmResolver = resolve;
+  });
+}
+function closeConfirmModal(result) {
+  $('confirm-modal').style.display = 'none';
+  if (confirmResolver) { const r = confirmResolver; confirmResolver = null; r(result); }
+}
 function applyClientRole(on) {
   $('role-banner').style.display = on ? 'none' : 'flex';
   const off = $('d-fanin-off');
@@ -27,7 +46,7 @@ function applyClientRole(on) {
 }
 async function refreshServerPanel() {
   let st = null;
-  try { st = await invoke('server_status'); } catch (e) { return; }
+  try { st = await serverStatusFresh(); } catch (e) { return; }
   window._serverStatus = st;
   const on = $('r-server').checked || st.running;
   $('server-panel').style.display = on ? 'block' : 'none';
@@ -127,10 +146,24 @@ function syncNotifyFloatRow() {
   row.style.opacity = fb.checked ? '' : '.5';
   sw.disabled = !fb.checked;
 }
+/* Low-frequency roles refresh (10s tick): converges ANY _rolesCache drift — float ball / tray
+   mode switches (the ag-roles event is the immediate path), CLI writes, missed manual change
+   points. Signature-gated: no re-render when unchanged (web.md §1.3). */
+async function refreshRolesCache() {
+  if (HTTP_MODE) return;
+  let settings = null;
+  try { settings = await invoke('get_role_settings'); } catch (e) { return; }
+  const sig = JSON.stringify(settings);
+  if (sig === window._rolesSig) return;
+  window._rolesSig = sig;
+  window._rolesCache = settings;
+  if (window.Hero && Hero.renderMode) Hero.renderMode();
+}
 async function initRoles() {
   let settings = { client: true, server: false, web: false, web_listen: '127.0.0.1:59291' };
   try { settings = await invoke('get_role_settings'); } catch (e) {}
   window._rolesCache = settings; // Data source for the Hero current-mode summary (system_proxy/tun_mode/sub_mode; updated at each change point, never re-fetched)
+  window._rolesSig = JSON.stringify(settings);
   $('r-client').checked = settings.client;
   $('r-server').checked = settings.server;
   $('d-server').checked = settings.server;
@@ -264,6 +297,8 @@ async function initRoles() {
   };
 
   $('pwd-cancel').onclick = () => closePwdModal(null);
+  $('confirm-cancel').onclick = () => closeConfirmModal(false);
+  $('confirm-ok').onclick = () => closeConfirmModal(true);
   $('pwd-ok').onclick = () => {
     const user = $('pwd-user').value.trim();
     const p1 = $('pwd-pass').value, p2 = $('pwd-pass2').value;

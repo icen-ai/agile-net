@@ -8,7 +8,7 @@ use crate::floatball;
 use agile_net_node::service::NodeServer;
 use serde::Serialize;
 use std::sync::Arc;
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
 
 /// Enable/disable autostart on boot
 #[tauri::command]
@@ -48,6 +48,14 @@ pub struct ServerStatus {
 #[tauri::command]
 pub(crate) async fn get_role_settings(state: State<'_, AppState>) -> Result<RoleSettings, String> {
     Ok(state.roles.lock().await.clone())
+}
+
+/// Broadcast the current role settings to every window (`ag-roles`; float-ball / tray mode
+/// switches must converge the main window's `_rolesCache` immediately, not on the next poll —
+/// web.md §1.3). Fire-and-forget: no listener is required for correctness.
+pub(crate) async fn emit_settings(app: &tauri::AppHandle, state: &State<'_, AppState>) {
+    let settings = state.roles.lock().await.clone();
+    let _ = app.emit("ag-roles", settings);
 }
 
 /// Toggle A: client role. Disabling disconnects all nodes and stops the local proxy.
@@ -349,7 +357,7 @@ pub struct TunStatus {
 
 /// Unified fallback for abandoning a TUN enable: persist toggle off + audit + one-shot notice.
 /// Semantics (per user request): TUN is an independent option; quietly abandon on privilege/start failure, never affecting other features.
-pub(crate) async fn abandon_tun(state: &State<'_, AppState>, reason: &str) {
+pub(crate) async fn abandon_tun(app: &tauri::AppHandle, state: &State<'_, AppState>, reason: &str) {
     {
         let mut roles = state.roles.lock().await;
         roles.tun_mode = false;
@@ -359,6 +367,7 @@ pub(crate) async fn abandon_tun(state: &State<'_, AppState>, reason: &str) {
     *state.tun_notice.lock().await = Some(format!(
         "TUN 已放弃开启：{reason}（已回退普通模式，不影响其它功能）"
     ));
+    emit_settings(app, state).await;
 }
 
 pub(crate) async fn tun_status_of(state: &State<'_, AppState>) -> TunStatus {
@@ -459,12 +468,13 @@ pub(crate) async fn set_tun_mode(
             Err(e) => Err(e),
         };
         if let Err(e) = start_result {
-            abandon_tun(&state, &format!("启动失败（{e}）")).await;
+            abandon_tun(&app, &state, &format!("启动失败（{e}）")).await;
             // After rollback, try restarting the kernel in normal mode so the subscription role stays usable
             let _ = state.kernel.start().await;
             crate::apply_proxy_fallback(&state).await;
             return Err(format!("TUN 开启失败，已回退普通模式: {e}"));
         }
+        emit_settings(&app, &state).await;
     } else {
         {
             let mut roles = state.roles.lock().await;
@@ -484,6 +494,7 @@ pub(crate) async fn set_tun_mode(
             let server = crate::expected_sysproxy(&state);
             let _ = tokio::task::spawn_blocking(move || sysproxy::engage(&server)).await;
         }
+        emit_settings(&app, &state).await;
     }
     Ok(tun_status_of(&state).await)
 }

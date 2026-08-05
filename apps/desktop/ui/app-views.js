@@ -2,6 +2,16 @@
 /* Split from app.js: fan-in/fan-out/rules/custom rules/combos/admin console/proxy control/dashboard cards (pure move, zero logic change) */
 
 /* ================= Empty state guide ================= */
+/* server_status coalescing (web.md §3.3): the 10s tick fans one invoke out to every consumer
+   (refreshAdminEntry / renderDashFanout / refreshServerPanel) — in-flight dedup + 1.5s TTL.
+   User-action paths (toggles, universal import) call invoke('server_status') directly. */
+let _ssCache = { t: 0, p: null };
+function serverStatusFresh() {
+  const now = Date.now();
+  if (_ssCache.p && now - _ssCache.t < 1500) return _ssCache.p;
+  _ssCache = { t: now, p: invoke('server_status') };
+  return _ssCache.p;
+}
 function updateOnboarding(nodes) {
   // no active connections and no saved fan-in = empty state: show only the connect guide; show dashboard card grid once data exists
   const empty = (!nodes || nodes.length === 0) && !(window._credsRaw || []).length;
@@ -349,14 +359,26 @@ function comboEditOpen(c) {
   $('ce-search').value = '';
   $('ce-err').textContent = '';
   renderComboEditList('');
+  // web.md §3.1: surface dangling member references (e.g. a deleted preset) instead of silently ignoring them
+  const known = new Set(allRuleChoices().map(it => it.key));
+  const dangling = [...CE_MEMBERS].filter(k => !known.has(k));
+  if (dangling.length) {
+    dangling.forEach(k => CE_MEMBERS.delete(k));
+    $('ce-err').textContent = AgI18n.t('views.combo-dangling', { n: dangling.length });
+    renderComboEditList('');
+  }
   $('combo-edit-modal').style.display = 'flex';
   $('ce-name').focus();
 }
-/* Compact list of all rules (custom + pulled; system hosts read-only, not selectable; pulled deduped by key across endpoints) */
+/* Compact list of all rules (custom + pulled; system hosts read-only, not selectable; pulled deduped by key across endpoints;
+   built-in presets excluded — they are system defaults, not combo members (web.md §3.1) */
 function allRuleChoices() {
   const out = [];
   const c = window._custom || { bypass: [], hosts: [] };
-  (c.bypass || []).forEach(r => out.push({ key: r.id, badge: AgI18n.t('views.rule-bypass'), cls: 'b-ok', value: r.pattern, source: AgI18n.t('views.src-custom') }));
+  (c.bypass || []).forEach(r => {
+    if (String(r.id).startsWith('preset-')) return;
+    out.push({ key: r.id, badge: AgI18n.t('views.rule-bypass'), cls: 'b-ok', value: r.pattern, source: AgI18n.t('views.src-custom') });
+  });
   (c.hosts || []).forEach(r => {
     if (r.source !== 'system') out.push({ key: r.id, badge: AgI18n.t('views.rule-map'), cls: 'b-gray', value: r.hostname + ' → ' + r.ip, source: AgI18n.t('views.src-custom') });
   });
@@ -635,7 +657,7 @@ function adminNavActivate(v) {
 async function refreshAdminEntry() {
   const items = [];
   try {
-    const st = await invoke('server_status');
+    const st = await serverStatusFresh();
     if (st && st.running) items.push({ kind: 'local', label: AgI18n.t('views.admin-local'), sub: AgI18n.t('views.admin-local-sub') });
   } catch (e) {}
   const nodes = window._nodes || [];
@@ -843,7 +865,9 @@ function updateDashFanin() {
   const conn = nodes.filter(n => n.status === 'Connected').length;
   const trying = nodes.length - conn;
   setText('d-fanin-val', AgI18n.t('views.fanin-conn', { n: conn }));
-  setText('d-fanin-sub', AgI18n.t('views.fanin-saved', { n: saved }) + (trying ? AgI18n.t('views.fanin-trying', { n: trying }) : ''));
+  // saved-but-idle middle state (web.md §1.2): guide the next step instead of a hollow-looking card
+  const idleHint = (conn === 0 && saved > 0) ? ' · ' + AgI18n.t('views.fanin-idle-hint') : '';
+  setText('d-fanin-sub', AgI18n.t('views.fanin-saved', { n: saved }) + (trying ? AgI18n.t('views.fanin-trying', { n: trying }) : '') + idleHint);
   const tf = window._tfTotals || { up: 0, down: 0 };
   const has = tf.up + tf.down > 0;
   const tfEl = $('d-fanin-tf'), sparkEl = $('d-fanin-spark');
@@ -864,7 +888,8 @@ async function refreshCreds() {
     window._credsRaw = creds;
     window._creds = Object.fromEntries(creds);
     renderCredList(creds, window._nodeStatus || {});
-    invoke('list_nodes').then(nodes => updateOnboarding(nodes)).catch(() => {});
+    // web.md §3.2: reuse the cached nodes — refreshNodes already re-fetches on its own cadence
+    updateOnboarding(window._nodes || []);
     updateDashFanin();
   } catch (e) {}
 }
@@ -882,6 +907,10 @@ function renderCredList(creds, statusMap) {
   const shownCreds = creds.filter(([key, c]) =>
     match(key.includes('@') ? key.slice(0, key.indexOf('@')) : key, c.username, c.addr, statusMap[key]));
   const shownUnsaved = unsaved.filter(n => match(n.node_name, n.username, n.addr, n.status));
+  // web.md §3.2: signature guard — identical inputs skip the full DOM rebuild (10s poll stability)
+  const sig = JSON.stringify([creds, statusMap, f, window._nodes || []]);
+  if (list.dataset.sig === sig) return;
+  list.dataset.sig = sig;
   if (!shownCreds.length && !shownUnsaved.length) {
     list.innerHTML = '<div class="empty">' + (f ? AgI18n.t('views.no-match') : T('no-creds')) + '</div>';
     return;
@@ -943,7 +972,8 @@ async function reconnectSaved(key, btn) {
 }
 async function exportCred(key) {
   // credential export contains plaintext password: Web remote panel requires a second confirmation
-  if (HTTP_MODE && !window.confirm(AgI18n.t('views.export-confirm'))) return;
+  // (DOM modal — window.confirm is unreliable in embedded WebViews and must never gate secrets)
+  if (HTTP_MODE && !(await askConfirm({ title: AgI18n.t('views.export-title'), desc: AgI18n.t('views.export-confirm'), icon: 'share-2', danger: true }))) return;
   try {
     const url = await invoke('export_credential', { key });
     await navigator.clipboard.writeText(url);
@@ -1132,7 +1162,7 @@ function initUpstreams() {
 async function renderDashFanout() {
   if (HTTP_MODE) return;
   let st = null, conns = [];
-  try { st = await invoke('server_status'); } catch (e) {}
+  try { st = await serverStatusFresh(); } catch (e) {}
   try { conns = await invoke('list_server_connectors'); } catch (e) {}
   const running = !!(st && st.running);
   const total = conns.length;

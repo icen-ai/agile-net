@@ -227,6 +227,14 @@ window.addEventListener('DOMContentLoaded', async () => {
         } catch (err) { toast(friendlyError(err), 'err'); }
       }
     });
+    // Role settings broadcast (float ball / tray mode switches): converge _rolesCache at once
+    // instead of waiting for the 10s poll (web.md §1.3; emit ag-roles from the Rust setters)
+    TAURI.event.listen('ag-roles', (e) => {
+      if (!e.payload) return;
+      window._rolesCache = e.payload;
+      window._rolesSig = JSON.stringify(e.payload);
+      if (window.Hero && Hero.renderMode) Hero.renderMode();
+    });
   }
   $('link-paste').onclick = pasteFromClipboard;
   $('link-manual').onclick = () => { switchView('nodes'); toggleManual(true); };
@@ -328,7 +336,7 @@ window.addEventListener('DOMContentLoaded', async () => {
 
   /* ---- Main-window poll scheduling: pause the three timers while the window is hidden, resume and refresh immediately when visible (same visibilitychange pattern as tray/float ball) ---- */
   let mainT10 = 0, mainT2 = 0, mainT30 = 0;
-  function mainTick10s() { refreshNodes(); refreshProxy(); refreshSubStatus(); refreshSysproxy(); refreshTun(); renderDashFanout(); refreshCustomRules(); refreshCombos(); Hero.tick10s(); }
+  function mainTick10s() { refreshNodes(); refreshProxy(); refreshSubStatus(); refreshSysproxy(); refreshTun(); renderDashFanout(); refreshCustomRules(); refreshCombos(); Hero.tick10s(); refreshRolesCache(); }
   // 2s poll of subscription kernel traffic + artifact download state (sub_traffic reads an Atomic snapshot, dl_state reads in-memory state — cheap; internal change detection avoids repaints)
   function mainTick2s() { SubTraffic.poll(); pollDl(); }
   // 30s poll of the egress IP probe (results signature-compared, no repaint when unchanged)

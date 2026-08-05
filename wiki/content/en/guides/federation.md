@@ -66,9 +66,11 @@ Once a group is marked end-to-end encrypted:
 - Every access to its targets must arrive E2E-sealed — a plaintext Open hitting the group is
   refused by C (fail-close: a flag-stripping attack degrades to denial of service, never to
   plaintext).
-- Coarse advertisement + local fine-grained grants: C advertises only a coarse routing hint
-  to B; fine rules (e.g. one exact database address) live in a local-only group that is never
-  pushed — B stays oblivious while A reaches them through the grant.
+- **Entrust zero-disclosure routing (v4+)**: E2E tokens automatically carry an opaque
+  `en_<token-hash prefix>` routing word — issuance **no longer requires** pushed groups or
+  advertised routes: B only ever learns `en_xxx → C`, never a group name, a rule, or a subnet.
+  Compatibility: when the effective advertise set is non-empty a legacy hint rides along as
+  the fallback (new peers prefer `en`, older peers fall back to `ehint`).
 
 ## Consumer side (A)
 
@@ -86,6 +88,10 @@ Import the link (paste / .anet file / anet:// deep link) and connect:
 - Delegated tokens **live with the fan-out session**: when C goes offline the token lapses
   on every upstream (A couldn't reach C's resources anyway); on reconnect C re-registers
   automatically. Relays persist nothing.
+- **Optional expiry & usage caps**: issuance accepts `expires_at` / `max_uses` (unlimited by
+  default); once expired or exhausted the registration sync stops offering the token (the
+  list shows expired/exhausted) and the issuer's data plane refuses it outright. Fan-in
+  tokens and client accounts (tunnel tokens) support the same optional validity window.
 - Revocation = C deletes the local record and sends a revoke frame to every online upstream;
   offline upstreams lapse by disconnect.
 - A second session with the same node identity kicks the stale one (tolerates restart
