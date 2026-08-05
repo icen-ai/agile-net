@@ -14,7 +14,8 @@ use rusqlite::params;
 impl Database {
     /// Insert a delegated token (hash + prefix + encrypted E2E key prepared by the caller).
     /// `groups_json` = JSON array of local group IDs; `hint_map_json` = JSON array of {hint, groups};
-    /// `mode` = consumer mode (`dedicated` 专线 / `split` 分流).
+    /// `mode` = consumer mode (`dedicated` 专线 / `split` 分流);
+    /// `expires_at`/`max_uses` = token lifecycle window (None = never expires / unlimited).
     #[allow(clippy::too_many_arguments)]
     pub fn create_delegated_token(
         &self,
@@ -26,14 +27,17 @@ impl Database {
         e2e_key_enc: &str,
         mode: &str,
         admin_scope: &str,
+        expires_at: Option<&str>,
+        max_uses: Option<i64>,
     ) -> Result<DelegatedTokenRecord> {
+        let max_uses = max_uses.filter(|v| *v > 0);
         let conn = self.conn();
         let id = uuid::Uuid::new_v4().to_string();
         let now = now_rfc3339();
         conn.execute(
-            "INSERT INTO delegated_token (id, token_hash, token_prefix, label, groups, hint_map, e2e_key_enc, mode, admin_scope, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-            params![id, token_hash, token_prefix, label, groups_json, hint_map_json, e2e_key_enc, mode, admin_scope, now],
+            "INSERT INTO delegated_token (id, token_hash, token_prefix, label, groups, hint_map, e2e_key_enc, mode, admin_scope, expires_at, max_uses, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            params![id, token_hash, token_prefix, label, groups_json, hint_map_json, e2e_key_enc, mode, admin_scope, expires_at, max_uses, now],
         )
         .map_err(db_err)?;
         Ok(DelegatedTokenRecord {
@@ -46,9 +50,51 @@ impl Database {
             e2e_key_enc: e2e_key_enc.to_string(),
             mode: mode.to_string(),
             admin_scope: admin_scope.to_string(),
+            expires_at: expires_at.map(|s| s.to_string()),
+            max_uses,
+            used_count: 0,
             created_at: now,
             regs: Vec::new(),
         })
+    }
+
+    /// Count one data-plane open against the token's usage cap (issuer-side, best effort).
+    pub fn bump_delegated_token_use(&self, id: &str) -> Result<()> {
+        let conn = self.conn();
+        conn.execute(
+            "UPDATE delegated_token SET used_count = used_count + 1 WHERE id = ?1",
+            params![id],
+        )
+        .map_err(db_err)?;
+        Ok(())
+    }
+
+    /// Set the lifecycle window of a delegated token (None = never expires / unlimited).
+    pub fn set_delegated_token_lifecycle(
+        &self,
+        id: &str,
+        expires_at: Option<&str>,
+        max_uses: Option<i64>,
+    ) -> Result<()> {
+        let max_uses = max_uses.filter(|v| *v > 0);
+        let conn = self.conn();
+        conn.execute(
+            "UPDATE delegated_token SET expires_at = ?1, max_uses = ?2 WHERE id = ?3",
+            params![expires_at, max_uses, id],
+        )
+        .map_err(db_err)?;
+        Ok(())
+    }
+
+    /// Persist the usage counter (absolute set; the engine flushes on cache rebuild).
+    pub fn set_delegated_token_used(&self, id: &str, used_count: i64) -> Result<()> {
+        let conn = self.conn();
+        conn.execute(
+            "UPDATE delegated_token SET used_count = ?1 WHERE id = ?2",
+            params![used_count, id],
+        )
+        .map_err(db_err)?;
+        Ok(())
     }
 
     /// All delegated tokens with their disaster-set registration rows (creation order, newest first).
@@ -56,7 +102,7 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn
             .prepare(
-                "SELECT id, token_hash, token_prefix, label, groups, hint_map, e2e_key_enc, mode, admin_scope, created_at
+                "SELECT id, token_hash, token_prefix, label, groups, hint_map, e2e_key_enc, mode, admin_scope, expires_at, max_uses, used_count, created_at
                  FROM delegated_token ORDER BY created_at DESC",
             )
             .map_err(db_err)?;
@@ -79,7 +125,7 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn
             .prepare(
-                "SELECT id, token_hash, token_prefix, label, groups, hint_map, e2e_key_enc, mode, admin_scope, created_at
+                "SELECT id, token_hash, token_prefix, label, groups, hint_map, e2e_key_enc, mode, admin_scope, expires_at, max_uses, used_count, created_at
                  FROM delegated_token WHERE id = ?1",
             )
             .map_err(db_err)?;
@@ -153,7 +199,7 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn
             .prepare(
-                "SELECT t.id, t.token_hash, t.token_prefix, t.label, t.groups, t.hint_map, t.e2e_key_enc, t.mode, t.admin_scope, t.created_at
+                "SELECT t.id, t.token_hash, t.token_prefix, t.label, t.groups, t.hint_map, t.e2e_key_enc, t.mode, t.admin_scope, t.expires_at, t.max_uses, t.used_count, t.created_at
                  FROM delegated_token t
                  JOIN delegated_token_reg r ON r.token_id = t.id
                  WHERE r.connector_id = ?1
@@ -178,7 +224,7 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn
             .prepare(
-                "SELECT id, token_hash, token_prefix, label, groups, hint_map, e2e_key_enc, mode, admin_scope, created_at
+                "SELECT id, token_hash, token_prefix, label, groups, hint_map, e2e_key_enc, mode, admin_scope, expires_at, max_uses, used_count, created_at
                  FROM delegated_token WHERE substr(token_hash, 1, 8) = ?1",
             )
             .map_err(db_err)?;
@@ -202,7 +248,10 @@ fn map_delegated_row(r: &rusqlite::Row) -> rusqlite::Result<DelegatedTokenRecord
         e2e_key_enc: r.get(6)?,
         mode: r.get(7)?,
         admin_scope: r.get(8)?,
-        created_at: r.get(9)?,
+        expires_at: r.get("expires_at")?,
+        max_uses: r.get("max_uses")?,
+        used_count: r.get("used_count")?,
+        created_at: r.get("created_at")?,
         regs: Vec::new(),
     })
 }
@@ -218,7 +267,7 @@ mod tests {
     }
 
     fn mk_token(db: &Database, hash: &str, label: &str) -> DelegatedTokenRecord {
-        db.create_delegated_token(hash, "psk_test01", label, "[\"g1\",\"g2\"]", "[{\"hint\":\"*.internal\",\"groups\":[\"git\"]}]", "v1:AAAA:BBBB", "split", "full")
+        db.create_delegated_token(hash, "psk_test01", label, "[\"g1\",\"g2\"]", "[{\"hint\":\"*.internal\",\"groups\":[\"git\"]}]", "v1:AAAA:BBBB", "split", "full", None, None)
             .expect("create delegated token")
     }
 

@@ -353,6 +353,24 @@ const MIGRATIONS: &[(u32, &str, &str)] = &[
     PRAGMA foreign_keys=ON;
     "#,
     ),
+    (
+        15,
+        "token_lifecycle",
+        r#"
+    -- Token lifecycle (docs/todo/e2e.md §8): optional expiry / usage caps for every token type.
+    -- NULL = never expires / unlimited — all existing tokens stay unrestricted (backward compatible).
+    -- relay_token:  expires_at (ISO datetime) + max_uses / used_count (successful fan-in auths)
+    -- delegated_token: expires_at + max_uses / used_count (data-plane opens, counted on the issuer)
+    -- account: tunnel_expires_at (tunnel token validity window; password login unaffected)
+    ALTER TABLE relay_token ADD COLUMN expires_at TEXT;
+    ALTER TABLE relay_token ADD COLUMN max_uses INTEGER;
+    ALTER TABLE relay_token ADD COLUMN used_count INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE delegated_token ADD COLUMN expires_at TEXT;
+    ALTER TABLE delegated_token ADD COLUMN max_uses INTEGER;
+    ALTER TABLE delegated_token ADD COLUMN used_count INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE account ADD COLUMN tunnel_expires_at TEXT;
+    "#,
+    ),
 ];
 
 impl Database {
@@ -695,7 +713,7 @@ mod tests {
             db.set_group_e2e_required("g-old", true).expect("free group can be marked");
 
             let tok = db
-                .create_delegated_token(&"ab".repeat(32), "psk_test01", "legacy-issue", "[]", "[]", "v1:AAAA:CCCC", "dedicated", "")
+                .create_delegated_token(&"ab".repeat(32), "psk_test01", "legacy-issue", "[]", "[]", "v1:AAAA:CCCC", "dedicated", "", None, None)
                 .expect("create delegated token");
             assert_eq!(tok.mode, "dedicated");
             db.set_delegated_token_regs(&tok.id, &[("conn-old".to_string(), true)])

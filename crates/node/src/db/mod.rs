@@ -21,6 +21,7 @@ mod pool;
 mod rules;
 
 pub use pool::Database;
+pub use pool::{expiry_active, normalize_expiry, uses_exhausted};
 
 use agile_net_core::error::{Error, Result};
 use argon2::{

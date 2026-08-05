@@ -456,6 +456,17 @@ impl ConnectorManager {
                         if live.contains_key(&rec.id) {
                             continue;
                         }
+                        // token lifecycle: an expired/exhausted token is never offered upstream
+                        // (state surfaced in the delegation UI; the engine's in-session gate
+                        // refuses its opens as the backstop)
+                        if !crate::db::expiry_active(rec.expires_at.as_deref()) {
+                            states.insert((rec.id.clone(), connector_id.clone()), "expired".into());
+                            continue;
+                        }
+                        if crate::db::uses_exhausted(rec.max_uses, rec.used_count) {
+                            states.insert((rec.id.clone(), connector_id.clone()), "exhausted".into());
+                            continue;
+                        }
                         let msg = build_register_msg(&db, &rec);
                         // an older relay keeps no entrust registry — strip the opaque en_ words
                         // so the rest of the hint map still registers (legacy advertise-derived

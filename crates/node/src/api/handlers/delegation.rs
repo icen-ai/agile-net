@@ -6,6 +6,7 @@
 //! as that session — the plaintext is returned once at issuance, inside the share link.
 
 use super::audit;
+use super::lifecycle_status;
 use crate::api::extractors::{AdminAuth, ClientIp};
 use crate::api::{ApiState, codes, err, ok, ok_created};
 use crate::db::models::DelegatedTokenRecord;
@@ -71,6 +72,12 @@ pub struct IssueRequest {
     /// management of discovered upstreams. Requires at least one e2e_required group.
     #[serde(default)]
     pub admin_scope: String,
+    /// Token lifecycle (optional): validity window (RFC3339 or YYYY-MM-DDTHH:MM; empty = never)
+    #[serde(default)]
+    pub expires_at: String,
+    /// Token lifecycle (optional): max data-plane opens (0/absent = unlimited)
+    #[serde(default)]
+    pub max_uses: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -105,6 +112,25 @@ pub async fn issue_token(
     }
     if !["", "ro", "rules", "full"].contains(&req.admin_scope.as_str()) {
         return err(StatusCode::BAD_REQUEST, codes::VALIDATION_FAILED, "管理授权档位只能是 ro / rules / full");
+    }
+    // token lifecycle (optional): normalize the expiry to the canonical UTC form; a past
+    // expiry is rejected at issuance instead of dying silently on first use
+    let expires_at = if req.expires_at.trim().is_empty() {
+        None
+    } else {
+        match crate::db::normalize_expiry(&req.expires_at) {
+            Ok(v) => {
+                if !crate::db::expiry_active(Some(&v)) {
+                    return err(StatusCode::BAD_REQUEST, codes::VALIDATION_FAILED, "过期时间不能早于当前时间");
+                }
+                Some(v)
+            }
+            Err(msg) => return err(StatusCode::BAD_REQUEST, codes::VALIDATION_FAILED, msg),
+        }
+    };
+    let max_uses = req.max_uses;
+    if max_uses.is_some_and(|v| v <= 0) {
+        return err(StatusCode::BAD_REQUEST, codes::VALIDATION_FAILED, "用量上限必须为正整数");
     }
 
     // federation P3 entrust mode: every E2E token automatically carries its opaque entrust word
@@ -186,10 +212,24 @@ pub async fn issue_token(
                 .map_err(|e| agile_net_core::error::Error::Other(e.to_string()))
         })
         .await;
-    let (rec, plaintext) = match issued {
+    let (mut rec, plaintext) = match issued {
         Ok(v) => v,
         Err(e) => return err(StatusCode::BAD_REQUEST, codes::VALIDATION_FAILED, e.to_string()),
     };
+
+    // token lifecycle: apply the optional window right after issuance (the registration sync
+    // polls on a 2s tick, so the follow-up update always lands before any registration)
+    if expires_at.is_some() || max_uses.is_some() {
+        let (rec_id, exp, mu) = (rec.id.clone(), expires_at.clone(), max_uses);
+        let applied = state
+            .db_call(move |db| db.set_delegated_token_lifecycle(&rec_id, exp.as_deref(), mu))
+            .await;
+        if let Err(e) = applied {
+            return err(StatusCode::INTERNAL_SERVER_ERROR, codes::INTERNAL, e.to_string());
+        }
+        rec.expires_at = expires_at.clone();
+        rec.max_uses = max_uses.filter(|v| *v > 0);
+    }
 
     // warm the enforcement caches immediately (the group may have been created seconds ago,
     // ahead of the config_version watcher tick); session registration rides the connector sync task
@@ -324,6 +364,11 @@ fn token_json(
         "hint_map": serde_json::from_str::<Vec<HintEntry>>(&rec.hint_map).unwrap_or_default(),
         "regs": regs,
         "created_at": rec.created_at,
+        "expires_at": rec.expires_at,
+        "max_uses": rec.max_uses,
+        "used_count": rec.used_count,
+        // token lifecycle status: active | expiring (<72h) | expired | exhausted
+        "lifecycle": lifecycle_status(rec.expires_at.as_deref(), rec.max_uses, rec.used_count),
     });
     if let Some((plaintext, share_url)) = issued {
         v["token"] = json!(plaintext);

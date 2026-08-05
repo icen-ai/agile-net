@@ -70,6 +70,9 @@ pub struct AccountRecord {
     pub online: bool,
     #[serde(default)]
     pub last_seen_at: Option<String>,
+    /// Tunnel token validity window (None = never expires; password login unaffected)
+    #[serde(default)]
+    pub tunnel_expires_at: Option<String>,
     pub remark: String,
     pub created_at: String,
     pub updated_at: String,
@@ -96,6 +99,15 @@ pub struct RelayTokenRecord {
     /// Bandwidth quota (KB/s; None = unlimited)
     #[serde(default)]
     pub rate_limit_kbps: Option<i64>,
+    /// Validity window (None = never expires)
+    #[serde(default)]
+    pub expires_at: Option<String>,
+    /// Usage cap: max successful fan-in auths (None = unlimited)
+    #[serde(default)]
+    pub max_uses: Option<i64>,
+    /// Successful auths so far
+    #[serde(default)]
+    pub used_count: i64,
     pub last_used_at: Option<String>,
     pub created_at: String,
 }
@@ -250,6 +262,15 @@ pub struct DelegatedTokenRecord {
     /// E2E admin channel (full additionally unlocks transit management of upstreams)
     #[serde(default)]
     pub admin_scope: String,
+    /// Validity window (None = never expires)
+    #[serde(default)]
+    pub expires_at: Option<String>,
+    /// Usage cap: max data-plane opens (None = unlimited; counted on the issuer)
+    #[serde(default)]
+    pub max_uses: Option<i64>,
+    /// Opens served so far
+    #[serde(default)]
+    pub used_count: i64,
     pub created_at: String,
     /// Disaster-set registration rows (one per upstream connector)
     #[serde(default)]

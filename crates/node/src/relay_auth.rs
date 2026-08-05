@@ -150,6 +150,12 @@ impl TokenValidator for DbTokenValidator {
                     if !account.enabled {
                         return None;
                     }
+                    // token lifecycle: a tunnel token past its validity window is rejected like
+                    // an unknown token (the password login path is unaffected; the client learns
+                    // on its next API login and re-auths)
+                    if !crate::db::expiry_active(account.tunnel_expires_at.as_deref()) {
+                        return None;
+                    }
                     // Load all rules of the account's group as the data-plane ACL.
                     let rules = self.db.rules_of_account(&account.id).ok()?;
                     let mut acl: Vec<String> = rules.into_iter().map(|r| r.value).collect();
@@ -371,5 +377,59 @@ mod tests {
         };
         assert_eq!(account_id, acc.id);
         assert!(delegated.is_none());
+    }
+
+    #[test]
+    fn relay_token_lifecycle_rejected() {
+        let db = Database::in_memory().unwrap();
+        let token = "psk_lifecycle-token";
+        let rec = db
+            .create_relay_token_with_quota(&sha256_hex(token.as_bytes()), "psk_life", "", false, "full", None, None)
+            .unwrap();
+
+        // expired window -> auth rejects it like an unknown token
+        db.set_relay_token_lifecycle(&rec.id, Some("2020-01-01T00:00:00Z"), None)
+            .unwrap();
+        assert!(DbTokenValidator::new(db.clone()).validate(&node_auth(token)).is_none());
+
+        // future window -> alive again
+        let future = (chrono::Utc::now() + chrono::Duration::hours(1))
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        db.set_relay_token_lifecycle(&rec.id, Some(&future), None).unwrap();
+        assert!(DbTokenValidator::new(db.clone()).validate(&node_auth(token)).is_some());
+
+        // usage cap: max_uses = 1 with one auth already counted -> exhausted
+        db.set_relay_token_lifecycle(&rec.id, None, Some(1)).unwrap();
+        assert!(DbTokenValidator::new(db.clone()).validate(&node_auth(token)).is_none());
+
+        // cleared window + higher cap -> alive (one use remains, then exhausts)
+        db.set_relay_token_lifecycle(&rec.id, None, Some(2)).unwrap();
+        assert!(DbTokenValidator::new(db.clone()).validate(&node_auth(token)).is_some());
+        assert!(DbTokenValidator::new(db.clone()).validate(&node_auth(token)).is_none());
+    }
+
+    #[test]
+    fn account_tunnel_expiry_rejected() {
+        let db = Database::in_memory().unwrap();
+        let gid = mk_group_with_rule(&db, "peers", "10.12.0.0/16");
+        let token = "tun_lifecycle-token";
+        let hash = sha256_hex(token.as_bytes());
+        let acc = db
+            .create_account("u-expiry", &crate::db::hash_password("Passw0rd!ab").unwrap(), &gid, "")
+            .unwrap();
+        db.set_account_tunnel_token(&acc.id, Some(&hash)).unwrap();
+
+        // no window -> alive
+        assert!(DbTokenValidator::new(db.clone()).validate(&client_auth(token)).is_some());
+
+        // expired window -> rejected (password login path unaffected — data plane only)
+        db.set_account_tunnel_expiry(&acc.id, Some("2020-01-01T00:00:00Z")).unwrap();
+        assert!(DbTokenValidator::new(db.clone()).validate(&client_auth(token)).is_none());
+
+        // future window -> alive again
+        let future = (chrono::Utc::now() + chrono::Duration::hours(1))
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        db.set_account_tunnel_expiry(&acc.id, Some(&future)).unwrap();
+        assert!(DbTokenValidator::new(db.clone()).validate(&client_auth(token)).is_some());
     }
 }

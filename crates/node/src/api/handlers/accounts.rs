@@ -64,7 +64,13 @@ pub async fn list_accounts(
                 a.online = tunnel_online || heartbeat_online;
             }
             ok(json!({
-                "items": items,
+                "items": items.into_iter().map(|a| {
+                    let mut v = serde_json::to_value(&a).unwrap_or_default();
+                    v["lifecycle"] = serde_json::Value::String(
+                        super::lifecycle_status(a.tunnel_expires_at.as_deref(), None, 0).into(),
+                    );
+                    v
+                }).collect::<Vec<_>>(),
                 "total": total,
                 "page": page,
                 "page_size": page_size,
@@ -87,6 +93,9 @@ pub struct CreateAccountRequest {
     /// Also grant the "manage this node" permission (admin link; strong warning on the create page + issuance audit)
     #[serde(default)]
     pub admin_console: bool,
+    /// Tunnel token validity window (optional; RFC3339 or YYYY-MM-DDTHH:MM; empty = never expires)
+    #[serde(default)]
+    pub tunnel_expires_at: String,
 }
 
 /// Username validation: 3-32 chars [a-zA-Z0-9_-]
@@ -145,6 +154,20 @@ pub async fn create_account(
     if let Some(r) = super::groups::reject_e2e_group(&g) {
         return r;
     }
+    // tunnel token lifecycle (optional): normalize the window
+    let tunnel_expires_at = if req.tunnel_expires_at.trim().is_empty() {
+        None
+    } else {
+        match crate::db::normalize_expiry(&req.tunnel_expires_at) {
+            Ok(v) => {
+                if !crate::db::expiry_active(Some(&v)) {
+                    return err(StatusCode::BAD_REQUEST, codes::VALIDATION_FAILED, "过期时间不能早于当前时间");
+                }
+                Some(v)
+            }
+            Err(msg) => return err(StatusCode::BAD_REQUEST, codes::VALIDATION_FAILED, msg),
+        }
+    };
 
     // Server-side strong password (sk style); argon2id hash offloaded to the blocking pool
     let password = generate_password();
@@ -197,6 +220,16 @@ pub async fn create_account(
                 username,
             )
             .await;
+            // tunnel token lifecycle (optional window)
+            if let Some(exp) = &tunnel_expires_at {
+                let (aid, exp2) = (account.id.clone(), exp.clone());
+                if let Err(e) = state
+                    .db_call(move |db| db.set_account_tunnel_expiry(&aid, Some(&exp2)))
+                    .await
+                {
+                    return err(StatusCode::INTERNAL_SERVER_ERROR, codes::INTERNAL, e.to_string());
+                }
+            }
             let gid = req.group_id.clone();
             let group = state
                 .db_call(move |db| db.get_group(&gid))
@@ -212,6 +245,7 @@ pub async fn create_account(
                 "enabled": true,
                 "remark": account.remark,
                 "admin_console": account.admin_console,
+                "tunnel_expires_at": tunnel_expires_at,
                 "created_at": account.created_at,
                 "connect_url": connect_url,
                 "endpoints": endpoints,
@@ -231,6 +265,18 @@ pub struct UpdateAccountRequest {
     pub enabled: Option<bool>,
     pub remark: Option<String>,
     pub admin_console: Option<bool>,
+    /// Tunnel expiry tri-state: absent = unchanged, null = never expires, string = new window.
+    #[serde(default, deserialize_with = "deserialize_some_account")]
+    pub tunnel_expires_at: Option<serde_json::Value>,
+}
+
+/// Wraps the field in Some when present (including explicit null); only absent falls back to default None.
+fn deserialize_some_account<'de, D, T>(de: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    T::deserialize(de).map(Some)
 }
 
 pub async fn update_account(
@@ -287,6 +333,40 @@ pub async fn update_account(
             codes::INTERNAL,
             e.to_string(),
         );
+    }
+
+    // Tunnel token lifecycle window (tri-state): absent = unchanged, null = never expires,
+    // string = new window. Live sessions are not kicked; the next tunnel auth enforces it.
+    match &req.tunnel_expires_at {
+        None => {}
+        Some(serde_json::Value::Null) => {
+            let aid = id.clone();
+            if let Err(e) = state
+                .db_call(move |db| db.set_account_tunnel_expiry(&aid, None))
+                .await
+            {
+                return err(StatusCode::INTERNAL_SERVER_ERROR, codes::INTERNAL, e.to_string());
+            }
+        }
+        Some(serde_json::Value::String(s)) => match crate::db::normalize_expiry(s) {
+            Ok(v) => {
+                let aid = id.clone();
+                if let Err(e) = state
+                    .db_call(move |db| db.set_account_tunnel_expiry(&aid, Some(&v)))
+                    .await
+                {
+                    return err(StatusCode::INTERNAL_SERVER_ERROR, codes::INTERNAL, e.to_string());
+                }
+            }
+            Err(msg) => return err(StatusCode::BAD_REQUEST, codes::VALIDATION_FAILED, msg),
+        },
+        Some(_) => {
+            return err(
+                StatusCode::BAD_REQUEST,
+                codes::VALIDATION_FAILED,
+                "tunnel_expires_at must be a datetime string or null",
+            );
+        }
     }
 
     // Admin permission change: granting records an issuance audit; revoking disconnects tunnel sessions (admin path disabled at once)

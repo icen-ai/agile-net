@@ -35,7 +35,7 @@ impl Database {
         }
         super::paginate::paged_query(
             &conn,
-            "a.id, a.username, a.group_id, g.name, a.enabled, a.remark, a.last_seen_at, a.created_at, a.updated_at, a.admin_console",
+            "a.id, a.username, a.group_id, g.name, a.enabled, a.remark, a.last_seen_at, a.created_at, a.updated_at, a.admin_console, a.tunnel_expires_at",
             "account a LEFT JOIN \"group\" g ON a.group_id = g.id",
             &where_clauses,
             &bind,
@@ -50,7 +50,7 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn
             .prepare(
-                "SELECT a.id, a.username, a.group_id, g.name, a.enabled, a.remark, a.last_seen_at, a.created_at, a.updated_at, a.admin_console
+                "SELECT a.id, a.username, a.group_id, g.name, a.enabled, a.remark, a.last_seen_at, a.created_at, a.updated_at, a.admin_console, a.tunnel_expires_at
                  FROM account a LEFT JOIN \"group\" g ON a.group_id = g.id WHERE a.id = ?1",
             )
             .map_err(db_err)?;
@@ -68,7 +68,7 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn
             .prepare(
-                "SELECT a.id, a.username, a.group_id, g.name, a.enabled, a.remark, a.last_seen_at, a.created_at, a.updated_at, a.admin_console, a.password
+                "SELECT a.id, a.username, a.group_id, g.name, a.enabled, a.remark, a.last_seen_at, a.created_at, a.updated_at, a.admin_console, a.password, a.tunnel_expires_at
                  FROM account a LEFT JOIN \"group\" g ON a.group_id = g.id WHERE a.username = ?1",
             )
             .map_err(db_err)?;
@@ -131,6 +131,7 @@ impl Database {
             enabled: true,
             online: false,
             last_seen_at: None,
+            tunnel_expires_at: None,
             remark: remark.to_string(),
             created_at: now.clone(),
             updated_at: now,
@@ -215,7 +216,7 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn
             .prepare(
-                "SELECT a.id, a.username, a.group_id, g.name, a.enabled, a.remark, a.last_seen_at, a.created_at, a.updated_at, a.admin_console
+                "SELECT a.id, a.username, a.group_id, g.name, a.enabled, a.remark, a.last_seen_at, a.created_at, a.updated_at, a.admin_console, a.tunnel_expires_at
                  FROM account a LEFT JOIN \"group\" g ON a.group_id = g.id
                  WHERE a.tunnel_token_hash = ?1",
             )
@@ -291,6 +292,9 @@ impl Database {
             group_id: group_id.map(|g| g.to_string()),
             group_name: None,
             rate_limit_kbps,
+            expires_at: None,
+            max_uses: None,
+            used_count: 0,
             last_used_at: None,
             created_at: now,
         })
@@ -376,7 +380,7 @@ impl Database {
         let mut items = {
             let conn = self.conn();
             let mut stmt = conn
-                .prepare("SELECT t.id, t.token_prefix, t.remark, t.expose_control, t.control_scope, t.last_used_at, t.created_at, t.group_id, g.name, t.rate_limit_kbps
+                .prepare("SELECT t.id, t.token_prefix, t.remark, t.expose_control, t.control_scope, t.last_used_at, t.created_at, t.group_id, g.name, t.rate_limit_kbps, t.expires_at, t.max_uses, t.used_count
                           FROM relay_token t LEFT JOIN \"group\" g ON t.group_id = g.id ORDER BY t.created_at DESC")
                 .map_err(db_err)?;
             let rows = stmt.query_map([], map_relay_token_row).map_err(db_err)?;
@@ -397,7 +401,7 @@ impl Database {
         let mut rec = {
             let conn = self.conn();
             let mut stmt = conn
-                .prepare("SELECT t.id, t.token_prefix, t.remark, t.expose_control, t.control_scope, t.last_used_at, t.created_at, t.group_id, g.name, t.rate_limit_kbps
+                .prepare("SELECT t.id, t.token_prefix, t.remark, t.expose_control, t.control_scope, t.last_used_at, t.created_at, t.group_id, g.name, t.rate_limit_kbps, t.expires_at, t.max_uses, t.used_count
                           FROM relay_token t LEFT JOIN \"group\" g ON t.group_id = g.id WHERE t.id = ?1")
                 .map_err(db_err)?;
             let mut rows = stmt.query(params![id]).map_err(db_err)?;
@@ -446,17 +450,27 @@ impl Database {
         })
     }
 
-    /// Check a relay token hash exists; updates last_used_at on hit
+    /// Check a relay token hash exists and is alive (token lifecycle: not expired, usage cap
+    /// not reached); updates last_used_at and increments used_count on a live hit.
+    /// An expired/exhausted token reports as a miss (auth rejects it like an unknown token).
     pub fn check_relay_token(&self, token_hash: &str) -> Result<bool> {
         let conn = self.conn();
         let mut stmt = conn
-            .prepare("SELECT id FROM relay_token WHERE token_hash = ?1")
+            .prepare("SELECT id, expires_at, max_uses, used_count FROM relay_token WHERE token_hash = ?1")
             .map_err(db_err)?;
         let mut rows = stmt.query(params![token_hash]).map_err(db_err)?;
         if let Some(r) = rows.next().map_err(db_err)? {
             let id: String = r.get(0).map_err(db_err)?;
+            let expires_at: Option<String> = r.get(1).map_err(db_err)?;
+            let max_uses: Option<i64> = r.get(2).map_err(db_err)?;
+            let used_count: i64 = r.get(3).map_err(db_err)?;
+            if !super::pool::expiry_active(expires_at.as_deref())
+                || super::pool::uses_exhausted(max_uses, used_count)
+            {
+                return Ok(false);
+            }
             conn.execute(
-                "UPDATE relay_token SET last_used_at = ?1 WHERE id = ?2",
+                "UPDATE relay_token SET last_used_at = ?1, used_count = used_count + 1 WHERE id = ?2",
                 params![now_rfc3339(), id],
             )
             .map_err(db_err)?;
@@ -464,6 +478,34 @@ impl Database {
         } else {
             Ok(false)
         }
+    }
+
+    /// Set the lifecycle window of a relay token (None = never expires / unlimited).
+    pub fn set_relay_token_lifecycle(
+        &self,
+        id: &str,
+        expires_at: Option<&str>,
+        max_uses: Option<i64>,
+    ) -> Result<()> {
+        let max_uses = max_uses.filter(|v| *v > 0);
+        let conn = self.conn();
+        conn.execute(
+            "UPDATE relay_token SET expires_at = ?1, max_uses = ?2 WHERE id = ?3",
+            params![expires_at, max_uses, id],
+        )
+        .map_err(db_err)?;
+        Ok(())
+    }
+
+    /// Set the tunnel token validity window of an account (None = never expires).
+    pub fn set_account_tunnel_expiry(&self, id: &str, expires_at: Option<&str>) -> Result<()> {
+        let conn = self.conn();
+        conn.execute(
+            "UPDATE account SET tunnel_expires_at = ?1 WHERE id = ?2",
+            params![expires_at, id],
+        )
+        .map_err(db_err)?;
+        Ok(())
     }
 
     pub fn delete_relay_token(&self, id: &str) -> Result<()> {
@@ -499,6 +541,9 @@ fn map_relay_token_row(r: &rusqlite::Row) -> rusqlite::Result<RelayTokenRecord> 
         group_id: r.get(7)?,
         group_name: r.get(8)?,
         rate_limit_kbps: r.get(9)?,
+        expires_at: r.get("expires_at")?,
+        max_uses: r.get("max_uses")?,
+        used_count: r.get("used_count")?,
     })
 }
 
@@ -514,6 +559,7 @@ fn map_account_row(r: &rusqlite::Row) -> rusqlite::Result<AccountRecord> {
         created_at: r.get(7)?,
         updated_at: r.get(8)?,
         admin_console: r.get::<_, i32>(9)? != 0,
+        tunnel_expires_at: r.get("tunnel_expires_at")?,
         online: false,
     })
 }

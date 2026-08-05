@@ -597,7 +597,7 @@ const ACT_CLICK = {
   'grp-del': b => delGroup(b.dataset.id, b.dataset.name, Number(b.dataset.count || 0)),
   'rule-edit': b => openEditRule(b.dataset.id, b.dataset.type, b.dataset.value, b.dataset.resolve === 'true', b.dataset.remark || ''),
   'rule-del': b => delRule(b.dataset.id, b.dataset.value, Number(b.dataset.count || 0)),
-  'tok-edit': b => openEditToken(b.dataset.id, b.dataset.group || '', b.dataset.expose === 'true', b.dataset.scope),
+  'tok-edit': b => openEditToken(b.dataset.id, b.dataset.group || '', b.dataset.expose === 'true', b.dataset.scope, b.dataset.expires || '', b.dataset.maxuses || '', b.dataset.rate || ''),
   'tok-del': b => delToken(b.dataset.id),
   'conn-edit': b => openEditConnector(b.dataset.id),
   'conn-toggle': b => toggleConnector(b.dataset.id, b.dataset.enabled === 'true'),
@@ -844,7 +844,7 @@ async function loadAccounts() {
   try {
     const d = await api('GET', url);
     body.innerHTML = (d.items||[]).map(a =>
-      '<tr><td><b>' + esc(a.username) + '</b>' + (a.admin_console ? ' <span class="badge b-info">' + T('accounts.badgeAdmin') + '</span>' : '') + '<div class="mono" style="color:var(--dim2)">' + shortId(a.id) + '</div></td>' +
+      '<tr><td><b>' + esc(a.username) + '</b>' + (a.admin_console ? ' <span class="badge b-info">' + T('accounts.badgeAdmin') + '</span>' : '') + lifecycleBadge(a) + '<div class="mono" style="color:var(--dim2)">' + shortId(a.id) + '</div></td>' +
       '<td>' + esc(a.group_name || groupName(a.group_id)) + '</td>' +
       '<td><span class="dot ' + (a.online?'on':'off') + '"></span>' + (a.online ? T('adm.online') : T('adm.offline')) + '</td>' +
       '<td>' + (a.enabled ? '<span class="badge b-ok">' + T('adm.stOn') + '</span>' : '<span class="badge b-off">' + T('adm.stOff') + '</span>') + '</td>' +
@@ -866,6 +866,8 @@ function openCreateAccount() {
     '<label>' + T('term.group') + '</label><select id="na-group" style="width:100%">' +
       S.groups.map(g => '<option value="' + esc(g.id) + '">' + esc(g.name) + '</option>').join('') + '</select>' +
     '<label>' + T('common.remark') + '</label><input id="na-remark" style="width:100%">' +
+    '<label style="margin-top:10px">' + T('adm.tunnelExpiryLabel') + ' ' + ahelp(T('adm.tunnelExpiryHelp')) + '</label>' +
+    '<input id="na-expiry" type="datetime-local" style="width:100%">' +
     '<label class="chk" style="display:flex;align-items:center;gap:6px;margin-top:8px"><input type="checkbox" id="na-admin"> ' + T('accounts.adminGrant') + '</label>' +
     '<div class="hint" id="na-admin-warn" style="color:var(--danger-text);display:none">' + ic('triangle-alert', 13) + ' ' + T('accounts.adminWarn') + '</div>',
     [
@@ -873,8 +875,9 @@ function openCreateAccount() {
       {label: T('common.create'), fn: async () => {
         const username = $('na-user').value.trim(), group_id = $('na-group').value, remark = $('na-remark').value.trim();
         const admin_console = $('na-admin').checked;
+        const tunnel_expires_at = ($('na-expiry').value || '').trim();
         try {
-          const d = await api('POST', '/api/v1/admin/accounts', {username, group_id, remark, admin_console});
+          const d = await api('POST', '/api/v1/admin/accounts', {username, group_id, remark, admin_console, tunnel_expires_at});
           showAccountSecret(T('accounts.createdTitle'), d.username, d.password, d.connect_url, d.id, admin_console, d.endpoints);
           loadAccounts();
         } catch(e) { toast(e.message, 'err'); }
@@ -1365,7 +1368,7 @@ function renderFaninTokens() {
     (t.group_id && (t.group_name || groupNamesOf(t.group_id)).toLowerCase().includes(q))
   ) : FANIN_TOKENS;
   body.innerHTML = items.map(t =>
-    '<tr><td class="mono">' + esc(t.token_prefix) + '</td>' +
+    '<tr><td class="mono">' + esc(t.token_prefix) + lifecycleBadge(t) + '</td>' +
     '<td>' + (t.group_id ? esc(t.group_name || groupNamesOf(t.group_id)) : '<span style="color:var(--dim2)">' + T('adm.noRestrict') + '</span>') + '</td>' +
     '<td class="mono">' + (t.rate_limit_kbps ? esc(t.rate_limit_kbps) + ' KB/s' : '<span style="color:var(--dim2)">' + T('adm.unlimited') + '</span>') + '</td>' +
     '<td>' + esc(t.remark || '-') + '</td>' +
@@ -1375,7 +1378,7 @@ function renderFaninTokens() {
         ['ro','rules','full'].map(sc => '<option value="' + sc + '" ' + (t.control_scope === sc ? 'selected' : '') + '>' + ({ro: T('fanin.scopeRo'), rules: T('fanin.scopeRules'), full: T('fanin.scopeFull')})[sc] + '</option>').join('') + '</select>' : '') + '</td>' +
     '<td style="color:var(--dim)">' + esc(t.last_used_at || T('fanin.unused')) + '</td>' +
     '<td style="color:var(--dim)">' + esc(t.created_at) + '</td>' +
-    '<td style="white-space:nowrap"><button class="ghost small" data-act="tok-edit" data-id="' + esc(t.id) + '" data-group="' + esc(t.group_id||'') + '" data-expose="' + t.expose_control + '" data-scope="' + esc(t.control_scope) + '">' + T('common.edit') + '</button> ' +
+    '<td style="white-space:nowrap"><button class="ghost small" data-act="tok-edit" data-id="' + esc(t.id) + '" data-group="' + esc(t.group_id||'') + '" data-expose="' + t.expose_control + '" data-scope="' + esc(t.control_scope) + '" data-expires="' + esc(t.expires_at||'') + '" data-maxuses="' + esc(t.max_uses||'') + '" data-rate="' + esc(t.rate_limit_kbps||'') + '">' + T('common.edit') + '</button> ' +
     '<button class="danger small" data-act="tok-del" data-id="' + esc(t.id) + '">' + T('adm.revoke') + '</button></td></tr>'
   ).join('') || '<tr><td colspan="8" class="empty">' + (q ? T('fanin.noMatchTokens') : T('fanin.emptyTokens')) + '</td></tr>';
   agSelectEnhance(body);
@@ -1405,6 +1408,7 @@ function openCreateToken() {
       ).join('') : '<div class="empty">' + T('groups.empty') + '</div>') + '</div>' +
     '<label>' + T('fanin.rateLabel') + '</label><input id="nt-rate" type="number" min="1" placeholder="' + T('fanin.ratePh') + '" style="width:100%">' +
     '<div class="hint">' + T('fanin.rateHint') + '</div>' +
+    lifecycleFieldsHtml('nt', '', '') +
     '<label class="chk" style="display:flex;align-items:center;gap:6px;margin-top:8px"><input type="checkbox" id="nt-expose"> ' + T('fanin.exposeLabel') + '</label>' +
     '<div id="nt-expose-opts" style="display:none;margin:6px 0">' +
       '<label>' + T('fanin.scopeLabel') + '</label><select id="nt-scope" style="width:100%">' +
@@ -1419,12 +1423,15 @@ function openCreateToken() {
       {label: T('fanin.generate'), fn: async () => {
         try {
           const rateVal = parseInt($('nt-rate').value, 10);
+          const life = lifecycleFieldsVal('nt');
           const d = await api('POST', '/api/v1/admin/node/relay-tokens', {
             remark: $('nt-remark').value.trim(),
             expose_control: $('nt-expose').checked,
             control_scope: $('nt-scope').value,
             group_id: [...document.querySelectorAll('.nt-acl:checked')].map(c => c.value).join(',') || null,
             rate_limit_kbps: rateVal > 0 ? rateVal : null,
+            expires_at: life.expires_at,
+            max_uses: life.max_uses,
           });
           openModal(T('fanin.createdTitle'),
             '<div class="kv"><span class="k">' + T('common.remark') + '</span><span>' + esc(d.remark || '-') + '</span></div>' +
@@ -1445,7 +1452,7 @@ async function delToken(id) {
 }
 /* Edit bound group: PUT tri-state semantics (absent = unchanged / null = unbound / string = bind to group);
    editing is an explicit user choice so it is always sent; control-plane exposure is changed directly in the list (group_id not sent = unchanged) */
-function openEditToken(id, groupId, exposeControl, controlScope, rateKbps) {
+function openEditToken(id, groupId, exposeControl, controlScope, expiresAt, maxUses, rateKbps) {
   openModal(T('fanin.editTitle'),
     '<label>' + T('adm.groupLabel') + '</label>' +
     '<div class="rule-check" style="max-height:130px">' +
@@ -1454,16 +1461,20 @@ function openEditToken(id, groupId, exposeControl, controlScope, rateKbps) {
         '<span>' + esc(g.name) + '</span>' + (g.e2e_required ? '<span class="badge b-warn">E2E</span>' : '<span class="badge b-info">' + (g.rule_count || 0) + '</span>') + '</label>'
       ).join('') : '<div class="empty">' + T('groups.empty') + '</div>') + '</div>' +
     '<label>' + T('fanin.editRateLabel') + '</label><input id="et-rate" type="number" min="1" value="' + (rateKbps > 0 ? rateKbps : '') + '" placeholder="' + T('adm.unlimited') + '" style="width:100%">' +
+    lifecycleFieldsHtml('et', expiresAt, maxUses) +
     '<div class="hint">' + T('fanin.editHint') + '</div>',
     [
       {label: T('common.cancel'), kind:'ghost', fn: closeModal},
       {label: T('common.save'), fn: async () => {
         try {
           const rateVal = parseInt($('et-rate').value, 10);
+          const life = lifecycleFieldsVal('et');
           await api('PUT', '/api/v1/admin/node/relay-tokens/' + id, {
             expose_control: exposeControl, control_scope: controlScope,
             group_id: [...document.querySelectorAll('.et-acl:checked')].map(c => c.value).join(',') || null,
             rate_limit_kbps: rateVal > 0 ? rateVal : null,
+            expires_at: life.expires_at || null,
+            max_uses: life.max_uses,
           });
           closeModal(); toast(T('adm.saved'), 'ok'); loadTokens();
         } catch(e) { toast(e.message, 'err'); }
@@ -1553,6 +1564,32 @@ function delegStateBadge(st) {
   const m = map[st] || ['b-off', T('deleg.stOffline')];
   return '<span class="badge ' + m[0] + '">' + m[1] + '</span>';
 }
+/* Token lifecycle badge (docs/todo/e2e.md §8): only rendered when the token carries a window
+   or a cap; the status string (active/expiring/expired/exhausted) comes computed from the API. */
+function lifecycleBadge(t) {
+  if (!t || (!t.expires_at && !t.max_uses)) return '';
+  const map = {
+    active: ['b-ok', 'adm.lifeActive'],
+    expiring: ['b-warn', 'adm.lifeExpiring'],
+    expired: ['b-off', 'adm.lifeExpired'],
+    exhausted: ['b-off', 'adm.lifeExhausted'],
+  };
+  const m = map[t.lifecycle] || map.active;
+  const title = (t.expires_at || '') + (t.max_uses ? (t.expires_at ? ' · ' : '') + T('adm.usedCount') + ' ' + (t.used_count || 0) + '/' + t.max_uses : '');
+  return ' <span class="badge ' + m[0] + '" title="' + esc(title.trim()) + '">' + T(m[1]) + '</span>';
+}
+/* Optional expiry + max-uses field pair for token dialogs (fan-in / delegation issue). */
+function lifecycleFieldsHtml(idp, expVal, usesVal) {
+  return '<label style="margin-top:10px">' + T('adm.expiryLabel') + ' ' + ahelp(T('adm.expiryHelp')) + '</label>' +
+    '<input id="' + idp + '-expiry" type="datetime-local" style="width:100%"' + (expVal ? ' value="' + esc(String(expVal).replace('Z', '').replace(/\+00:00$/, '')) + '"' : '') + '>' +
+    '<label style="margin-top:10px">' + T('adm.maxUsesLabel') + ' ' + ahelp(T('adm.maxUsesHelp')) + '</label>' +
+    '<input id="' + idp + '-maxuses" type="number" min="1" placeholder="' + T('adm.unlimited') + '" style="width:100%"' + (usesVal ? ' value="' + esc(usesVal) + '"' : '') + '>';
+}
+function lifecycleFieldsVal(idp) {
+  const exp = ($(idp + '-expiry') || {}).value || '';
+  const uses = parseInt(($(idp + '-maxuses') || {}).value, 10);
+  return { expires_at: exp.trim(), max_uses: uses > 0 ? uses : null };
+}
 async function loadDelegation() {
   const body = $('deleg-body'); if (!body) return;
   try {
@@ -1575,12 +1612,13 @@ async function loadDelegation() {
       const adminBadge = t.admin_scope
         ? ' <span class="badge b-warn">' + T('deleg.badgeAdmin') + '·' + esc(t.admin_scope) + '</span>'
         : '';
+      const lifeBadge = lifecycleBadge(t);
       const regs = (t.regs || []).map(r =>
         '<div style="display:flex;align-items:center;gap:6px;padding:2px 0">' +
           (r.is_primary ? '<span class="badge b-ok">' + T('deleg.primaryBadge') + '</span>' : '') +
           '<span>' + esc(r.connector_name) + '</span>' + delegStateBadge(r.state) + '</div>'
       ).join('');
-      return '<tr><td><b>' + esc(t.label || t.token_prefix) + '</b>' + tierBadge + adminBadge + '<div class="mono" style="color:var(--dim2)">' + esc(t.token_prefix) + '</div></td>' +
+      return '<tr><td><b>' + esc(t.label || t.token_prefix) + '</b>' + tierBadge + adminBadge + lifeBadge + '<div class="mono" style="color:var(--dim2)">' + esc(t.token_prefix) + '</div></td>' +
         '<td>' + (groups || '-') + '</td>' +
         '<td>' + (regs || '-') + '</td>' +
         '<td style="color:var(--dim);white-space:nowrap">' + esc((t.created_at || '').replace('T', ' ').replace(/\..*$/, '')) + '</td>' +
@@ -1642,7 +1680,8 @@ async function openIssueDelegation() {
         '<label class="chk" style="display:inline-flex;align-items:center;gap:5px;margin-right:14px"><input type="radio" name="di-scope" value="rules"> ' + T('deleg.scopeRules') + '</label>' +
         '<label class="chk" style="display:inline-flex;align-items:center;gap:5px"><input type="radio" name="di-scope" value="full" checked> ' + T('deleg.scopeFull') + '</label>' +
       '</div></div>' +
-    '<label style="margin-top:10px">' + T('common.remark') + '</label><input id="di-label" style="width:100%" placeholder="' + T('deleg.labelPh') + '">',
+    '<label style="margin-top:10px">' + T('common.remark') + '</label><input id="di-label" style="width:100%" placeholder="' + T('deleg.labelPh') + '">' +
+    lifecycleFieldsHtml('di', '', ''),
     [
       {label: T('common.cancel'), kind: 'ghost', fn: closeModal},
       {label: T('deleg.issue'), fn: async () => {
@@ -1653,6 +1692,7 @@ async function openIssueDelegation() {
         const primary = $('di-primary').dataset.value || targets[0];
         const mode = (document.querySelector('input[name="di-mode"]:checked') || {}).value || 'dedicated';
         const adminScope = ($('di-admin').checked && (document.querySelector('input[name="di-scope"]:checked') || {}).value) || '';
+        const life = lifecycleFieldsVal('di');
         try {
           const d = await api('POST', '/api/v1/admin/delegation/tokens', {
             label: $('di-label').value.trim(),
@@ -1660,6 +1700,8 @@ async function openIssueDelegation() {
             regs: targets.map(id => ({ connector_id: id, is_primary: id === primary })),
             mode,
             admin_scope: adminScope,
+            expires_at: life.expires_at,
+            max_uses: life.max_uses,
           });
           closeModal();
           openModal(T('deleg.issuedTitle'), shareCardHtml([]), []);

@@ -32,6 +32,12 @@ pub struct CreateTokenRequest {
     /// Bandwidth quota (KB/s; absent/null = unlimited; >0 takes effect, <=0 invalid)
     #[serde(default)]
     pub rate_limit_kbps: Option<i64>,
+    /// Token lifecycle (optional): validity window (RFC3339 or YYYY-MM-DDTHH:MM; empty = never)
+    #[serde(default)]
+    pub expires_at: String,
+    /// Token lifecycle (optional): max successful fan-in auths (0/absent = unlimited)
+    #[serde(default)]
+    pub max_uses: Option<i64>,
 }
 
 fn default_scope() -> String {
@@ -72,6 +78,27 @@ pub async fn create_token(
             StatusCode::BAD_REQUEST,
             codes::VALIDATION_FAILED,
             "rate_limit_kbps must be positive",
+        );
+    }
+    // token lifecycle (optional): normalize the expiry; reject a past window at creation
+    let expires_at = if req.expires_at.trim().is_empty() {
+        None
+    } else {
+        match crate::db::normalize_expiry(&req.expires_at) {
+            Ok(v) => {
+                if !crate::db::expiry_active(Some(&v)) {
+                    return err(StatusCode::BAD_REQUEST, codes::VALIDATION_FAILED, "过期时间不能早于当前时间");
+                }
+                Some(v)
+            }
+            Err(msg) => return err(StatusCode::BAD_REQUEST, codes::VALIDATION_FAILED, msg),
+        }
+    };
+    if req.max_uses.is_some_and(|v| v <= 0) {
+        return err(
+            StatusCode::BAD_REQUEST,
+            codes::VALIDATION_FAILED,
+            "max_uses must be a positive integer",
         );
     }
     // ACL group set (comma-separated multi-group): each member must exist; federation P3:
@@ -133,6 +160,29 @@ pub async fn create_token(
                 &req.remark,
             )
             .await;
+            // token lifecycle (optional window)
+            if expires_at.is_some() || req.max_uses.is_some() {
+                let (rid, exp, mu) = (record.id.clone(), expires_at.clone(), req.max_uses);
+                if let Err(e) = state
+                    .db_call(move |db| db.set_relay_token_lifecycle(&rid, exp.as_deref(), mu))
+                    .await
+                {
+                    return err(StatusCode::INTERNAL_SERVER_ERROR, codes::INTERNAL, e.to_string());
+                }
+                audit(
+                    &state,
+                    &claims,
+                    &ip,
+                    "relay_token.set_lifecycle",
+                    Some(&record.id),
+                    &format!(
+                        "expires_at={} max_uses={}",
+                        expires_at.as_deref().unwrap_or(""),
+                        req.max_uses.map(|v| v.to_string()).unwrap_or_default()
+                    ),
+                )
+                .await;
+            }
             if req.expose_control {
                 audit(
                     &state,
@@ -188,6 +238,8 @@ pub async fn create_token(
                 "control_scope": record.control_scope,
                 "group_id": record.group_id,
                 "rate_limit_kbps": record.rate_limit_kbps,
+                "expires_at": expires_at,
+                "max_uses": req.max_uses,
                 "created_at": record.created_at,
                 "share_url": share_url,
                 "endpoints": endpoints,
@@ -213,6 +265,12 @@ pub struct UpdateTokenRequest {
     /// Quota change tri-state: absent = unchanged, null = unlimited, positive integer = set to that value (KB/s).
     #[serde(default, deserialize_with = "deserialize_some")]
     pub rate_limit_kbps: Option<serde_json::Value>,
+    /// Lifecycle window tri-state: absent = unchanged, null = never expires, string = new expiry.
+    #[serde(default, deserialize_with = "deserialize_some")]
+    pub expires_at: Option<serde_json::Value>,
+    /// Usage cap tri-state: absent = unchanged, null = unlimited, positive integer = set.
+    #[serde(default, deserialize_with = "deserialize_some")]
+    pub max_uses: Option<serde_json::Value>,
 }
 
 /// Wraps the field in Some when present (including explicit null); only absent falls back to default None.
@@ -415,18 +473,119 @@ pub async fn update_token(
         rate_limit_resp = new_rate_limit;
     }
 
+    // Lifecycle window change (tri-state per field; merged with the current values into one write).
+    // New sessions authenticate only while the window is alive (the data-plane check treats an
+    // expired/exhausted token as unknown); existing sessions are not kicked mid-flight.
+    let mut lifecycle_touched = false;
+    let mut expires_resp = existing.expires_at.clone();
+    let mut max_uses_resp = existing.max_uses;
+    match &req.expires_at {
+        None => {}
+        Some(serde_json::Value::Null) => {
+            expires_resp = None;
+            lifecycle_touched = true;
+        }
+        Some(serde_json::Value::String(s)) => match crate::db::normalize_expiry(s) {
+            Ok(v) => {
+                expires_resp = Some(v);
+                lifecycle_touched = true;
+            }
+            Err(msg) => return err(StatusCode::BAD_REQUEST, codes::VALIDATION_FAILED, msg),
+        },
+        Some(_) => {
+            return err(
+                StatusCode::BAD_REQUEST,
+                codes::VALIDATION_FAILED,
+                "expires_at must be a datetime string or null",
+            );
+        }
+    }
+    match &req.max_uses {
+        None => {}
+        Some(serde_json::Value::Null) => {
+            max_uses_resp = None;
+            lifecycle_touched = true;
+        }
+        Some(serde_json::Value::Number(n)) => match n.as_i64() {
+            Some(v) if v > 0 => {
+                max_uses_resp = Some(v);
+                lifecycle_touched = true;
+            }
+            _ => {
+                return err(
+                    StatusCode::BAD_REQUEST,
+                    codes::VALIDATION_FAILED,
+                    "max_uses must be a positive integer or null",
+                );
+            }
+        },
+        Some(_) => {
+            return err(
+                StatusCode::BAD_REQUEST,
+                codes::VALIDATION_FAILED,
+                "max_uses must be a positive integer or null",
+            );
+        }
+    }
+    if lifecycle_touched {
+        let (tid, exp, mu) = (id.clone(), expires_resp.clone(), max_uses_resp);
+        if let Err(e) = state
+            .db_call(move |db| db.set_relay_token_lifecycle(&tid, exp.as_deref(), mu))
+            .await
+        {
+            return err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                codes::INTERNAL,
+                e.to_string(),
+            );
+        }
+        audit(
+            &state,
+            &claims,
+            &ip,
+            "relay_token.set_lifecycle",
+            Some(&id),
+            &format!(
+                "expires_at={} max_uses={}",
+                expires_resp.as_deref().unwrap_or("∅"),
+                max_uses_resp.map(|v| v.to_string()).unwrap_or_else(|| "∅".into())
+            ),
+        )
+        .await;
+    }
+
     ok(json!({
         "id": id,
         "expose_control": req.expose_control,
         "control_scope": req.control_scope,
         "group_id": group_id_resp,
         "rate_limit_kbps": rate_limit_resp,
+        "expires_at": expires_resp,
+        "max_uses": max_uses_resp,
     }))
 }
 
 pub async fn list_tokens(AdminAuth(_): AdminAuth, State(state): State<ApiState>) -> Response {
     match state.db_call(|db| db.list_relay_tokens()).await {
-        Ok(items) => ok(json!({ "items": items })),
+        Ok(items) => {
+            // fold the computed lifecycle status into each serialized record
+            let items: Vec<serde_json::Value> = items
+                .into_iter()
+                .map(|t| {
+                    let mut v = serde_json::to_value(&t).unwrap_or_default();
+                    v["lifecycle"] = serde_json::Value::String(
+                        super::lifecycle_status(
+                            t.expires_at.as_deref(),
+                            t.max_uses,
+                            t.used_count,
+                        )
+                        .into(),
+                    );
+                    v
+                })
+                .collect();
+            ok(json!({ "items": items }))
+        }
         Err(e) => err(
             StatusCode::INTERNAL_SERVER_ERROR,
             codes::INTERNAL,

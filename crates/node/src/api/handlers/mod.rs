@@ -51,3 +51,27 @@ pub(crate) async fn audit(
         })
         .await;
 }
+
+/// Token lifecycle status for list rendering (docs/todo/e2e.md §8):
+/// "expired" | "exhausted" | "expiring" (< 72h remaining) | "active".
+pub(crate) fn lifecycle_status(
+    expires_at: Option<&str>,
+    max_uses: Option<i64>,
+    used_count: i64,
+) -> &'static str {
+    if !crate::db::expiry_active(expires_at) {
+        return "expired";
+    }
+    if crate::db::uses_exhausted(max_uses, used_count) {
+        return "exhausted";
+    }
+    if let Some(s) = expires_at
+        && let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s)
+    {
+        let remain = dt.with_timezone(&chrono::Utc) - chrono::Utc::now();
+        if remain < chrono::Duration::hours(72) {
+            return "expiring";
+        }
+    }
+    "active"
+}

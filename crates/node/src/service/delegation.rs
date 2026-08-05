@@ -98,6 +98,8 @@ pub fn issue_token(
         &e2e_key_enc,
         mode,
         admin_scope,
+        None,
+        None,
     )?;
     db.set_delegated_token_regs(&rec.id, regs)?;
     let rec = db.get_delegated_token(&rec.id)?.expect("just created");
@@ -195,6 +197,22 @@ struct KeyEntry {
     admin_scope: String,
     /// Token label (ticket subject attribution)
     label: String,
+    /// Token row id (usage flush back to the DB on cache rebuild)
+    token_id: String,
+    /// Token lifecycle (docs/todo/e2e.md §8): None = never expires / unlimited
+    expires_at: Option<String>,
+    max_uses: Option<i64>,
+    /// Opens served (seeded from the DB on refresh, incremented in memory on the hot path)
+    used_count: std::sync::Arc<std::sync::atomic::AtomicI64>,
+}
+
+impl KeyEntry {
+    /// Lifecycle gate: an expired or exhausted token is refused on every enforcement path
+    /// (registration sync also stops offering it upstream — this is the in-session backstop).
+    fn alive(&self) -> bool {
+        crate::db::expiry_active(self.expires_at.as_deref())
+            && !crate::db::uses_exhausted(self.max_uses, self.used_count.load(std::sync::atomic::Ordering::Relaxed))
+    }
 }
 
 /// Runtime wiring for admin-capable tokens (issuer API endpoint + upstream registry + ticket minter).
@@ -241,6 +259,15 @@ impl DelegationEngine {
 
     /// Rebuild the kid -> E2E key cache from the DB (call on issue/revoke and at startup).
     pub fn refresh_keys(&self, db: &Database) {
+        // persist the current usage counters before swapping the map (best-effort restart
+        // continuity for max_uses — the in-memory counter is authoritative during runtime)
+        {
+            let old = self.keys.load();
+            for entry in old.values() {
+                let n = entry.used_count.load(std::sync::atomic::Ordering::Relaxed);
+                let _ = db.set_delegated_token_used(&entry.token_id, n);
+            }
+        }
         let mut map = std::collections::HashMap::new();
         for rec in db.list_delegated_tokens().unwrap_or_default() {
             match e2e_key_of(db, &rec) {
@@ -258,6 +285,10 @@ impl DelegationEngine {
                             groups,
                             admin_scope: rec.admin_scope.clone(),
                             label: rec.label.clone(),
+                            token_id: rec.id.clone(),
+                            expires_at: rec.expires_at.clone(),
+                            max_uses: rec.max_uses,
+                            used_count: std::sync::Arc::new(std::sync::atomic::AtomicI64::new(rec.used_count)),
                         },
                     );
                 }
@@ -328,7 +359,17 @@ impl agile_net_core::relay::DelegationHooks for DelegationEngine {
         let Some(entry) = cache.get(&e2e.kid) else {
             return Ok(None); // transit role: not our token
         };
+        // token lifecycle gate (expired / usage cap reached — the in-session backstop of the
+        // registration sync's dead-token skip)
+        if !entry.alive() {
+            return Err(agile_net_core::error::Error::Other(
+                "delegated token expired or exhausted".into(),
+            ));
+        }
         let (mut payload, cipher) = agile_net_core::relay::e2e::open_open(&entry.key, e2e)?;
+        entry
+            .used_count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         // an empty sealed group set means "all groups of my token" — the consumer client
         // knows no group names; inherit the token's set for local enforcement
         if payload.groups.is_empty() {
@@ -341,6 +382,9 @@ impl agile_net_core::relay::DelegationHooks for DelegationEngine {
         use agile_net_core::relay::{DelegationAdmin, DelegationConfig, DelegationUpstream};
         let keys = self.keys.load();
         let entry = keys.get(kid)?;
+        if !entry.alive() {
+            return None; // dead tokens pull no vocabulary / tickets
+        }
         let groups = self.groups.load();
         let mut rules: Vec<String> = Vec::new();
         for name in &entry.groups {
@@ -402,7 +446,7 @@ impl agile_net_core::relay::DelegationHooks for DelegationEngine {
     fn delegation_admin_port(&self, kid: &str) -> Option<u16> {
         let keys = self.keys.load();
         let entry = keys.get(kid)?;
-        if entry.admin_scope.is_empty() {
+        if entry.admin_scope.is_empty() || !entry.alive() {
             return None;
         }
         let rt = self.admin_runtime.load_full()?;
@@ -415,7 +459,8 @@ impl agile_net_core::relay::DelegationHooks for DelegationEngine {
         node_name: &str,
     ) -> Option<agile_net_core::relay::DelegationUpstream> {
         let keys = self.keys.load();
-        if keys.get(kid)?.admin_scope != "full" {
+        let entry = keys.get(kid)?;
+        if entry.admin_scope != "full" || !entry.alive() {
             return None;
         }
         let rt = self.admin_runtime.load_full()?;
@@ -671,5 +716,46 @@ mod tests {
         revoke_token(&db, &rec.id).unwrap();
         engine.refresh_keys(&db);
         assert!(engine.e2e_unwrap(&env).unwrap().is_none());
+    }
+
+    #[test]
+    fn engine_token_lifecycle_gate() {
+        use agile_net_core::relay::DelegationHooks;
+        use agile_net_core::relay::e2e::{derive_key, kid_of, seal_open};
+
+        let db = Database::in_memory().unwrap();
+        let gid = mk_group(&db, "db-prod");
+        let cid = mk_connector(&db, "up-1");
+        let (rec, plaintext) = issue_token(&db, "alice", &[gid], &[], &[(cid, true)], "dedicated", "").unwrap();
+        let key = derive_key(&plaintext);
+        let seal = || {
+            seal_open(&key, kid_of(&rec.token_hash), "h", "10.2.0.5", 5432, &[]).0
+        };
+
+        // expired token: unwrap hard-rejects (OpenFail), config channel closed
+        db.set_delegated_token_lifecycle(&rec.id, Some("2020-01-01T00:00:00Z"), None).unwrap();
+        let engine = DelegationEngine::new();
+        engine.refresh_keys(&db);
+        assert!(engine.e2e_unwrap(&seal()).is_err());
+        assert!(engine.delegation_config(kid_of(&rec.token_hash)).is_none());
+
+        // future window: alive
+        let future = (chrono::Utc::now() + chrono::Duration::hours(1))
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        db.set_delegated_token_lifecycle(&rec.id, Some(&future), None).unwrap();
+        engine.refresh_keys(&db);
+        assert!(engine.e2e_unwrap(&seal()).unwrap().is_some());
+
+        // usage cap 2: one use was already counted above (flushed on refresh) — one open
+        // passes, the next is rejected (in-memory counting on the hot path)
+        db.set_delegated_token_lifecycle(&rec.id, None, Some(2)).unwrap();
+        engine.refresh_keys(&db);
+        assert!(engine.e2e_unwrap(&seal()).unwrap().is_some());
+        assert!(engine.e2e_unwrap(&seal()).is_err());
+
+        // the refresh flushes counters back to the DB (restart continuity)
+        engine.refresh_keys(&db);
+        let rec2 = db.get_delegated_token(&rec.id).unwrap().unwrap();
+        assert_eq!(rec2.used_count, 2, "usage flushed to the DB on refresh");
     }
 }
