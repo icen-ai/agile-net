@@ -151,7 +151,10 @@ select.agsel-src { position: absolute !important; width: 1px !important; height:
 .side-foot-rate .down::before { content: "↓"; font-size: 11px; color: var(--info-text); }
 body.collapsed .side-foot { padding: 10px 4px 6px; align-items: center; }
 body.collapsed .side-foot > *:not(.side-foot-rate) { display: none; }
-body.collapsed .side-foot-rate { flex-direction: column; gap: 2px; font-size: 10.5px; }
+/* 46px rail (width = titlebar height): numbers would clip mid-glyph, so collapsed keeps only the two
+   direction arrows as a minimal live indicator (span text zeroed, ::before arrows keep their own size) */
+body.collapsed .side-foot-rate { flex-direction: column; gap: 2px; font-size: 0; }
+body.collapsed .side-foot-rate .up::before, body.collapsed .side-foot-rate .down::before { font-size: 11px; }
 @media (max-width: 720px) {
   .side-foot { display: none; }
 }

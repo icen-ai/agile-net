@@ -68,6 +68,8 @@ a { color: var(--link); text-decoration: underline; text-underline-offset: 2px; 
 /* Titlebar icon buttons (menu collapse / more) */
 .tb-icon { display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 26px; margin-left: 6px; border-radius: 7px; background: transparent; color: var(--dim); padding: 0; align-self: center; transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease); }
 .tb-icon:hover { background: var(--hover); color: var(--text-strong); }
+/* First icon (collapse) shares the nav icons' 23px center line (12px drag padding − 6px + half of 34px) */
+.tb-drag .tb-icon:first-child { margin-left: -6px; }
 
 /* More dropdown menu (ctx-in entrance animation defined in components.css) */
 .more-menu { position: fixed; top: 46px; left: 8px; z-index: 400; min-width: 150px; background: var(--panel2); border: 1px solid var(--border); border-radius: 11px; box-shadow: var(--shadow-2); padding: 5px; transform-origin: top left; animation: ctx-in var(--dur-fast) ease-out both; }
@@ -85,11 +87,13 @@ a { color: var(--link); text-decoration: underline; text-underline-offset: 2px; 
 .about-desc { font-size: 12.5px; color: var(--dim); margin: 10px 0 14px; line-height: 1.6; }
 .about-links { display: flex; justify-content: center; gap: 8px; }
 
-/* Sidebar collapsed (icons only) */
-body.collapsed .sidebar { width: 58px; padding: 14px 8px; }
+/* Sidebar collapsed (icons only): width = titlebar height (46px) so the rail is a clean square column;
+   icon center line pinned at 23px in BOTH states — same left padding as expanded (no centering),
+   so icons never travel during the collapse animation; titlebar's first icon sits on the same 23px line */
+body.collapsed .sidebar { width: 46px; padding: 14px 10px; }
 body.collapsed .nav-label { opacity: 0; width: 0; }
-body.collapsed .nav-item { justify-content: center; padding: 9px 0; gap: 0; }
-body.collapsed .island { left: calc(50% + 29px); }
+body.collapsed .nav-item { padding-right: 0; gap: 0; }
+body.collapsed .island { left: calc(50% + 23px); }
 .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
 .dot.on { background: var(--ok); }
 .dot.off { background: var(--border2); }
@@ -151,7 +155,7 @@ body.collapsed .island { left: calc(50% + 29px); }
 /* ===== App shell: sidebar + content area ===== */
 .shell { flex: 1; display: flex; min-height: 0; }
 .sidebar { width: 216px; flex-shrink: 0; padding: 14px 10px; display: flex; flex-direction: column; gap: 2px; border-right: 1px solid var(--border); overflow: hidden; transition: width .2s ease, padding .2s ease; }
-.nav-item { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-radius: 8px; color: var(--dim); cursor: pointer; user-select: none; font-size: 13.5px; font-weight: 600; white-space: nowrap; overflow: hidden; transition: background var(--dur) var(--ease), color var(--dur), transform var(--dur-fast) var(--ease), padding .2s ease, gap .2s ease; }
+.nav-item { display: flex; align-items: center; gap: 10px; padding: 8px 12px 8px 5px; border-radius: 8px; color: var(--dim); cursor: pointer; user-select: none; font-size: 13.5px; font-weight: 600; white-space: nowrap; overflow: hidden; transition: background var(--dur) var(--ease), color var(--dur), transform var(--dur-fast) var(--ease), padding .2s ease, gap .2s ease; }
 .nav-label { transition: opacity .15s ease, width .2s ease; overflow: hidden; }
 .nav-item:hover { background: var(--hover); color: var(--text-strong); }
 .nav-item:active { transform: scale(.98); }
