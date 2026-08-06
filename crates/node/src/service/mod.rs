@@ -54,7 +54,7 @@ pub struct NodeServerOptions {
     /// client tunnel routes resold downstream; an Open hit forwards via the matching tunnel)
     pub client_routes: Option<ClientRoutes>,
     /// Client-role proxy state slot (written by the GUI host; default empty slot = unreported,
-    /// status API's proxy section falls back to the legacy proxy_listen behavior)
+    /// status API's proxy section falls back to the node-role proxy_listen behavior)
     pub client_proxy_slot: ClientProxySlot,
     /// `[client]` section (embedded client role: delegated nodes + local proxy in-process;
     /// parsed by `load_client_role_config`, passed through by the host)

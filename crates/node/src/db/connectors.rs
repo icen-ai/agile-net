@@ -95,7 +95,7 @@ impl Database {
         };
         let mut items = Vec::new();
         // Display names of multi-group sets (comma-separated group_id) resolve per member in
-        // Rust — the SQL LEFT JOIN only covers the legacy single-id case
+        // Rust — the SQL LEFT JOIN only covers the single-id case
         let name_map = self.group_name_map().unwrap_or_default();
         for (rec, group_name) in recs {
             let group_name = match &rec.group_id {

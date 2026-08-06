@@ -165,7 +165,7 @@ pub trait TokenValidator: Send + Sync {
     fn validate(&self, auth: &AuthRequest) -> Option<AuthIdentity>;
 }
 
-/// Static single-token validator (backwards compatible / for tests), constant-time comparison.
+/// Static single-token validator (static config / tests), constant-time comparison.
 pub struct StaticTokenValidator {
     token: String,
 }
@@ -299,7 +299,7 @@ impl RelayListener {
         ))
     }
 
-    /// Create with a custom TlsAcceptor + static token (backwards compatible).
+    /// Create with a custom TlsAcceptor + static token.
     pub fn with_tls_acceptor(
         listen_addr: SocketAddr,
         expected_token: impl Into<String>,

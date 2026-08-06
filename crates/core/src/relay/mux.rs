@@ -171,7 +171,7 @@ impl AsyncWrite for MuxChannel {
         // 1. flow-control credit (v2): suspend when credit runs out, wait for the peer's WindowUpdate
         // chunk length gets a 0-2047B random perturbation: fixed 16KB chunks are a strong private-mux
         // fingerprint in the TLS record length distribution; chunk boundaries are transparent to
-        // protocol semantics (the receiver reassembles the stream), backwards compatible
+        // protocol semantics (the receiver reassembles the stream)
         let mut chunk_len =
             buf.len().min(DATA_CHUNK_SIZE - ((rand::random::<u64>() % 2048) as usize));
         if self.credit.is_some() {

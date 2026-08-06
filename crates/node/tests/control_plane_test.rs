@@ -293,9 +293,9 @@ async fn expose_control_toggle_audited() {
     a.stop().await;
 }
 
-/// Verify the in-memory migration path also has v3 columns (idempotent migration).
+/// The baseline schema carries the relay_token control columns (roundtrip through the db layer).
 #[tokio::test]
-async fn migration_v3_columns_present() {
+async fn relay_token_control_columns_present() {
     let db = Database::in_memory().unwrap();
     let rec = db
         .create_relay_token_with_quota(&sha256_hex(b"psk_x"), "psk_x***", "", true, "ro", None, None)

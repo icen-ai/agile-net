@@ -139,7 +139,7 @@ impl Database {
             items
         };
         // Display names of multi-group sets resolve per member in Rust (the SQL join only
-        // covers the legacy single-id case)
+        // covers the single-id case)
         self.fixup_group_set_names(&mut items);
         Ok(items)
     }

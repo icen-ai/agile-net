@@ -5,12 +5,12 @@
 //! hot-swaps the group's routes in place via `rebuild` (arc_swap) — established tunnels see
 //! rule changes with zero downtime.
 //!
-//! The stored group_id is a comma-separated group set (single id = one-element set, backward
-//! compatible): the ACL is the union of every member group's rules.
+//! The stored group_id is a comma-separated group set (a bare single id is a one-element set):
+//! the ACL is the union of every member group's rules.
 //!
 //! ACL semantics: group rules compile into a `ProxyRouter` (hit = allow); empty set =
-//! empty router = deny all; `handle(None)` = unrestricted (allow everything, compatible with
-//! legacy tokens/connectors).
+//! empty router = deny all; `handle(None)` = unrestricted (allow everything — the shape for
+//! tokens/connectors without a group binding).
 
 use crate::db::Database;
 use agile_net_core::proxy::router::{Outbound, ProxyRouter};

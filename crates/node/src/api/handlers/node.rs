@@ -85,7 +85,7 @@ pub async fn status(AdminAuth(_): AdminAuth, State(state): State<ApiState>) -> R
         .collect();
 
     // Client-role proxy slot (real state written by the GUI host) takes precedence;
-    // an empty slot (pure anet-svc) keeps the legacy node-role proxy_listen behavior (no mode field)
+    // an empty slot (pure anet-svc) keeps the node-role proxy_listen behavior (no mode field)
     let client_proxy = state.runtime.client_proxy_slot.load();
     let proxy_json = match &**client_proxy {
         Some(info) => json!({

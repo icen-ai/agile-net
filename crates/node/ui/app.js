@@ -672,7 +672,7 @@ async function renderDashboard() {
             (c.status === 'connected' ? 'b-ok' : (c.status === 'disconnected' ? 'b-off' : 'b-warn')) + '">' +
             esc(connStatusText(c.status)) + '</span></div>').join('')
         : '-';
-      // Local proxy sub-line: with mode (client proxy slot) → mode + listen; otherwise the node's legacy proxy_listen wording
+      // Local proxy sub-line: with mode (client proxy slot) → mode + listen; otherwise the node's proxy_listen wording
       const proxySub = P.mode
         ? esc(proxyModeText(P.mode)) + (P.enabled && P.listen ? ' · ' + esc(P.listen) : '')
         : (P.enabled ? esc(P.listen) + ' · ' + T('dashboard.proxyStats', { active: P.active_connections||0, rules: P.rule_count||0 }) : T('dashboard.proxyRules', { n: P.rule_count||0 }));

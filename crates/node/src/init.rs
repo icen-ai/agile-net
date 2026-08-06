@@ -268,7 +268,7 @@ pub async fn run(args: InitArgs) -> Result<()> {
             ));
         }
         // Ensure the parent directory exists (default path ~/.anet/svc/ may not
-        // exist on a fresh install where the legacy migration was a no-op).
+        // exist on a fresh install).
         if let Some(parent) = config_path.parent() {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("创建配置目录失败: {}", parent.display()))?;
