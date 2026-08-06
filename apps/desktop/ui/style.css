@@ -439,7 +439,10 @@ label, .modal label { font-size: 11px; font-weight: 600; letter-spacing: .03em; 
 
 /* Machined cards + head band (first-child h3 only; cards without a leading h3 keep the plain look) */
 .card { background: var(--panel2); border-color: var(--border2); box-shadow: inset 0 1px 0 var(--card-hi), var(--shadow-1); }
-.card:hover { box-shadow: inset 0 1px 0 var(--card-hi), var(--shadow-2); }
+/* Hover language v2: NO lift (floating reads cheap next to a mounted panel) — border deepens one step,
+   shadow stays level 1; clickable cards answer with a head-band tint instead of motion */
+.card:hover { transform: none; box-shadow: inset 0 1px 0 var(--card-hi), var(--shadow-1); }
+.sub-card:hover, .snode-card:hover { transform: none; box-shadow: inset 0 1px 0 var(--card-hi), var(--shadow-1); }
 .card > h3:first-child {
   margin: -16px -18px 12px; padding: 9px 18px 10px;
   background: var(--bg2); border-bottom: 1px solid var(--border);
@@ -465,7 +468,8 @@ label, .modal label { font-size: 11px; font-weight: 600; letter-spacing: .03em; 
 
 /* Dashboard cards: same machining; .dc-head becomes the band (align-self:stretch cancels .dcard's align-items:flex-start, width:auto cancels .dcard > * width:100% — so the negative margins stretch the band exactly over the card padding) */
 .dcard { background: var(--panel2); border-color: var(--border2); box-shadow: inset 0 1px 0 var(--card-hi), var(--shadow-1); }
-.dcard[data-goto]:hover { box-shadow: inset 0 1px 0 var(--card-hi), var(--shadow-2); }
+.dcard[data-goto]:hover { transform: none; box-shadow: inset 0 1px 0 var(--card-hi), var(--shadow-1); }
+.dcard[data-goto]:hover .dc-head { background: var(--chip); }
 .dcard > .dc-head {
   align-self: stretch; width: auto; margin: -13px -15px 0; padding: 8px 14px 9px;
   background: var(--bg2); border-bottom: 1px solid var(--border);

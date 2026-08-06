@@ -20,7 +20,7 @@ AgileNet 有三套用户界面：节点 Web 管理后台、节点 TUI 终端、�
 | `--link` / `--ring` | `#2E3237` / `#2E3237` | `#EEEEEE` / `#EEEEEE` | 链接（带下划线）/ 聚焦环——主题无蓝，激活与焦点一律近黑（深主题近白） |
 | `--ok` / `--warn` / `--danger` | `#61C555` / `#F6BE50` / `#ED6A5F` | `#5FCF65` / `#F8CE52` / `#F96057` | 语义基准色 = **macOS 红绿灯**（仅填充/圆点/进度条/开关等图形场景） |
 | `--ok-text` / `--warn-text` / `--danger-text` | `#3E8E2E` / `#9A7414` / `#CE3F34` | 同基准色 | 语义文本色：基准色直接作文字对比度不足，浅主题用加深变体（深主题亮色可直接作文本） |
-| `--shadow-1` / `--shadow-2` / `--shadow-3` | 双层柔和投影（alpha .045/.08~.12/.06~.14） | 同层级加深（alpha .24~.28/.36~.40/.40~.48） | 阴影层级：1 卡片（hover 微抬升并升至 2 级）/ 2 弹层·菜单·浮层 / 3 模态；深色以 `--glass-border` 发光补偿 |
+| `--shadow-1` / `--shadow-2` / `--shadow-3` | 双层投影（v2 不透明度约翻倍） | 同层级加深 | 阴影层级：1 卡片 / 2 弹层·菜单·浮层 / 3 模态；hover 不浮起不升级（v2 起），深色以 `--glass-border` 发光补偿 |
 | `--glass-bg` / `--glass-border` | `rgba(252,252,252,.78)` / `rgba(0,0,0,.08)` | `rgba(56,54,54,.78)` / `rgba(255,255,255,.10)` | 玻璃拟态（须配合 backdrop-filter blur；ctx-menu/float-menu 浮层） |
 | `--info` / `--info-text` / `--info-bg` | `#5484BC` / `#3E6A9E` / `rgba(84,132,188,.14)` | `#7EA6D8` / 同 / `rgba(126,166,216,.14)` | info 语义（日志级别用；主题无蓝，取低饱和钢蓝） |
 | `--tbl-head-bg` / `--tbl-row-hover` / `--tbl-row-alt` | `#F1F1F1` / `rgba(0,0,0,.03)` / `rgba(0,0,0,.015)` | `#383636` / `rgba(255,255,255,.04)` / `rgba(255,255,255,.02)` | 表格：粘性表头底 / 行 hover / 极淡斑马纹 |
@@ -42,7 +42,7 @@ AgileNet 有三套用户界面：节点 Web 管理后台、节点 TUI 终端、�
 | `--mast-*` 组 | 固定深色（两主题同值）：`--mast-bg`/`--mast-border`/`--mast-hi`/`--mast-text`/`--mast-dim`/`--mast-dim2`/`--mast-faint`/`--mast-div`/`--mast-btn-*`/`--mast-on-*` | 同左 | 深色仪器主卡（首页 hero 总电闸面板，深浅主题均为固定深色） |
 
 - 圆角：卡片 10px（`--radius`），按钮 8px，输入框 6px（硬边底缘 4px），徽标与胶囊 999px，上下文菜单 10px（菜单项 6px）
-- 阴影：三级层级 token —— `--shadow-1` 卡片（hover translateY(-1px) 微抬升并升至 `--shadow-2`）、`--shadow-2` 弹层/菜单/浮层、`--shadow-3` 模态；深色同层级加深，玻璃拟态浮层另以 `--glass-border` 发光补偿。`--shadow` 为管理端 crates/node/ui 存量引用的兼容别名（值 = `--shadow-3`），新代码勿用。v2 起三级不透明度约翻倍（卡片读作「装在机架上的面板」而非漂浮纸片）
+- 阴影：三级层级 token —— `--shadow-1` 卡片、`--shadow-2` 弹层/菜单/浮层、`--shadow-3` 模态；深色同层级加深，玻璃拟态浮层另以 `--glass-border` 发光补偿。`--shadow` 为管理端 crates/node/ui 存量引用的兼容别名（值 = `--shadow-3`），新代码勿用。v2 起三级不透明度约翻倍（卡片读作「装在机架上的面板」而非漂浮纸片）；**hover 不再浮起**（无 translateY、阴影不升级）——边框加深一档、可点卡片以铭牌头带微加深作响应（float/raise 是消费级语言，与机架面板冲突）
 - **内容区质感 v2（两端一致，以后层级联覆盖落在各自 style.css 末尾）**：①机加工卡——卡面 `--panel2` + `--border2` 描边 + `--card-hi` 顶高光 + 加倍阴影；②铭牌头带——`.card > h3:first-child` / `.dc-head` / `.modal > h3:first-child` 负边距头带（`--bg2` 底 + 底线 + 12px 字距丝印，零标记改动）；③硬边控件——input/textarea/select/agsel-btn 下沉灰填充 + 2px 底缘，聚焦底缘近黑；④未开启降饱和——首页角色卡 `.dcard.off`（syncDashOff 驱动：头带开关关 → 整卡退灰去影、卡身压 45%，开关本身保持全亮作开启入口），hero 主卡停止态数据区压 30%；⑤深色仪器主卡——首页 hero 固定深色 `--mast-*` 面板（两主题同深色），状态墙横排分隔线 + 等宽大数字，总电闸运行态反相白键 + 白色呼吸环
 - 侧栏选中项为反相胶囊（`--accent-grad` 微渐变 + `--shadow-1`；浅主题深底浅字，深主题浅底深字），hover 用 `--hover`
 - 默认主题为浅色；深/浅切换持久化于 localStorage（`ag_theme`）
