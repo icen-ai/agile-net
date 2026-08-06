@@ -46,19 +46,27 @@ pub(crate) async fn fetch_exit_ip(state: State<'_, AppState>, via_proxy: bool) -
         .user_agent(concat!("anet-gui/", env!("CARGO_PKG_VERSION")))
         .timeout(std::time::Duration::from_secs(5));
     if via_proxy {
-        // In TUN mode the mixed port (57892) is disabled by the anti-loop design, so probes go through
-        // the subscription exit socks port (57893) instead: socks5h scheme (proxy-side DNS resolution,
-        // avoiding fake-ip range addresses failing local direct connect); non-TUN uses the mixed port http proxy.
-        let proxy = if state.roles.lock().await.tun_mode {
+        // Egress probe path, in order: TUN → subscription exit socks (57893; mixed port is disabled by the
+        // anti-loop design); kernel running → mixed port http; otherwise the anet local proxy (57890) —
+        // mihomo only owns the subscription mechanism; with the kernel off the anet inbound still routes
+        // (direct/tunnel per its rules), so the probe keeps working and reflects the real egress.
+        let tun = state.roles.lock().await.tun_mode;
+        let kernel_on = state.kernel.running().await;
+        let proxy_port = state.client.proxy_port();
+        let proxy = if tun {
             reqwest::Proxy::all(format!(
                 "socks5h://127.0.0.1:{}",
                 subscription::MIHOMO_SOCKS_PORT
             ))
-        } else {
+        } else if kernel_on {
             reqwest::Proxy::all(format!(
                 "http://127.0.0.1:{}",
                 subscription::MIHOMO_MIXED_PORT
             ))
+        } else if proxy_port > 0 {
+            reqwest::Proxy::all(format!("http://127.0.0.1:{proxy_port}"))
+        } else {
+            return Err("代理未启动，无法经代理探测".into());
         }
         .map_err(map_err)?;
         builder = builder.proxy(proxy);
@@ -120,6 +128,69 @@ pub(crate) async fn lan_ip() -> Result<LanIpInfo, String> {
     })
     .await
     .map_err(map_err)?
+}
+
+/// Local-proxy cumulative traffic (anet ProxyStats). The hero card rates/connections fall back to this
+/// when the subscription kernel is off — mihomo only ever owned the subscription mechanism.
+#[derive(Debug, Clone, Serialize)]
+pub struct ProxyTrafficInfo {
+    pub running: bool,
+    pub bytes_up: u64,
+    pub bytes_down: u64,
+    pub active: u64,
+    pub total: u64,
+}
+
+#[tauri::command]
+pub(crate) async fn proxy_traffic(state: State<'_, AppState>) -> Result<ProxyTrafficInfo, String> {
+    use std::sync::atomic::Ordering;
+    match state.client.proxy_stats() {
+        Some(s) => Ok(ProxyTrafficInfo {
+            running: true,
+            bytes_up: s.bytes_up.load(Ordering::Relaxed),
+            bytes_down: s.bytes_down.load(Ordering::Relaxed),
+            active: s.active_connections.load(Ordering::Relaxed),
+            total: s.total_connections.load(Ordering::Relaxed),
+        }),
+        None => Ok(ProxyTrafficInfo {
+            running: false,
+            bytes_up: 0,
+            bytes_down: 0,
+            active: 0,
+            total: 0,
+        }),
+    }
+}
+
+/// App-side recent logs (anet's own tracing ring buffer; 实时日志 tab's fallback when the kernel is off).
+/// Output shape matches sub_logs ({time: epoch secs, level, payload}) so the frontend renderer is shared.
+#[tauri::command]
+pub(crate) async fn app_logs(
+    state: State<'_, AppState>,
+    limit: Option<usize>,
+    level: Option<String>,
+) -> Result<Vec<serde_json::Value>, String> {
+    let mut entries = state
+        .app_logs
+        .query(limit.unwrap_or(500).clamp(1, 1000), level.as_deref(), None);
+    entries.reverse(); // buffer is newest-first; the incremental renderer wants oldest→newest
+    Ok(entries
+        .into_iter()
+        .map(|e| {
+            serde_json::json!({
+                "time": e.ts / 1000,
+                "level": e.level,
+                "payload": format!("[{}] {}", e.module, e.message),
+            })
+        })
+        .collect())
+}
+
+/// Clear the app-side log ring (实时日志 tab's 清空 when showing the anet source).
+#[tauri::command]
+pub(crate) async fn app_logs_clear(state: State<'_, AppState>) -> Result<(), String> {
+    state.app_logs.clear();
+    Ok(())
 }
 
 #[cfg(test)]

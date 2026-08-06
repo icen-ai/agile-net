@@ -167,6 +167,23 @@ pub fn sha256_hex(data: &[u8]) -> String {
     format!("{:x}", digest)
 }
 
+/// Spawn a console program without ever flashing a console window (GUI context).
+/// Windows GUI apps spawning console tools (netsh/reg/route/powershell/…) otherwise flash a console
+/// per call and can hit 0xc0000142 (console subsystem init failure). CREATE_NO_WINDOW never allocates
+/// one; captured stdout/stderr pipes are unaffected. Single source project-wide — every Command::new
+/// for a console program goes through this.
+pub fn silent_command(prog: &str) -> std::process::Command {
+    #[allow(unused_mut)]
+    let mut c = std::process::Command::new(prog);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        c.creation_flags(CREATE_NO_WINDOW);
+    }
+    c
+}
+
 /// Minimal base64 encoder (core avoids a base64 dependency; single hand-rolled copy project-wide).
 pub fn base64_encode(data: &[u8]) -> String {
     const TABLE: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";

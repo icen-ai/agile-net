@@ -235,6 +235,9 @@ struct ConnRecGuard {
     failed: Option<String>,
 }
 
+/// Counter pair handed to the stream wrapper: per-connection (ring row) + per-target (aggregated cell).
+type CounterPair = (Option<Arc<ActiveCounters>>, Option<Arc<ActiveCounters>>);
+
 impl ConnRecGuard {
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -246,23 +249,26 @@ impl ConnRecGuard {
         outbound: &Outbound,
         hit: HitLayer,
         kill_tx: Option<tokio::sync::oneshot::Sender<()>>,
-    ) -> (Self, Option<Arc<ActiveCounters>>) {
+    ) -> (Self, CounterPair) {
         let kind = match outbound {
             Outbound::Direct => OutboundKind::Direct,
             Outbound::Tunnel { node_id } => OutboundKind::Tunnel { node: node_id.clone() },
             Outbound::Forward { .. } => OutboundKind::Forward,
         };
         let Some(log) = ctx.conlog.clone() else {
-            return (Self { log: None, id: 0, failed: None }, None);
+            return (Self { log: None, id: 0, failed: None }, (None, None));
         };
         match log.begin(proto, host, port, mapped_to, kind, hit) {
-            Some((id, ctr)) => {
+            Some(h) => {
                 if let Some(tx) = kill_tx {
-                    log.attach_kill(id, tx);
+                    log.attach_kill(h.id, tx);
                 }
-                (Self { log: Some(log), id, failed: None }, Some(ctr))
+                (
+                    Self { log: Some(log), id: h.id, failed: None },
+                    (Some(h.conn), Some(h.agg)),
+                )
             }
-            None => (Self { log: None, id: 0, failed: None }, None),
+            None => (Self { log: None, id: 0, failed: None }, (None, None)),
         }
     }
 
@@ -465,7 +471,7 @@ async fn handle_socks5(
         let (outbound, hit) = router_ref.decide_inbound_hit(&host);
         (host, outbound.clone(), hit, mapped_to)
     };
-    let (mut rec, ctr) = ConnRecGuard::new(
+    let (mut rec, ctrs) = ConnRecGuard::new(
         &ctx,
         Proto::Socks5,
         &orig_host,
@@ -515,7 +521,7 @@ async fn handle_socks5(
                         .write_all(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
                         .await?;
 
-                    let mut stream = CountingIo::new(stream, ctr);
+                    let mut stream = CountingIo::new(stream, ctrs.0.clone(), ctrs.1.clone());
                     let (up, down) =
                         tokio::io::copy_bidirectional(&mut stream, &mut target_stream).await?;
                     ctx.stats.bytes_up.fetch_add(up, Ordering::Relaxed);
@@ -542,7 +548,7 @@ async fn handle_socks5(
                 let to_label = opener.transit_label(&node_id, &target_host);
                 let tunnel_outbound = TunnelOutbound::new(opener);
                 let (up, down) = tunnel_outbound
-                    .proxy_stream(&node_id, &target_host, target_port, CountingIo::new(stream, ctr))
+                    .proxy_stream(&node_id, &target_host, target_port, CountingIo::new(stream, ctrs.0.clone(), ctrs.1.clone()))
                     .await?;
                 ctx.stats.bytes_up.fetch_add(up, Ordering::Relaxed);
                 ctx.stats.bytes_down.fetch_add(down, Ordering::Relaxed);
@@ -566,7 +572,7 @@ async fn handle_socks5(
             // while mid-pump resets stay Closed; the ok reply is already sent either way
             match Socks5ForwardOutbound::connect(addr, &target_host, target_port).await {
                 Ok(mut upstream) => {
-                    let mut stream = CountingIo::new(stream, ctr);
+                    let mut stream = CountingIo::new(stream, ctrs.0.clone(), ctrs.1.clone());
                     let (up, down) =
                         tokio::io::copy_bidirectional(&mut stream, &mut upstream).await?;
                     ctx.stats.bytes_up.fetch_add(up, Ordering::Relaxed);
@@ -695,7 +701,7 @@ async fn handle_http(
         let (outbound, hit) = router_ref.decide_inbound_hit(&host);
         (host, outbound.clone(), hit, mapped_to)
     };
-    let (mut rec, ctr) = ConnRecGuard::new(
+    let (mut rec, ctrs) = ConnRecGuard::new(
         &ctx,
         Proto::Http,
         &orig_host,
@@ -750,7 +756,7 @@ async fn handle_http(
                         target_stream.write_all(&req_buf).await?;
                     }
 
-                    let mut stream = CountingIo::new(stream, ctr);
+                    let mut stream = CountingIo::new(stream, ctrs.0.clone(), ctrs.1.clone());
                     let (up, down) =
                         tokio::io::copy_bidirectional(&mut stream, &mut target_stream).await?;
                     ctx.stats.bytes_up.fetch_add(up, Ordering::Relaxed);
@@ -789,7 +795,7 @@ async fn handle_http(
                     channel.write_all(&req_buf).await?;
                 }
 
-                let (up, down) = crate::relay::bridge::bridge(CountingIo::new(stream, ctr), channel).await?;
+                let (up, down) = crate::relay::bridge::bridge(CountingIo::new(stream, ctrs.0.clone(), ctrs.1.clone()), channel).await?;
                 ctx.stats.bytes_up.fetch_add(up, Ordering::Relaxed);
                 ctx.stats.bytes_down.fetch_add(down, Ordering::Relaxed);
                 record_transit(&ctx, &to_label, up, down);
@@ -818,7 +824,7 @@ async fn handle_http(
                         // plain HTTP requests must carry the original request when forwarded
                         upstream.write_all(&req_buf).await?;
                     }
-                    let mut stream = CountingIo::new(stream, ctr);
+                    let mut stream = CountingIo::new(stream, ctrs.0.clone(), ctrs.1.clone());
                     let (up, down) =
                         tokio::io::copy_bidirectional(&mut stream, &mut upstream).await?;
                     ctx.stats.bytes_up.fetch_add(up, Ordering::Relaxed);

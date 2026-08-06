@@ -137,7 +137,7 @@ fn load_mtu_table(_t: &mut MtuTable) {}
     target_os = "netbsd"
 ))]
 fn shell_out(program: &str, args: &[&str]) -> Option<String> {
-    let out = std::process::Command::new(program).args(args).output().ok()?;
+    let out = agile_net_core::util::silent_command(program).args(args).output().ok()?;
     out.status
         .success()
         .then(|| String::from_utf8_lossy(&out.stdout).into_owned())

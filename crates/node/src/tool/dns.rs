@@ -183,7 +183,7 @@ fn system_dns_config() -> Result<SystemDns, String> {
     if cfg!(windows) {
         // Registry Tcpip\Parameters\Interfaces: per-interface NameServer / DhcpNameServer
         const KEY: &str = r"HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces";
-        let output = std::process::Command::new("reg")
+        let output = agile_net_core::util::silent_command("reg")
             .args(["query", KEY, "/s"])
             .output()
             .map_err(|e| format!("reg query 执行失败：{e}"))?;

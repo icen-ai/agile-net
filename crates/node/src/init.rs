@@ -384,7 +384,7 @@ fn register_service(config_abs: &Path) -> Result<bool> {
 }
 
 fn run_cmd(prog: &str, args: &[&str]) -> Result<()> {
-    let out = std::process::Command::new(prog).args(args).output()?;
+    let out = agile_net_core::util::silent_command(prog).args(args).output()?;
     if out.status.success() {
         Ok(())
     } else {

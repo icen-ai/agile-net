@@ -498,6 +498,13 @@ impl AgileNetClient {
         self.inner.conn_log.clone()
     }
 
+    /// Proxy inbound stats handle (Some while the local proxy runs). The GUI reads cumulative
+    /// bytes/active counts here when the subscription kernel is off — mihomo only ever owned the
+    /// subscription mechanism; rates and egress state must not go blind with it.
+    pub fn proxy_stats(&self) -> Option<Arc<agile_net_core::proxy::inbound::ProxyStats>> {
+        self.inner.proxy_stats.load_full()
+    }
+
     /// Shared handle of the merged router (route re-publishing: injects the embedded node connector).
     pub fn shared_router_handle(&self) -> Arc<ArcSwap<ProxyRouter>> {
         self.inner.shared_router.clone()

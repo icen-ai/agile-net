@@ -158,7 +158,7 @@ pub fn sweep_orphan_kernels() {
          | ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }}",
         exe.to_string_lossy()
     );
-    let _ = std::process::Command::new("powershell")
+    let _ = agile_net_core::util::silent_command("powershell")
         .args(["-NoProfile", "-Command", &script])
         .output();
 }

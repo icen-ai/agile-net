@@ -2,11 +2,12 @@
 /* Split from app.js: logs view / connection records / event center */
 
 /* ================= Logs view =================
-   连接记录 tab: anet local-proxy inbound full ingestion (conlog_* commands, docs/todo/conn-log.md) — direct/tunnel/
-   subscription incl. bypass; recording default off; 50-row pages; kernel-independent (records even with the kernel down).
-   实时日志 / 命中追踪 tabs stay on the mihomo kernel source; 事件中心 is the local audit log.
-   Poll only while this page is open (records/logs 1s, hits 2s, events 10s; single timer dispatched by tab), stops on leave;
-   all renders are signature-compared, no DOM rewrite on unchanged data. */
+   连接记录 tab: anet local-proxy inbound full ingestion, PER-TARGET aggregated (host:port one row;
+   live rates from 1s cumulative deltas; session totals + persisted historical baseline in the row detail).
+   Recording default off; 50-row pages; kernel-independent (docs/todo/conn-log.md).
+   实时日志: mihomo kernel logs when the kernel runs, anet's own app log ring (app_logs) when it's off —
+   mihomo only owns the subscription mechanism. 命中追踪 stays kernel-sourced; 事件中心 is the local audit log.
+   Poll only while this page is open (records/logs 1s, hits 2s, events 10s); all renders signature-compared. */
 
 /* ---- Log line rendering (level normalization + keyword mark.logv-hl highlight; esc first then highlight, the replacement string is escaped text too) ---- */
 function canonLevel(level) {
@@ -31,8 +32,8 @@ const PAGE = 50;
 const LogsView = {
   tab: 'conn',
   timer: null, tick: 0,
-  kernelOff: false, // kernel not running and empty state already shown (kernel-sourced tabs idle; one final pull lands the empty state)
-  cl: { statSig: '', sig: '', page: 0 },   // connection records state
+  kernelOff: false, // kernel-sourced tabs idle when the kernel is down (one final pull lands the empty state)
+  cl: { statSig: '', sig: '', page: 0, prev: {}, expanded: null, items: [] }, // prev: key → {up,down,t} for 1s rate deltas
   hitsSig: '', hitsAll: [], hitsPage: 0,
   evSig: '', evAll: [], evPage: 0,
   entries: [],      // live log cache (data source for full re-render on filter change)
@@ -52,14 +53,15 @@ const LogsView = {
     // Connection records are anet-side: kernel-independent, poll every second
     if (this.tab === 'conn') { this.pollConns(); return; }
     if (this.tab === 'ev') { if (this.tick % 10 === 0) this.pollEvents(); return; } // events are low frequency: 10s (local event log, no kernel dependency)
-    // Kernel-sourced tabs: kernel not running → idle and skip kernel IPC; right after a kernel stop, allow one final pull for the empty state
+    // Live logs: kernel source while it runs, anet app log ring otherwise — always poll
+    if (this.tab === 'log') { this.pollLogs(); return; }
+    // Hits are kernel-only: idle when the kernel is down (one settling pull lands the empty state)
     let settling = false;
     if (!window._subRunning) {
       if (this.kernelOff) return;
       this.kernelOff = true; settling = true;
     } else this.kernelOff = false;
-    if (this.tab === 'hits') { if (settling || this.tick % 2 === 0) this.pollHits(); return; }
-    if (this.tab === 'log') this.pollLogs();
+    if (this.tab === 'hits') { if (settling || this.tick % 2 === 0) this.pollHits(); }
   },
   pollNow() {
     if (this.tab === 'log') this.pollLogs();
@@ -68,7 +70,7 @@ const LogsView = {
     else this.pollConns();
   },
 
-  /* ---- Connection records (1s; conlog_status toolbar sync + conlog_query page; wholesale redraw on signature compare) ---- */
+  /* ---- Connection records (per-target aggregated; conlog_status toolbar + conlog_hosts page, 1s) ---- */
   clFilter() {
     const time = $('cl-time').value;
     let fromMs = null, toMs = null;
@@ -99,13 +101,23 @@ const LogsView = {
       if (ssig !== this.cl.statSig) {
         this.cl.statSig = ssig;
         if ($('cl-enable').checked !== st.enabled) $('cl-enable').checked = st.enabled;
-        setText('cl-stats', AgI18n.t('logs.cl.stats', { down: fmtBytes(st.down), up: fmtBytes(st.up), n: st.closed, a: st.active }));
+        setText('cl-stats', AgI18n.t('logs.cl.stats', { down: fmtBytes(st.down), up: fmtBytes(st.up), n: st.hosts, a: st.active }));
       }
     } catch (e) { return; }
     let v;
-    try { v = await invoke('conlog_query', this.clFilter()); } catch (e) { return; }
+    try { v = await invoke('conlog_hosts', this.clFilter()); } catch (e) { return; }
+    // live per-target rates: session-cumulative deltas over the 1s poll cadence
+    const now = Date.now();
+    for (const r of v.items) {
+      const p = this.cl.prev[r.key];
+      const dt = p ? Math.max(0.2, (now - p.t) / 1000) : 0;
+      r.down_rate = p ? Math.max(0, (r.sess_down - p.down) / dt) : 0;
+      r.up_rate = p ? Math.max(0, (r.sess_up - p.up) / dt) : 0;
+      this.cl.prev[r.key] = { up: r.sess_up, down: r.sess_down, t: now };
+    }
+    this.cl.items = v.items;
     const sig = JSON.stringify(v);
-    if (sig === this.cl.sig) return;
+    if (sig === this.cl.sig) { this.restoreClDetail(); return; }
     this.cl.sig = sig;
     const body = $('lg-conn-body');
     if (!v.items.length) {
@@ -117,13 +129,48 @@ const LogsView = {
     setText('cl-page-info', AgI18n.t('logs.cl.pageInfo', { p: Math.min(this.cl.page + 1, pages), pages, n: v.total }));
     $('cl-prev').disabled = this.cl.page <= 0;
     $('cl-next').disabled = this.cl.page + 1 >= pages;
+    this.restoreClDetail();
   },
 
-  /* ---- Live logs (1s; incremental append, full redraw on buffer rotation / filter change) ---- */
+  /* Row detail expand (click; only one open at a time, re-inserted on every redraw = live refresh).
+     Covers what the table hides: historical / this-session cumulative bytes, first/last seen, conn/fail
+     counts, source — plus the last few per-connection rows from the ring layer. */
+  async toggleClDetail(key) {
+    const body = $('lg-conn-body');
+    const old = body.querySelector('.conn-detail-row');
+    if (old) old.remove();
+    if (this.cl.expanded === key) { this.cl.expanded = null; return; }
+    this.cl.expanded = key;
+    await this.restoreClDetail();
+  },
+  async restoreClDetail() {
+    const key = this.cl.expanded;
+    if (!key) return;
+    const body = $('lg-conn-body');
+    const old = body.querySelector('.conn-detail-row');
+    if (old) old.remove();
+    const rec = this.cl.items.find((r) => r.key === key);
+    if (!rec) { this.cl.expanded = null; return; }
+    let anchor = null;
+    body.querySelectorAll('tr[data-key]').forEach((tr) => { if (tr.dataset.key === key) anchor = tr; });
+    if (!anchor) { this.cl.expanded = null; return; }
+    let recent = [];
+    try {
+      const q = await invoke('conlog_query', { keyword: rec.host, source: 'all', limit: 5 });
+      recent = q.items || [];
+    } catch (e) { /* keep the summary even if the ring query fails */ }
+    anchor.insertAdjacentHTML('afterend', clDetailRowHtml(rec, recent));
+  },
+
+  /* ---- Live logs (1s; kernel source while running, anet app ring otherwise; incremental append) ---- */
   async pollLogs() {
     if (HTTP_MODE) return;
     let logs;
-    try { logs = await invoke('sub_logs'); } catch (e) { return; }
+    if (window._subRunning) {
+      try { logs = await invoke('sub_logs'); } catch (e) { return; }
+    } else {
+      try { logs = await invoke('app_logs', { limit: 500 }); } catch (e) { return; }
+    }
     this.entries = logs || [];
     this.renderLogs(false);
   },
@@ -137,7 +184,7 @@ const LogsView = {
       return !kwl || (e.payload || '').toLowerCase().includes(kwl);
     };
     const entries = this.entries;
-    if (!entries.length) { // cleared or kernel not running
+    if (!entries.length) { // cleared or nothing yet
       if (view.children.length) view.innerHTML = '';
       this.logCursor = null;
       return;
@@ -263,16 +310,13 @@ function evRowHtml(e) {
     '<span class="ev-detail" title="' + esc(e.detail) + '">' + esc(e.detail) + '</span></div>';
 }
 
-/* ---- Connection record row (anet inbound full ingestion) ----
-   serde shapes: state = {state:'active'|'closed'|'failed', reason?}, outbound = {kind:'direct'|'forward'|'tunnel', node?};
-   active rows get the 3px accent bar and live cumulative bytes (1s re-render), closed rows dimmed. */
+/* ---- Aggregated target row (per host:port) ----
+   Live rows get the 3px accent bar and live rates; inactive rows dimmed. */
 function clRowHtml(r) {
-  const st = typeof r.state === 'string' ? r.state : r.state.state;
-  const live = st === 'active';
-  const d = new Date(r.start_ms);
+  const live = r.active > 0;
+  const d = new Date(r.last_ms);
   const pad = (n) => String(n).padStart(2, '0');
-  const time = pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
-  const mapped = r.mapped_to ? ' <span class="dim">→ ' + esc(r.mapped_to) + '</span>' : '';
+  const last = pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
   const tun = r.source === 'tun_relay' ? ' <span class="pill pill-dim">TUN</span>' : '';
   const kind = r.outbound.kind;
   const outHtml = kind === 'direct'
@@ -280,21 +324,53 @@ function clRowHtml(r) {
     : kind === 'forward'
       ? '<span class="pill pill-warn">' + AgI18n.t('logs.out.forward') + '</span>'
       : '<span class="pill pill-ok">' + esc(AgI18n.t('logs.out.tunnel', { node: r.outbound.node })) + '</span>';
-  const durMs = Math.max(0, (live ? Date.now() : r.end_ms) - r.start_ms);
   const statePill = live
     ? '<span class="pill pill-ok">' + AgI18n.t('logs.conn.live') + '</span>'
-    : st === 'closed'
-      ? '<span class="pill pill-dim">' + AgI18n.t('logs.conn.closed') + '</span>'
-      : '<span class="pill pill-danger" title="' + esc(r.state.reason || '') + '">' + AgI18n.t('logs.cl.failed') + '</span>';
-  return '<tr data-cid="' + r.id + '" data-host="' + esc(r.host) + '" data-live="' + (live ? '1' : '') + '"' + (live ? '' : ' class="dim"') + '>' +
-    '<td class="mono"' + (live ? ' style="box-shadow:inset 3px 0 0 var(--accent)"' : '') + '>' + time + '</td>' +
-    '<td class="mono" title="' + esc(r.host + ':' + r.port) + '">' + esc(r.host) + '<span class="dim">:' + r.port + '</span>' + mapped + tun + '</td>' +
+    : r.fails > 0
+      ? '<span class="pill pill-danger">' + AgI18n.t('logs.cl.failed') + '·' + r.fails + '</span>'
+      : '<span class="pill pill-dim">' + AgI18n.t('logs.conn.closed') + '</span>';
+  return '<tr data-key="' + esc(r.key) + '" data-host="' + esc(r.host) + '" data-port="' + r.port + '" data-live="' + (live ? '1' : '') + '" style="cursor:pointer"' + (live ? '' : ' class="dim"') + '>' +
+    '<td class="mono" title="' + esc(r.key) + '"' + (live ? ' style="box-shadow:inset 3px 0 0 var(--accent)"' : '') + '>' + esc(r.host) + '<span class="dim">:' + r.port + '</span>' + tun + '</td>' +
     '<td>' + outHtml + '</td>' +
     '<td class="dim">' + esc(AgI18n.t('logs.hit.' + r.hit)) + '</td>' +
-    '<td class="mono">' + fmtBytes(r.down) + '</td>' +
-    '<td class="mono">' + fmtBytes(r.up) + '</td>' +
-    '<td class="mono">' + fmtDur(Math.round(durMs / 1000)) + '</td>' +
+    '<td class="mono">' + (live ? fmtBytes(Math.round(r.down_rate)) + '/s' : '—') + '</td>' +
+    '<td class="mono">' + (live ? fmtBytes(Math.round(r.up_rate)) + '/s' : '—') + '</td>' +
+    '<td class="mono">' + r.conns + '</td>' +
+    '<td class="mono dim">' + last + '</td>' +
     '<td>' + statePill + '</td></tr>';
+}
+
+/* Row detail (click expand): cumulative bytes (history / this session), first/last seen, conn & fail counts,
+   source — then the last few per-connection rows from the ring layer. */
+function clDetailRowHtml(r, recent) {
+  const day = (ms) => {
+    const d = new Date(ms);
+    const pad = (n) => String(n).padStart(2, '0');
+    return pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+  };
+  const kv = (k, v) => '<span><span class="dim">' + k + ' </span>' + v + '</span>';
+  let recentHtml = '';
+  if (recent.length) {
+    recentHtml = '<div style="margin-top:6px;border-top:1px dashed var(--row-border);padding-top:5px">' +
+      '<div class="dim" style="font-size:11px;margin-bottom:3px">' + AgI18n.t('logs.cl.detailRecent') + '</div>' +
+      recent.map((c) => {
+        const st = typeof c.state === 'string' ? c.state : c.state.state;
+        const d = new Date(c.start_ms);
+        const pad = (n) => String(n).padStart(2, '0');
+        const t = pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+        const stTxt = st === 'active' ? AgI18n.t('logs.conn.live') : st === 'closed' ? AgI18n.t('logs.conn.closed') : AgI18n.t('logs.cl.failed') + (c.state.reason ? '（' + c.state.reason + '）' : '');
+        return '<div class="mono" style="font-size:11px;line-height:1.7"><span class="dim">' + t + '</span>　↓' + fmtBytes(c.down) + ' ↑' + fmtBytes(c.up) + '　<span class="dim">' + esc(stTxt) + '</span></div>';
+      }).join('') + '</div>';
+  }
+  return '<tr class="conn-detail-row">' +
+    '<td colspan="8" style="padding:8px 14px 10px;border-top:none">' +
+    '<div style="font-size:12px;display:flex;gap:16px;flex-wrap:wrap;align-items:center">' +
+    kv(AgI18n.t('logs.cl.detailSess'), '<span class="mono">↓' + fmtBytes(r.sess_down) + ' ↑' + fmtBytes(r.sess_up) + '</span>') +
+    kv(AgI18n.t('logs.cl.detailHist'), '<span class="mono">↓' + fmtBytes(r.hist_down) + ' ↑' + fmtBytes(r.hist_up) + '</span>') +
+    kv(AgI18n.t('logs.cl.detailConns'), '<span class="mono">' + r.conns + (r.fails ? '（' + AgI18n.t('logs.cl.failed') + ' ' + r.fails + '）' : '') + '</span>') +
+    kv(AgI18n.t('logs.cl.detailFirst'), '<span class="mono">' + day(r.first_ms) + '</span>') +
+    kv(AgI18n.t('logs.cl.detailLast'), '<span class="mono">' + day(r.last_ms) + '</span>') +
+    '</div>' + recentHtml + '</td></tr>';
 }
 
 /* One-click add rule: direct-allow for the host / route via subscription egress (backend strips scheme/port and is idempotent) */
@@ -318,7 +394,9 @@ function initLogs() {
   $('lg-log-level').addEventListener('change', () => LogsView.renderLogs(true));
   $('btn-lg-clear').onclick = async () => {
     try {
-      await invoke('sub_clear_logs');
+      // source-routed: kernel buffers when the kernel runs, the anet app ring otherwise
+      if (window._subRunning) await invoke('sub_clear_logs');
+      else await invoke('app_logs_clear');
       LogsView.entries = [];
       LogsView.logCursor = null;
       view.innerHTML = '';
@@ -356,12 +434,12 @@ function initLogs() {
     LogsView.cl.statSig = ''; LogsView.cl.sig = '';
     LogsView.pollConns();
   };
-  // One-click clear (DOM modal; deletes the on-disk archive too)
+  // One-click clear (DOM modal; deletes the on-disk snapshot too)
   $('btn-cl-clear').onclick = async () => {
     if (!(await askConfirm({ title: AgI18n.t('logs.cl.clearTitle'), desc: AgI18n.t('logs.cl.clearConfirm'), icon: 'trash-2', danger: true }))) return;
     try {
       await invoke('conlog_clear');
-      LogsView.cl.sig = ''; LogsView.cl.statSig = ''; LogsView.cl.page = 0;
+      LogsView.cl.sig = ''; LogsView.cl.statSig = ''; LogsView.cl.page = 0; LogsView.cl.prev = {};
       LogsView.pollConns();
       toast(AgI18n.t('logs.cl.cleared'), 'ok');
     } catch (err) { toast(friendlyError(err), 'err'); }
@@ -381,19 +459,26 @@ function initLogs() {
   $('cl-tun').onchange = clRefetch;
   $('cl-prev').onclick = () => { if (LogsView.cl.page > 0) { LogsView.cl.page--; LogsView.pollConns(); } };
   $('cl-next').onclick = () => { LogsView.cl.page++; LogsView.pollConns(); };
-  // Row context menu: force kill (active only, anet-side kill switch) / direct for this domain / subscription for this domain
+  // Click a target row to expand/collapse the detail (cumulative bytes, first/last seen, recent connections)
+  $('lg-conn-body').addEventListener('click', (e) => {
+    if (e.target.closest('.conn-detail-row')) { e.stopPropagation(); return; }
+    const tr = e.target.closest('tr[data-key]');
+    if (tr) LogsView.toggleClDetail(tr.dataset.key);
+  });
+  // Row context menu: force-close every connection to this target (active only) / direct / subscription for this domain
   $('lg-conn-body').addEventListener('contextmenu', (e) => {
-    const tr = e.target.closest('tr[data-cid]');
+    if (e.target.closest('.conn-detail-row')) { e.preventDefault(); e.stopPropagation(); return; }
+    const tr = e.target.closest('tr[data-key]');
     if (!tr) return;
     e.preventDefault();
     e.stopPropagation();
-    const id = Number(tr.dataset.cid), host = tr.dataset.host;
+    const host = tr.dataset.host, port = Number(tr.dataset.port);
     const items = [];
     if (tr.dataset.live === '1') {
-      items.push({ label: AgI18n.t('logs.ctx.kill'), danger: true, fn: async () => {
+      items.push({ label: AgI18n.t('logs.cl.killTarget'), danger: true, fn: async () => {
         try {
-          await invoke('conlog_kill', { id });
-          toast(AgI18n.t('logs.killed'), 'ok');
+          const n = await invoke('conlog_kill_target', { host, port });
+          toast(AgI18n.t('logs.cl.killedN', { n }), 'ok');
           LogsView.pollConns();
         } catch (err) { toast(friendlyError(err), 'err'); }
       } });

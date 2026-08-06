@@ -21,14 +21,8 @@ pub(super) fn kernel_bin_name() -> &'static str {
 }
 
 /// Spawn a child process without a console window (GUI context calling console programs like reg/networksetup).
+/// Delegates to the project-wide single source (core::util::silent_command).
+#[allow(dead_code)] // callers are Windows/macOS-cfg'd; the Linux build has none
 pub(super) fn silent_command(prog: &str) -> std::process::Command {
-    #[allow(unused_mut)]
-    let mut c = std::process::Command::new(prog);
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-        c.creation_flags(CREATE_NO_WINDOW);
-    }
-    c
+    agile_net_core::util::silent_command(prog)
 }

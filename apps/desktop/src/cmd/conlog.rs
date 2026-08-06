@@ -1,33 +1,34 @@
 //! Split out of lib.rs-style cmd layout: connection log commands (design docs/todo/conn-log.md).
 //!
 //! The engine-owned ConnLog (state.client.conn_log()) records one row per local-proxy inbound connection
-//! across Direct/Tunnel/Forward with the hit layer. Enabled flag persists as roles.conn_log_enabled
-//! (default off — records are browsing history, strictly opt-in). Persistence is the smart-flush task:
-//! JSONL append to ~/.anet/gui/conn-log.jsonl on batch (>=200 unflushed) / 30s idle sweep / disable,
-//! never per-record writes; startup replays the tail into memory. Clear removes memory + file.
+//! (ring layer) and aggregates per target host:port (primary 连接记录 view: live counters + session totals
+//! plus persisted historical baseline). Enabled flag persists as roles.conn_log_enabled (default off —
+//! records are browsing history, strictly opt-in). Persistence is the smart-flush task: snapshot write
+//! to ~/.anet/gui/conn-stats.json on dirty (5s tick) / 30s idle sweep with active conns / disable —
+//! atomic tmp+rename, never per-connection writes. Clear removes memory + file.
 
 use crate::{roles, AppState};
-use agile_net_core::proxy::conlog::{ConnFilter, ConnLog, ConnRec, QueryOut, CONLOG_FLUSH_BATCH};
+use agile_net_core::proxy::conlog::{ConnFilter, ConnLog, HostQueryOut, QueryOut};
 use roles::RoleSettings;
 use serde::Serialize;
 use std::sync::Arc;
 use tauri::{AppHandle, Manager, State};
 
-/// Persistence file (~/.anet/gui/conn-log.jsonl)
-pub(crate) fn conn_log_path() -> std::path::PathBuf {
-    roles::data_dir().join("conn-log.jsonl")
+/// Persistence file (~/.anet/gui/conn-stats.json)
+pub(crate) fn conn_stats_path() -> std::path::PathBuf {
+    roles::data_dir().join("conn-stats.json")
 }
 
 fn log_of(state: &State<'_, AppState>) -> Arc<ConnLog> {
     state.client.conn_log()
 }
 
-/// Toolbar status: enabled flag + session totals (active count and live up/down included)
+/// Toolbar status: enabled flag + session totals (target-aggregated, live values included)
 #[derive(Serialize)]
 pub struct ConlogStatus {
     pub enabled: bool,
     pub active: usize,
-    pub closed: usize,
+    pub hosts: usize,
     pub up: u64,
     pub down: u64,
 }
@@ -39,14 +40,56 @@ pub(crate) async fn conlog_status(state: State<'_, AppState>) -> Result<ConlogSt
     Ok(ConlogStatus {
         enabled: log.is_enabled(),
         active: t.active,
-        closed: t.closed,
+        hosts: t.hosts,
         up: t.up,
         down: t.down,
     })
 }
 
-/// Filtered/paged query (50-row pages driven by the frontend's offset/limit).
-/// `row_state` = active|closed|failed; `outbound` = direct|tunnel|forward; `source` = all|tun_relay (default hides TunRelay).
+#[allow(clippy::too_many_arguments)]
+fn to_filter(
+    keyword: Option<String>,
+    outbound: Option<String>,
+    row_state: Option<String>,
+    source: Option<String>,
+    from_ms: Option<i64>,
+    to_ms: Option<i64>,
+    offset: Option<usize>,
+    limit: Option<usize>,
+) -> ConnFilter {
+    ConnFilter {
+        keyword,
+        outbound,
+        state: row_state,
+        source,
+        from_ms,
+        to_ms,
+        offset: offset.unwrap_or(0),
+        limit: limit.unwrap_or(50),
+    }
+}
+
+/// Aggregated per-target page (primary 连接记录 view; 50-row pages driven by the frontend's offset/limit).
+/// `row_state` = active|closed|failed (target semantics: has-live / none-live / has-failures);
+/// `source` = all|tun_relay (default hides TunRelay).
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn conlog_hosts(
+    state: State<'_, AppState>,
+    keyword: Option<String>,
+    outbound: Option<String>,
+    row_state: Option<String>,
+    source: Option<String>,
+    from_ms: Option<i64>,
+    to_ms: Option<i64>,
+    offset: Option<usize>,
+    limit: Option<usize>,
+) -> Result<HostQueryOut, String> {
+    let f = to_filter(keyword, outbound, row_state, source, from_ms, to_ms, offset, limit);
+    Ok(log_of(&state).query_hosts(&f))
+}
+
+/// Per-connection page (ring layer; used by the row detail expand and the agent's conlog_recent).
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn conlog_query(
@@ -60,20 +103,11 @@ pub(crate) async fn conlog_query(
     offset: Option<usize>,
     limit: Option<usize>,
 ) -> Result<QueryOut, String> {
-    let f = ConnFilter {
-        keyword,
-        outbound,
-        state: row_state,
-        source,
-        from_ms,
-        to_ms,
-        offset: offset.unwrap_or(0),
-        limit: limit.unwrap_or(50),
-    };
+    let f = to_filter(keyword, outbound, row_state, source, from_ms, to_ms, offset, limit);
     Ok(log_of(&state).query(&f))
 }
 
-/// Toggle recording (persisted). Disabling flushes everything pending first, so nothing recorded is lost.
+/// Toggle recording (persisted). Disabling flushes the snapshot first, so nothing recorded is lost.
 #[tauri::command]
 pub(crate) async fn conlog_set_enabled(
     state: State<'_, AppState>,
@@ -93,56 +127,68 @@ pub(crate) async fn conlog_set_enabled(
     Ok(())
 }
 
-/// One-click clear: in-memory rows + pending buffer + the persistence file.
+/// One-click clear: in-memory rows + aggregation map + the persistence file (incl. the legacy JSONL).
 #[tauri::command]
 pub(crate) async fn conlog_clear(state: State<'_, AppState>) -> Result<(), String> {
     let log = log_of(&state);
     log.clear();
-    let path = conn_log_path();
-    let _ = tokio::task::spawn_blocking(move || std::fs::remove_file(path)).await;
+    let _ = tokio::task::spawn_blocking(move || {
+        let _ = std::fs::remove_file(conn_stats_path());
+        let _ = std::fs::remove_file(roles::data_dir().join("conn-log.jsonl")); // legacy P1 file
+    })
+    .await;
     roles::audit("gui.conlog_clear", serde_json::json!({}));
     Ok(())
 }
 
-/// Force-close an active connection (row right-click 强制打断); the row finalizes as Closed.
+/// Force-close every active connection to a target (aggregated row right-click 强制打断);
+/// fired rows finalize as Closed. Returns how many connections were killed.
+#[tauri::command]
+pub(crate) async fn conlog_kill_target(
+    state: State<'_, AppState>,
+    host: String,
+    port: u16,
+) -> Result<u32, String> {
+    Ok(log_of(&state).kill_target(&host, port))
+}
+
+/// Force-close one active connection by id (kept for the agent tool / future per-conn UI).
 #[tauri::command]
 pub(crate) async fn conlog_kill(state: State<'_, AppState>, id: u64) -> Result<bool, String> {
     Ok(log_of(&state).kill(id))
 }
 
-/// Append pending rows to the JSONL file (blocking IO off the async path, fire-and-forget).
+/// Write the snapshot (tmp + rename; blocking IO off the async path, fire-and-forget).
 fn flush_now(log: &Arc<ConnLog>) {
-    let rows = log.take_unflushed();
-    if rows.is_empty() {
-        return;
-    }
-    let path = conn_log_path();
+    let rows = log.stats_snapshot();
+    let path = conn_stats_path();
     tokio::task::spawn_blocking(move || {
         use std::io::Write;
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) else {
-            return;
-        };
-        for r in &rows {
-            if let Ok(line) = serde_json::to_string(r) {
-                let _ = writeln!(f, "{line}");
-            }
+        let tmp = path.with_extension("json.tmp");
+        let body = serde_json::to_string(&rows).unwrap_or_else(|_| "[]".into());
+        let ok = std::fs::File::create(&tmp)
+            .and_then(|mut f| f.write_all(body.as_bytes()))
+            .and_then(|_| std::fs::rename(&tmp, &path));
+        if let Err(e) = ok {
+            tracing::warn!(error = %e, "conn-stats snapshot flush failed");
         }
     });
 }
 
-/// Smart flush loop (5s tick): flush on batch (>= CONLOG_FLUSH_BATCH unflushed) or a 30s idle sweep.
+/// Smart flush loop (5s tick): flush when dirty; additionally a 30s sweep while connections are active
+/// (long-lived connections only move byte counters, which never set the dirty flag).
 fn spawn_flush_task(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         let mut last = std::time::Instant::now();
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(5)).await;
             let log = app.state::<AppState>().client.conn_log();
-            let n = log.unflushed_len();
-            let idle_due = last.elapsed() >= std::time::Duration::from_secs(30);
-            if n == 0 || (n < CONLOG_FLUSH_BATCH && !idle_due) {
+            let dirty = log.take_dirty();
+            let idle_due = last.elapsed() >= std::time::Duration::from_secs(30) && log.has_active();
+            if !dirty && !idle_due {
                 continue;
             }
             flush_now(&log);
@@ -151,16 +197,14 @@ fn spawn_flush_task(app: AppHandle) {
     });
 }
 
-/// Startup wiring (lib.rs setup): replay the JSONL tail into memory, restore enabled/tun-relay flags,
+/// Startup wiring (lib.rs setup): replay the persisted baselines, restore enabled/tun-relay flags,
 /// spawn the smart-flush task.
 pub(crate) fn init_conn_log(app: &AppHandle) {
     let log = app.state::<AppState>().client.conn_log();
-    if let Ok(content) = std::fs::read_to_string(conn_log_path()) {
-        let rows = content
-            .lines()
-            .filter_map(|l| serde_json::from_str::<ConnRec>(l).ok())
-            .collect::<Vec<_>>();
-        log.restore(rows);
+    if let Ok(content) = std::fs::read_to_string(conn_stats_path()) {
+        if let Ok(rows) = serde_json::from_str(&content) {
+            log.restore_stats(rows);
+        }
     }
     let roles = RoleSettings::load();
     log.set_tun_relay(roles.tun_mode);

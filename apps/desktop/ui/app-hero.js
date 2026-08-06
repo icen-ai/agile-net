@@ -5,7 +5,7 @@
 function renderSideFoot() {
   const up = $('sf-up');
   if (!up) return;
-  const running = !!window._subRunning;
+  const running = !!(window._subRunning || window._anetProxyOn);
   const r = SubTraffic.rates || { up: 0, down: 0 };
   // show/hide first (not blocked by change detection)
   up.style.display = running ? '' : 'none';
@@ -57,6 +57,7 @@ const Hero = {
     this._powerSig = sig;
     const btn = $('btn-power');
     btn.classList.toggle('on', on);
+    window._anetProxyOn = on; // rates/probe fallback source flag (mihomo-independent data plane)
     $('hero-card').classList.toggle('off', !on); // master card off-state: data zones dim, power key stays lit
     btn.disabled = tunLocked || clientOff;
     btn.style.opacity = (tunLocked || clientOff) ? '.45' : '';
@@ -85,7 +86,7 @@ const Hero = {
   },
   /* SubTraffic 2s hook: rate buffers + dual-series chart (down primary --chart-down / up --chart-up) + today usage (with up/down split subtext) */
   onTraffic() {
-    const running = !!window._subRunning;
+    const running = !!(window._subRunning || window._anetProxyOn); // rates flow from whichever data plane is up
     const r = SubTraffic.rates || { up: 0, down: 0 };
     if (running) {
       this.down60.push(r.down); if (this.down60.length > 60) this.down60.shift();
@@ -108,11 +109,23 @@ const Hero = {
     ]);
   },
   /* Active connections: hooked once into 10s main polling (sub_connections 1s high-freq polling belongs to logs view; not duplicated) */
+  /* Active connections: kernel's table while it runs; the anet inbound's counter otherwise (10s main polling) */
   async pollConns() {
     if (HTTP_MODE) return;
-    let n = 0;
-    try { n = ((await invoke('sub_connections')).active || []).length; } catch (e) { return; }
-    odoSet($('hero-conns'), window._subRunning ? String(n) : '-');
+    if (window._subRunning) {
+      let n = 0;
+      try { n = ((await invoke('sub_connections')).active || []).length; } catch (e) { return; }
+      odoSet($('hero-conns'), String(n));
+      return;
+    }
+    if (window._anetProxyOn) {
+      try {
+        const t = await invoke('proxy_traffic');
+        odoSet($('hero-conns'), String(t.active));
+      } catch (e) { /* keep last reading */ }
+      return;
+    }
+    odoSet($('hero-conns'), '-');
   },
   /* Current mode: proxy_power.on + _rolesCache (frontend cache of get_role_settings, synced at change points, no re-fetch).
      Mapping: off -> 已停止; tun_mode -> TUN · outbound (§2.5 mutual exclusion pins rule); else system proxy/local proxy · outbound mode */
@@ -225,9 +238,11 @@ const NetProbe = {
   async refresh(force) {
     if (HTTP_MODE || (this._busy && !force)) return;
     this._busy = true;
-    const via = !!window._subRunning;
+    // Egress probe path: kernel egress while it runs (verifies the subscription path), the anet local
+    // proxy otherwise (verifies the real egress users' traffic takes); direct only when both are off
+    const via = window._subRunning ? 'mihomo' : (window._anetProxyOn ? 'anet' : 'direct');
     try {
-      const r = await invoke('fetch_exit_ip', { viaProxy: via });
+      const r = await invoke('fetch_exit_ip', { viaProxy: via !== 'direct' });
       this.data = { ip: r.ip, country: r.country, country_code: r.country_code, via };
     } catch (e) {
       this.data = { fail: true, via };
@@ -244,26 +259,27 @@ const NetProbe = {
     this.render();
   },
   render() {
-    const sig = JSON.stringify(this.data) + '|' + this.lan + '|' + window._subRunning;
+    const sig = JSON.stringify(this.data) + '|' + this.lan + '|' + window._subRunning + '|' + !!window._anetProxyOn;
     if (sig === this._sig) return;
     this._sig = sig;
     const d = this.data;
     const geo = (x) => [x.country_code, x.country].filter(Boolean).join(' · ');
+    const viaTxt = (v) => v === 'mihomo' ? AgI18n.t('hero.viaMihomo') : v === 'anet' ? AgI18n.t('hero.viaAnet') : AgI18n.t('hero.viaDirect');
     // home net-probe card: on failure show only 「探测失败」, no placeholder error
     setText('d-net-ip', !d ? AgI18n.t('hero.probeLoading') : (d.fail ? AgI18n.t('hero.probeFailed') : d.ip));
     setText('d-net-geo', !d ? '' : (d.fail
-      ? (d.via ? AgI18n.t('hero.probeFailVia') : AgI18n.t('hero.probeFailDirect'))
-      : (geo(d) || AgI18n.t('hero.geoUnknown')) + ' · ' + (d.via ? AgI18n.t('hero.viaMihomo') : AgI18n.t('hero.viaDirect'))));
+      ? (d.via === 'direct' ? AgI18n.t('hero.probeFailDirect') : AgI18n.t('hero.probeFailVia'))
+      : (geo(d) || AgI18n.t('hero.geoUnknown')) + ' · ' + viaTxt(d.via)));
     setText('d-net-lan', this.lan || '-');
     // subscription page: while kernel runs also show egress (verify mihomo proxying works); only use probe results via kernel egress
     if ($('sub-exit-ip')) {
       if (!window._subRunning) {
         setText('sub-exit-ip', AgI18n.t('tun.kernelNotRunning'));
         setText('sub-exit-geo', '');
-      } else if (d && d.via && !d.fail) {
+      } else if (d && d.via === 'mihomo' && !d.fail) {
         setText('sub-exit-ip', d.ip);
         setText('sub-exit-geo', (geo(d) || AgI18n.t('hero.geoUnknown')) + ' · ' + AgI18n.t('hero.viaMihomo'));
-      } else if (d && d.via && d.fail) {
+      } else if (d && d.via === 'mihomo' && d.fail) {
         setText('sub-exit-ip', AgI18n.t('hero.probeFailed'));
         setText('sub-exit-geo', AgI18n.t('hero.probeFailVia'));
       } else {

@@ -14,6 +14,9 @@ const MAX_ENTRIES: usize = 1000;
 #[derive(Debug, Clone, Serialize)]
 pub struct LogEntry {
     pub time: String,
+    /// Epoch milliseconds (machine-readable; the GUI's 实时日志 fallback renders from this)
+    #[serde(default)]
+    pub ts: i64,
     pub level: String,
     pub module: String,
     pub message: String,
@@ -53,6 +56,14 @@ impl LogBuffer {
             .take(limit)
             .cloned()
             .collect()
+    }
+
+    /// Drop all buffered entries (GUI 实时日志 fallback's 清空).
+    pub fn clear(&self) {
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
     }
 }
 
@@ -104,6 +115,7 @@ where
         let metadata = event.metadata();
         self.buffer.push(LogEntry {
             time: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            ts: chrono::Utc::now().timestamp_millis(),
             level: metadata.level().to_string().to_lowercase(),
             module: metadata.target().to_string(),
             message: visitor.message,

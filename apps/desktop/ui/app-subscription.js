@@ -112,7 +112,22 @@ const SubTraffic = {
   async poll() {
     if (HTTP_MODE) return;
     let t;
-    try { t = await invoke('sub_traffic'); } catch (e) { return; }
+    if (window._subRunning) {
+      try { t = await invoke('sub_traffic'); } catch (e) { return; }
+    } else if (window._anetProxyOn) {
+      // kernel off: the anet local-proxy cumulative counters carry the rates
+      // (mihomo only owns the subscription mechanism; the proxy data plane keeps reporting)
+      try {
+        const s = await invoke('proxy_traffic');
+        if (!s.running) return;
+        t = { up_total: s.bytes_up, down_total: s.bytes_down };
+      } catch (e) { return; }
+    } else {
+      // neither source: settle to the empty state (clears stale rate buffers once)
+      Hero.onTraffic();
+      renderSideFoot();
+      return;
+    }
     const total = t.up_total + t.down_total;
     if (this._last !== null) {
       let delta = total - this._last;

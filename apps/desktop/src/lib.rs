@@ -87,10 +87,12 @@ pub struct AppState {
     pub(crate) notify_float_ball: Arc<AtomicBool>,
     /// Built-in network security agent (session-scoped conversation owned here; see agent.rs)
     pub(crate) agent: Arc<agent::AgentState>,
+    /// App-side tracing ring buffer (anet logs; 实时日志 tab fallback source when the kernel is off)
+    pub(crate) app_logs: agile_net_node::logs::LogBuffer,
 }
 
 impl AppState {
-    fn new() -> Self {
+    fn new(app_logs: agile_net_node::logs::LogBuffer) -> Self {
         let roles = RoleSettings::load();
         let notify_float_ball = roles.notify_float_ball;
         // Boot initial values: proxy not started + saved proxy mode preference (boot restore state)
@@ -115,6 +117,7 @@ impl AppState {
             last_fallback: Arc::new(tokio::sync::Mutex::new(None)),
             notify_float_ball: Arc::new(AtomicBool::new(notify_float_ball)),
             agent: Arc::new(agent::AgentState::new()),
+            app_logs,
         }
     }
 }
@@ -133,11 +136,17 @@ pub fn run() {
         eprintln!("warn: legacy layout migration failed: {e}; continuing");
     }
 
-    tracing_subscriber::fmt()
-        .with_env_filter(
+    let app_log_buf = agile_net_node::logs::LogBuffer::new();
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+    tracing_subscriber::registry()
+        .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
+        .with(tracing_subscriber::fmt::layer())
+        // in-memory ring buffer: the GUI 实时日志 tab's anet-side fallback when the kernel is off
+        .with(agile_net_node::logs::LogBufferLayer::new(app_log_buf.clone()))
         .init();
 
     let mut builder = tauri::Builder::default();
@@ -156,7 +165,7 @@ pub fn run() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
         ))
-        .manage(AppState::new())
+        .manage(AppState::new(app_log_buf))
         .invoke_handler(tauri::generate_handler![
             connect_node,
             disconnect_node,
@@ -274,9 +283,14 @@ pub fn run() {
             qr_pick_decode,
             conlog_status,
             conlog_query,
+            conlog_hosts,
             conlog_set_enabled,
             conlog_clear,
             conlog_kill,
+            conlog_kill_target,
+            proxy_traffic,
+            app_logs,
+            app_logs_clear,
             agent::agent_get_state,
             agent::agent_send,
             agent::agent_stop,

@@ -146,9 +146,10 @@ AgI18n.register({
   // ---- network probes ----
   'hero.probeLoading': { zh: '探测中…', en: 'Probing…' },
   'hero.probeFailed': { zh: '探测失败', en: 'Probe failed' },
-  'hero.probeFailVia': { zh: '经 mihomo 出口探测失败', en: 'Probe via mihomo exit failed' },
+  'hero.probeFailVia': { zh: '经代理出口探测失败', en: 'Probe via proxy exit failed' },
   'hero.probeFailDirect': { zh: '直连出口探测失败', en: 'Probe via direct exit failed' },
   'hero.geoUnknown': { zh: '归属地未知', en: 'Location unknown' },
   'hero.viaMihomo': { zh: '经 mihomo 出口', en: 'via mihomo exit' },
+  'hero.viaAnet': { zh: '经本地代理出口', en: 'via local proxy exit' },
   'hero.viaDirect': { zh: '直连出口', en: 'direct exit' },
 });

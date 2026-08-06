@@ -1,24 +1,27 @@
-//! Connection log (per-connection records at the local proxy inbound; design: docs/todo/conn-log.md).
+//! Connection log (per-target aggregated connection records at the local proxy inbound; docs/todo/conn-log.md).
 //!
-//! One record per inbound connection across all three outbound arms (Direct / Tunnel / Forward),
-//! with the precedence layer that produced the decision (`HitLayer`). Disabled by default — every
-//! path short-circuits on the enabled flag, so an off logger costs one atomic load per connection.
-//! Storage is an in-memory ring (closed records) plus a live active table; persistence is the
-//! caller's job via batched `take_unflushed` snapshots (smart flush, never per-record writes).
+//! Two layers:
+//! - **Per-connection ring** (`ConnRec`, capacity-capped): the raw evidence — one row per inbound connection
+//!   across all three outbound arms (Direct / Tunnel / Forward) with the precedence layer (`HitLayer`).
+//! - **Per-target aggregation** (`hosts` map keyed by host:port): the 连接记录 tab's primary view — one row per
+//!   target with live counters, session totals, and a persisted historical baseline (conn-stats.json snapshot;
+//!   smart flush, never per-connection writes).
+//!
+//! Disabled by default — every path short-circuits on the enabled flag, so an off logger costs one atomic
+//! load per connection.
 
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
-/// Ring capacity for closed records (oldest evicted).
+/// Ring capacity for closed per-connection records (oldest evicted).
+/// (The dirty-flag flush cadence is driven by the desktop task: 5s tick / 30s idle sweep.)
 pub const CONLOG_CAPACITY: usize = 5000;
-/// Unflushed batch threshold hint for the persistence task (it also flushes on an idle timer).
-pub const CONLOG_FLUSH_BATCH: usize = 200;
 
 /// Inbound protocol.
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Debug)]
@@ -68,7 +71,7 @@ pub enum RecState {
     Failed { reason: String },
 }
 
-/// One connection record (row of the 连接记录 tab).
+/// One per-connection record (ring layer; detail expand / agent evidence source).
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct ConnRec {
     pub id: u64,
@@ -88,7 +91,7 @@ pub struct ConnRec {
     pub state: RecState,
 }
 
-/// Live byte counters of an active connection (shared with the CountingIo wrapper on the client stream).
+/// Live byte counters (shared with the CountingIo wrapper on the client stream; also the per-target cell's).
 #[derive(Default)]
 pub struct ActiveCounters {
     /// Bytes read from the client (uplink)
@@ -104,7 +107,7 @@ pub struct ConnFilter {
     pub keyword: Option<String>,
     /// "direct" | "tunnel" | "forward"
     pub outbound: Option<String>,
-    /// "active" | "closed" | "failed"
+    /// per-conn query: "active"|"closed"|"failed"; per-target query: active = has live conns, closed = none, failed = has failures
     pub state: Option<String>,
     /// TunRelay rows are hidden unless source=Some("tun_relay")/"all" is requested
     pub source: Option<String>,
@@ -121,11 +124,51 @@ pub struct QueryOut {
     pub items: Vec<ConnRec>,
 }
 
-/// Session totals for the toolbar (live: active rows contribute current counter values).
+/// One aggregated target row (the 连接记录 tab's primary view).
+#[derive(Clone, Serialize)]
+pub struct HostStat {
+    pub key: String,
+    pub host: String,
+    pub port: u16,
+    /// connection counts (this session)
+    pub conns: u64,
+    pub fails: u64,
+    /// currently open connections
+    pub active: u64,
+    /// this-session cumulative bytes (live-inclusive)
+    pub sess_up: u64,
+    pub sess_down: u64,
+    /// historical cumulative bytes (persisted baseline, excludes this session)
+    pub hist_up: u64,
+    pub hist_down: u64,
+    pub first_ms: i64,
+    pub last_ms: i64,
+    /// last connection's outbound / hit layer / source
+    pub outbound: OutboundKind,
+    pub hit: HitLayer,
+    pub source: Source,
+}
+
+#[derive(Serialize)]
+pub struct HostQueryOut {
+    pub total: usize,
+    pub items: Vec<HostStat>,
+}
+
+/// Persisted per-target cumulative (conn-stats.json snapshot).
+#[derive(Clone, Serialize, Deserialize)]
+pub struct HostDiskStat {
+    pub host: String,
+    pub port: u16,
+    pub up: u64,
+    pub down: u64,
+}
+
+/// Session totals for the toolbar (target-aggregated; live values included).
 #[derive(Serialize)]
 pub struct Totals {
     pub active: usize,
-    pub closed: usize,
+    pub hosts: usize,
     pub up: u64,
     pub down: u64,
 }
@@ -143,15 +186,57 @@ type KillTx = tokio::sync::oneshot::Sender<()>;
 /// Active table entry: the record template, live counters, optional kill switch.
 type ActiveEntry = (ConnRec, Arc<ActiveCounters>, Option<KillTx>);
 
-/// The connection logger. Handle shared via Arc; all hot paths lock-free except the
-/// closed/unflushed VecDeques (short Mutex, only on finalize).
+/// Per-target aggregation cell (live counters are shared with the CountingIo wrappers of its connections).
+struct HostAgg {
+    host: String,
+    port: u16,
+    first_ms: i64,
+    last_ms: AtomicI64,
+    conns: AtomicU64,
+    fails: AtomicU64,
+    active: AtomicU64,
+    live: Arc<ActiveCounters>,
+    hist_up: u64,
+    hist_down: u64,
+    meta: Mutex<(OutboundKind, HitLayer, Source)>,
+}
+
+impl HostAgg {
+    fn new(host: &str, port: u16, hist_up: u64, hist_down: u64) -> Self {
+        Self {
+            host: host.to_string(),
+            port,
+            first_ms: now_ms(),
+            last_ms: AtomicI64::new(now_ms()),
+            conns: AtomicU64::new(0),
+            fails: AtomicU64::new(0),
+            active: AtomicU64::new(0),
+            live: Arc::new(ActiveCounters::default()),
+            hist_up,
+            hist_down,
+            meta: Mutex::new((OutboundKind::Direct, HitLayer::Default, Source::Proxy)),
+        }
+    }
+}
+
+/// What begin() hands back to the inbound guard: the record id plus the two counter targets
+/// (per-connection for the ring row, per-target for the aggregated cell).
+pub struct BeginHandle {
+    pub id: u64,
+    pub conn: Arc<ActiveCounters>,
+    pub agg: Arc<ActiveCounters>,
+}
+
+/// The connection logger. Handle shared via Arc; hot paths lock-free except the closed VecDeque
+/// (short Mutex, only on finalize) and the per-target meta Mutex.
 pub struct ConnLog {
     enabled: AtomicBool,
     tun_relay: AtomicBool,
     next_id: AtomicU64,
     closed: Mutex<VecDeque<ConnRec>>,
     active: DashMap<u64, ActiveEntry>,
-    unflushed: Mutex<Vec<ConnRec>>,
+    hosts: DashMap<String, Arc<HostAgg>>,
+    dirty: AtomicBool,
 }
 
 impl Default for ConnLog {
@@ -168,7 +253,8 @@ impl ConnLog {
             next_id: AtomicU64::new(1),
             closed: Mutex::new(VecDeque::new()),
             active: DashMap::new(),
-            unflushed: Mutex::new(Vec::new()),
+            hosts: DashMap::new(),
+            dirty: AtomicBool::new(false),
         }
     }
 
@@ -182,14 +268,19 @@ impl ConnLog {
         if !on {
             let now = now_ms();
             let drained: Vec<u64> = self.active.iter().map(|e| *e.key()).collect();
+            let had_inflight = !drained.is_empty();
             for id in drained {
                 if let Some((_, (mut rec, ctr, _))) = self.active.remove(&id) {
+                    self.agg_of(&rec.host, rec.port).map(|a| a.active.fetch_sub(1, Ordering::Relaxed));
                     rec.up = ctr.up.load(Ordering::Relaxed);
                     rec.down = ctr.down.load(Ordering::Relaxed);
                     rec.end_ms = now;
                     rec.state = RecState::Closed;
                     self.push_closed(rec);
                 }
+            }
+            if had_inflight {
+                self.dirty.store(true, Ordering::Relaxed);
             }
         }
     }
@@ -199,14 +290,19 @@ impl ConnLog {
         self.tun_relay.store(on, Ordering::Relaxed);
     }
 
+    fn agg_of(&self, host: &str, port: u16) -> Option<Arc<HostAgg>> {
+        self.hosts
+            .get(&format!("{}:{}", host.to_lowercase(), port))
+            .map(|r| r.value().clone())
+    }
+
     fn push_closed(&self, rec: ConnRec) {
         let mut q = self.closed.lock().unwrap();
-        q.push_back(rec.clone());
+        q.push_back(rec);
         while q.len() > CONLOG_CAPACITY {
             q.pop_front();
         }
-        drop(q);
-        self.unflushed.lock().unwrap().push(rec);
+        self.dirty.store(true, Ordering::Relaxed);
     }
 
     /// Begin an Active record; None when disabled (callers then skip stream wrapping).
@@ -219,33 +315,47 @@ impl ConnLog {
         mapped_to: Option<String>,
         outbound: OutboundKind,
         hit: HitLayer,
-    ) -> Option<(u64, Arc<ActiveCounters>)> {
+    ) -> Option<BeginHandle> {
         if !self.is_enabled() {
             return None;
         }
+        let now = now_ms();
+        let source = if self.tun_relay.load(Ordering::Relaxed) {
+            Source::TunRelay
+        } else {
+            Source::Proxy
+        };
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let ctr = Arc::new(ActiveCounters::default());
         let rec = ConnRec {
             id,
-            start_ms: now_ms(),
+            start_ms: now,
             end_ms: 0,
             host: host.to_string(),
             port,
             mapped_to,
             proto,
-            source: if self.tun_relay.load(Ordering::Relaxed) {
-                Source::TunRelay
-            } else {
-                Source::Proxy
-            },
-            outbound,
+            source,
+            outbound: outbound.clone(),
             hit,
             up: 0,
             down: 0,
             state: RecState::Active,
         };
+        // per-target aggregation cell (created with zero baseline; restore_stats primes historical baselines)
+        let agg = self
+            .hosts
+            .entry(format!("{}:{}", host.to_lowercase(), port))
+            .or_insert_with(|| Arc::new(HostAgg::new(host, port, 0, 0)))
+            .value()
+            .clone();
+        agg.conns.fetch_add(1, Ordering::Relaxed);
+        agg.active.fetch_add(1, Ordering::Relaxed);
+        agg.last_ms.store(now, Ordering::Relaxed);
+        *agg.meta.lock().unwrap() = (outbound, hit, source);
         self.active.insert(id, (rec, ctr.clone(), None));
-        Some((id, ctr))
+        self.dirty.store(true, Ordering::Relaxed);
+        Some(BeginHandle { id, conn: ctr, agg: agg.live.clone() })
     }
 
     /// Register the kill switch of an in-flight record (called right after begin by the inbound guard).
@@ -255,8 +365,8 @@ impl ConnLog {
         }
     }
 
-    /// Force-close an active connection (row right-click 「强制打断」): fires the kill switch into the
-    /// inbound task's select; the task then unwinds and the guard finalizes the row as Closed.
+    /// Force-close an active connection (「强制打断」): fires the kill switch into the inbound task's
+    /// select; the task then unwinds and the guard finalizes the row as Closed.
     pub fn kill(&self, id: u64) -> bool {
         let tx = self
             .active
@@ -271,26 +381,52 @@ impl ConnLog {
         }
     }
 
-    /// Finalize an Active record as Closed (counter values become final).
-    pub fn end(&self, id: u64) {
+    /// Force-close every active connection to a target (aggregated row's 强制打断); returns how many fired.
+    pub fn kill_target(&self, host: &str, port: u16) -> u32 {
+        let host_lc = host.to_lowercase();
+        let ids: Vec<u64> = self
+            .active
+            .iter()
+            .filter(|e| e.value().0.host.to_lowercase() == host_lc && e.value().0.port == port)
+            .map(|e| *e.key())
+            .collect();
+        let mut n = 0;
+        for id in ids {
+            if self.kill(id) {
+                n += 1;
+            }
+        }
+        n
+    }
+
+    fn finalize(&self, id: u64, failed: Option<String>) {
         if let Some((_, (mut rec, ctr, _))) = self.active.remove(&id) {
+            if let Some(a) = self.agg_of(&rec.host, rec.port) {
+                a.active.fetch_sub(1, Ordering::Relaxed);
+                a.last_ms.store(now_ms(), Ordering::Relaxed);
+                if failed.is_some() {
+                    a.fails.fetch_add(1, Ordering::Relaxed);
+                }
+            }
             rec.up = ctr.up.load(Ordering::Relaxed);
             rec.down = ctr.down.load(Ordering::Relaxed);
             rec.end_ms = now_ms();
-            rec.state = RecState::Closed;
+            rec.state = match failed {
+                Some(r) => RecState::Failed { reason: r },
+                None => RecState::Closed,
+            };
             self.push_closed(rec);
         }
     }
 
+    /// Finalize an Active record as Closed (counter values become final).
+    pub fn end(&self, id: u64) {
+        self.finalize(id, None);
+    }
+
     /// Finalize an Active record as Failed (dial/handshake error).
     pub fn end_failed(&self, id: u64, reason: String) {
-        if let Some((_, (mut rec, ctr, _))) = self.active.remove(&id) {
-            rec.up = ctr.up.load(Ordering::Relaxed);
-            rec.down = ctr.down.load(Ordering::Relaxed);
-            rec.end_ms = now_ms();
-            rec.state = RecState::Failed { reason };
-            self.push_closed(rec);
-        }
+        self.finalize(id, Some(reason));
     }
 
     /// One-shot Failed record helper for failures before/without a begin (no-op when disabled).
@@ -305,12 +441,12 @@ impl ConnLog {
         hit: HitLayer,
         reason: String,
     ) {
-        if let Some((id, _)) = self.begin(proto, host, port, mapped_to, outbound, hit) {
-            self.end_failed(id, reason);
+        if let Some(h) = self.begin(proto, host, port, mapped_to, outbound, hit) {
+            self.end_failed(h.id, reason);
         }
     }
 
-    /// Newest-first filtered page (active rows merged in with live counter values).
+    /// Newest-first filtered page of per-connection records (ring layer; active rows merge live counters).
     pub fn query(&self, f: &ConnFilter) -> QueryOut {
         let kw = f.keyword.as_ref().map(|k| k.to_lowercase());
         let mut rows: Vec<ConnRec> = Vec::new();
@@ -381,45 +517,150 @@ impl ConnLog {
         QueryOut { total, items }
     }
 
-    /// Session totals (live values for active rows).
+    /// Aggregated per-target page (primary view of the 连接记录 tab), most-recent-activity first.
+    pub fn query_hosts(&self, f: &ConnFilter) -> HostQueryOut {
+        let kw = f.keyword.as_ref().map(|k| k.to_lowercase());
+        let want_tun = matches!(f.source.as_deref(), Some("tun_relay") | Some("all"));
+        let mut rows: Vec<HostStat> = self
+            .hosts
+            .iter()
+            .map(|e| {
+                let key = e.key().clone();
+                let a = e.value();
+                let (outbound, hit, source) = a.meta.lock().unwrap().clone();
+                HostStat {
+                    key,
+                    host: a.host.clone(),
+                    port: a.port,
+                    conns: a.conns.load(Ordering::Relaxed),
+                    fails: a.fails.load(Ordering::Relaxed),
+                    active: a.active.load(Ordering::Relaxed),
+                    sess_up: a.live.up.load(Ordering::Relaxed),
+                    sess_down: a.live.down.load(Ordering::Relaxed),
+                    hist_up: a.hist_up,
+                    hist_down: a.hist_down,
+                    first_ms: a.first_ms,
+                    last_ms: a.last_ms.load(Ordering::Relaxed),
+                    outbound,
+                    hit,
+                    source,
+                }
+            })
+            .collect();
+        rows.sort_by(|a, b| b.last_ms.cmp(&a.last_ms));
+        let matches = |r: &&HostStat| {
+            if !want_tun && r.source == Source::TunRelay {
+                return false;
+            }
+            if kw.as_ref().is_some_and(|k| !r.host.to_lowercase().contains(k)) {
+                return false;
+            }
+            if let Some(o) = &f.outbound {
+                let kind = match &r.outbound {
+                    OutboundKind::Direct => "direct",
+                    OutboundKind::Tunnel { .. } => "tunnel",
+                    OutboundKind::Forward => "forward",
+                };
+                if o != kind {
+                    return false;
+                }
+            }
+            if let Some(s) = &f.state {
+                let ok = match s.as_str() {
+                    "active" => r.active > 0,
+                    "closed" => r.active == 0,
+                    "failed" => r.fails > 0,
+                    _ => true,
+                };
+                if !ok {
+                    return false;
+                }
+            }
+            if f.from_ms.is_some_and(|from| r.last_ms < from) {
+                return false;
+            }
+            if f.to_ms.is_some_and(|to| r.last_ms > to) {
+                return false;
+            }
+            true
+        };
+        let iter_rows: Vec<&HostStat> = rows.iter().filter(&matches).collect();
+        let total = iter_rows.len();
+        let items = if f.limit == 0 {
+            Vec::new()
+        } else {
+            iter_rows
+                .into_iter()
+                .skip(f.offset)
+                .take(f.limit)
+                .cloned()
+                .collect()
+        };
+        HostQueryOut { total, items }
+    }
+
+    /// Session totals for the toolbar (target-aggregated; live values included).
     pub fn totals(&self) -> Totals {
         let mut t = Totals {
             active: 0,
-            closed: 0,
+            hosts: 0,
             up: 0,
             down: 0,
         };
-        for e in self.active.iter() {
-            t.active += 1;
-            t.up += e.value().1.up.load(Ordering::Relaxed);
-            t.down += e.value().1.down.load(Ordering::Relaxed);
-        }
-        for r in self.closed.lock().unwrap().iter() {
-            t.closed += 1;
-            t.up += r.up;
-            t.down += r.down;
+        for e in self.hosts.iter() {
+            let a = e.value();
+            t.hosts += 1;
+            t.active += a.active.load(Ordering::Relaxed) as usize;
+            t.up += a.live.up.load(Ordering::Relaxed);
+            t.down += a.live.down.load(Ordering::Relaxed);
         }
         t
     }
 
-    /// One-click clear (in-memory rows + pending flush buffer; the persistence file is the caller's job).
+    /// One-click clear (in-memory rows + aggregation map; the persistence file is the caller's job).
     pub fn clear(&self) {
         self.closed.lock().unwrap().clear();
-        self.unflushed.lock().unwrap().clear();
         self.active.clear();
+        self.hosts.clear();
+        self.dirty.store(true, Ordering::Relaxed);
     }
 
-    /// Pending rows for the persistence task (takes the buffer).
-    pub fn take_unflushed(&self) -> Vec<ConnRec> {
-        std::mem::take(&mut *self.unflushed.lock().unwrap())
+    /// Dirty flag for the smart-flush task (set on begin/finalize/clear; taken = flushed).
+    pub fn take_dirty(&self) -> bool {
+        self.dirty.swap(false, Ordering::Relaxed)
     }
 
-    pub fn unflushed_len(&self) -> usize {
-        self.unflushed.lock().unwrap().len()
+    pub fn has_active(&self) -> bool {
+        !self.active.is_empty()
     }
 
-    /// Restore replayed rows at startup (all must be closed/failed; not marked unflushed).
-    /// Ring keeps the newest CONLOG_CAPACITY rows; id sequence resumes beyond the max seen.
+    /// Persistence snapshot: per-target cumulative totals (historical baseline + live session bytes).
+    pub fn stats_snapshot(&self) -> Vec<HostDiskStat> {
+        self.hosts
+            .iter()
+            .map(|e| {
+                let a = e.value();
+                HostDiskStat {
+                    host: a.host.clone(),
+                    port: a.port,
+                    up: a.hist_up + a.live.up.load(Ordering::Relaxed),
+                    down: a.hist_down + a.live.down.load(Ordering::Relaxed),
+                }
+            })
+            .collect()
+    }
+
+    /// Load the persisted baselines at startup (historical cumulative columns).
+    pub fn restore_stats(&self, rows: Vec<HostDiskStat>) {
+        for r in rows {
+            let key = format!("{}:{}", r.host.to_lowercase(), r.port);
+            self.hosts
+                .entry(key)
+                .or_insert_with(|| Arc::new(HostAgg::new(&r.host, r.port, r.up, r.down)));
+        }
+    }
+
+    /// Restore replayed per-connection rows at startup (ring layer only; not marked dirty).
     pub fn restore(&self, recs: Vec<ConnRec>) {
         let mut max_id = 0;
         let mut q = self.closed.lock().unwrap();
@@ -440,16 +681,29 @@ impl ConnLog {
     }
 }
 
-/// Client-stream wrapper that feeds the live counters of an active record.
-/// `None` counters (logging disabled) degrade to a pass-through with one Option check per poll.
+/// Client-stream wrapper feeding live counters (per-connection and/or per-target).
+/// Both `None` (logging disabled) degrades to a pass-through with one Option check per poll.
 pub struct CountingIo<T> {
     inner: T,
-    ctr: Option<Arc<ActiveCounters>>,
+    conn: Option<Arc<ActiveCounters>>,
+    agg: Option<Arc<ActiveCounters>>,
 }
 
 impl<T> CountingIo<T> {
-    pub fn new(inner: T, ctr: Option<Arc<ActiveCounters>>) -> Self {
-        Self { inner, ctr }
+    pub fn new(inner: T, conn: Option<Arc<ActiveCounters>>, agg: Option<Arc<ActiveCounters>>) -> Self {
+        Self { inner, conn, agg }
+    }
+
+    #[inline]
+    fn count(&self, up: u64, down: u64) {
+        if let Some(c) = &self.conn {
+            c.up.fetch_add(up, Ordering::Relaxed);
+            c.down.fetch_add(down, Ordering::Relaxed);
+        }
+        if let Some(a) = &self.agg {
+            a.up.fetch_add(up, Ordering::Relaxed);
+            a.down.fetch_add(down, Ordering::Relaxed);
+        }
     }
 }
 
@@ -461,10 +715,10 @@ impl<T: AsyncRead + Unpin> AsyncRead for CountingIo<T> {
     ) -> Poll<std::io::Result<()>> {
         let before = buf.filled().len();
         let r = Pin::new(&mut self.inner).poll_read(cx, buf);
-        if let (Poll::Ready(Ok(())), Some(c)) = (&r, &self.ctr) {
-            let n = buf.filled().len() - before;
+        if let Poll::Ready(Ok(())) = &r {
+            let n = (buf.filled().len() - before) as u64;
             if n > 0 {
-                c.up.fetch_add(n as u64, Ordering::Relaxed);
+                self.count(n, 0);
             }
         }
         r
@@ -478,8 +732,8 @@ impl<T: AsyncWrite + Unpin> AsyncWrite for CountingIo<T> {
         buf: &[u8],
     ) -> Poll<std::io::Result<usize>> {
         let r = Pin::new(&mut self.inner).poll_write(cx, buf);
-        if let (Poll::Ready(Ok(n)), Some(c)) = (&r, &self.ctr) {
-            c.down.fetch_add(*n as u64, Ordering::Relaxed);
+        if let Poll::Ready(Ok(n)) = &r {
+            self.count(0, *n as u64);
         }
         r
     }
@@ -501,7 +755,7 @@ mod tests {
         Arc::new(ConnLog::new())
     }
 
-    fn begin_one(l: &Arc<ConnLog>, host: &str) -> (u64, Arc<ActiveCounters>) {
+    fn begin_one(l: &Arc<ConnLog>, host: &str) -> BeginHandle {
         l.begin(Proto::Socks5, host, 443, None, OutboundKind::Direct, HitLayer::UserBypass)
             .expect("enabled")
     }
@@ -514,86 +768,93 @@ mod tests {
             .begin(Proto::Socks5, "a.com", 443, None, OutboundKind::Direct, HitLayer::Default)
             .is_none());
         l.fail(Proto::Http, "a.com", 80, None, OutboundKind::Direct, HitLayer::Default, "x".into());
-        assert_eq!(l.totals().closed, 0);
+        assert_eq!(l.totals().hosts, 0);
     }
 
     #[test]
-    fn begin_end_cycle_and_unflushed() {
+    fn per_target_aggregation_and_live_counters() {
         let l = log();
         l.set_enabled(true);
-        let (id, ctr) = begin_one(&l, "a.com");
-        ctr.up.fetch_add(100, Ordering::Relaxed);
-        ctr.down.fetch_add(250, Ordering::Relaxed);
-        // active row visible with live counters
-        let q = l.query(&ConnFilter { limit: 50, ..Default::default() });
-        assert_eq!(q.total, 1);
-        assert_eq!(q.items[0].state, RecState::Active);
-        assert_eq!(q.items[0].up, 100);
-        l.end(id);
-        let q = l.query(&ConnFilter { limit: 50, ..Default::default() });
-        assert_eq!(q.items[0].state, RecState::Closed);
-        assert_eq!(q.items[0].down, 250);
-        assert!(q.items[0].end_ms > 0);
-        assert_eq!(l.unflushed_len(), 1);
-        assert_eq!(l.take_unflushed().len(), 1);
-        assert_eq!(l.unflushed_len(), 0);
+        // two connections to the same target, one to another
+        let h1 = begin_one(&l, "A.com"); // case-insensitive key
+        let h2 = begin_one(&l, "a.com");
+        let h3 = begin_one(&l, "b.com");
+        h1.agg.up.fetch_add(100, Ordering::Relaxed);
+        h2.agg.up.fetch_add(50, Ordering::Relaxed);
+        h3.agg.down.fetch_add(7, Ordering::Relaxed);
+        let out = l.query_hosts(&ConnFilter { limit: 50, ..Default::default() });
+        assert_eq!(out.total, 2); // A.com/a.com deduped
+        let a = out.items.iter().find(|r| r.host == "A.com").unwrap();
+        assert_eq!(a.conns, 2);
+        assert_eq!(a.active, 2);
+        assert_eq!(a.sess_up, 150);
+        l.end(h1.id);
+        let out = l.query_hosts(&ConnFilter { limit: 50, ..Default::default() });
+        let a = out.items.iter().find(|r| r.host == "A.com").unwrap();
+        assert_eq!(a.active, 1);
+        // failed filter + kill_target
+        l.end_failed(h2.id, "refused".into());
+        let failed = l.query_hosts(&ConnFilter { state: Some("failed".into()), limit: 50, ..Default::default() });
+        assert_eq!(failed.total, 1);
+        l.end(h3.id);
     }
 
     #[test]
-    fn failed_records_and_disable_finalizes_inflight() {
+    fn kill_target_fires_all_matching() {
         let l = log();
         l.set_enabled(true);
-        l.fail(Proto::Socks5, "b.com", 443, None, OutboundKind::Forward, HitLayer::Default, "dial refused".into());
-        let (id, _) = begin_one(&l, "c.com");
-        l.set_enabled(false);
-        let q = l.query(&ConnFilter { limit: 50, ..Default::default() });
-        assert_eq!(q.total, 2);
-        assert!(matches!(q.items.iter().find(|r| r.host == "b.com").unwrap().state, RecState::Failed { .. }));
-        let c = q.items.iter().find(|r| r.id == id).unwrap();
-        assert_eq!(c.state, RecState::Closed);
+        let h1 = begin_one(&l, "k.com");
+        let h2 = begin_one(&l, "k.com");
+        let (tx1, rx1) = tokio::sync::oneshot::channel::<()>();
+        let (tx2, rx2) = tokio::sync::oneshot::channel::<()>();
+        l.attach_kill(h1.id, tx1);
+        l.attach_kill(h2.id, tx2);
+        assert_eq!(l.kill_target("K.com", 443), 2);
+        assert!(rx1.blocking_recv().is_ok());
+        assert!(rx2.blocking_recv().is_ok());
     }
 
     #[test]
-    fn filters_and_pagination() {
+    fn snapshot_and_restore_baselines() {
         let l = log();
         l.set_enabled(true);
-        for i in 0..120u64 {
-            let kind = if i % 2 == 0 { OutboundKind::Direct } else { OutboundKind::Tunnel { node: "n".into() } };
-            let (id, _) = l.begin(Proto::Socks5, &format!("h{i}.com"), 443, None, kind, HitLayer::Default).unwrap();
-            l.end(id);
-        }
-        let page1 = l.query(&ConnFilter { limit: 50, ..Default::default() });
-        assert_eq!(page1.total, 120);
-        assert_eq!(page1.items.len(), 50);
-        assert_eq!(page1.items[0].id, 120); // newest first
-        let page3 = l.query(&ConnFilter { offset: 100, limit: 50, ..Default::default() });
-        assert_eq!(page3.items.len(), 20);
-        let kw = l.query(&ConnFilter { keyword: Some("h1.".into()), limit: 50, ..Default::default() });
-        assert_eq!(kw.total, 1);
-        let tunnel = l.query(&ConnFilter { outbound: Some("tunnel".into()), limit: 50, ..Default::default() });
-        assert_eq!(tunnel.total, 60);
-        let closed = l.query(&ConnFilter { state: Some("closed".into()), limit: 200, ..Default::default() });
-        assert_eq!(closed.total, 120);
-    }
-
-    #[test]
-    fn ring_capacity_and_restore() {
-        let l = log();
-        l.set_enabled(true);
-        for i in 0..(CONLOG_CAPACITY + 10) as u64 {
-            let (id, _) = begin_one(&l, &format!("x{i}"));
-            l.end(id);
-        }
-        assert_eq!(l.totals().closed, CONLOG_CAPACITY);
+        let h = begin_one(&l, "s.com");
+        h.agg.up.fetch_add(300, Ordering::Relaxed);
+        l.end(h.id);
+        let snap = l.stats_snapshot();
+        assert_eq!(snap.len(), 1);
+        assert_eq!(snap[0].up, 300);
 
         let l2 = log();
-        let rows = l.query(&ConnFilter { limit: 6000, ..Default::default() }).items;
-        l2.restore(rows);
-        assert_eq!(l2.totals().closed, CONLOG_CAPACITY);
-        // id sequence resumes beyond the restored max
+        l2.restore_stats(snap);
+        let out = l2.query_hosts(&ConnFilter { limit: 50, ..Default::default() });
+        assert_eq!(out.items[0].hist_up, 300);
+        assert_eq!(out.items[0].sess_up, 0);
+        // new session bytes add on top of the baseline
         l2.set_enabled(true);
-        let (id, _) = begin_one(&l2, "new");
-        assert_eq!(id, (CONLOG_CAPACITY + 10 + 1) as u64);
+        let h2 = begin_one(&l2, "s.com");
+        h2.agg.up.fetch_add(20, Ordering::Relaxed);
+        let out = l2.query_hosts(&ConnFilter { limit: 50, ..Default::default() });
+        assert_eq!(out.items[0].hist_up, 300);
+        assert_eq!(out.items[0].sess_up, 20);
+        assert_eq!(l2.stats_snapshot()[0].up, 320);
+    }
+
+    #[test]
+    fn per_conn_ring_still_works() {
+        let l = log();
+        l.set_enabled(true);
+        let h = begin_one(&l, "a.com");
+        h.conn.up.fetch_add(100, Ordering::Relaxed);
+        let q = l.query(&ConnFilter { limit: 50, ..Default::default() });
+        assert_eq!(q.items[0].state, RecState::Active);
+        assert_eq!(q.items[0].up, 100);
+        l.end(h.id);
+        let q = l.query(&ConnFilter { limit: 50, ..Default::default() });
+        assert_eq!(q.items[0].state, RecState::Closed);
+        assert_eq!(q.items[0].up, 100);
+        assert!(l.take_dirty());
+        assert!(!l.take_dirty());
     }
 
     #[test]
@@ -601,38 +862,29 @@ mod tests {
         let l = log();
         l.set_enabled(true);
         l.set_tun_relay(true);
-        let (id, _) = begin_one(&l, "relay.com");
-        l.end(id);
-        // hidden by default
+        let h = begin_one(&l, "relay.com");
+        l.end(h.id);
         assert_eq!(l.query(&ConnFilter { limit: 50, ..Default::default() }).total, 0);
-        let all = l.query(&ConnFilter { source: Some("all".into()), limit: 50, ..Default::default() });
+        assert_eq!(l.query_hosts(&ConnFilter { limit: 50, ..Default::default() }).total, 0);
+        let all = l.query_hosts(&ConnFilter { source: Some("all".into()), limit: 50, ..Default::default() });
         assert_eq!(all.total, 1);
         assert_eq!(all.items[0].source, Source::TunRelay);
     }
 
-    #[test]
-    fn kill_fires_the_switch_once() {
-        let l = log();
-        l.set_enabled(true);
-        let (id, _) = begin_one(&l, "k.com");
-        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
-        l.attach_kill(id, tx);
-        assert!(l.kill(id));
-        assert!(rx.blocking_recv().is_ok()); // fired
-        assert!(!l.kill(id)); // second kill: switch already taken
-    }
-
     #[tokio::test]
-    async fn counting_io_counts_both_directions() {
+    async fn counting_io_counts_both_targets() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        let ctr = Arc::new(ActiveCounters::default());
+        let conn = Arc::new(ActiveCounters::default());
+        let agg = Arc::new(ActiveCounters::default());
         let (a, mut b) = tokio::io::duplex(64);
-        let mut w = CountingIo::new(a, Some(ctr.clone()));
+        let mut w = CountingIo::new(a, Some(conn.clone()), Some(agg.clone()));
         w.write_all(b"hello").await.unwrap();
         b.write_all(b"world!").await.unwrap();
         let mut buf = [0u8; 6];
         w.read_exact(&mut buf).await.unwrap();
-        assert_eq!(ctr.down.load(Ordering::Relaxed), 5); // written to client
-        assert_eq!(ctr.up.load(Ordering::Relaxed), 6); // read from client
+        for c in [&conn, &agg] {
+            assert_eq!(c.down.load(Ordering::Relaxed), 5);
+            assert_eq!(c.up.load(Ordering::Relaxed), 6);
+        }
     }
 }
