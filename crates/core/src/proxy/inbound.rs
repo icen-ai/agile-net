@@ -10,6 +10,7 @@
 //! - concurrent connection cap (flood protection)
 
 use crate::error::{Error, Result};
+use crate::proxy::conlog::{ActiveCounters, ConnLog, CountingIo, HitLayer, OutboundKind, Proto};
 use crate::proxy::outbound::{DirectOutbound, Socks5ForwardOutbound, TunnelOutbound};
 use crate::proxy::router::{Outbound, ProxyRouter};
 use crate::relay::listener::RelayListener;
@@ -56,6 +57,8 @@ pub struct ProxyInbound {
     stats: Arc<ProxyStats>,
     /// Transit accounting (None = no metering; proxy inbound forwarding is booked as from="proxy")
     transit: Option<Arc<TransitMeter>>,
+    /// Connection log (None = not attached; attached-but-disabled still short-circuits per connection)
+    conlog: Option<Arc<ConnLog>>,
 }
 
 impl ProxyInbound {
@@ -68,6 +71,7 @@ impl ProxyInbound {
             auth: None,
             stats: Arc::new(ProxyStats::default()),
             transit: None,
+            conlog: None,
         }
     }
 
@@ -118,6 +122,13 @@ impl ProxyInbound {
     /// destination label: tunnel = opener transit_label, direct/forward = "local").
     pub fn with_transit_meter(mut self, meter: Arc<TransitMeter>) -> Self {
         self.transit = Some(meter);
+        self
+    }
+
+    /// Attach the connection log (docs/todo/conn-log.md; enabled flag lives inside the log,
+    /// attaching alone costs one atomic load per connection while disabled).
+    pub fn with_conn_log(mut self, log: Arc<ConnLog>) -> Self {
+        self.conlog = Some(log);
         self
     }
 
@@ -173,12 +184,29 @@ impl ProxyInbound {
                 auth: self.auth.clone(),
                 stats: self.stats.clone(),
                 transit: self.transit.clone(),
+                conlog: self.conlog.clone(),
             };
 
             tokio::spawn(async move {
                 let _guard = ActiveGuard(this.stats.clone());
-                if let Err(e) = handle_connection(stream, client_addr, this).await {
-                    debug!(client = %client_addr, error = %e, "proxy connection handled with error");
+                // Connection-log kill switch (强制打断): the guard registers the sender on begin;
+                // firing it unwinds the task, and the guard's Drop finalizes the row as Closed.
+                // Sender dropped without registration (log disabled/detached) must NOT resolve the race —
+                // pend forever in that case, otherwise the connection would be cut right after the decision.
+                let (kill_tx, kill_rx) = tokio::sync::oneshot::channel::<()>();
+                let kill = async move {
+                    match kill_rx.await {
+                        Ok(()) => (),
+                        Err(_) => std::future::pending::<()>().await,
+                    }
+                };
+                tokio::select! {
+                    r = handle_connection(stream, client_addr, this, kill_tx) => {
+                        if let Err(e) = r {
+                            debug!(client = %client_addr, error = %e, "proxy connection handled with error");
+                        }
+                    }
+                    _ = kill => {},
                 }
             });
         }
@@ -195,6 +223,63 @@ struct InboundCtx {
     auth: Option<(String, String)>,
     stats: Arc<ProxyStats>,
     transit: Option<Arc<TransitMeter>>,
+    conlog: Option<Arc<ConnLog>>,
+}
+
+/// Connection-log guard (docs/todo/conn-log.md): one row per inbound connection when enabled.
+/// Created right after the inbound decision; `attach` wraps the client stream with live counters
+/// before the pump; drop finalizes Closed, `.fail(...)` (dial/handshake errors) marks Failed instead.
+struct ConnRecGuard {
+    log: Option<Arc<ConnLog>>,
+    id: u64,
+    failed: Option<String>,
+}
+
+impl ConnRecGuard {
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        ctx: &InboundCtx,
+        proto: Proto,
+        host: &str,
+        port: u16,
+        mapped_to: Option<String>,
+        outbound: &Outbound,
+        hit: HitLayer,
+        kill_tx: Option<tokio::sync::oneshot::Sender<()>>,
+    ) -> (Self, Option<Arc<ActiveCounters>>) {
+        let kind = match outbound {
+            Outbound::Direct => OutboundKind::Direct,
+            Outbound::Tunnel { node_id } => OutboundKind::Tunnel { node: node_id.clone() },
+            Outbound::Forward { .. } => OutboundKind::Forward,
+        };
+        let Some(log) = ctx.conlog.clone() else {
+            return (Self { log: None, id: 0, failed: None }, None);
+        };
+        match log.begin(proto, host, port, mapped_to, kind, hit) {
+            Some((id, ctr)) => {
+                if let Some(tx) = kill_tx {
+                    log.attach_kill(id, tx);
+                }
+                (Self { log: Some(log), id, failed: None }, Some(ctr))
+            }
+            None => (Self { log: None, id: 0, failed: None }, None),
+        }
+    }
+
+    fn fail(&mut self, e: impl std::fmt::Display) {
+        self.failed = Some(e.to_string());
+    }
+}
+
+impl Drop for ConnRecGuard {
+    fn drop(&mut self) {
+        if let Some(log) = &self.log {
+            match self.failed.take() {
+                Some(r) => log.end_failed(self.id, r),
+                None => log.end(self.id),
+            }
+        }
+    }
 }
 
 /// Transit accounting (from="proxy"); no-op without a meter.
@@ -228,6 +313,7 @@ async fn handle_connection(
     mut stream: TcpStream,
     client_addr: SocketAddr,
     ctx: InboundCtx,
+    kill_tx: tokio::sync::oneshot::Sender<()>,
 ) -> Result<()> {
     // read the first byte to detect the protocol (time-limited, Slowloris protection)
     let mut first_byte = [0u8; 1];
@@ -236,9 +322,9 @@ async fn handle_connection(
         .map_err(|_| Error::Timeout)??;
 
     match first_byte[0] {
-        0x05 => handle_socks5(stream, client_addr, ctx).await,
+        0x05 => handle_socks5(stream, client_addr, ctx, kill_tx).await,
         b'G' | b'P' | b'C' | b'H' | b'O' | b'D' | b'T' => {
-            handle_http(stream, client_addr, first_byte[0], ctx).await
+            handle_http(stream, client_addr, first_byte[0], ctx, kill_tx).await
         }
         other => Err(Error::Protocol(format!(
             "unsupported proxy protocol first byte: {other:#x}"
@@ -259,6 +345,7 @@ async fn handle_socks5(
     mut stream: TcpStream,
     client_addr: SocketAddr,
     ctx: InboundCtx,
+    kill_tx: tokio::sync::oneshot::Sender<()>,
 ) -> Result<()> {
     // 1. negotiate auth method
     let mut nmethods = [0u8; 1];
@@ -362,17 +449,32 @@ async fn handle_socks5(
     }
 
     // Custom rule layer (GUI custom rules): the hosts mapping rewrites the resolve target first,
-    // then decide_inbound applies the precedence (user bypass > narrower route > preset > default);
+    // then decide_inbound_hit applies the precedence (user bypass > narrower route > preset > default)
+    // and surfaces the hit layer for the connection log;
     // zero cost when the layer is empty (map_host / custom_bypass_match short-circuit on empty tables)
-    let (target_host, outbound) = {
+    let orig_host = target_host;
+    let (target_host, outbound, hit, mapped_to) = {
         let router_ref = ctx.router.load();
-        let host = match router_ref.map_host(&target_host) {
-            Some(ip) => ip.to_string(),
-            None => target_host,
+        let (host, mapped_to) = match router_ref.map_host(&orig_host) {
+            Some(ip) => {
+                let s = ip.to_string();
+                (s.clone(), Some(s))
+            }
+            None => (orig_host.clone(), None),
         };
-        let outbound = router_ref.decide_inbound(&host).clone();
-        (host, outbound)
+        let (outbound, hit) = router_ref.decide_inbound_hit(&host);
+        (host, outbound.clone(), hit, mapped_to)
     };
+    let (mut rec, ctr) = ConnRecGuard::new(
+        &ctx,
+        Proto::Socks5,
+        &orig_host,
+        target_port,
+        mapped_to,
+        &outbound,
+        hit,
+        Some(kill_tx),
+    );
     let target_str = format!("{target_host}:{target_port}");
     debug!(client = %client_addr, target = %target_str, "SOCKS5 request received");
 
@@ -380,14 +482,24 @@ async fn handle_socks5(
         Outbound::Direct => {
             let target_addr: SocketAddr = match target_str.parse() {
                 Ok(a) => a,
-                Err(_) => tokio::net::lookup_host(&target_str)
-                    .await?
-                    .next()
-                    .ok_or_else(|| Error::Other("dns resolution failed".into()))?,
+                Err(_) => match tokio::net::lookup_host(&target_str).await {
+                    Ok(mut addrs) => match addrs.next() {
+                        Some(a) => a,
+                        None => {
+                            rec.fail("dns resolution failed");
+                            return Err(Error::Other("dns resolution failed".into()));
+                        }
+                    },
+                    Err(e) => {
+                        rec.fail(&e);
+                        return Err(e.into());
+                    }
+                },
             };
 
             // self-connect guard
             if is_self_connect(&ctx, &target_addr) {
+                rec.fail("refused: target is the proxy itself");
                 let _ = stream
                     .write_all(&[0x05, 0x02, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
                     .await;
@@ -403,6 +515,7 @@ async fn handle_socks5(
                         .write_all(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
                         .await?;
 
+                    let mut stream = CountingIo::new(stream, ctr);
                     let (up, down) =
                         tokio::io::copy_bidirectional(&mut stream, &mut target_stream).await?;
                     ctx.stats.bytes_up.fetch_add(up, Ordering::Relaxed);
@@ -414,6 +527,7 @@ async fn handle_socks5(
                     let _ = stream
                         .write_all(&[0x05, 0x04, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
                         .await;
+                    rec.fail(&e);
                     Err(e)
                 }
             }
@@ -428,7 +542,7 @@ async fn handle_socks5(
                 let to_label = opener.transit_label(&node_id, &target_host);
                 let tunnel_outbound = TunnelOutbound::new(opener);
                 let (up, down) = tunnel_outbound
-                    .proxy_stream(&node_id, &target_host, target_port, stream)
+                    .proxy_stream(&node_id, &target_host, target_port, CountingIo::new(stream, ctr))
                     .await?;
                 ctx.stats.bytes_up.fetch_add(up, Ordering::Relaxed);
                 ctx.stats.bytes_down.fetch_add(down, Ordering::Relaxed);
@@ -438,6 +552,7 @@ async fn handle_socks5(
                 let _ = stream
                     .write_all(&[0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
                     .await;
+                rec.fail("no channel opener configured for tunnel routing");
                 Err(Error::Other(
                     "no channel opener configured for tunnel routing".into(),
                 ))
@@ -447,17 +562,23 @@ async fn handle_socks5(
             stream
                 .write_all(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
                 .await?;
-            match Socks5ForwardOutbound::proxy_stream(addr, &target_host, target_port, stream)
-                .await
-            {
-                Ok((up, down)) => {
+            // connect + manual pump (instead of proxy_stream) so dial failures mark the record Failed
+            // while mid-pump resets stay Closed; the ok reply is already sent either way
+            match Socks5ForwardOutbound::connect(addr, &target_host, target_port).await {
+                Ok(mut upstream) => {
+                    let mut stream = CountingIo::new(stream, ctr);
+                    let (up, down) =
+                        tokio::io::copy_bidirectional(&mut stream, &mut upstream).await?;
                     ctx.stats.bytes_up.fetch_add(up, Ordering::Relaxed);
                     ctx.stats.bytes_down.fetch_add(down, Ordering::Relaxed);
                     // loopback upstream forwarding is initiated locally; booked as locally terminated
                     record_transit(&ctx, TO_LOCAL, up, down);
                     Ok(())
                 }
-                Err(e) => Err(e),
+                Err(e) => {
+                    rec.fail(&e);
+                    Err(e)
+                }
             }
         }
     }
@@ -469,6 +590,7 @@ async fn handle_http(
     client_addr: SocketAddr,
     first_byte: u8,
     ctx: InboundCtx,
+    kill_tx: tokio::sync::oneshot::Sender<()>,
 ) -> Result<()> {
     // read the full request header (up to \r\n\r\n, 16KB cap, time-limited)
     let mut req_buf = vec![first_byte];
@@ -558,16 +680,31 @@ async fn handle_http(
     }
 
     // Custom rule layer (GUI custom rules): the hosts mapping rewrites the resolve target first,
-    // then decide_inbound applies the precedence (user bypass > narrower route > preset > default)
-    let (target_host, outbound) = {
+    // then decide_inbound_hit applies the precedence (user bypass > narrower route > preset > default)
+    // and surfaces the hit layer for the connection log
+    let orig_host = target_host;
+    let (target_host, outbound, hit, mapped_to) = {
         let router_ref = ctx.router.load();
-        let host = match router_ref.map_host(&target_host) {
-            Some(ip) => ip.to_string(),
-            None => target_host,
+        let (host, mapped_to) = match router_ref.map_host(&orig_host) {
+            Some(ip) => {
+                let s = ip.to_string();
+                (s.clone(), Some(s))
+            }
+            None => (orig_host.clone(), None),
         };
-        let outbound = router_ref.decide_inbound(&host).clone();
-        (host, outbound)
+        let (outbound, hit) = router_ref.decide_inbound_hit(&host);
+        (host, outbound.clone(), hit, mapped_to)
     };
+    let (mut rec, ctr) = ConnRecGuard::new(
+        &ctx,
+        Proto::Http,
+        &orig_host,
+        target_port,
+        mapped_to,
+        &outbound,
+        hit,
+        Some(kill_tx),
+    );
     let target_str = format!("{target_host}:{target_port}");
     debug!(client = %client_addr, target = %target_str, "HTTP Proxy request received");
 
@@ -575,14 +712,24 @@ async fn handle_http(
         Outbound::Direct => {
             let target_addr: SocketAddr = match target_str.parse() {
                 Ok(a) => a,
-                Err(_) => tokio::net::lookup_host(&target_str)
-                    .await?
-                    .next()
-                    .ok_or_else(|| Error::Other("dns resolution failed".into()))?,
+                Err(_) => match tokio::net::lookup_host(&target_str).await {
+                    Ok(mut addrs) => match addrs.next() {
+                        Some(a) => a,
+                        None => {
+                            rec.fail("dns resolution failed");
+                            return Err(Error::Other("dns resolution failed".into()));
+                        }
+                    },
+                    Err(e) => {
+                        rec.fail(&e);
+                        return Err(e.into());
+                    }
+                },
             };
 
             // self-connect guard
             if is_self_connect(&ctx, &target_addr) {
+                rec.fail("refused: target is the proxy itself");
                 let _ = stream.write_all(b"HTTP/1.1 403 Forbidden\r\n\r\n").await;
                 return Err(Error::Protocol(
                     "refused: target is the proxy itself".into(),
@@ -603,6 +750,7 @@ async fn handle_http(
                         target_stream.write_all(&req_buf).await?;
                     }
 
+                    let mut stream = CountingIo::new(stream, ctr);
                     let (up, down) =
                         tokio::io::copy_bidirectional(&mut stream, &mut target_stream).await?;
                     ctx.stats.bytes_up.fetch_add(up, Ordering::Relaxed);
@@ -612,6 +760,7 @@ async fn handle_http(
                 }
                 Err(e) => {
                     let _ = stream.write_all(b"HTTP/1.1 502 Bad Gateway\r\n\r\n").await;
+                    rec.fail(&e);
                     Err(e)
                 }
             }
@@ -620,8 +769,13 @@ async fn handle_http(
             if let Some(opener) = resolve_opener(&ctx, &node_id) {
                 // destination label resolved the same way as open (actual peer when auto-routing)
                 let to_label = opener.transit_label(&node_id, &target_host);
-                let channel = opener.open(&node_id, &target_host, target_port).await?;
-                let mut channel = channel;
+                let mut channel = match opener.open(&node_id, &target_host, target_port).await {
+                    Ok(c) => c,
+                    Err(e) => {
+                        rec.fail(&e);
+                        return Err(e);
+                    }
+                };
 
                 if method == "CONNECT" {
                     stream
@@ -635,7 +789,7 @@ async fn handle_http(
                     channel.write_all(&req_buf).await?;
                 }
 
-                let (up, down) = crate::relay::bridge::bridge(stream, channel).await?;
+                let (up, down) = crate::relay::bridge::bridge(CountingIo::new(stream, ctr), channel).await?;
                 ctx.stats.bytes_up.fetch_add(up, Ordering::Relaxed);
                 ctx.stats.bytes_down.fetch_add(down, Ordering::Relaxed);
                 record_transit(&ctx, &to_label, up, down);
@@ -644,6 +798,7 @@ async fn handle_http(
                 let _ = stream
                     .write_all(b"HTTP/1.1 503 Service Unavailable\r\n\r\n")
                     .await;
+                rec.fail("no channel opener configured for tunnel routing");
                 Err(Error::Other(
                     "no channel opener configured for tunnel routing".into(),
                 ))
@@ -663,6 +818,7 @@ async fn handle_http(
                         // plain HTTP requests must carry the original request when forwarded
                         upstream.write_all(&req_buf).await?;
                     }
+                    let mut stream = CountingIo::new(stream, ctr);
                     let (up, down) =
                         tokio::io::copy_bidirectional(&mut stream, &mut upstream).await?;
                     ctx.stats.bytes_up.fetch_add(up, Ordering::Relaxed);
@@ -673,6 +829,7 @@ async fn handle_http(
                 }
                 Err(e) => {
                     let _ = stream.write_all(b"HTTP/1.1 502 Bad Gateway\r\n\r\n").await;
+                    rec.fail(&e);
                     Err(e)
                 }
             }

@@ -248,8 +248,16 @@ impl ProxyRouter {
     /// delegated full-tunnel) still let the presets keep loopback/LAN traffic direct.
     /// Input is a bare hostname or IP string (no port; hosts mapping is applied by the caller).
     pub fn decide_inbound(&self, host: &str) -> &Outbound {
+        self.decide_inbound_hit(host).0
+    }
+
+    /// decide_inbound with the precedence layer surfaced (connection log, docs/todo/conn-log.md §3):
+    /// custom bypass hit → UserBypass; narrower-than-catch-all route → ExplicitRoute;
+    /// preset bypass (incl. preset winning over a catch-all) → PresetBypass; catch-all/default → Default.
+    pub fn decide_inbound_hit(&self, host: &str) -> (&Outbound, crate::proxy::conlog::HitLayer) {
+        use crate::proxy::conlog::HitLayer;
         if let Some(o) = self.custom_bypass_match(host) {
-            return o;
+            return (o, HitLayer::UserBypass);
         }
         let scoped = if let Ok(ip) = host.parse::<IpAddr>() {
             self.route_ip_scoped(ip)
@@ -257,9 +265,15 @@ impl ProxyRouter {
             self.resolve_host_scoped(host)
         };
         match scoped {
-            Some((out, false)) => out,
-            Some((out, true)) => self.preset_bypass_match(host).unwrap_or(out),
-            None => self.preset_bypass_match(host).unwrap_or(&self.default),
+            Some((out, false)) => (out, HitLayer::ExplicitRoute),
+            Some((out, true)) => match self.preset_bypass_match(host) {
+                Some(p) => (p, HitLayer::PresetBypass),
+                None => (out, HitLayer::Default),
+            },
+            None => match self.preset_bypass_match(host) {
+                Some(p) => (p, HitLayer::PresetBypass),
+                None => (&self.default, HitLayer::Default),
+            },
         }
     }
 

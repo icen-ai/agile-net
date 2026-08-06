@@ -5,6 +5,7 @@
 //! crate:: path references (e.g. floatball.rs's crate::show_main_window) completely unchanged.
 
 mod client;
+mod conlog;
 mod doctor;
 mod misc;
 mod net;
@@ -16,6 +17,7 @@ mod tray;
 mod windows;
 
 pub(crate) use client::*;
+pub(crate) use conlog::*;
 pub(crate) use doctor::*;
 pub(crate) use misc::*;
 pub(crate) use net::*;

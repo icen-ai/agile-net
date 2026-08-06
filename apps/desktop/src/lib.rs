@@ -267,6 +267,11 @@ pub fn run() {
             anet_open_file,
             read_text_file,
             qr_pick_decode,
+            conlog_status,
+            conlog_query,
+            conlog_set_enabled,
+            conlog_clear,
+            conlog_kill,
         ])
         .setup(|app| {
             setup_tray(app)?;
@@ -311,6 +316,8 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 sysproxy_watch(handle).await;
             });
+            // Connection log (docs/todo/conn-log.md): replay persisted rows, restore enabled/tun-relay flags, spawn the smart-flush task
+            init_conn_log(app.handle());
             // Tray tooltip live speed (1s)
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {

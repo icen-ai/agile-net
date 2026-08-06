@@ -192,8 +192,8 @@ AgI18n.register({
   'proxy.sortDelay': { zh: '按延迟', en: 'By Delay' },
   'proxy.test': { zh: '测速', en: 'Test' },
   // ---- logs (view-logs) ----
-  'logs.desc': { zh: '订阅内核实时可观测：连接（右键行可强制打断 / 一键加规则）、内核日志与规则命中统计', en: 'Live subscription-kernel observability: connections (right-click a row to force-close or add a rule), kernel logs and rule-hit stats' },
-  'logs.tabConn': { zh: '实时连接', en: 'Connections' },
+  'logs.desc': { zh: '连接记录全收录（anet 入站层：直连 / 隧道 / 订阅，含放行；右键行强制打断 / 加规则）+ 订阅内核日志与命中统计', en: 'Full connection records from the anet inbound (direct / tunnel / subscription, bypass included; right-click a row to force-close or add a rule), plus kernel logs and rule-hit stats' },
+  'logs.tabConn': { zh: '连接记录', en: 'Records' },
   'logs.tabLog': { zh: '实时日志', en: 'Logs' },
   'logs.tabHits': { zh: '命中追踪', en: 'Hits' },
   'logs.colTarget': { zh: '目标', en: 'Target' },

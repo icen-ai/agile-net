@@ -496,6 +496,8 @@ pub(crate) async fn set_tun_mode(
         }
         emit_settings(&app, &state).await;
     }
+    // Connection log TUN-relay marking (docs/todo/conn-log.md §5; inbound rows begun under TUN carry source=TunRelay)
+    state.client.conn_log().set_tun_relay(enabled);
     Ok(tun_status_of(&state).await)
 }
 

@@ -1,10 +1,12 @@
 'use strict';
-/* Split from app.js: logs view / connection detail / event center (pure move, zero logic change) */
+/* Split from app.js: logs view / connection records / event center */
 
-/* ================= Logs view (subscription kernel observability: live connections / live logs / hit tracking) =================
-   Poll only while this page is open (connections/logs 1s, hits 2s; single timer dispatched by tab), stops on leave;
-   when the window is hidden or the kernel is not running, the timer idles lightly and skips kernel IPC (on kernel stop, one final pull is allowed through to land the empty state);
-   connection table redrawn wholesale on signature compare, log stream appended incrementally (500-line DOM cap), anti-flicker rendering. */
+/* ================= Logs view =================
+   连接记录 tab: anet local-proxy inbound full ingestion (conlog_* commands, docs/todo/conn-log.md) — direct/tunnel/
+   subscription incl. bypass; recording default off; 50-row pages; kernel-independent (records even with the kernel down).
+   实时日志 / 命中追踪 tabs stay on the mihomo kernel source; 事件中心 is the local audit log.
+   Poll only while this page is open (records/logs 1s, hits 2s, events 10s; single timer dispatched by tab), stops on leave;
+   all renders are signature-compared, no DOM rewrite on unchanged data. */
 
 /* ---- Log line rendering (level normalization + keyword mark.logv-hl highlight; esc first then highlight, the replacement string is escaped text too) ---- */
 function canonLevel(level) {
@@ -24,13 +26,15 @@ function logLineHtml(e, kw) {
     pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds()) + '</span> ' + payload + '</div>';
 }
 
+const PAGE = 50;
+
 const LogsView = {
   tab: 'conn',
   timer: null, tick: 0,
-  kernelOff: false, // kernel not running and empty state already shown (onTick uses this to idle and skip kernel IPC; auto-resets when running again)
-  connSig: '', hitsSig: '', evSig: '',
-  connMap: {},        // latest connection data id → {c, live} (data source for detail expand/redraw restore)
-  connDetailId: null, // id of the expanded connection detail row (only one open at a time; collapses when the row disappears)
+  kernelOff: false, // kernel not running and empty state already shown (kernel-sourced tabs idle; one final pull lands the empty state)
+  cl: { statSig: '', sig: '', page: 0 },   // connection records state
+  hitsSig: '', hitsAll: [], hitsPage: 0,
+  evSig: '', evAll: [], evPage: 0,
   entries: [],      // live log cache (data source for full re-render on filter change)
   logCursor: null,  // last rendered {time,level,payload} (incremental cursor; losing it = buffer rotation → full redraw)
   follow: true,     // auto scroll to bottom (pauses when the user scrolls up, resumes at bottom)
@@ -45,8 +49,10 @@ const LogsView = {
     this.tick++;
     // Window hidden: skip this IPC round (timer keeps idling lightly, resumes on its own when visible again)
     if (document.hidden) return;
+    // Connection records are anet-side: kernel-independent, poll every second
+    if (this.tab === 'conn') { this.pollConns(); return; }
     if (this.tab === 'ev') { if (this.tick % 10 === 0) this.pollEvents(); return; } // events are low frequency: 10s (local event log, no kernel dependency)
-    // Kernel not running: idle and skip kernel IPC; right after a kernel stop, allow one final pull so the page falls back to the 「内核未运行」 empty state
+    // Kernel-sourced tabs: kernel not running → idle and skip kernel IPC; right after a kernel stop, allow one final pull for the empty state
     let settling = false;
     if (!window._subRunning) {
       if (this.kernelOff) return;
@@ -54,7 +60,6 @@ const LogsView = {
     } else this.kernelOff = false;
     if (this.tab === 'hits') { if (settling || this.tick % 2 === 0) this.pollHits(); return; }
     if (this.tab === 'log') this.pollLogs();
-    else this.pollConns();
   },
   pollNow() {
     if (this.tab === 'log') this.pollLogs();
@@ -63,46 +68,55 @@ const LogsView = {
     else this.pollConns();
   },
 
-  /* ---- Live connections (1s; signature compare, active pinned on top + closed dimmed below, max 100 closed rows) ---- */
+  /* ---- Connection records (1s; conlog_status toolbar sync + conlog_query page; wholesale redraw on signature compare) ---- */
+  clFilter() {
+    const time = $('cl-time').value;
+    let fromMs = null, toMs = null;
+    if (time === '1h') fromMs = Date.now() - 3600e3;
+    else if (time === '24h') fromMs = Date.now() - 86400e3;
+    else if (time === 'custom') {
+      fromMs = $('cl-from').value ? new Date($('cl-from').value).getTime() : null;
+      toMs = $('cl-to').value ? new Date($('cl-to').value).getTime() : null;
+    }
+    return {
+      keyword: ($('cl-kw').value || '').trim() || null,
+      outbound: $('cl-outbound').value || null,
+      rowState: $('cl-state').value || null,
+      source: $('cl-tun').checked ? 'all' : null,
+      fromMs, toMs,
+      offset: this.cl.page * PAGE, limit: PAGE,
+    };
+  },
   async pollConns() {
     if (HTTP_MODE) return;
+    // TUN hint follows the role cache (UDP / kernel-direct traffic bypasses the anet inbound under TUN)
+    const tunOn = !!(window._rolesCache && window._rolesCache.tun_mode);
+    const tunHint = $('cl-tun-hint');
+    if (tunHint) tunHint.style.display = tunOn ? '' : 'none';
+    try {
+      const st = await invoke('conlog_status');
+      const ssig = JSON.stringify(st);
+      if (ssig !== this.cl.statSig) {
+        this.cl.statSig = ssig;
+        if ($('cl-enable').checked !== st.enabled) $('cl-enable').checked = st.enabled;
+        setText('cl-stats', AgI18n.t('logs.cl.stats', { down: fmtBytes(st.down), up: fmtBytes(st.up), n: st.closed, a: st.active }));
+      }
+    } catch (e) { return; }
     let v;
-    try { v = await invoke('sub_connections'); } catch (e) { return; }
+    try { v = await invoke('conlog_query', this.clFilter()); } catch (e) { return; }
     const sig = JSON.stringify(v);
-    if (sig === this.connSig) return;
-    this.connSig = sig;
+    if (sig === this.cl.sig) return;
+    this.cl.sig = sig;
     const body = $('lg-conn-body');
-    const act = v.active || [];
-    const closed = (v.closed || []).slice(0, 100);
-    this.connMap = {};
-    act.forEach(c => { this.connMap[c.id] = { c, live: true }; });
-    closed.forEach(c => { this.connMap[c.id] = { c, live: false }; });
-    if (!act.length && !closed.length) {
-      this.connDetailId = null;
-      body.innerHTML = '<tr><td colspan="7" class="empty">' + AgI18n.t('logs.empty.conn') + '</td></tr>';
-      return;
+    if (!v.items.length) {
+      body.innerHTML = '<tr><td colspan="8" class="empty">' + AgI18n.t('logs.cl.empty') + '</td></tr>';
+    } else {
+      body.innerHTML = v.items.map(clRowHtml).join('');
     }
-    body.innerHTML = act.map(c => connRowHtml(c, true)).join('') +
-      closed.map(c => connRowHtml(c, false)).join('');
-    this.restoreConnDetail(); // restore the expanded row after wholesale redraw (latest data = live detail refresh; collapse if the row is gone)
-  },
-
-  /* Expand/collapse connection detail (clicking the same row again or another row collapses; only one open at a time) */
-  toggleConnDetail(id) {
-    const old = $('lg-conn-body').querySelector('.conn-detail-row');
-    if (old) old.remove();
-    this.connDetailId = this.connDetailId === id ? null : id;
-    this.restoreConnDetail();
-  },
-  restoreConnDetail() {
-    const id = this.connDetailId;
-    if (!id) return;
-    const rec = this.connMap[id];
-    if (!rec) { this.connDetailId = null; return; } // row gone: collapse
-    let anchor = null;
-    $('lg-conn-body').querySelectorAll('tr[data-cid]').forEach(r => { if (r.dataset.cid === id) anchor = r; });
-    if (!anchor) { this.connDetailId = null; return; }
-    anchor.insertAdjacentHTML('afterend', connDetailRowHtml(rec.c, rec.live));
+    const pages = Math.max(1, Math.ceil(v.total / PAGE));
+    setText('cl-page-info', AgI18n.t('logs.cl.pageInfo', { p: Math.min(this.cl.page + 1, pages), pages, n: v.total }));
+    $('cl-prev').disabled = this.cl.page <= 0;
+    $('cl-next').disabled = this.cl.page + 1 >= pages;
   },
 
   /* ---- Live logs (1s; incremental append, full redraw on buffer rotation / filter change) ---- */
@@ -152,7 +166,7 @@ const LogsView = {
     if (this.follow) view.scrollTop = view.scrollHeight;
   },
 
-  /* ---- Hit tracking (2s; wholesale redraw on signature compare) ---- */
+  /* ---- Hit tracking (2s; 50-row client-side pages, wholesale redraw on signature compare) ---- */
   async pollHits() {
     if (HTTP_MODE) return;
     let hits;
@@ -160,35 +174,61 @@ const LogsView = {
     const sig = JSON.stringify(hits);
     if (sig === this.hitsSig) return;
     this.hitsSig = sig;
+    this.hitsAll = hits || [];
+    this.renderHits();
+  },
+  renderHits() {
+    const all = this.hitsAll;
     const body = $('lg-hits-body');
-    if (!hits || !hits.length) {
+    if (!all.length) {
       body.innerHTML = '<tr><td colspan="5" class="empty">' + AgI18n.t('logs.empty.hits') + '</td></tr>';
+      setText('hits-page-info', '');
+      $('btn-hits-prev').disabled = true;
+      $('btn-hits-next').disabled = true;
       return;
     }
-    body.innerHTML = hits.map(h =>
+    const pages = Math.max(1, Math.ceil(all.length / PAGE));
+    this.hitsPage = Math.min(this.hitsPage, pages - 1);
+    body.innerHTML = all.slice(this.hitsPage * PAGE, this.hitsPage * PAGE + PAGE).map(h =>
       '<tr><td class="mono">' + esc(h.rule || '—') + '</td>' +
       '<td class="mono">' + esc(h.payload || '—') + '</td>' +
       '<td class="mono">' + h.count + '</td>' +
       '<td class="mono">' + esc(h.last_host || '—') + '</td>' +
       '<td class="dim">' + esc(fmtAgo(h.last_seen)) + '</td></tr>').join('');
+    setText('hits-page-info', AgI18n.t('logs.cl.pageInfo', { p: this.hitsPage + 1, pages, n: all.length }));
+    $('btn-hits-prev').disabled = this.hitsPage <= 0;
+    $('btn-hits-next').disabled = this.hitsPage + 1 >= pages;
   },
 
-  /* ---- Event center (low frequency: one pull on tab entry + onTick 10s + manual refresh; signature compare, max 50 entries) ---- */
+  /* ---- Event center (one pull on tab entry + onTick 10s + manual refresh; 50-row client-side pages over the latest 200) ---- */
   async pollEvents() {
     if (HTTP_MODE) return;
     let evs;
-    try { evs = await invoke('recent_events', { limit: 50 }); } catch (e) { return; }
+    try { evs = await invoke('recent_events', { limit: 200 }); } catch (e) { return; }
     const sig = JSON.stringify(evs);
     if (sig === this.evSig) return;
     this.evSig = sig;
+    this.evAll = evs || [];
+    this.renderEvents();
+  },
+  renderEvents() {
+    const all = this.evAll;
     const list = $('lg-ev-list');
-    if (!evs || !evs.length) {
+    if (!all.length) {
       list.innerHTML = '<div class="empty-state">' + AgIcon('bell', 36) +
         '<div class="empty-t">' + AgI18n.t('logs.empty.ev') + '</div>' +
         '<div class="empty-d">' + AgI18n.t('logs.empty.evDesc') + '</div></div>';
+      setText('ev-page-info', '');
+      $('btn-ev-prev').disabled = true;
+      $('btn-ev-next').disabled = true;
       return;
     }
-    list.innerHTML = evs.map(evRowHtml).join('');
+    const pages = Math.max(1, Math.ceil(all.length / PAGE));
+    this.evPage = Math.min(this.evPage, pages - 1);
+    list.innerHTML = all.slice(this.evPage * PAGE, this.evPage * PAGE + PAGE).map(evRowHtml).join('');
+    setText('ev-page-info', AgI18n.t('logs.cl.pageInfo', { p: this.evPage + 1, pages, n: all.length }));
+    $('btn-ev-prev').disabled = this.evPage <= 0;
+    $('btn-ev-next').disabled = this.evPage + 1 >= pages;
   },
 };
 
@@ -223,69 +263,38 @@ function evRowHtml(e) {
     '<span class="ev-detail" title="' + esc(e.detail) + '">' + esc(e.detail) + '</span></div>';
 }
 
-/* Connection row HTML: active rows get a left 3px accent bar (var token, no hardcoded colors), closed rows fully dimmed */
-function connRowHtml(c, live) {
-  const dim = live ? '' : ' class="dim"';
-  const exit = (c.chains && c.chains.length) ? c.chains[0] : '—';
-  const chainTitle = (c.chains && c.chains.length) ? ' title="' + esc(c.chains.join(' → ')) + '"' : '';
-  const rule = c.rule
-    ? esc(c.rule) + (c.rule_payload ? ' <span class="dim">' + esc(c.rule_payload) + '</span>' : '')
-    : '<span class="dim">—</span>';
-  return '<tr data-cid="' + esc(c.id) + '" data-host="' + esc(c.host || '') + '" data-live="' + (live ? '1' : '') + '" style="cursor:pointer">' +
-    '<td class="mono" title="' + esc(c.host || '') + '"' + (live ? ' style="box-shadow:inset 3px 0 0 var(--accent)"' : '') + '>' + esc(c.host || '—') + '</td>' +
-    '<td' + dim + '>' + esc(c.process || '—') + '</td>' +
-    '<td class="mono">' + rule + '</td>' +
-    '<td class="mono"' + chainTitle + '>' + esc(exit) + '</td>' +
-    '<td class="mono">' + (live ? fmtBytes(c.down_rate) + '/s' : '—') + '</td>' +
-    '<td class="mono">' + (live ? fmtBytes(c.up_rate) + '/s' : '—') + '</td>' +
-    '<td class="mono">' + fmtDur(c.elapsed) + '</td></tr>';
-}
-
-/* Chain mini topology (pure HTML flex, zero deps, no SVG): local machine → relays in reversed chains order → target host
-   (chains[0] is the egress; chain order = local + chains.slice().reverse() + host; empty chains = just local→host two points).
-   Dot semantic colors all via var tokens (local accent / relay dim2 / target ok-text), links and right arrows use --border2;
-   node names 10px centered, truncated with ellipsis beyond 8 chars, full name in title. */
-function connTopoHtml(c) {
-  const cut = (s) => s.length > 8 ? s.slice(0, 8) + '…' : s;
-  const node = (name, color) =>
-    '<div style="flex-shrink:0;display:flex;flex-direction:column;align-items:center;max-width:90px" title="' + esc(name) + '">' +
-    '<span style="width:9px;height:9px;border-radius:50%;background:' + color + '"></span>' +
-    '<span class="dim" style="margin-top:3px;font-size:10px;line-height:1.3;max-width:90px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(cut(name)) + '</span></div>';
-  const link = '<div style="flex:1;min-width:24px;height:9px;display:flex;align-items:center">' +
-    '<span style="flex:1;height:1px;background:var(--border2)"></span>' +
-    '<span style="width:0;height:0;border-top:3.5px solid transparent;border-bottom:3.5px solid transparent;border-left:5px solid var(--border2)"></span></div>';
-  const nodes = [[AgI18n.t('logs.topo.local'), 'var(--accent)']];
-  (c.chains || []).slice().reverse().forEach(n => nodes.push([String(n), 'var(--dim2)']));
-  nodes.push([c.host || '—', 'var(--ok-text)']);
-  return '<div style="display:flex;align-items:flex-start;margin-bottom:7px">' +
-    nodes.map((n, i) => (i ? link : '') + node(n[0], n[1])).join('') + '</div>';
-}
-
-/* Connection detail expanded row (benchmark Surge: chain topology + two-line inner layout; styles all inline, no CSS class for this).
-   Topology row = local → relay chain → target (connTopoHtml); first line = full outbound chain + matched rule;
-   second line = process / start time / cumulative traffic / status pill.
-   Data re-inserted in place on pollConns wholesale redraw = live refresh. */
-function connDetailRowHtml(c, live) {
-  const chains = (c.chains && c.chains.length) ? c.chains.join(' → ') : '—';
-  const rule = c.rule
-    ? esc(c.rule) + (c.rule_payload ? ' <span class="dim">' + esc(c.rule_payload) + '</span>' : '')
-    : '<span class="dim">' + AgI18n.t('logs.conn.final') + '</span>';
-  const d = c.start ? new Date(c.start * 1000) : null;
+/* ---- Connection record row (anet inbound full ingestion) ----
+   serde shapes: state = {state:'active'|'closed'|'failed', reason?}, outbound = {kind:'direct'|'forward'|'tunnel', node?};
+   active rows get the 3px accent bar and live cumulative bytes (1s re-render), closed rows dimmed. */
+function clRowHtml(r) {
+  const st = typeof r.state === 'string' ? r.state : r.state.state;
+  const live = st === 'active';
+  const d = new Date(r.start_ms);
   const pad = (n) => String(n).padStart(2, '0');
-  const startTxt = d ? pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds()) : '—';
-  return '<tr class="conn-detail-row">' +
-    '<td colspan="7" style="padding:8px 14px 10px;border-top:none">' +
-    connTopoHtml(c) +
-    '<div style="font-size:12px;line-height:1.7;word-break:break-all">' +
-    '<span class="mono" style="font-size:11.5px">' + esc(chains) + '</span>' +
-    '<span class="dim">　' + AgI18n.t('term.rule') + '　</span>' + rule + '</div>' +
-    '<div class="dim" style="margin-top:3px;font-size:12px;display:flex;gap:14px;flex-wrap:wrap;align-items:center">' +
-    '<span>' + AgI18n.t('logs.conn.process') + ' ' + esc(c.process || '—') + '</span>' +
-    '<span>' + AgI18n.t('logs.conn.started') + ' ' + startTxt + '</span>' +
-    '<span>' + AgI18n.t('logs.conn.down') + ' ' + fmtBytes(c.download) + '</span>' +
-    '<span>' + AgI18n.t('logs.conn.up') + ' ' + fmtBytes(c.upload) + '</span>' +
-    '<span class="pill ' + (live ? 'pill-ok' : 'pill-dim') + '">' + AgI18n.t(live ? 'logs.conn.live' : 'logs.conn.closed') + '</span>' +
-    '</div></td></tr>';
+  const time = pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+  const mapped = r.mapped_to ? ' <span class="dim">→ ' + esc(r.mapped_to) + '</span>' : '';
+  const tun = r.source === 'tun_relay' ? ' <span class="pill pill-dim">TUN</span>' : '';
+  const kind = r.outbound.kind;
+  const outHtml = kind === 'direct'
+    ? '<span class="pill pill-dim">' + AgI18n.t('logs.out.direct') + '</span>'
+    : kind === 'forward'
+      ? '<span class="pill pill-warn">' + AgI18n.t('logs.out.forward') + '</span>'
+      : '<span class="pill pill-ok">' + esc(AgI18n.t('logs.out.tunnel', { node: r.outbound.node })) + '</span>';
+  const durMs = Math.max(0, (live ? Date.now() : r.end_ms) - r.start_ms);
+  const statePill = live
+    ? '<span class="pill pill-ok">' + AgI18n.t('logs.conn.live') + '</span>'
+    : st === 'closed'
+      ? '<span class="pill pill-dim">' + AgI18n.t('logs.conn.closed') + '</span>'
+      : '<span class="pill pill-danger" title="' + esc(r.state.reason || '') + '">' + AgI18n.t('logs.cl.failed') + '</span>';
+  return '<tr data-cid="' + r.id + '" data-host="' + esc(r.host) + '" data-live="' + (live ? '1' : '') + '"' + (live ? '' : ' class="dim"') + '>' +
+    '<td class="mono"' + (live ? ' style="box-shadow:inset 3px 0 0 var(--accent)"' : '') + '>' + time + '</td>' +
+    '<td class="mono" title="' + esc(r.host + ':' + r.port) + '">' + esc(r.host) + '<span class="dim">:' + r.port + '</span>' + mapped + tun + '</td>' +
+    '<td>' + outHtml + '</td>' +
+    '<td class="dim">' + esc(AgI18n.t('logs.hit.' + r.hit)) + '</td>' +
+    '<td class="mono">' + fmtBytes(r.down) + '</td>' +
+    '<td class="mono">' + fmtBytes(r.up) + '</td>' +
+    '<td class="mono">' + fmtDur(Math.round(durMs / 1000)) + '</td>' +
+    '<td>' + statePill + '</td></tr>';
 }
 
 /* One-click add rule: direct-allow for the host / route via subscription egress (backend strips scheme/port and is idempotent) */
@@ -324,28 +333,66 @@ function initLogs() {
       toast(AgI18n.t('logs.hitsCleared'), 'ok');
     } catch (err) { toast(friendlyError(err), 'err'); }
   };
-  // Event center manual refresh (clear signature to force re-pull and redraw)
+  $('btn-hits-prev').onclick = () => { if (LogsView.hitsPage > 0) { LogsView.hitsPage--; LogsView.renderHits(); } };
+  $('btn-hits-next').onclick = () => { if ((LogsView.hitsPage + 1) * PAGE < LogsView.hitsAll.length) { LogsView.hitsPage++; LogsView.renderHits(); } };
+  // Event center: manual refresh (clear signature to force re-pull) + 50-row pages
   $('btn-ev-refresh').onclick = () => { LogsView.evSig = ''; LogsView.pollEvents(); };
-  // Click a connection row to expand/collapse detail (clicking the same row again or another row collapses; only one open at a time);
-  // clicks/right-clicks inside the detail row do not leak out (no expand toggle, no row context menu)
-  $('lg-conn-body').addEventListener('click', (e) => {
-    if (e.target.closest('.conn-detail-row')) { e.stopPropagation(); return; }
-    const tr = e.target.closest('tr[data-cid]');
-    if (tr) LogsView.toggleConnDetail(tr.dataset.cid);
-  });
-  // Connection row context menu: force kill (active only) / direct for this domain / subscription for this domain
+  $('btn-ev-prev').onclick = () => { if (LogsView.evPage > 0) { LogsView.evPage--; LogsView.renderEvents(); } };
+  $('btn-ev-next').onclick = () => { if ((LogsView.evPage + 1) * PAGE < LogsView.evAll.length) { LogsView.evPage++; LogsView.renderEvents(); } };
+
+  /* ---- Connection records toolbar ---- */
+  // Recording toggle (default off; persisted as roles.conn_log_enabled)
+  $('cl-enable').onchange = async (e) => {
+    const on = e.target.checked;
+    e.target.disabled = true;
+    try {
+      await invoke('conlog_set_enabled', { enabled: on });
+      toast(AgI18n.t(on ? 'logs.cl.on' : 'logs.cl.off'), 'ok');
+    } catch (err) {
+      e.target.checked = !on;
+      toast(friendlyError(err), 'err');
+    }
+    e.target.disabled = false;
+    LogsView.cl.statSig = ''; LogsView.cl.sig = '';
+    LogsView.pollConns();
+  };
+  // One-click clear (DOM modal; deletes the on-disk archive too)
+  $('btn-cl-clear').onclick = async () => {
+    if (!(await askConfirm({ title: AgI18n.t('logs.cl.clearTitle'), desc: AgI18n.t('logs.cl.clearConfirm'), icon: 'trash-2', danger: true }))) return;
+    try {
+      await invoke('conlog_clear');
+      LogsView.cl.sig = ''; LogsView.cl.statSig = ''; LogsView.cl.page = 0;
+      LogsView.pollConns();
+      toast(AgI18n.t('logs.cl.cleared'), 'ok');
+    } catch (err) { toast(friendlyError(err), 'err'); }
+  };
+  // Filters: any change returns to page 1 and refetches
+  const clRefetch = () => { LogsView.cl.page = 0; LogsView.pollConns(); };
+  $('cl-kw').addEventListener('input', clRefetch);
+  $('cl-outbound').onchange = clRefetch;
+  $('cl-state').onchange = clRefetch;
+  $('cl-time').onchange = () => {
+    const custom = $('cl-time').value === 'custom';
+    $('cl-from').hidden = $('cl-to').hidden = !custom;
+    clRefetch();
+  };
+  $('cl-from').onchange = clRefetch;
+  $('cl-to').onchange = clRefetch;
+  $('cl-tun').onchange = clRefetch;
+  $('cl-prev').onclick = () => { if (LogsView.cl.page > 0) { LogsView.cl.page--; LogsView.pollConns(); } };
+  $('cl-next').onclick = () => { LogsView.cl.page++; LogsView.pollConns(); };
+  // Row context menu: force kill (active only, anet-side kill switch) / direct for this domain / subscription for this domain
   $('lg-conn-body').addEventListener('contextmenu', (e) => {
-    if (e.target.closest('.conn-detail-row')) { e.preventDefault(); e.stopPropagation(); return; }
     const tr = e.target.closest('tr[data-cid]');
     if (!tr) return;
     e.preventDefault();
     e.stopPropagation();
-    const id = tr.dataset.cid, host = tr.dataset.host;
+    const id = Number(tr.dataset.cid), host = tr.dataset.host;
     const items = [];
     if (tr.dataset.live === '1') {
       items.push({ label: AgI18n.t('logs.ctx.kill'), danger: true, fn: async () => {
         try {
-          await invoke('sub_close_connection', { id });
+          await invoke('conlog_kill', { id });
           toast(AgI18n.t('logs.killed'), 'ok');
           LogsView.pollConns();
         } catch (err) { toast(friendlyError(err), 'err'); }
@@ -360,8 +407,8 @@ function initLogs() {
   });
 }
 
-/* Language switch: clear signatures to force re-pull and redraw (connections/hits/events all render by signature compare; locale entry changes must break the signature) */
+/* Language switch: clear signatures to force re-pull and redraw (all renders are signature-compared; locale entry changes must break the signature) */
 AgI18n.onChange(() => {
-  LogsView.connSig = LogsView.hitsSig = LogsView.evSig = '';
+  LogsView.cl.sig = LogsView.cl.statSig = LogsView.hitsSig = LogsView.evSig = '';
   if (LogsView.timer) LogsView.pollNow();
 });

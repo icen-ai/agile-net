@@ -334,6 +334,8 @@ struct ClientInner {
     /// Delegated admin state pulled over the E2E config channel (federation P3): node_id -> current
     /// bootstrap ticket + transit-management offers (full scope). Session-scoped, refetched per session.
     deleg_admin: DashMap<String, DelegAdminState>,
+    /// Connection log (docs/todo/conn-log.md; engine-owned, injected into the proxy inbound on start)
+    conn_log: Arc<agile_net_core::proxy::conlog::ConnLog>,
 }
 
 /// Delegated admin state (federation P3): the issuer's current bootstrap ticket + port, plus the
@@ -482,12 +484,18 @@ impl AgileNetClient {
                 paused_rules: DashMap::new(),
                 proxy_fallback: arc_swap::ArcSwapOption::from_pointee(None),
                 custom_rules: ArcSwap::from_pointee(CustomRules::default()),
+                conn_log: Arc::new(agile_net_core::proxy::conlog::ConnLog::new()),
             }),
         }
     }
 
     pub fn proxy_router(&self) -> Arc<ProxyRouter> {
         self.inner.shared_router.load_full()
+    }
+
+    /// Engine-owned connection log (docs/todo/conn-log.md; injected into the proxy inbound on start).
+    pub fn conn_log(&self) -> Arc<agile_net_core::proxy::conlog::ConnLog> {
+        self.inner.conn_log.clone()
     }
 
     /// Shared handle of the merged router (route re-publishing: injects the embedded node connector).
@@ -1016,7 +1024,8 @@ impl AgileNetClient {
         let listen_addr: SocketAddr = format!("127.0.0.1:{port}").parse()?;
         // The inbound shares the engine's opener registry (node up/down takes effect immediately)
         let mut inbound = ProxyInbound::new(listen_addr, self.inner.shared_router.clone())
-            .with_openers_map(self.inner.openers.clone());
+            .with_openers_map(self.inner.openers.clone())
+            .with_conn_log(self.inner.conn_log.clone());
         if let Some((u, p)) = auth {
             inbound = inbound.with_auth(u, p);
         }

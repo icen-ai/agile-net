@@ -74,6 +74,9 @@ pub struct RoleSettings {
     /// Performance mode (frontend disables blur/animations based on this; backend only persists it)
     #[serde(default)]
     pub reduce_effects: bool,
+    /// Connection log (docs/todo/conn-log.md; default off — records are browsing history, opt-in)
+    #[serde(default)]
+    pub conn_log_enabled: bool,
 }
 
 fn default_true() -> bool {
@@ -139,6 +142,7 @@ impl Default for RoleSettings {
             float_ball: false,
             notify_float_ball: true,
             reduce_effects: false,
+            conn_log_enabled: false,
         }
     }
 }

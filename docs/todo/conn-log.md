@@ -69,4 +69,10 @@ ConnRec {
 
 ## 7. 实施记录
 
-（待实施批次填写）
+2026-08 全部四期落地：
+
+- **P1 core**（`crates/core/src/proxy/`）：`conlog.rs` 记录器（ConnRec 模型 / enabled+tun_relay 原子开关 / ring 5000 / active DashMap 实时计数 / `CountingIo` 客户端流包装 / kill oneshot 开关 / unflushed 快照 / restore 回放）；`router.rs` 新增 `decide_inbound_hit`（旧 `decide_inbound` 委托，零破坏）；`inbound.rs` 两入口三臂全挂钩（`ConnRecGuard` drop 定稿 Closed、`.fail` 标 Failed；kill 开关经 select 竞速，**sender 未注册时 kill 分支 pending 化**——否则 oneshot 关闭会误杀连接，socks5_auth_enforced 抓出）；SOCKS5 Forward 臂改 connect+手动泵（拨号失败标 Failed、中途重置仍 Closed）。测试 8 新（conlog 7 + 计数流 1），core 133 全过。
+- **P2 client/desktop**：`client.rs` 引擎持有 `Arc<ConnLog>` 并随 `start_proxy_with_auth` 注入（`conn_log()` 访问器）；desktop `cmd/conlog.rs`（`conlog_status/query/set_enabled/clear/kill` 五命令）+ `roles.conn_log_enabled`（serde 默认 false）+ 智能落盘（5s tick：≥200 立即 / 30s 空闲扫 / 关闭先冲后停，JSONL `~/.anet/gui/conn-log.jsonl`，启动回放截断 5000）+ `set_tun_mode` 打 TunRelay 标。
+- **P3 GUI**：日志页「实时连接」改「**连接记录**」（工具行：记录开关+隐私 ahelp+会话累计统计+TUN 提示+清空 askConfirm；过滤行：搜索/出口/状态/时间范围含自定义起止/含 TUN 回转；50 条/页分页；行 = 时间/目标:端口(→映射)/出口徽标/命中层/↓↑累计/耗时/状态徽标；右键 active 强制打断（conlog_kill）+ 加规则）；命中追踪、事件中心 50 条/页分页（事件取最新 200 条客户端分页）。i18n 键 `logs.cl.*`/`logs.out.*`/`logs.hit.*` 双语。
+- **P4 TUN**：`source` 字段从模型第一天就位（Proxy/TunRelay）；回转行默认隐藏，「含 TUN 回转」勾选调 source=all 查询并打 TUN 徽标；TUN 模式工具行提示「UDP 与内核直连流量不入库」。内核源持久合并不做（避免双源双写冲突，见 §5）。
+- 偏差：内核时代的「连接详情展开（链路迷你拓扑）」随数据源切换下线（anet 记录无内核链信息）；`recent_events` 上限 200 故事件分页在 200 条内进行；HTTP_MODE（Web 远程面）连接记录不可用（local-only 语义，与原有一致）。

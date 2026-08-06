@@ -538,22 +538,64 @@
         </div>
       </div>
 
-      <!-- Live connections: active pinned on top (3px accent bar left), closed grayed below (1s polling) -->
+      <!-- Connection records: anet inbound full ingestion (direct/tunnel/subscription incl. bypass; docs/todo/conn-log.md);
+           recording default off (privacy), 50-row pages, 1s polling while the tab is open -->
       <div data-agpanel="conn">
         <div class="card">
+          <div class="rl-toolbar">
+            <label class="chk" style="margin:0"><input type="checkbox" id="cl-enable"><span data-i18n="logs.cl.enable">记录连接</span></label>
+            <span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip" data-i18n="logs.cl.tip">连接记录等同浏览历史：仅存本机（conn-log.jsonl），默认关闭；开启后直连 / 隧道 / 订阅连接全量收录</span></span>
+            <span class="dim" id="cl-stats" style="font-size:12px"></span>
+            <span class="rl-tools">
+              <span class="hint" id="cl-tun-hint" style="display:none;margin:0" data-i18n="logs.cl.tunHint">TUN 模式：UDP 与内核直连流量不入库</span>
+              <button id="btn-cl-clear" class="ghost small" data-i18n="common.clear">清空</button>
+            </span>
+          </div>
+          <div class="rl-toolbar" style="margin-top:-4px">
+            <input id="cl-kw" style="flex:1;min-width:140px" data-i18n-ph="logs.cl.kwPh" placeholder="搜索域名 / IP">
+            <select id="cl-outbound" class="small" style="width:104px">
+              <option value="" data-i18n="logs.cl.allOut">全部出口</option>
+              <option value="direct" data-i18n="logs.out.direct">直连</option>
+              <option value="tunnel" data-i18n="logs.cl.tunnelOpt">隧道</option>
+              <option value="forward" data-i18n="term.subscription">订阅</option>
+            </select>
+            <select id="cl-state" class="small" style="width:104px">
+              <option value="" data-i18n="logs.cl.allState">全部状态</option>
+              <option value="active" data-i18n="logs.conn.live">活跃</option>
+              <option value="closed" data-i18n="logs.conn.closed">关闭</option>
+              <option value="failed" data-i18n="logs.cl.failed">失败</option>
+            </select>
+            <select id="cl-time" class="small" style="width:110px">
+              <option value="" data-i18n="logs.cl.allTime">全部时间</option>
+              <option value="1h" data-i18n="logs.cl.1h">近 1 小时</option>
+              <option value="24h" data-i18n="logs.cl.24h">近 24 小时</option>
+              <option value="custom" data-i18n="logs.cl.custom">自定义</option>
+            </select>
+            <input id="cl-from" type="datetime-local" class="small" style="width:170px" hidden>
+            <input id="cl-to" type="datetime-local" class="small" style="width:170px" hidden>
+            <label class="chk" style="margin:0"><input type="checkbox" id="cl-tun"><span data-i18n="logs.cl.tunRelay">含 TUN 回转</span></label>
+          </div>
           <div class="table-scroll">
             <table class="tbl tbl-dense">
               <thead><tr>
+                <th style="width:9%" data-i18n="logs.cl.colTime">时间</th>
                 <th data-i18n="logs.colTarget">目标</th>
-                <th style="width:12%" data-i18n="logs.colProcess">进程</th>
-                <th style="width:17%" data-i18n="term.rule">规则</th>
-                <th style="width:15%" data-i18n="logs.colExit">出口</th>
+                <th style="width:14%" data-i18n="logs.colExit">出口</th>
+                <th style="width:10%" data-i18n="logs.cl.colHit">命中</th>
                 <th style="width:9%">↓</th>
                 <th style="width:9%">↑</th>
                 <th style="width:8%" data-i18n="logs.colDuration">耗时</th>
+                <th style="width:8%" data-i18n="logs.cl.colState">状态</th>
               </tr></thead>
               <tbody id="lg-conn-body"></tbody>
             </table>
+          </div>
+          <div class="rl-toolbar" style="margin:10px 0 0">
+            <span class="dim" id="cl-page-info" style="font-size:12px"></span>
+            <span class="rl-tools">
+              <button id="cl-prev" class="ghost small" data-i18n="logs.cl.prev">上一页</button>
+              <button id="cl-next" class="ghost small" data-i18n="logs.cl.next">下一页</button>
+            </span>
           </div>
         </div>
       </div>
@@ -594,6 +636,13 @@
               <tbody id="lg-hits-body"></tbody>
             </table>
           </div>
+          <div class="rl-toolbar" style="margin:10px 0 0">
+            <span class="dim" id="hits-page-info" style="font-size:12px"></span>
+            <span class="rl-tools">
+              <button id="btn-hits-prev" class="ghost small" data-i18n="logs.cl.prev">上一页</button>
+              <button id="btn-hits-next" class="ghost small" data-i18n="logs.cl.next">下一页</button>
+            </span>
+          </div>
         </div>
       </div>
 
@@ -605,6 +654,13 @@
             <span class="rl-tools"><button id="btn-ev-refresh" class="ghost small"><i data-ic="refresh-cw" data-sz="13"></i> <span data-i18n="common.refresh">刷新</span></button></span>
           </div>
           <div class="ev-list" id="lg-ev-list"></div>
+          <div class="rl-toolbar" style="margin:10px 0 0">
+            <span class="dim" id="ev-page-info" style="font-size:12px"></span>
+            <span class="rl-tools">
+              <button id="btn-ev-prev" class="ghost small" data-i18n="logs.cl.prev">上一页</button>
+              <button id="btn-ev-next" class="ghost small" data-i18n="logs.cl.next">下一页</button>
+            </span>
+          </div>
         </div>
       </div>
     </section>
