@@ -147,6 +147,9 @@ impl TokenValidator for DbTokenValidator {
                     groups: auth.groups.clone(),
                     control,
                     acl,
+                    // issuer-assigned display name for admin peer lists (the peer's self-reported
+                    // node name is decorative — often a default like "AgileNet 内嵌端点")
+                    display: self.db.get_relay_token_remark(&token_hash).ok().flatten(),
                 })
             }
             AuthKind::Client => match self.db.find_account_by_tunnel_hash(&token_hash) {

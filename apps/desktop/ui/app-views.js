@@ -151,14 +151,16 @@ function renderMergedRules(nodes) {
     for (const n of nodes) {
       const dot = n.status === 'Connected' ? 'ok' : (n.status === 'Disconnected' ? 'down' : 'warn');
       const pset = pausedMap[n.node_id] || new Set();
+      // user-assigned fan-in alias wins over the peer's self-reported node name everywhere
+      const nname = (((window._creds || {})[n.node_id] || {}).name || '').trim() || n.node_name;
       for (const r of (n.rules || [])) {
         const key = ruleKey(r);
-        if (!hit(r.value, r.type, n.node_name)) continue;
+        if (!hit(r.value, r.type, nname + ' ' + n.node_name)) continue;
         const paused = pset.has(key);
         rows.push('<tr class="' + (paused ? 'rule-paused' : '') + '"><td><span class="rdot ' + dot + '"></span><span class="badge b-ok">' + esc(r.type) + '</span></td>' +
           '<td class="mono">' + esc(r.value) + '</td>' +
           '<td class="dim">—</td>' +
-          '<td class="dim">' + esc(n.node_name) + '</td>' +
+          '<td class="dim">' + esc(nname) + '</td>' +
           '<td><label class="switch"><input type="checkbox" data-node="' + esc(n.node_id) + '" data-rule="' + esc(key) + '"' + (paused ? '' : ' checked') + '><span class="slider"></span></label></td>' +
           '<td></td></tr>');
       }
@@ -670,6 +672,8 @@ async function refreshAdminEntry() {
     }
   } catch (e) {}
   for (const n of nodes) {
+    // Manageable-console list shows each endpoint's OWN console name (it identifies the management
+    // target) — deliberately NOT the user alias; aliases only title my own fan-in connections
     if (n.admin_console && n.status === 'Connected') {
       remotes.push({ kind: 'node', id: n.node_id, label: n.node_name + (n.username ? ' · ' + n.username : ''), sub: n.addr });
     }
@@ -895,6 +899,7 @@ async function refreshCreds() {
 }
 function renderCredList(creds, statusMap) {
   const list = $('creds-list');
+  if (list.querySelector('.cred-rename-input')) return; // a rename edit is in flight — don't rebuild under it
   const f = FILTERS.creds;
   const nodeMap = Object.fromEntries((window._nodes || []).map(n => [n.node_id, n]));
   // unsaved active connections (manual connect without saving credential): appended after saved fan-ins, disconnect/manage only
@@ -905,7 +910,8 @@ function renderCredList(creds, statusMap) {
     name.toLowerCase().includes(f) || (username || '').toLowerCase().includes(f) ||
     addr.toLowerCase().includes(f) || (st ? statusText(st) : AgI18n.t('common.disconnected')).includes(f);
   const shownCreds = creds.filter(([key, c]) =>
-    match(key.includes('@') ? key.slice(0, key.indexOf('@')) : key, c.username, c.addr, statusMap[key]));
+    match(key.includes('@') ? key.slice(0, key.indexOf('@')) : key, c.username, c.addr, statusMap[key])
+    || (c.name && match(c.name, c.username, c.addr, statusMap[key])));
   const shownUnsaved = unsaved.filter(n => match(n.node_name, n.username, n.addr, n.status));
   // web.md §3.2: signature guard — identical inputs skip the full DOM rebuild (10s poll stability)
   const sig = JSON.stringify([creds, statusMap, f, window._nodes || []]);
@@ -922,7 +928,7 @@ function renderCredList(creds, statusMap) {
     const mainBtn = st === 'Connected'
       ? '<button class="ghost small" data-act="disconnect" data-key="' + esc(key) + '">' + AgI18n.t('views.disconnect') + '</button>'
       : '<button class="small" data-act="reconnect" data-key="' + esc(key) + '">' + AgI18n.t(st ? 'views.reconnect' : 'views.connect') + '</button>';
-    const epName = key.includes('@') ? key.slice(0, key.indexOf('@')) : key;
+    const epName = (c.name && c.name.trim()) || (key.includes('@') ? key.slice(0, key.indexOf('@')) : key);
     // federation P2: delegated credentials badged; the live failover entry shown when connected
     const delegBadge = c.delegated ? ' <span class="badge b-info">' + AgI18n.t('views.delegated-badge') + '</span>' : '';
     // federation P3 tier badge: 专线 (whole machine) vs 分流 (rule delivery) on E2E credentials
@@ -939,9 +945,10 @@ function renderCredList(creds, statusMap) {
       ? esc(n.current_entry) + ' · <span class="dim">' + AgI18n.t('views.delegated-set', { n: (c.entries || []).length || 1 }) + '</span>'
       : esc(c.addr);
     return '<div class="node-card' + (live(st) ? '' : ' down') + '"><div class="info">' +
-      '<div class="name">' + esc(epName) + ' <span class="dim">· ' + esc(c.username) + '</span> ' + badge + delegBadge + tierBadge + '</div>' +
+      '<div class="name"><span class="cred-name" data-rename="' + esc(key) + '" title="' + AgI18n.t('fanin.rename') + '">' + esc(epName) + '</span> <span class="dim">· ' + esc(c.username) + '</span> ' + badge + delegBadge + tierBadge + '</div>' +
       '<div class="addr mono">' + addrLine + (c.insecure ? ' · <span class="badge b-warn">insecure</span>' : '') + '</div>' +
       '</div><div class="card-actions">' +
+      '<button class="ghost small icon-btn" title="' + AgI18n.t('fanin.rename') + '" data-act="rename" data-key="' + esc(key) + '">' + AgIcon('pencil', 13) + '</button>' +
       (n && n.admin_console && st === 'Connected' && !HTTP_MODE
         ? '<button class="ghost small" data-act="console" data-id="' + esc(key) + '">' + AgIcon('monitor', 13) + ' ' + AgI18n.t('views.manage') + '</button>' : '') +
       mainBtn +
@@ -993,6 +1000,42 @@ async function deleteCred(key, btn) {
   const old = btn.innerHTML;
   btn.innerHTML = '<span style="font-size:11px">' + AgI18n.t('common.confirm') + '</span>';
   setTimeout(() => { if (btn.isConnected) { btn.dataset.confirm = ''; btn.innerHTML = old; } }, 2500);
+}
+
+/* Fan-in rename (user alias): click the name/pencil → inline input; Enter saves, Esc/blur cancels;
+   empty or equal-to-derived clears the alias back to the node-id-derived name */
+function startCredRename(span) {
+  const list = $('creds-list');
+  if (list.querySelector('.cred-rename-input')) return; // one edit at a time
+  const key = span.dataset.rename;
+  const c = (window._creds || {})[key];
+  if (!c) return;
+  const derived = key.includes('@') ? key.slice(0, key.indexOf('@')) : key;
+  const input = document.createElement('input');
+  input.className = 'cred-rename-input';
+  input.value = (c.name && c.name.trim()) || derived;
+  input.maxLength = 32;
+  input.spellcheck = false;
+  span.replaceWith(input);
+  input.focus();
+  input.select();
+  let done = false;
+  const cancel = () => { if (!done) { done = true; refreshCreds(); } };
+  const save = async () => {
+    if (done) return;
+    done = true;
+    const name = input.value.trim();
+    try {
+      await invoke('rename_credential', { key, name: name && name !== derived ? name : null });
+      toast(AgI18n.t('fanin.renamed'), 'ok');
+    } catch (err) { toast(friendlyError(err), 'err'); }
+    refreshCreds();
+  };
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); save(); }
+    if (e.key === 'Escape') { e.preventDefault(); cancel(); }
+  });
+  input.addEventListener('blur', cancel);
 }
 
 /* ================= Fan-out connections (embedded node DB managed, changes hot-applied) ================= */

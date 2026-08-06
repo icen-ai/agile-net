@@ -170,6 +170,7 @@ pub fn run() {
             connect_node,
             disconnect_node,
             list_nodes,
+            rename_credential,
             list_credentials,
             delete_credential,
             export_credential,

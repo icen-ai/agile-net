@@ -17,6 +17,10 @@ pub struct Credential {
     pub addr: String,
     pub username: String,
     pub password: String,
+    /// User-assigned display alias (fan-in list / rules page / admin menu). None = derive from node_id.
+    /// The far side's self-reported node name is decorative; the user's own label wins everywhere.
+    #[serde(default)]
+    pub name: Option<String>,
     #[serde(default)]
     pub insecure: bool,
     #[serde(default)]
@@ -280,6 +284,7 @@ mod tests {
             addr: "node.example.com:59090".into(),
             username: "alice".into(),
             password: password.into(),
+            name: None,
             insecure: false,
             pinned_fingerprint: None,
             delegated: false,

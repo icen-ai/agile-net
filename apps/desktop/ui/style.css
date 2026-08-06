@@ -493,6 +493,11 @@ label, .modal label { font-size: 11px; font-weight: 600; letter-spacing: .03em; 
 .dcard.off > *:not(.dc-head) { opacity: .45; }
 html[data-theme="dark"] .dcard.off > *:not(.dc-head) { opacity: .38; }
 
+/* Fan-in row inline rename (click the name or the pencil; input swaps in place, Enter saves / Esc cancels) */
+.cred-name { cursor: text; border-bottom: 1px dashed transparent; }
+.cred-name:hover { border-bottom-color: var(--border2); }
+.cred-rename-input { width: 200px; padding: 3px 8px; font-size: 13px; }
+
 /* ================= Network AI assistant drawer (v2 machined: head band / well tool cards / inline confirm) =================
    Fixed right drawer under the titlebar; .open slides it in. Backend owns the conversation (drawer close ≠ stop). */
 .agent-drawer {

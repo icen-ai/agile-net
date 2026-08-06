@@ -265,6 +265,9 @@ window.addEventListener('DOMContentLoaded', async () => {
 
   // Event delegation for list actions (CSP forbids inline onclick)
   $('creds-list').addEventListener('click', (e) => {
+    // Fan-in rename: click the name text itself (inline input)
+    const nameEl = e.target.closest('.cred-name');
+    if (nameEl) { startCredRename(nameEl); return; }
     const btn = e.target.closest('button[data-act]');
     if (!btn) return;
     const key = btn.dataset.key;
@@ -274,6 +277,11 @@ window.addEventListener('DOMContentLoaded', async () => {
     if (btn.dataset.act === 'anet') exportCredAnet(key);
     if (btn.dataset.act === 'delcred') deleteCred(key, btn);
     if (btn.dataset.act === 'console') openNodeConsole(btn.dataset.id);
+    if (btn.dataset.act === 'rename') {
+      const row = btn.closest('.node-card');
+      const span = row && row.querySelector('.cred-name');
+      if (span) startCredRename(span);
+    }
   });
   $('rules-body').addEventListener('change', (e) => {
     const cb = e.target.closest('input[data-rule]');

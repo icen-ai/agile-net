@@ -177,6 +177,7 @@ async fn export_requires_confirm() {
                 addr: "127.0.0.1:59090".into(),
                 username: "u1".into(),
                 password: "sk-test".into(),
+                name: None,
                 insecure: false,
                 pinned_fingerprint: None,
                 delegated: false,

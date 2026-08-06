@@ -58,6 +58,9 @@ pub async fn status(AdminAuth(_): AdminAuth, State(state): State<ApiState>) -> R
                 "tls": true,
                 "connected_connectors": l.peer_count(),
                 "peers": l.list_peers(),
+                // node_id → issuer-assigned display name (token remark; falls back to node_id):
+                // self-reported node names are decorative, admin lists should render these
+                "peer_names": l.peer_display_map().into_iter().collect::<std::collections::HashMap<_, _>>(),
                 "peer_traffic": l.peer_traffic().into_iter().map(|(id, out, inn)| json!({
                     "node_id": id,
                     "bytes_up": out,

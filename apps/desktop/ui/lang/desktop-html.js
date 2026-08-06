@@ -111,6 +111,8 @@ AgI18n.register({
   'fanin.importAnet': { zh: '导入 .anet 凭据文件', en: 'Import .anet Credential File' },
   'fanin.manualConnect': { zh: '手动连接', en: 'Manual Connect' },
   'fanin.manualHint': { zh: '逐项填写扇入端点信息；有 anet:// 链接请直接用「导入链接」', en: 'Fill in the endpoint fields manually; if you have an anet:// link, use Import Link instead' },
+  'fanin.rename': { zh: '重命名', en: 'Rename' },
+  'fanin.renamed': { zh: '已重命名', en: 'Renamed' },
   'fanin.addrLabel': { zh: '扇入端点地址（host:port 或 https://…）', en: 'Fan-in endpoint address (host:port or https://…)' },
   'fanin.pinLabel': { zh: '证书固定 PEM 路径（可选，生产推荐）', en: 'Pinned certificate PEM path (optional, recommended in production)' },
   'fanin.insecure': { zh: '跳过证书校验（仅开发）', en: 'Skip certificate verification (dev only)' },

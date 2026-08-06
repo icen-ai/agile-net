@@ -170,7 +170,9 @@ async fn federation_push_pool_adopt_grant() {
     let body: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(body["code"].as_u64(), Some(0), "adopt: {body}");
     let adopted = body["data"].clone();
-    assert_eq!(adopted["name"].as_str().unwrap(), format!("git@{node_id}"));
+    // naming sovereignty: the source tag is B's own title for the peer (the relay token remark
+    // "for peer-c"), never the peer's self-reported node name (a default like "AgileNet Node")
+    assert_eq!(adopted["name"].as_str().unwrap(), "git@for peer-c");
     assert_eq!(adopted["rule_count"].as_u64(), Some(2));
     let adopted_gid = adopted["id"].as_str().unwrap().to_string();
 

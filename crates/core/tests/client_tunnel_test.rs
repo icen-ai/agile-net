@@ -38,6 +38,7 @@ impl TokenValidator for TestValidator {
                         groups: auth.groups.clone(),
                         control: None,
                         acl: None,
+                        display: None,
                     })
                 } else {
                     None

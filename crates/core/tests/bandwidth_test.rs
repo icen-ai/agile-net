@@ -57,6 +57,7 @@ impl TokenValidator for AclValidator {
                 groups: auth.groups.clone(),
                 control: None,
                 acl: self.acl.clone(),
+                display: None,
             })
         } else {
             None

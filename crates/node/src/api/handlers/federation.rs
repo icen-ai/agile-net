@@ -147,6 +147,16 @@ pub async fn adopt(
     let rules = pushed.rules.clone();
     let src_e2e = pushed.e2e_required;
     let node_id = req.node_id.clone();
+    // Source tag = the issuer-assigned title for this external node (token remark; falls back to
+    // node_id) — local naming sovereignty: everything sourced from a peer carries MY name for it.
+    // Lineage matching below still keys on node_id (stable), only display uses the title.
+    let display = listener
+        .peer_display_map()
+        .into_iter()
+        .find(|(id, _)| id == &req.node_id)
+        .map(|(_, d)| d)
+        .filter(|d| !d.trim().is_empty())
+        .unwrap_or_else(|| req.node_id.clone());
 
     // idempotent: adopting the same pushed group twice returns the existing mirror
     let existing = state
@@ -167,8 +177,8 @@ pub async fn adopt(
 
     let created = state
         .db_call(move |db| {
-            // Group name with source tag (dedup via get_group_by_name)
-            let name = adopt_name(&src_name, &node_id, &mut |n| {
+            // Group name with source tag = my title for the source node (dedup via get_group_by_name)
+            let name = adopt_name(&src_name, &display, &mut |n| {
                 db.get_group_by_name(n).ok().flatten().is_some()
             });
             // Materialize rules: reuse by unique (type, value), else create with a source-tag remark
@@ -186,13 +196,13 @@ pub async fn adopt(
                         rule_ids.push(id);
                     }
                     None => {
-                        let remark = format!("上送自 {node_id}/{src_name}");
+                        let remark = format!("上送自 {display}/{src_name}");
                         let rec = db.create_rule(ty, value, false, &remark)?;
                         rule_ids.push(rec.id);
                     }
                 }
             }
-            let group = db.create_group(&name, &format!("上送自 {node_id}：{src_remark}"))?;
+            let group = db.create_group(&name, &format!("上送自 {display}：{src_remark}"))?;
             db.set_group_rules(&group.id, &rule_ids)?;
             // adoption lineage: the group becomes a read-only live mirror of the pushed source
             db.set_group_adoption(&group.id, &node_id, &src_name)?;

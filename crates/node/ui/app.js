@@ -685,7 +685,8 @@ async function renderDashboard() {
         statCard(T('dashboard.cardAccounts'), T('adm.countN', { n: A.total||0 }), T('dashboard.accSub', { on: A.online||0, off: A.disabled||0 }), 'accounts') +
         statCard(T('dashboard.cardSystem'), (st.system.memory_mb||0) + ' MB', T('dashboard.sysSub', { cpu: (st.system.cpu_usage||0).toFixed(1), mem: st.system.total_memory_mb||0 }));
       if (L.enabled && (L.peers||[]).length) {
-        cards += statCard(T('dashboard.cardPeers'), (L.peers||[]).map(p => '<div class="mono"><span class="dot on"></span>' + esc(p) + '</div>').join(''), '');
+        const names = L.peer_names || {};
+        cards += statCard(T('dashboard.cardPeers'), (L.peers||[]).map(p => '<div class="mono"><span class="dot on"></span>' + esc(names[p] || p) + '</div>').join(''), '');
       }
       $('dash-stats').innerHTML = cards;
       // Three traffic cards: fan-in (today + 24h trend) / fan-out (totals + per-item details) / relay path (totals + pairs)
@@ -791,7 +792,7 @@ function updateTfCards(st) {
   tfNums('fanin', fi ? fi.up : null, fi ? fi.down : 0, T('dashboard.scopeToday'));
   tfSpark('fanin', T24.fanin);
   tfDetail('fanin', ((R.listener || {}).peer_traffic || []).map(p => ({
-    l: p.node_id, v: tfUpDown(p.bytes_up, p.bytes_down),
+    l: (R.listener.peer_names || {})[p.node_id] || p.node_id, v: tfUpDown(p.bytes_up, p.bytes_down),
   })));
   // Fan-out: fanout_traffic totals + per-connector details
   const fo = Array.isArray(R.fanout_traffic) ? R.fanout_traffic : null;
@@ -1194,6 +1195,7 @@ function openBatchImport() {
 /* ================= Fan-in (who is connected to this endpoint: listener / peers / tokens) ================= */
 /* Latest list data cache: besides polling signature detection, search filtering and tab switching reuse it directly (no refetch) */
 let FANIN_PEERS = [];
+let FANIN_NAMES = {}; // node_id → issuer-assigned display name (token remark; falls back to node_id)
 let FANIN_TOKENS = [];
 /* Authorizable pool cache (federation P1): node_id -> { advertise, groups } (fetched with the fan-in status) */
 let FED_OFFERS = {};
@@ -1261,6 +1263,7 @@ async function loadFaninStatus() {
   }
   const traffic = L.enabled ? (L.peer_traffic || []) : [];
   const peers = L.enabled ? (L.peers || []) : [];
+  FANIN_NAMES = (L.enabled && L.peer_names) || {};
   // Pad peers missing from traffic with 0 (traffic counters are cumulative since startup)
   const rows = traffic.slice();
   const seen = new Set(traffic.map(t => t.node_id));
@@ -1286,7 +1289,8 @@ function poolDetailHtml(o) {
 function renderFaninPeers() {
   const body = $('fanin-peers'); if (!body) return;
   const q = S.faninQuery.trim().toLowerCase();
-  const rows = q ? FANIN_PEERS.filter(t => (t.node_id || '').toLowerCase().includes(q)) : FANIN_PEERS;
+  const disp = (id) => FANIN_NAMES[id] || id;
+  const rows = q ? FANIN_PEERS.filter(t => ((t.node_id || '') + disp(t.node_id)).toLowerCase().includes(q)) : FANIN_PEERS;
   body.innerHTML = rows.map(t => {
     const o = FED_OFFERS[t.node_id];
     const hasPool = !!(o && ((o.advertise || []).length || (o.groups || []).length));
@@ -1297,7 +1301,9 @@ function renderFaninPeers() {
       ? adv.slice(0, 3).map(a => '<span class="badge b-info mono" style="margin:0 4px 2px 0">' + esc(a) + '</span>').join('') +
         (adv.length > 3 ? '<span class="hint" title="' + esc(adv.join(', ')) + '">+' + (adv.length - 3) + '</span>' : '')
       : '<span style="color:var(--dim2)">' + T('fanin.noAdv') + '</span>';
-    let html = '<tr><td class="mono"><span class="dot on"></span>' + esc(t.node_id) + '</td>' +
+    const name = disp(t.node_id);
+    const nameCell = esc(name) + (name !== t.node_id ? ' <span style="color:var(--dim2)">' + esc(t.node_id) + '</span>' : '');
+    let html = '<tr><td class="mono"><span class="dot on"></span>' + nameCell + '</td>' +
       '<td class="mono">' + fmtBytes(t.bytes_up) + '</td>' +
       '<td class="mono">' + fmtBytes(t.bytes_down) + '</td>' +
       '<td>' + advCell + '</td>' +

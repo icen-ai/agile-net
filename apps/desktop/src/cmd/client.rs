@@ -1,6 +1,6 @@
 //! Split from lib.rs: endpoint connect / credentials / rule pause (pure move, zero logic change)
 
-use crate::{map_err, AppState, ConnectInput};
+use crate::{map_err, roles, AppState, ConnectInput};
 use agile_net_client::{ConnectParams, Credential, NodeState};
 use tauri::State;
 
@@ -37,6 +37,7 @@ pub(crate) async fn connect_node(state: State<'_, AppState>, input: ConnectInput
                         addr: input.addr,
                         username: input.username,
                         password: input.password,
+                        name: None,
                         insecure: input.insecure,
                         pinned_fingerprint: input.pinned_fingerprint,
                         delegated: input.delegated,
@@ -134,6 +135,32 @@ pub(crate) async fn list_credentials(state: State<'_, AppState>) -> Result<Vec<(
         }
     }
     Ok(out)
+}
+
+/// Rename a saved fan-in (user-assigned display alias; empty/whitespace clears it back to the
+/// node-id-derived name). The store key (node_id) never changes, so connections are unaffected.
+#[tauri::command]
+pub(crate) async fn rename_credential(
+    state: State<'_, AppState>,
+    key: String,
+    name: Option<String>,
+) -> Result<(), String> {
+    let Some(store) = state.creds.as_ref() else {
+        return Err("凭据存储不可用".into());
+    };
+    let Some(mut cred) = store.get(&key).await else {
+        return Err("凭据不存在".into());
+    };
+    let name = name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty());
+    if let Some(n) = &name {
+        if n.chars().count() > 32 {
+            return Err("名字最长 32 字".into());
+        }
+    }
+    cred.name = name;
+    store.save(&key, &cred).await;
+    roles::audit("gui.cred_rename", serde_json::json!({"key": key, "name": cred.name}));
+    Ok(())
 }
 
 /// Parse an agilenet://connect?... URL (implemented in agile-net-client, shared with Web REST)

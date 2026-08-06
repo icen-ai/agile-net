@@ -145,6 +145,7 @@ mod tests {
             addr: "1.2.3.4:59090".into(),
             username: "u".into(),
             password: "p".into(),
+            name: None,
             insecure: false,
             pinned_fingerprint: Some("ab".into()),
             delegated: false,

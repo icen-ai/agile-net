@@ -450,6 +450,23 @@ impl Database {
         })
     }
 
+    /// Token remark by hash (the issuer-assigned display name for fan-in peer lists; None = unknown/empty).
+    pub fn get_relay_token_remark(&self, token_hash: &str) -> Result<Option<String>> {
+        let conn = self.conn();
+        let mut stmt = conn
+            .prepare("SELECT remark FROM relay_token WHERE token_hash = ?1")
+            .map_err(db_err)?;
+        let mut rows = stmt.query(params![token_hash]).map_err(db_err)?;
+        Ok(match rows.next().map_err(db_err)? {
+            Some(r) => {
+                let remark: String = r.get(0).map_err(db_err)?;
+                let remark = remark.trim().to_string();
+                if remark.is_empty() { None } else { Some(remark) }
+            }
+            None => None,
+        })
+    }
+
     /// Check a relay token hash exists and is alive (token lifecycle: not expired, usage cap
     /// not reached); updates last_used_at and increments used_count on a live hit.
     /// An expired/exhausted token reports as a miss (auth rejects it like an unknown token).

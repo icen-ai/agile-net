@@ -364,6 +364,7 @@ async fn credentials_persist() {
                 addr: "1.2.3.4:443".into(),
                 username: "zhangsan".into(),
                 password: "secret".into(),
+                name: None,
                 insecure: false,
                 pinned_fingerprint: None,
                 delegated: false,

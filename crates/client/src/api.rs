@@ -528,6 +528,7 @@ async fn connect_node(State(state): State<ApiState>, Json(input): Json<ConnectIn
                     addr: input.addr,
                     username: input.username,
                     password: input.password,
+                    name: None,
                     insecure: input.insecure,
                     pinned_fingerprint: input.pinned_fingerprint,
                     delegated: input.delegated,

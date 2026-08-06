@@ -61,6 +61,10 @@ pub enum AuthIdentity {
         control: Option<crate::proto::message::ControlOffer>,
         /// Fan-in restriction: allowlist for target connections initiated by this peer (None = unrestricted, allow all)
         acl: Option<Arc<PeerAcl>>,
+        /// Admin-assigned display name (relay token remark; None = fall back to node_id).
+        /// The peer's self-reported node name is decorative and often a default like "AgileNet 内嵌端点";
+        /// the issuer-side token remark is the authoritative identity for admin displays.
+        display: Option<String>,
     },
     /// Client account, with target access control rules
     Client {
@@ -173,6 +177,7 @@ impl TokenValidator for StaticTokenValidator {
                 groups: auth.groups.clone(),
                 control: None,
                 acl: None,
+                display: None,
             })
         } else {
             None
@@ -213,6 +218,8 @@ pub struct PeerSession {
     pub mux: Arc<MuxSession>,
     /// SHA-256 of the token used for auth (sessions are kicked by hash when the token is revoked)
     pub token_hash: String,
+    /// Display name: the auth identity's admin-assigned label (token remark) when present, else node_id
+    pub display: String,
 }
 
 /// Route table advertised by downstream nodes (target -> peer node_id).
@@ -372,9 +379,18 @@ impl RelayListener {
         self.peers.len()
     }
 
-    /// List online downstream node IDs.
+    /// List online downstream node IDs (routing/session keys — NOT display names; admin UIs should
+    /// render `peer_display_map` values instead, since self-reported node names are decorative).
     pub fn list_peers(&self) -> Vec<String> {
         self.peers.iter().map(|p| p.key().clone()).collect()
+    }
+
+    /// node_id → display name (token remark when the issuer assigned one, else node_id).
+    pub fn peer_display_map(&self) -> Vec<(String, String)> {
+        self.peers
+            .iter()
+            .map(|p| (p.key().clone(), p.value().display.clone()))
+            .collect()
     }
 
     /// Force-disconnect a downstream node (control-plane kick / effective immediately after token revocation).
@@ -624,6 +640,7 @@ impl RelayListener {
                 advertise,
                 groups,
                 acl,
+                display,
                 ..
             } => {
                 self.serve_node_session(
@@ -636,6 +653,7 @@ impl RelayListener {
                     flow_control,
                     acl,
                     limiter,
+                    display,
                 )
                 .await
             }
@@ -755,6 +773,7 @@ impl RelayListener {
         flow_control: bool,
         acl: Option<Arc<PeerAcl>>,
         limiter: Option<Arc<TokenBucket>>,
+        display: Option<String>,
     ) -> Result<()> {
         info!(peer = %peer_addr, node_id = %node_id, "node authenticated successfully");
 
@@ -794,6 +813,7 @@ impl RelayListener {
                 node_id: node_id.clone(),
                 mux: mux.clone(),
                 token_hash,
+                display: display.filter(|d| !d.trim().is_empty()).unwrap_or_else(|| node_id.clone()),
             },
         );
         self.set_peer_routes(&node_id, advertise);
