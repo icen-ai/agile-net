@@ -33,7 +33,8 @@ tauri-plugin-single-instance = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
-reqwest = { version = "0.12", features = ["json", "socks"] }
+reqwest = { version = "0.12", features = ["json", "socks", "stream"] }
+futures-util = "0.3"
 sha2 = "0.10"
 # 设置同步：PBKDF2/AES-256-GCM/HMAC（SigV4）复用主 workspace 同版本 ring，无新下载
 ring = "0.17"
@@ -43,6 +44,13 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 # 订阅脚本沙箱（嵌入式 QuickJS，无外部运行时）与配置管线（YAML ↔ JSON）
 rquickjs = { version = "0.12", default-features = false, features = ["std"] }
 serde_yaml = "0.9"
+
+# AI 助手 API Key 存 OS 凭据管理器（与 crates/client 同一 keyring 方案；Android 等平台回退 0600 文件）
+[target.'cfg(any(windows, target_os = "macos"))'.dependencies]
+keyring = { version = "3", default-features = false, features = [
+    "windows-native",
+    "apple-native",
+] }
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.10"

@@ -484,3 +484,84 @@ label, .modal label { font-size: 11px; font-weight: 600; letter-spacing: .03em; 
 .dcard.off .dc-head { background: transparent; box-shadow: none; border-bottom-color: var(--row-border); color: var(--dim2); }
 .dcard.off > *:not(.dc-head) { opacity: .45; }
 html[data-theme="dark"] .dcard.off > *:not(.dc-head) { opacity: .38; }
+
+/* ================= Network AI assistant drawer (v2 machined: head band / well tool cards / inline confirm) =================
+   Fixed right drawer under the titlebar; .open slides it in. Backend owns the conversation (drawer close ≠ stop). */
+.agent-drawer {
+  position: fixed; top: 46px; right: 0; bottom: 0; width: 400px; max-width: 92vw; z-index: 200;
+  display: flex; flex-direction: column;
+  background: var(--panel2); border-left: 1px solid var(--border2);
+  box-shadow: var(--shadow-3);
+  transform: translateX(105%); visibility: hidden;
+  transition: transform .24s var(--ease), visibility .24s;
+}
+.agent-drawer.open { transform: none; visibility: visible; }
+.ag-head {
+  display: flex; align-items: center; gap: 8px; padding: 10px 14px;
+  background: var(--bg2); border-bottom: 1px solid var(--border);
+  box-shadow: inset 0 1px 0 var(--card-hi);
+  font-size: 12px; font-weight: 600; letter-spacing: .05em; color: var(--dim); flex-shrink: 0;
+}
+.ag-head .ag-title { color: var(--dim); }
+.ag-head-tools { margin-left: auto; display: inline-flex; gap: 4px; }
+.ag-body { flex: 1; overflow-y: auto; padding: 14px 14px 10px; display: flex; flex-direction: column; gap: 10px; }
+.ag-body .ag-text, .ag-body pre { user-select: text; -webkit-user-select: text; }
+
+/* messages: user = inverted bubble right; assistant = plain flow left (md rendered) */
+.ag-msg.user { display: flex; justify-content: flex-end; }
+.ag-bubble { max-width: 88%; padding: 8px 13px; border-radius: 10px 10px 3px 10px; background: var(--accent); color: var(--accent-fg); font-size: 13px; line-height: 1.55; box-shadow: inset 0 1px 0 var(--btn-hi); }
+.ag-msg.asst { font-size: 13px; line-height: 1.65; color: var(--text); }
+.ag-text p { margin: 0 0 7px; }
+.ag-text p:last-child { margin-bottom: 0; }
+.ag-text ul { margin: 2px 0 7px; padding-left: 18px; }
+.ag-text li { margin: 2px 0; }
+.ag-text b { color: var(--text-strong); }
+.ag-text code { font-family: ui-monospace, Consolas, monospace; font-size: 11.5px; background: var(--chip); border-radius: 4px; padding: 1px 5px; }
+.ag-pre { font-family: ui-monospace, Consolas, monospace; font-size: 11.5px; line-height: 1.55; background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; margin: 5px 0; overflow-x: auto; white-space: pre-wrap; word-break: break-all; }
+
+/* tool-call card: one-line plate, click expands args/result (well texture) */
+.ag-tool { margin-top: 6px; background: var(--input-bg); border: 1px solid var(--border); border-radius: 8px; box-shadow: var(--well-inset); font-size: 12px; }
+.ag-tool-h { display: flex; align-items: center; gap: 7px; padding: 6px 10px; cursor: pointer; color: var(--dim); }
+.ag-tool-h .ag-tool-name { color: var(--text); font-size: 11.5px; }
+.ag-tool-h .pill { margin-left: auto; }
+.ag-tool-h .ag-chev { transition: transform .15s; color: var(--dim2); }
+.ag-tool-h.open .ag-chev { transform: rotate(180deg); }
+.ag-tool-b { padding: 2px 10px 8px; }
+.ag-tool-b .ag-pre { margin: 4px 0 0; max-height: 180px; overflow-y: auto; }
+.ag-spin { width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--border2); border-top-color: var(--accent); animation: ag-spin .8s linear infinite; flex-shrink: 0; }
+@keyframes ag-spin { to { transform: rotate(360deg); } }
+
+/* inline confirm card (mutation gate; fail-closed, timeout denies) */
+.ag-confirm { border: 1px solid var(--warn); background: var(--warn-bg); border-radius: 10px; padding: 10px 12px; font-size: 12.5px; }
+.ag-c-t { font-weight: 600; color: var(--text-strong); margin-bottom: 4px; }
+.ag-c-name { font-size: 12px; margin-bottom: 4px; }
+.ag-c-row { display: flex; gap: 8px; margin-top: 8px; }
+
+/* transient system notes (retry / error) */
+.ag-note { font-size: 11.5px; color: var(--dim2); text-align: center; padding: 2px 0; }
+.ag-note.err { color: var(--danger-text); }
+
+/* welcome empty state + playbook chips */
+.ag-welcome { text-align: center; padding: 40px 18px 20px; margin: auto; }
+.ag-logo { display: inline-flex; width: 52px; height: 52px; border-radius: 14px; background: var(--accent); color: var(--accent-fg); align-items: center; justify-content: center; margin-bottom: 12px; box-shadow: inset 0 1px 0 var(--btn-hi), var(--shadow-1); }
+.ag-w-t { font-size: 16px; font-weight: 700; color: var(--text-strong); margin-bottom: 6px; }
+.ag-w-d { font-size: 12.5px; color: var(--dim2); line-height: 1.7; max-width: 280px; margin: 0 auto; }
+.ag-w-warn { margin-top: 14px; display: flex; align-items: center; justify-content: center; gap: 10px; font-size: 12px; color: var(--warn-text); }
+.ag-chips { display: flex; gap: 6px; flex-wrap: wrap; padding: 8px 12px 0; flex-shrink: 0; }
+.ag-chip { padding: 4px 12px; font-size: 12px; border-radius: 999px; background: var(--chip); border: 1px solid var(--border); color: var(--dim); box-shadow: none; }
+.ag-chip:hover { background: var(--hover); color: var(--text-strong); filter: none; }
+.ag-foot { display: flex; gap: 8px; align-items: flex-end; padding: 10px 12px; border-top: 1px solid var(--row-border); flex-shrink: 0; }
+.ag-foot textarea { flex: 1; resize: none; max-height: 84px; line-height: 1.5; }
+.ag-foot button { flex-shrink: 0; padding: 8px 11px; }
+
+/* skills popover */
+.ag-skills-pop { position: absolute; top: 42px; right: 10px; width: 300px; max-height: 70%; overflow-y: auto; z-index: 5; background: var(--panel2); border: 1px solid var(--border2); border-radius: 10px; box-shadow: var(--shadow-2); padding: 12px; }
+.ag-skills-h { font-size: 11px; font-weight: 600; letter-spacing: .05em; color: var(--dim); margin-bottom: 8px; }
+.ag-skill-row { display: flex; align-items: center; gap: 8px; padding: 7px 0; border-bottom: 1px dashed var(--row-border); }
+.ag-skill-row:last-child { border-bottom: none; }
+.ag-skill-info { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.ag-skill-info b { font-size: 12.5px; color: var(--text-strong); }
+.ag-skill-info .dim { font-size: 11px; color: var(--dim2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ag-skills-add { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--row-border); display: flex; flex-direction: column; gap: 8px; }
+@media (max-width: 720px) { .agent-drawer { width: 100vw; max-width: 100vw; } }
+@media (prefers-reduced-motion: reduce) { .agent-drawer { transition: none; } .ag-spin { animation: none; } }

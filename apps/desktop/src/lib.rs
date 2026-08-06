@@ -45,7 +45,9 @@ mod custom_rules;
 mod download;
 #[cfg(windows)]
 mod floatball;
+pub(crate) mod agent;
 pub(crate) mod kernel;
+pub(crate) mod llm;
 mod roles;
 mod subscription;
 mod sub_script;
@@ -83,6 +85,8 @@ pub struct AppState {
     pub(crate) last_fallback: Arc<tokio::sync::Mutex<Option<std::net::SocketAddr>>>,
     /// Cheap cache of the float ball bubble notification toggle (for sync gating in float_notify; kept in sync with roles.notify_float_ball)
     pub(crate) notify_float_ball: Arc<AtomicBool>,
+    /// Built-in network security agent (session-scoped conversation owned here; see agent.rs)
+    pub(crate) agent: Arc<agent::AgentState>,
 }
 
 impl AppState {
@@ -110,6 +114,7 @@ impl AppState {
             tun_notice: Arc::new(tokio::sync::Mutex::new(None)),
             last_fallback: Arc::new(tokio::sync::Mutex::new(None)),
             notify_float_ball: Arc::new(AtomicBool::new(notify_float_ball)),
+            agent: Arc::new(agent::AgentState::new()),
         }
     }
 }
@@ -272,6 +277,15 @@ pub fn run() {
             conlog_set_enabled,
             conlog_clear,
             conlog_kill,
+            agent::agent_get_state,
+            agent::agent_send,
+            agent::agent_stop,
+            agent::agent_clear,
+            agent::agent_confirm,
+            agent::agent_config_set,
+            agent::agent_skill_save,
+            agent::agent_skill_toggle,
+            agent::agent_skill_delete,
         ])
         .setup(|app| {
             setup_tray(app)?;

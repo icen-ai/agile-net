@@ -52,6 +52,7 @@
     <button id="btn-more" class="tb-icon" title="更多" data-i18n-title="menu.more"><i data-ic="menu" data-sz="16"></i></button>
     <button id="btn-agimport" class="tb-icon" title="导入链接 / 凭据" data-i18n-title="import.head"><i data-ic="link" data-sz="16"></i></button>
     <button id="btn-admin" class="tb-icon disabled" title="管理端点" data-i18n-title="menu.admin"><i data-ic="fingerprint" data-sz="16"></i></button>
+    <button id="btn-agent" class="tb-icon" title="网络助手" data-i18n-title="agent.title"><i data-ic="sparkles" data-sz="16"></i></button>
     <span class="tb-spacer"></span>
   </div>
   <!-- Admin console entry (local server always first, rest sorted by name; icon grayed when no manageable endpoints) -->
@@ -729,6 +730,42 @@
       </div>
 
       <!-- System: autostart / lock system proxy / doctor -->
+      <!-- AI assistant (BYOK): endpoint preset / model / API key (OS keyring, never echoed);
+           direct-route presets auto-inject the API host into bypass rules (defense-proof session pinning) -->
+      <div class="card" id="agent-card">
+        <h3><i data-ic="sparkles"></i><span data-i18n="agent.settings">AI 助手</span> <span class="hint inline" id="agent-key-state"></span></h3>
+        <div class="grid2">
+          <div>
+            <label data-i18n="agent.provider">服务商</label>
+            <select id="agent-preset">
+              <option value="deepseek">DeepSeek</option>
+              <option value="kimi">Kimi（月之暗面）</option>
+              <option value="qwen">通义千问</option>
+              <option value="zhipu">智谱 GLM</option>
+              <option value="openai">OpenAI</option>
+              <option value="custom" data-i18n="agent.custom">自定义（OpenAI 兼容）</option>
+            </select>
+          </div>
+          <div>
+            <label data-i18n="agent.model">模型</label>
+            <input id="agent-model" class="mono" placeholder="deepseek-chat">
+          </div>
+        </div>
+        <div id="agent-base-row" hidden>
+          <label>Base URL</label>
+          <input id="agent-base" class="mono" placeholder="https://your-endpoint/v1">
+        </div>
+        <div>
+          <label>API Key</label>
+          <input id="agent-key" type="password" data-i18n-ph="agent.keyPh" placeholder="仅存系统钥匙串，不回显">
+        </div>
+        <div class="row" style="margin-top:12px">
+          <span class="hint" id="agent-route-hint" style="margin:0"></span>
+          <span style="margin-left:auto"></span>
+          <button class="small" id="agent-save" data-i18n="common.save">保存</button>
+        </div>
+      </div>
+
       <div class="card">
         <h3><i data-ic="power"></i><span data-i18n="settings.system">系统</span></h3>
         <label class="chk"><input type="checkbox" id="s-autostart"> <span data-i18n="settings.autostart">开机自动启动 AgileNet</span></label>
@@ -836,6 +873,37 @@
 </div>
 
 <!-- Web remote panel login modal (browser mode only) -->
+<!-- Network AI assistant drawer (white-hat agent; the backend owns the conversation — closing/reopening
+     the drawer or window never interrupts a running turn; session-scoped, cleared manually by the user) -->
+<aside class="agent-drawer" id="agent-drawer">
+  <div class="ag-head">
+    <i data-ic="sparkles" data-sz="15"></i><span class="ag-title" data-i18n="agent.title">网络助手</span>
+    <span class="pill pill-dim" id="ag-model"></span>
+    <span class="ag-head-tools">
+      <button class="ghost small icon-btn" id="ag-skills-btn" data-i18n-title="agent.skills" title="技能"><i data-ic="layers" data-sz="14"></i></button>
+      <button class="ghost small icon-btn" id="ag-clear" data-i18n-title="agent.clear" title="清空对话"><i data-ic="trash-2" data-sz="14"></i></button>
+      <button class="ghost small icon-btn" id="ag-close" data-i18n-title="agent.close" title="关闭"><i data-ic="x" data-sz="14"></i></button>
+    </span>
+  </div>
+  <div class="ag-body" id="ag-body"></div>
+  <div class="ag-chips" id="ag-chips"></div>
+  <div class="ag-foot">
+    <textarea id="ag-input" rows="1" data-i18n-ph="agent.inputPh" placeholder="描述你的网络问题…"></textarea>
+    <button id="ag-send" data-i18n-title="agent.send" title="发送"><i data-ic="send" data-sz="15"></i></button>
+    <button id="ag-stop" hidden data-i18n-title="agent.stop" title="停止"><i data-ic="square" data-sz="14"></i></button>
+  </div>
+  <!-- Skills manage popover: builtin toggles + user skill add/delete -->
+  <div class="ag-skills-pop" id="ag-skills-pop" hidden>
+    <div class="ag-skills-h" data-i18n="agent.skillsTitle">场景技能</div>
+    <div id="ag-skills-list"></div>
+    <div class="ag-skills-add">
+      <input id="ag-skill-name" data-i18n-ph="agent.skillNamePh" placeholder="技能名称">
+      <textarea id="ag-skill-prompt" rows="3" data-i18n-ph="agent.skillPromptPh" placeholder="提示词：这个场景下助手应该怎么查、怎么说"></textarea>
+      <button class="small" id="ag-skill-add" data-i18n="agent.skillAdd">添加技能</button>
+    </div>
+  </div>
+</aside>
+
 <div class="modal-mask" id="login-modal" style="display:none">
   <div class="modal">
     <h3><i data-ic="shield" data-sz="16"></i> <span data-i18n="login.title">Web 远程面</span></h3>
@@ -1220,6 +1288,7 @@
 <script src="lang/desktop-sub.js"></script>
 <script src="lang/desktop-core.js"></script>
 <script src="lang/desktop-trayfloat.js"></script>
+<script src="lang/desktop-agent.js"></script>
 <script src="lang-switcher.js"></script>
 <script src="app-core.js"></script>
 <script src="app-views.js"></script>
@@ -1227,6 +1296,7 @@
 <script src="app-hero.js"></script>
 <script src="app-logs.js"></script>
 <script src="app-settings.js"></script>
+<script src="agent.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

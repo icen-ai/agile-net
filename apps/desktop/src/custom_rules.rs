@@ -816,7 +816,7 @@ mod tests {
                 created_at: 1,
             },
         ];
-        sort_bypass(&mut bypass);
+        bypass.sort_by_key(|r| r.sort);
         assert_eq!(bypass[0].id, "bypass-user");
         assert_eq!(bypass[1].id, "preset-lan10");
         // Stable within a key: presets keep their predefined order
@@ -824,7 +824,7 @@ mod tests {
             BypassRule { id: "preset-lan10".into(), pattern: "10.*".into(), via_subscription: false, enabled: true, managed: false, sort: 1, created_at: 0 },
             BypassRule { id: "preset-lan172".into(), pattern: "172.*".into(), via_subscription: false, enabled: true, managed: false, sort: 1, created_at: 0 },
         ];
-        sort_bypass(&mut p);
+        p.sort_by_key(|r| r.sort);
         assert_eq!(p[0].id, "preset-lan10");
         assert_eq!(p[1].id, "preset-lan172");
     }

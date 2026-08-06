@@ -122,6 +122,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   initUpstreams();
   initRules();
   initLogs();
+  initAgent();
 
   // Browser mode (Web remote panel): local-only cards/toggles hidden via .local-only; show the login modal first when unauthenticated
   if (HTTP_MODE) {
@@ -135,11 +136,13 @@ window.addEventListener('DOMContentLoaded', async () => {
     if (logsNav) logsNav.style.display = 'none';
     // Narrow-screen bottom nav holds desktop entries like logs; hide it entirely on the Web remote panel (inline none overrides the ≤720px breakpoint's flex)
     $('bnav').style.display = 'none';
-    ['row-sysproxy-lock', 'row-doctor', 'row-float-ball', 'row-notify-float', 'row-reduce-effects', 'sync-card'].forEach(id => {
+    ['row-sysproxy-lock', 'row-doctor', 'row-float-ball', 'row-notify-float', 'row-reduce-effects', 'sync-card', 'agent-card'].forEach(id => {
       const r = $(id); if (r) r.style.display = 'none';
     });
     // Admin console is a local-only capability (ticket/forwarder loopback only); hide its entry on the Web remote panel
     $('btn-admin').style.display = 'none';
+    // AI assistant is desktop-only (tauri commands + keyring + local tools)
+    $('btn-agent').style.display = 'none';
     $('login-ok').onclick = webLogin;
     $('login-pass').addEventListener('keydown', e => { if (e.key === 'Enter') webLogin(); });
     if (!httpToken) { showLogin(); return; }
