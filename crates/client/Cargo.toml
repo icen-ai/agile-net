@@ -13,30 +13,16 @@ path = "src/lib.rs"
 agile-net-core = { path = "../core" }
 uuid = { workspace = true }
 tokio = { workspace = true }
-reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
-thiserror = { workspace = true }
 tracing = { workspace = true }
 arc-swap = { workspace = true }
 dashmap = { workspace = true }
-rustls-pemfile = { workspace = true }
 toml = { workspace = true }
 tracing-subscriber = { workspace = true }
 axum = { workspace = true }
 jsonwebtoken = { workspace = true }
 
-# 凭据 keyring 仅桌面平台：Linux 服务器（含 musl 静态构建）不引入 secret-service/dbus，
-# 一律回退 0600 文件方案；default-features=false 关闭全部默认 store，按需开启平台原生后端
-[target.'cfg(any(windows, target_os = "macos"))'.dependencies]
-keyring = { version = "3", default-features = false, features = [
-    "windows-native",
-    "apple-native",
-] }
-
 [dev-dependencies]
-tempfile = "3"
-agile-net-node = { path = "../node" }
-axum = { workspace = true }
-tokio-rustls = { workspace = true }
+reqwest = { workspace = true }

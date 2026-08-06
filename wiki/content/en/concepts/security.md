@@ -8,12 +8,12 @@ plane must be attributable.
 | Layer | Mechanism |
 | --- | --- |
 | Transport encryption | TLS 1.3 throughout (`rustls` + `ring`); the relay data plane and the management API can each enable it independently |
-| Certificate verification | Clients/connectors support **certificate pinning**: pin a PEM certificate or a SHA-256 fingerprint (`fp`, distributed one-click via connect_url, MITM-resistant); custom CAs are also supported |
-| Password storage | Administrator and client account passwords are always hashed with **argon2id** (64MB / t=3 / p=4); plaintext never touches the database |
-| Token storage | Client passwords (`sk-`), Relay Tokens (`psk_`), tunnel tokens (`tun_`), and management bootstrap tickets (`adt_`) are all server-generated 48-character strong random secrets; **only SHA-256 hashes are stored**, and the plaintext is returned exactly once at creation time |
-| Fan-out token | A connector's connection credential is issued by the peer and must be presented in plaintext when connecting: **the only reversible-storage exception in the entire database** — encrypted at rest with AES-256-GCM (`v1:nonce_b64:ct_b64`), with the machine key `node_config.connector_token_key` generated on first use; never displayed again after creation, and neither plaintext nor ciphertext is written to the audit log |
+| Certificate verification | Clients/connectors support **certificate pinning**: pin a SHA-256 fingerprint (`fp`, distributed one-click inside anet:// links, MITM-resistant) or a PEM certificate; custom CAs are also supported |
+| Password storage | Administrator passwords are always hashed with **argon2id** (64MB / t=3 / p=4); plaintext never touches the database |
+| Token storage | Relay Tokens and delegated tokens (both `psk_` + 48-character server-generated strong random) and management bootstrap tickets: **only SHA-256 hashes are stored**, and the plaintext is returned exactly once at creation time |
+| Reversible exceptions | Exactly two AES-256-GCM encrypted-at-rest exceptions (`v1:nonce_b64:ct_b64`, machine key `node_config.connector_token_key` generated on first use): ① fan-out connector credentials (issued by the peer, must be presented in plaintext); ② delegated-token E2E master keys (the issuer must recover HKDF(token) to unwrap E2E envelopes). Never displayed again after creation; neither plaintext nor ciphertext is written to the audit log |
 | Comparison | Data-plane token comparison must be **constant-time** (`constant_time_eq`) to defeat timing side channels |
-| Sessions | JWT (HS256): admin access 15min / refresh 7d; client access 1h / refresh 30d; refresh jti hashes are stored for revocation and rotation; the JWT secret is generated on first start and persisted |
+| Sessions | JWT (HS256): admin access 15min / refresh 7d; refresh jti hashes are stored for revocation and rotation; the JWT secret is generated on first start and persisted |
 
 ## Brute-Force Resistance & Rate Limiting
 
@@ -24,25 +24,25 @@ plane must be attributable.
 
 ## Data-Plane ACL
 
-When a client tunnel is established, the node loads every rule of that account's group as the
-ACL — **only destinations covered by the rules can be opened**; anything outside the rules is
-rejected at the tunnel entrance (docker assertion T3). Whether a node can be managed reduces to
+When a consumer tunnel is established, the node loads the union of the rules of the groups the
+delegated token references as the ACL — **only destinations covered by the rules can be opened**;
+anything outside is rejected at the tunnel entrance. Whether a node can be managed reduces to
 a rule as well: "is there a path to its API address" — revoke the grant and the management path
 disappears.
 
 ### Peer ACL
 
-Groups are also the single point of restriction for **node-to-node traffic**; all three identity
-kinds attach to a group:
+Groups are also the point of restriction for **node-to-node traffic**; identities attach to a
+group set (comma-separated, multi-group union):
 
 | Identity | Attachment | Default |
 | --- | --- | --- |
-| Account (direct users of this node) | `account.group_id` | Group chosen at creation |
+| Consumer (delegated token) | `delegated_token.groups` | Groups chosen at issuance |
 | Fan-in peer | `relay_token.group_id` | Unrestricted (allow everything) |
 | Fan-out peer | `connector.group_id` | Unrestricted |
 
 Traffic arriving over a peer tunnel is allowed only if its destination matches the rule set of
-that peer's group; otherwise it is rejected at the entrance and audited
+that peer's groups; otherwise it is rejected at the entrance and audited
 (`peer.acl_denied`: peer identity + destination + source, deduplicated per peer+destination per
 minute). Group rule hot updates, token revocation, and connector disabling all take effect in
 real time.
@@ -50,7 +50,22 @@ real time.
 Identity domains are separated (the sovereignty principle): tunnel authentication carries only
 the peer node's identity, **never** the identity of end users inside the peer's domain —
 restriction and auditing stop at the endpoint boundary, and accountability travels along the
-organizational chain. See `docs/todo/peer-acl.md` for the design and implementation record.
+organizational chain.
+
+### Unified-issuance trust tiers
+
+- **direct entry**: the consumer dials the issuer's own listener; TLS is already end-to-end
+  and the trust tier is locked to plaintext;
+- **relay entry + E2E groups**: every Open is sealed end-to-end (HKDF(token) key hierarchy,
+  strict sequence checking — a replay kills the session); the relay sees only the opaque
+  routing word `en_xxx` (entrust zero-disclosure routing; issuance requires no pushed groups
+  or advertised routes); a plaintext Open hitting an `e2e_required` group is **fail-closed**;
+- **management tier**: bootstrap tickets are delivered over the E2E config channel, **never
+  in relay plaintext**;
+- **concurrency enforcement**: single kicks the old session / multi coexists up to
+  max_sessions (snapshot at issuance, default 8);
+- **lifecycle**: optional expiry/usage caps; once expired or exhausted the registration sync
+  stops offering the token and the data plane refuses it outright (fail-closed).
 
 ## Auditing
 
@@ -60,7 +75,7 @@ plaintext is strictly forbidden. Management-plane events include:
 
 | action | Trigger |
 | --- | --- |
-| `account.issue_admin_link` | Management-capable access link issued |
+| `delegation.issue` / `delegation.revoke` / `delegation.register` | Full unified-issuance lifecycle (no plaintext recorded) |
 | `relay_token.expose_control` | Control-plane exposure toggle changed |
 | `relay_token.set_group` | Fan-in token restriction group changed (including group assignment at creation) |
 | `connector.create/update/delete/enable/disable` | Full fan-out peer lifecycle (no token plaintext/ciphertext recorded) |
@@ -72,13 +87,13 @@ plaintext is strictly forbidden. Management-plane events include:
 
 The principle: every management operation must be able to answer "who, via which path (local /
 which tunnel level / through which relay), on which device, did what"; token-level sessions and
-real human accounts are clearly distinguished in the operator field
-(`relay:psk_prefix@downstream` / `link:account` vs. usernames).
+real humans are clearly distinguished in the operator field
+(`relay:psk_prefix@downstream` / `link:label` vs. usernames).
 
 ## Management-Plane Defense in Depth
 
-- **Management bootstrap tickets are single-use** (management-link scenario) / time- and
-  count-limited (relay scenario), with atomic counting against replay
+- **Management bootstrap tickets are single-use / time- and count-limited**, with atomic
+  counting against replay
 - **Three scoped-admin tiers**: `ro` (read-only) / `rules` (read + rule write) / `full` (full
   control); the JWT scope claim is enforced at the AdminAuth layer, and unknown tiers fail
   closed as read-only

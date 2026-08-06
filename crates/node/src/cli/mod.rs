@@ -2,11 +2,10 @@
 //!
 //! Features:
 //! - Session persistence (~/.anet/session.json, Unix 0600), auto-refresh of expired access_token
-//! - Full admin commands: node / rule / group / account / token / connector / admin / audit
+//! - Full admin commands: node / rule / group / token / connector / admin / audit
 //! - ID prefix resolution (type the first few chars, e.g. `anet-svc rule delete 3f2a`)
 //! - --json machine-readable output, table output by default
 
-mod account;
 mod admin;
 mod audit;
 mod common;
@@ -18,7 +17,6 @@ mod rule;
 mod token;
 
 // Public visibility matches the original single-file cli.rs (tests/cli_test.rs etc. reference the *Sub enums directly).
-pub use account::{AccountAddArgs, AccountArgs, AccountListArgs, AccountSub, AccountUpdateArgs};
 pub use admin::{AdminAddArgs, AdminArgs, AdminSub, PasswdArgs, ResetPasswordArgs};
 pub use audit::{AuditArgs, AuditListArgs, AuditSub};
 pub use common::{AnetClient, IdArgs, IdOnlyArgs, ListArgs, Session};
@@ -65,8 +63,6 @@ pub enum Commands {
     Rule(RuleArgs),
     /// 权限组管理
     Group(GroupArgs),
-    /// 客户端账号管理
-    Account(AccountArgs),
     /// Relay 令牌管理
     Token(TokenArgs),
     /// 扇出对端管理
@@ -89,7 +85,7 @@ pub async fn run_cli(cli: Cli) -> Result<()> {
     dispatch(cli.command, cli.api, cli.json).await
 }
 
-/// Top-level command dispatch (shared by `anet-svc <rule|group|...>` and the legacy `anet-svc cli ...`).
+/// Top-level command dispatch (shared by the `anet` / `anet-svc` dual-persona entries).
 pub async fn dispatch(command: Commands, api: Option<String>, json_out: bool) -> Result<()> {
     match command {
         // The diagnostic toolkit is split off before session validation: local diagnostics, no login, no DB reads, no audit
@@ -143,7 +139,6 @@ pub async fn dispatch(command: Commands, api: Option<String>, json_out: bool) ->
         Commands::Status => node::cmd_node_status(api, json_out).await,
         Commands::Rule(args) => rule::cmd_rule(api, args, json_out).await,
         Commands::Group(args) => group::cmd_group(api, args, json_out).await,
-        Commands::Account(args) => account::cmd_account(api, args, json_out).await,
         Commands::Token(args) => token::cmd_token(api, args, json_out).await,
         Commands::Connector(args) => connector::cmd_connector(api, args, json_out).await,
         Commands::Admin(args) => admin::cmd_admin(api, args, json_out).await,

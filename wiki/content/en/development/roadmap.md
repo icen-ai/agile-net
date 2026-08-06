@@ -2,11 +2,14 @@
 
 ## Completed
 
-- **Dual-artifact unification (P1→P3)**: `NodeServer` assembly-root extraction; anet-gui's three independent switches (client role / server role / Web remote plane);
-  web-based client management plane (REST + dual-transport bridge + equal-strength authentication); management-grade connect URLs and the three scoped-admin tiers;
-  relay-exposed Control Plane + handshake v2 control-endpoint delivery + manageable-node auto-discovery + route re-advertisement;
-  convergence of the `anet-svc` (serve/tui/client/cli) and `anet-gui` artifacts, with CI/docker/docs kept in sync
-- Multi-level chained traversal (four-level chain assertions T1-T7), broken-link self-healing, long-polling hot updates
+- **Dual-artifact unification**: `NodeServer` assembly-root extraction; anet-gui's three independent switches (client role / server role / Web remote plane);
+  anet-svc's single-port unified Web (`/` admin SPA, `/client` client SPA, shared AdminAuth login);
+  the three scoped-admin tiers; relay-exposed control plane + manageable-node auto-discovery + route re-advertisement
+- **Unified issuance**: the account system was removed wholesale; delegated_token became the sole consumer identity (entry direct/relay × trust plaintext/E2E/E2E+management × routing dedicated/split × concurrency single/multi);
+  the fan-in/fan-out pages carry three tabs "Watch | Connect | Issue"; DB migrations collapsed into baseline v1; protocol v4 as the only behavior;
+  links unified on `anet://`; the client crate is delegation-only (link-style `nodes` TOML)
+- Federation: policy push / one-click adoption (read-only live mirrors), delegated-issuance disaster sets, E2E entrust zero-disclosure routing
+- Multi-level chained traversal (four-level chain assertions T1-T7), broken-link self-healing, rule hot updates
 - All-platform release pipeline (tag-triggered; Windows/macOS/Ubuntu/Android/musl static)
 - Documentation site (this site, Cloudflare Pages)
 
@@ -16,7 +19,7 @@
 | --- | --- | --- |
 | Mobile system island | Android foreground-service persistent notification / iOS Live Activities, with a foreground/background split architecture | `docs/todo/island.md` |
 | Production signing | Windows EV signing, macOS notarization, Android keystore + Play Store release | `docs/release.md` |
-| Limited delegated management | Central console proxy forwarding (carrying the real operator identity header), the phase-two candidate of the D route | `docs/plan/merge-gui-svc.md` §5 |
+| Limited delegated management | Central console proxy forwarding (carrying the real operator identity header), the phase-two candidate of the D route | — |
 | LoongArch support | loongarch64 toolchain verification and artifacts | — |
 | iOS | Tauri iOS productization and App Store release | — |
 

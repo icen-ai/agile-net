@@ -16,9 +16,9 @@ use serde::Deserialize;
 use serde_json::json;
 
 pub async fn status(AdminAuth(_): AdminAuth, State(state): State<ApiState>) -> Response {
-    // Merge overview reads into one blocking task (name/rule count/account stats/24h traffic series;
+    // Merge overview reads into one blocking task (name/rule count/24h traffic series;
     // node_traffic_24h is an hourly aggregate query; on failure fall back to an empty series, never block status)
-    let (node_name, rule_count, accounts_total, accounts_disabled, traffic_24h) = state
+    let (node_name, rule_count, traffic_24h) = state
         .db_call(|db| {
             let node_name = db
                 .get_config("node_name")
@@ -26,51 +26,33 @@ pub async fn status(AdminAuth(_): AdminAuth, State(state): State<ApiState>) -> R
                 .flatten()
                 .unwrap_or_else(|| "AgileNet Node".to_string());
             let rule_count = db.list_rules(1, 1, None, None).map(|(_, t)| t).unwrap_or(0);
-            let (accounts_total, accounts_disabled) = db.account_stats().unwrap_or((0, 0));
             let traffic_24h = db
                 .node_traffic_24h()
                 .map(|v| serde_json::to_value(v).unwrap_or_else(|_| empty_traffic_24h()))
                 .unwrap_or_else(|_| empty_traffic_24h());
-            Ok((
-                node_name,
-                rule_count,
-                accounts_total,
-                accounts_disabled,
-                traffic_24h,
-            ))
+            Ok((node_name, rule_count, traffic_24h))
         })
         .await
-        .unwrap_or_else(|_| {
-            (
-                "AgileNet Node".to_string(),
-                0,
-                0,
-                0,
-                empty_traffic_24h(),
-            )
-        });
+        .unwrap_or_else(|_| ("AgileNet Node".to_string(), 0, empty_traffic_24h()));
 
-    let (listener_json, online_accounts) = match &state.runtime.listener {
-        Some(l) => (
-            json!({
-                "enabled": true,
-                "addr": l.listen_addr().to_string(),
-                "tls": true,
-                "connected_connectors": l.peer_count(),
-                "peers": l.list_peers(),
-                // node_id → issuer-assigned display name (token remark; falls back to node_id):
-                // self-reported node names are decorative, admin lists should render these
-                "peer_names": l.peer_display_map().into_iter().collect::<std::collections::HashMap<_, _>>(),
-                "peer_traffic": l.peer_traffic().into_iter().map(|(id, out, inn)| json!({
-                    "node_id": id,
-                    "bytes_up": out,
-                    "bytes_down": inn,
-                })).collect::<Vec<_>>(),
-                "online_clients": l.online_client_count(),
-            }),
-            l.online_client_count() as i64,
-        ),
-        None => (json!({ "enabled": false }), 0),
+    let listener_json = match &state.runtime.listener {
+        Some(l) => json!({
+            "enabled": true,
+            "addr": l.listen_addr().to_string(),
+            "tls": true,
+            "connected_connectors": l.peer_count(),
+            "peers": l.list_peers(),
+            // node_id → issuer-assigned display name (token remark; falls back to node_id):
+            // self-reported node names are decorative, admin lists should render these
+            "peer_names": l.peer_display_map().into_iter().collect::<std::collections::HashMap<_, _>>(),
+            "peer_traffic": l.peer_traffic().into_iter().map(|(id, out, inn)| json!({
+                "node_id": id,
+                "bytes_up": out,
+                "bytes_down": inn,
+            })).collect::<Vec<_>>(),
+            "online_clients": l.online_client_count(),
+        }),
+        None => json!({ "enabled": false }),
     };
 
     // Fan-out (multi-target: address + per-link state; data source is ConnectorManager)
@@ -180,11 +162,6 @@ pub async fn status(AdminAuth(_): AdminAuth, State(state): State<ApiState>) -> R
         },
         "traffic_24h": traffic_24h,
         "proxy": proxy_json,
-        "accounts": {
-            "total": accounts_total,
-            "online": online_accounts,
-            "disabled": accounts_disabled,
-        },
         "system": system_stats(),
         "cert_fingerprint": state.runtime.cert_fingerprint,
         "public_host": public_host_cfg,
@@ -230,71 +207,6 @@ fn system_stats() -> serde_json::Value {
         "memory_mb": mem_bytes / 1024 / 1024,
         "total_memory_mb": sys.total_memory() / 1024 / 1024,
     })
-}
-
-#[derive(Deserialize)]
-pub struct StatsQuery {
-    #[serde(default = "default_period")]
-    pub period: String,
-    #[serde(default = "default_group_by")]
-    pub group_by: String,
-}
-
-fn default_period() -> String {
-    "1h".to_string()
-}
-fn default_group_by() -> String {
-    "account".to_string()
-}
-
-fn period_hours(period: &str) -> i64 {
-    match period {
-        "1h" => 1,
-        "24h" => 24,
-        "7d" => 24 * 7,
-        "30d" => 24 * 30,
-        _ => 1,
-    }
-}
-
-pub async fn stats(
-    AdminAuth(_): AdminAuth,
-    State(state): State<ApiState>,
-    Query(q): Query<StatsQuery>,
-) -> Response {
-    let hours = period_hours(&q.period);
-    match q.group_by.as_str() {
-        "account" => match state.db_call(move |db| db.traffic_by_account(hours)).await {
-            Ok((breakdown, total_tx, total_rx)) => ok(json!({
-                "period": q.period,
-                "total_tx": total_tx,
-                "total_rx": total_rx,
-                "breakdown": breakdown,
-            })),
-            Err(e) => err(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                codes::INTERNAL,
-                e.to_string(),
-            ),
-        },
-        "time" => match state.db_call(move |db| db.traffic_by_time(hours)).await {
-            Ok(points) => ok(json!({
-                "period": q.period,
-                "interval": "1h",
-                "points": points,
-            })),
-            Err(e) => err(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                codes::INTERNAL,
-                e.to_string(),
-            ),
-        },
-        _ => err(
-            StatusCode::BAD_REQUEST,
-            codes::VALIDATION_FAILED,
-            "group_by must be account|time",
-        ),
-    }
 }
 
 #[derive(Deserialize)]
@@ -466,14 +378,10 @@ pub async fn kick_peer(
 pub async fn metrics(AdminAuth(_): AdminAuth, State(state): State<ApiState>) -> Response {
     let mut out = String::new();
     let uptime = state.runtime.uptime_secs();
-    let (rule_count, acc_total, acc_disabled) = state
-        .db_call(|db| {
-            let rule_count = db.list_rules(1, 1, None, None).map(|(_, t)| t).unwrap_or(0);
-            let (acc_total, acc_disabled) = db.account_stats().unwrap_or((0, 0));
-            Ok((rule_count, acc_total, acc_disabled))
-        })
+    let rule_count = state
+        .db_call(|db| db.list_rules(1, 1, None, None).map(|(_, t)| t))
         .await
-        .unwrap_or((0, 0, 0));
+        .unwrap_or(0);
 
     out.push_str(
         "# HELP agilenet_uptime_seconds Node uptime\n# TYPE agilenet_uptime_seconds gauge\n",
@@ -483,12 +391,6 @@ pub async fn metrics(AdminAuth(_): AdminAuth, State(state): State<ApiState>) -> 
         "# HELP agilenet_rules_total Configured routing rules\n# TYPE agilenet_rules_total gauge\n",
     );
     out.push_str(&format!("agilenet_rules_total {rule_count}\n"));
-    out.push_str(
-        "# HELP agilenet_accounts_total Client accounts\n# TYPE agilenet_accounts_total gauge\n",
-    );
-    out.push_str(&format!(
-        "agilenet_accounts_total {acc_total}\nagilenet_accounts_disabled {acc_disabled}\n"
-    ));
 
     if let Some(l) = &state.runtime.listener {
         out.push_str(
@@ -537,7 +439,7 @@ pub async fn metrics(AdminAuth(_): AdminAuth, State(state): State<ApiState>) -> 
         .into_response()
 }
 
-/// WebSocket live event stream (node/client online-offline + 30s stats snapshot).
+/// WebSocket live event stream (node/consumer online-offline + 30s stats snapshot).
 ///
 /// Browser WebSockets cannot set request headers; to keep the token out of access logs
 /// and browser history, auth uses the **first message after upgrade**: the client sends its
@@ -602,15 +504,15 @@ async fn handle_ws(mut socket: WebSocket, state: ApiState) {
                         "time": chrono::Utc::now().to_rfc3339(),
                         "data": { "node_id": node_id },
                     }),
-                    Some(PeerEvent::ClientConnected { account_id }) => json!({
-                        "type": "account.online",
+                    Some(PeerEvent::ClientConnected { session_key }) => json!({
+                        "type": "consumer.online",
                         "time": chrono::Utc::now().to_rfc3339(),
-                        "data": { "account_id": account_id },
+                        "data": { "session_key": session_key },
                     }),
-                    Some(PeerEvent::ClientDisconnected { account_id }) => json!({
-                        "type": "account.offline",
+                    Some(PeerEvent::ClientDisconnected { session_key }) => json!({
+                        "type": "consumer.offline",
                         "time": chrono::Utc::now().to_rfc3339(),
-                        "data": { "account_id": account_id },
+                        "data": { "session_key": session_key },
                     }),
                     Some(PeerEvent::AclDenied { peer_label, target }) => json!({
                         "type": "peer.acl_denied",

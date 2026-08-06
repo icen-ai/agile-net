@@ -1,6 +1,7 @@
 # Mux 帧协议
 
-AgileNet 节点间及客户端与节点间运行于 TLS 1.3 之上的自定义二进制多路复用（Mux）协议。
+AgileNet 节点间及消费者与节点间运行于 TLS 1.3 之上的自定义二进制多路复用（Mux）协议。
+**协议 v4 为唯一行为**（`PROTOCOL_VERSION = 4` 仅为握手声明常量，无版本门槛、无降级分支）。
 
 ## 帧头格式
 
@@ -32,8 +33,8 @@ AgileNet 节点间及客户端与节点间运行于 TLS 1.3 之上的自定义�
 | `0x01` | `Auth` | 客户端 / 下游节点发起认证 | JSON 格式 `AuthRequest` |
 | `0x02` | `AuthOk` | 认证成功响应 | 可选 JSON 格式 `ControlOffer`（握手 v2） |
 | `0x03` | `AuthFail` | 认证失败响应 | 字符串原因说明 |
-| `0x04` | `Ctrl` | 会话控制面（协议 v3，联邦 P2 委托注册/吊销） | JSON 格式 `CtrlMessage` |
-| `0x10` | `Open` | 请求打开一条到目标的虚拟通道 | JSON 格式 `OpenChannel`（v3 可携带组标/E2E 信封） |
+| `0x04` | `Ctrl` | 会话控制面（channel 0：委托注册/吊销等） | JSON 格式 `CtrlMessage` |
+| `0x10` | `Open` | 请求打开一条到目标的虚拟通道 | JSON 格式 `OpenChannel`（可携带组标/E2E 信封） |
 | `0x11` | `OpenOk` | 目标通道打开成功 | 空 |
 | `0x12` | `OpenFail` | 目标通道打开失败 | JSON 格式 `OpenFailed` |
 | `0x20` | `Data` | 通道数据传输 | 原始二进制 Payload（E2E 信道为 AEAD 记录流） |
@@ -45,34 +46,33 @@ AgileNet 节点间及客户端与节点间运行于 TLS 1.3 之上的自定义�
 
 ---
 
-## 协议 v3 与会话控制面（Ctrl 帧）
+## 会话控制面（Ctrl 帧）
 
-协议 v3（`version >= 3`）新增会话控制面：Ctrl 帧固定走 channel 0，JSON Payload，
-控制面与数据面分离。首个用途是**联邦 P2 委托令牌注册**（扇出端点 → 中继）：
+Ctrl 帧固定走 channel 0，JSON Payload，控制面与数据面分离。首个用途是**委托令牌注册**
+（签发者 → 中继，relay 入口）：
 
 ### CtrlMessage Payload (0x04)
 
 ```json
 { "op": "token_register", "token_hash": "<sha256-hex>", "label": "alice", "groups": ["git"],
-  "hint_map": [{ "hint": "relay.internal", "groups": ["db-prod"] }] }
+  "hint_map": [{ "hint": "en_ab12cd34ef56", "groups": ["db-prod"] }] }
 { "op": "token_revoke", "token_hash": "<sha256-hex>" }
 { "op": "token_ack", "token_hash": "<sha256-hex>", "ok": true, "error": "" }
 ```
 
-- 注册校验：组名 ∩ 签发者上送组（空集拒绝）；每个 hint 必须能经路由表解析回签发者本身；
-  一个 token_hash 只属于一个签发者。
+- 注册校验：组名 ∩ 签发者上送组（entrust 词 `en_` 前缀免路由校验直进不透明表，
+  一哈希一签发者）；透明档每个 hint 必须能经路由表解析回签发者本身。
 - 生命周期随会话：签发者断线即全部失效（吊销即断），重连后签发者自动重注册。
-- 版本门槛：任一侧协议 < v3 时委托特性静默禁用，其余功能不变。
 
-### OpenChannel 扩展（v3，serde 向后兼容）
+### OpenChannel 扩展
 
 ```json
 { "target_addr": "10.0.0.5", "target_port": 5432,
   "groups": ["git"],                                   // 可选：委托会话组标（中继盖章，签发端按本地同名组执法）
-  "e2e": { "kid": "<hash前8hex>", "hint": "relay.internal", "blob": "<base64(nonce‖ct)>" } }
+  "e2e": { "kid": "<hash前12hex>", "hint": "en_ab12cd34ef56", "blob": "<base64(nonce‖ct)>" } }
 ```
 
-携带 `e2e` 时 `target_addr` 为粗路由词（中继盲转），真实目标密封在 blob 内：
+携带 `e2e` 时 `target_addr` 为不透明路由词（中继盲转），真实目标密封在 blob 内：
 `AES-256-GCM(e2e_key, 随机nonce, json{target_addr, target_port, groups, chan_salt})`，
 `e2e_key = HKDF-SHA256(ikm=token, salt="anet/e2e/v1")`；该信道后续 Data 为逐块 AEAD 记录
 （`[u32 长度][密文]`，子密钥 = HKDF(e2e_key, chan_salt)，nonce = 方向(1B)‖序号(8B)，
@@ -80,20 +80,25 @@ AgileNet 节点间及客户端与节点间运行于 TLS 1.3 之上的自定义�
 
 ---
 
-## 握手 v2 与控制面下发
+## 握手与控制面下发
 
-在 Auth 帧成功通过鉴权后，服务端返回 `AuthOk` 帧。协议 v2 引入了向后兼容的 `ControlOffer` 负载：
+在 Auth 帧成功通过鉴权后，服务端返回 `AuthOk` 帧，可附带 `ControlOffer` 负载：
 
 ### AuthRequest Payload (0x01)
 ```json
 {
-  "node_id": "client-uuid-or-name",
-  "token": "sk-... 或 psk_...",
+  "node_id": "node-b 或消费者标签",
+  "token": "psk_...",
   "kind": "client|node",
   "advertise": ["10.12.0.0/16", "git.internal"],
-  "version": 2
+  "groups": [{ "name": "git", "remark": "...", "rules": ["git.internal"] }],
+  "version": 4
 }
 ```
+
+- `kind=node`：relay_token 表 SHA-256 比对（扇入对端）；`advertise` 通告可服务网段，
+  `groups` 为策略上送组（可授权池）。
+- `kind=client`：委托令牌（delegated_token 表 SHA-256 比对，`AuthIdentity::Delegated`）。
 
 ### ControlOffer Payload (0x02 AuthOk)
 当上游 Relay Token 开启了「允许暴露控制面」时，`AuthOk` 帧附带 `ControlOffer`：
@@ -114,7 +119,7 @@ AgileNet 节点间及客户端与节点间运行于 TLS 1.3 之上的自定义�
 
 ## 通道流控 (WindowUpdate)
 
-协议 v2（`version >= 2`）支持基于 per-channel 窗口的滑动流控：
-- 初始接收窗口为 256 KB。
+基于 per-channel 窗口的滑动流控：
+- 初始接收窗口为 1 MiB。
 - 当对端消费读取数据后，发送 `0x22 WindowUpdate` 帧，Payload 为 4 字节大端序 `u32`，告知已释放的窗口增量。
 - 防止高速写入方撑爆低速接收方的缓冲池。

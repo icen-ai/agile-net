@@ -7,9 +7,12 @@
 
 pub mod acl;
 pub mod adoption;
+pub mod client_role;
 pub mod connectors;
 pub mod delegation;
 pub mod rate_limit;
+
+pub use client_role::{ClientRoleConfig, load_client_role_config};
 
 use crate::api::{ApiState, NodeRuntime, create_app};
 use crate::auth::jwt::JwtService;
@@ -53,6 +56,9 @@ pub struct NodeServerOptions {
     /// Client-role proxy state slot (written by the GUI host; default empty slot = unreported,
     /// status API's proxy section falls back to the legacy proxy_listen behavior)
     pub client_proxy_slot: ClientProxySlot,
+    /// `[client]` section (embedded client role: delegated nodes + local proxy in-process;
+    /// parsed by `load_client_role_config`, passed through by the host)
+    pub client_role: Option<ClientRoleConfig>,
 }
 
 /// Route re-publish injection: client engine's merged router + channel opener registry.
@@ -87,11 +93,13 @@ pub fn new_client_proxy_slot() -> ClientProxySlot {
 struct StartupGuard {
     tasks: Vec<tokio::task::JoinHandle<()>>,
     connectors: Option<Arc<ConnectorManager>>,
+    client_engine: Option<agile_net_client::AgileNetClient>,
 }
 
 impl StartupGuard {
     fn disarm(&mut self) -> Vec<tokio::task::JoinHandle<()>> {
         self.connectors = None;
+        self.client_engine = None;
         std::mem::take(&mut self.tasks)
     }
 }
@@ -104,6 +112,12 @@ impl Drop for StartupGuard {
         if let Some(m) = self.connectors.take() {
             // async shutdown, fire-and-forget: the runtime outlives this guard in both CLI and embedded hosts
             tokio::spawn(async move { m.shutdown().await });
+        }
+        if let Some(e) = self.client_engine.take() {
+            tokio::spawn(async move {
+                e.disconnect_all().await;
+                e.stop_proxy().await;
+            });
         }
     }
 }
@@ -118,6 +132,12 @@ pub struct NodeServer {    db: Database,
     tasks: Vec<tokio::task::JoinHandle<()>>,
     api_shutdown: Option<axum_server::Handle>,
     api_stop_tx: Option<tokio::sync::oneshot::Sender<()>>,
+    /// Embedded client-role engine (always mounted at /api/v1/client/*; the `[client]`
+    /// config section drives its pre-connects and local proxy)
+    client_engine: agile_net_client::AgileNetClient,
+    /// Whether the `[client]` section was active (the proxy slot is cleared on stop only then —
+    /// a GUI host owns and keeps its own slot state)
+    client_role_active: bool,
 }
 
 impl NodeServer {
@@ -134,6 +154,7 @@ impl NodeServer {
         let mut startup = StartupGuard {
             tasks: Vec::new(),
             connectors: None,
+            client_engine: None,
         };
         let log_buffer = opts.log_buffer.unwrap_or_default();
 
@@ -187,12 +208,15 @@ impl NodeServer {
             // federation P2: one registry instance shared by the validator (auth reads) and
             // the listener (session-scoped register/revoke writes)
             let delegated_registry = Arc::new(dashmap::DashMap::new());
+            // unified issuance (direct entry): persistent local delegated registry — the
+            // ConnectorManager reconciles this issuer's direct tokens into it (startup full
+            // sync + issue/revoke increments); the listener consults it before the
+            // session-scoped registry and never clears it
+            let local_delegated_registry = Arc::new(dashmap::DashMap::new());
             let validator = Arc::new(
                 DbTokenValidator::new(db.clone())
                     .with_control_api(control_api_slot.clone())
-                    .with_manageable(manageable_registry.clone())
-                    .with_acl_registry(acl_registry.clone())
-                    .with_delegated_registry(delegated_registry.clone()),
+                    .with_acl_registry(acl_registry.clone()),
             );
 
             let tls_acceptor = if let Some(acme_cfg) = &config.acme {
@@ -256,6 +280,7 @@ impl NodeServer {
                 let l = RelayListener::with_validator(addr, validator, tls_acceptor)
                     .with_transit_meter(transit_meter.clone())
                     .with_delegated_registry(delegated_registry)
+                    .with_local_delegated_registry(local_delegated_registry)
                     .with_session_rate_limit(move |id, hash| {
                         rate_limit::token_rate_limit_bps(id, hash, &db_rl)
                     });
@@ -358,6 +383,22 @@ impl NodeServer {
             }));
             tracing::info!(addr = %proxy_addr, "proxy inbound started");
         }
+
+        // 6.5 Embedded client role (single-port unified web plane): one engine per server,
+        // always mounted at /api/v1/client/* (AdminAuth) with the /client SPA. The optional
+        // `[client]` config section pre-connects delegated nodes and auto-starts the local proxy.
+        let client_engine = agile_net_client::AgileNetClient::new();
+        let client_creds = match agile_net_client::CredentialStore::open_default() {
+            Ok(s) => Some(Arc::new(s)),
+            Err(e) => {
+                tracing::warn!(error = %e, "client credential store unavailable");
+                None
+            }
+        };
+        if let Some(cc) = &opts.client_role {
+            client_role::run(&client_engine, cc, &opts.client_proxy_slot).await;
+        }
+        startup.client_engine = Some(client_engine.clone());
 
         // 7. API & Web Dashboard
         let runtime = Arc::new(NodeRuntime {
@@ -533,6 +574,29 @@ impl NodeServer {
             st
         };
         let app = create_app(state.clone()).merge(create_ui_router());
+        // Embedded client role: /api/v1/client/* behind AdminAuth (sensitive ops audited)
+        let app = {
+            let db_audit = db.clone();
+            let audit: agile_net_client::api::ClientAudit =
+                Arc::new(move |action: &str, detail: serde_json::Value| {
+                    let db = db_audit.clone();
+                    let action = action.to_string();
+                    let detail = detail.to_string();
+                    tokio::spawn(async move {
+                        let _ = tokio::task::spawn_blocking(move || {
+                            db.record_audit_log(None, "web", &action, None, Some(&detail), None)
+                        })
+                        .await;
+                    });
+                });
+            crate::api::mount_client_api(
+                app,
+                &state,
+                client_engine.clone(),
+                client_creds.clone(),
+                audit,
+            )
+        };
 
         let api_tls_cert = std::env::var("API_TLS_CERT")
             .ok()
@@ -610,6 +674,8 @@ impl NodeServer {
             tasks,
             api_shutdown: Some(api_shutdown),
             api_stop_tx,
+            client_engine,
+            client_role_active: opts.client_role.is_some(),
         })
     }
 
@@ -626,6 +692,11 @@ impl NodeServer {
     /// Fan-out connector manager (shared by GUI in-process hot ops and the admin API).
     pub fn connector_manager(&self) -> Arc<ConnectorManager> {
         self.connector_manager.clone()
+    }
+
+    /// Embedded client-role engine (mounted at /api/v1/client/*).
+    pub fn client_engine(&self) -> agile_net_client::AgileNetClient {
+        self.client_engine.clone()
     }
 
     pub fn db(&self) -> Database {
@@ -654,6 +725,12 @@ impl NodeServer {
             handle.graceful_shutdown(Some(std::time::Duration::from_secs(2)));
         }
         self.connector_manager.shutdown().await;
+        // embedded client role: drop all delegated tunnels and the local proxy
+        self.client_engine.disconnect_all().await;
+        self.client_engine.stop_proxy().await;
+        if self.client_role_active {
+            self.runtime.client_proxy_slot.store(Arc::new(None));
+        }
         // close live relay sessions too — aborting the accept loop alone leaves established
         // tunnels alive (each session task holds its own listener Arc)
         if let Some(l) = &self.runtime.listener {

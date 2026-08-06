@@ -1,16 +1,38 @@
-# Federation: Delegated Issuance & E2E
+# Federation: Unified Issuance & E2E
 
 The federation model keeps three parties sovereign — the public rendezvous (B), the resource
-owner (C), and the consumer (A): B provides reachability only; accounts and grants always
-belong to the resource owner.
+owner (C), and the consumer (A): B provides reachability only; tokens and grants always
+belong to the resource owner. Consumer access has **no account layer** — C issues delegated
+tokens directly, and the token is the only identity.
 
-Three ways to share, by trust tier:
+## The four dimensions of unified issuance
 
-| Mode | Use when | What B can see |
+Admin UI → the **Issue** tab on the fan-in / fan-out page → **Issue**, then pick tiers by
+trust and topology:
+
+| Dimension | Tier | Semantics |
 | --- | --- | --- |
-| One-click adoption (P1) | You trust B's admin: C pushes policy groups, B's admin adopts and opens an account for A | Traffic content (hop-by-hop TLS) |
-| Delegated issuance (P2, transparent) | C issues credentials to A directly — no work for B's admin | Traffic content |
-| Delegated issuance + E2E groups (P3) | You don't trust B: content is end-to-end encrypted | Coarse routing hints only — no targets, no content |
+| Entry | **Direct to this endpoint** (direct) | A dials C's own listener: TLS is already end-to-end, no relay involved, trust tier locked to plaintext; the token self-registers into C's local registry |
+| Entry | **Via fan-out rendezvous** (relay) | Registered upstream over the disaster set: the token registers on every selected upstream; any online one accepts the consumer; registration lives with the session |
+| Trust | **Plaintext** | Hop-by-hop TLS; B can see traffic content |
+| Trust | **E2E** | With an E2E-enforced group attached: every Open is sealed end-to-end to C; B sees only the opaque routing word (`en_xxx`) |
+| Trust | **E2E + management grant** | Additionally issues a bootstrap ticket over the E2E channel (never in relay plaintext): read-only / rules / full |
+| Routing | **Dedicated** | The consumer routes its whole machine into the tunnel and never sees the rule vocabulary |
+| Routing | **Split** | The vocabulary is delivered E2E-sealed; only authorized targets enter the tunnel (requires an E2E group) |
+| Concurrency | **Single** | A new session with the same token kicks the old one (tolerates restart flapping) |
+| Concurrency | **Multi** | Sessions coexist up to the max_sessions snapshot at issuance (the endpoint's `delegation_max_sessions` setting, default 8) |
+
+The relay entry additionally picks the **disaster set** (the upstreams that accept the token)
+and the **primary entry** (the link's first-connect address; the rest fail over in order).
+Issuance produces a complete `anet://connect` link (or a downloadable `.anet` credential
+file, optionally PIN-encrypted); the token plaintext is shown only once.
+
+**Trust semantics**: in the plaintext tier the disaster set is exactly *who can see the
+traffic*; with E2E it is a pure availability set (upstreams only see routing words).
+
+The list shows each token's per-upstream registration state (registered / registering /
+offline / failure reason). **Revoke** takes effect immediately: every online upstream drops
+the registration and kicks the token's live sessions.
 
 ## One-click adoption (relay B)
 
@@ -20,57 +42,22 @@ changes on the source side follow within seconds; an offline source leaves the l
 serving. To customize, hit **Copy** — a detached editable group is created while the mirror
 keeps following. Deleting the mirror un-adopts it.
 
-## Delegated issuance (resource owner C)
-
-Admin UI → **Fan-out** → **Delegation** tab → **Issue Delegation**:
-
-1. **Registration targets (failover set)**: check the upstreams that accept this token
-   (online v3+ upstreams are pre-checked). The token registers on every selected upstream;
-   any online one accepts the consumer.
-2. **Primary entry**: the link's first-connect address; the rest are failover backups the
-   client rotates through in check order.
-3. **Groups**: local groups the token may reach (multi-select). Groups with an `E2E` badge
-   enforce end-to-end encryption.
-4. **Access mode** (shown once an E2E group is checked): **Dedicated** — the consumer routes
-   its whole machine into the tunnel and never sees the rule vocabulary (dedicated-line use);
-   **Split** — the vocabulary is delivered E2E-sealed and only authorized targets enter the
-   tunnel, leaving daily traffic untouched. Either way the relay sees only the coarse hint.
-5. **Management grant** (optional, requires an E2E group): the consumer receives a bootstrap
-   ticket over the E2E channel (never in relay plaintext) and can open this endpoint's admin
-   console — read-only / rules / full. **Full** additionally unlocks transit management of the
-   upstreams this endpoint has discovered (console path: consumer → E2E → this endpoint →
-   fan-out session → upstream), with the relay blind beyond the routing hint.
-6. Add a label and generate — you get a full link (or a downloadable `.anet` credential
-   file, optionally PIN-encrypted).
-
 Route advertisement needs no hand maintenance: a fan-out's pushed group rules are unioned
-into the routes it declares upstream (offering implies reachability), and the E2E routing
-hint is derived from that same set — the hint always lands within what the peer's route
-table actually carries. Fill the advertise field only for extra segments beyond the pushed
-groups.
-
-**Trust semantics** (pinned in the dialog): in transparent tier the failover set is exactly
-*who can see the traffic*; with E2E it is a pure availability set (upstreams only see
-routing hints).
-
-The list shows each token's per-upstream registration state (registered / registering /
-offline / failure reason). **Revoke** takes effect immediately: every online upstream drops
-the registration and kicks the token's live sessions.
+into the routes it declares upstream (offering implies reachability). Fill the advertise
+field only for extra segments beyond the pushed groups.
 
 ## E2E-enforced groups (e2e_required)
 
 Once a group is marked end-to-end encrypted:
 
-- It may hang **only** on delegated tokens — never on local accounts, fan-in tokens or
-  fan-out connectors (those principals have no E2E key; all four write paths enforce this).
+- It may hang **only** on delegated tokens — never on fan-in tokens or fan-out connectors
+  (those principals have no E2E key; the write paths enforce this).
 - Every access to its targets must arrive E2E-sealed — a plaintext Open hitting the group is
   refused by C (fail-close: a flag-stripping attack degrades to denial of service, never to
   plaintext).
-- **Entrust zero-disclosure routing (v4+)**: E2E tokens automatically carry an opaque
-  `en_<token-hash prefix>` routing word — issuance **no longer requires** pushed groups or
+- **Entrust zero-disclosure routing**: E2E tokens automatically carry an opaque
+  `en_<token-hash prefix>` routing word — issuance **does not require** pushed groups or
   advertised routes: B only ever learns `en_xxx → C`, never a group name, a rule, or a subnet.
-  Compatibility: when the effective advertise set is non-empty a legacy hint rides along as
-  the fallback (new peers prefer `en`, older peers fall back to `ehint`).
 
 ## Consumer side (A)
 
@@ -80,37 +67,39 @@ Import the link (paste / .anet file / anet:// deep link) and connect:
   primary relay entry directly.
 - The link embeds the failover set and per-entry cert fingerprints: when the current entry
   drops, the client rotates to the next (in-flight connections retry at the application
-  layer, as with any VPN). The credential card shows a **Delegated** badge and the live entry.
-- When the link carries an E2E hint, every Open is sealed end-to-end automatically.
+  layer, as with any VPN).
+- When the link carries an E2E routing word, every Open is sealed end-to-end automatically.
+- A management-tier link pulls a bootstrap ticket over the E2E config channel and can open
+  the issuer's admin console (the full tier additionally unlocks transit management of the
+  upstreams the issuer has discovered: consumer → E2E → issuer → fan-out session → upstream).
 
 ## Lifecycle & revocation
 
-- Delegated tokens **live with the fan-out session**: when C goes offline the token lapses
-  on every upstream (A couldn't reach C's resources anyway); on reconnect C re-registers
-  automatically. Relays persist nothing.
-- **Optional expiry & usage caps**: issuance accepts `expires_at` / `max_uses` (unlimited by
+- Relay-entry delegated tokens **live with the fan-out session**: when C goes offline the
+  token lapses on every upstream; on reconnect C re-registers automatically. Relays persist
+  nothing. Direct-entry tokens register in C's local persistent registry.
+- **Optional expiry & usage caps**: issuance accepts an expiry and a usage cap (unlimited by
   default); once expired or exhausted the registration sync stops offering the token (the
   list shows expired/exhausted) and the issuer's data plane refuses it outright. Fan-in
-  tokens and client accounts (tunnel tokens) support the same optional validity window.
+  tokens support the same optional validity window.
 - Revocation = C deletes the local record and sends a revoke frame to every online upstream;
   offline upstreams lapse by disconnect.
-- A second session with the same node identity kicks the stale one (tolerates restart
-  flapping); multiple fan-out links to the same upstream are forced into distinct
+- Concurrency enforcement: in single tier a second session with the same token kicks the
+  stale one; in multi tier sessions coexist up to max_sessions, beyond which opens are
+  refused. Multiple fan-out links to the same upstream are forced into distinct
   `name#connector` identities and never evict each other.
 
 ## Honest limits
 
 - Failover is **reconnect-level**: entries have different IPs, so in-flight TCP connections
   drop and retry — seamless roaming is physically impossible.
-- v1 has no forward secrecy: recorded traffic plus a later token leak exposes history
-  (a Noise_NK handshake with forward secrecy is planned as P3.5).
-- Metadata (timings, volumes, routing hints) remains visible to B — this model targets
+- No forward secrecy yet: recorded traffic plus a later token leak exposes history
+  (a Noise_NK handshake with forward secrecy remains on the roadmap).
+- Metadata (timings, volumes, routing words) remains visible to B — this model targets
   sovereignty and reachability, not anonymity.
 - The delegated token is the root of trust: guard it like any access credential; revoke on
   suspicion.
 
 ## See also
 
-- Design: `docs/todo/federation.md` (federation model) · `docs/plan/federation-p2p3.md`
-  (P2/P3 implementation record)
-- API: Delegation `docs/api/delegation.md`
+- API: Unified Issuance `docs/api/delegation.md`

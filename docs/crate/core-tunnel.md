@@ -66,18 +66,18 @@ impl TunnelPool {
 
 ## 客户端隧道（ClientTunnel）
 
-客户端到节点的数据面连接：
+消费者到节点的数据面连接（委托令牌即身份，`kind=client`）：
 
 ```rust
 pub struct ClientTunnel { ... }
 
 impl ClientTunnel {
-    /// 生产推荐：TlsConfigBuilder::pinned_certs(...)
-    pub fn with_tls_builder(addr: SocketAddr, account_id: impl Into<String>,
-                            tunnel_token: impl Into<String>, builder: TlsConfigBuilder) -> Result<Self>;
+    /// 生产推荐：TlsConfigBuilder::pinned_fingerprint(...)
+    pub fn with_tls_builder(addr: SocketAddr, node_id: impl Into<String>,
+                            token: impl Into<String>, builder: TlsConfigBuilder) -> Result<Self>;
     /// 开发模式（不校验证书）
-    pub fn new_insecure(addr: SocketAddr, account_id: impl Into<String>,
-                        tunnel_token: impl Into<String>) -> Result<Self>;
+    pub fn new_insecure(addr: SocketAddr, node_id: impl Into<String>,
+                        token: impl Into<String>) -> Result<Self>;
 
     pub async fn connect(&self) -> Result<()>;                       // TLS + Auth(kind=client)
     pub async fn open_channel(&self, host: &str, port: u16) -> Result<MuxChannel>;
@@ -89,6 +89,8 @@ impl ClientTunnel {
 
 - 心跳 25s + 0~10s 抖动，90s 无帧判定断线
 - 断线指数退避重连（1s → 60s + 0~3s 抖动）
+- `open_channel_raw` 支持自定义 Open payload（E2E 信封由 DelegatedOpener 包装，
+  对消费方透明：`ChannelOpener` 返回 `BoxedChannel`）
 
 ## ChannelOpener（通道开启抽象）
 

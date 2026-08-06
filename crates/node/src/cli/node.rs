@@ -50,13 +50,6 @@ pub async fn cmd_node_status(api: Option<String>, json_out: bool) -> Result<()> 
                     .unwrap_or_else(|| "-".into())
             }
         );
-        let a = &d["accounts"];
-        println!(
-            "  账号:     共 {} · 在线 {} · 禁用 {}",
-            a["total"].as_i64().unwrap_or(0),
-            a["online"].as_i64().unwrap_or(0),
-            a["disabled"].as_i64().unwrap_or(0)
-        );
     }
     Ok(())
 }

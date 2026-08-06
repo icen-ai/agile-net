@@ -166,7 +166,7 @@ pub fn cmd_status() -> Result<()> {
             println!("  配置文件: {}", rec.config);
             println!("  API 监听: {}（{}）", rec.api_addr, if api_ok { "可达" } else { "不可达" });
             println!("  启动时间: {started}");
-            println!("  管理命令: anet login 后使用 rule/group/account/token/admin/audit");
+            println!("  管理命令: anet login 后使用 rule/group/token/admin/audit");
         }
         None => {
             println!("anet-svc 未在运行");

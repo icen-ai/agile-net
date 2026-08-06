@@ -1,4 +1,4 @@
-//! Delegated tokens (federation P2): the resource owner issues consumer credentials directly.
+//! Delegated tokens (unified issuance): the resource owner issues consumer credentials directly.
 //!
 //! Storage rules mirror relay tokens: plaintext is returned once at issuance, only the SHA-256
 //! hash is queryable afterwards. The single exception is `e2e_key_enc` — the E2E channel master
@@ -11,10 +11,15 @@ use super::pool::{Database, db_err, now_rfc3339};
 use agile_net_core::error::Result;
 use rusqlite::params;
 
+/// Column list shared by every delegated_token query (positional row mapping).
+const DELEGATED_COLS: &str = "id, token_hash, token_prefix, label, groups, hint_map, e2e_key_enc, mode, admin_scope, entry_mode, concurrency, max_sessions, expires_at, max_uses, used_count, created_at";
+
 impl Database {
     /// Insert a delegated token (hash + prefix + encrypted E2E key prepared by the caller).
     /// `groups_json` = JSON array of local group IDs; `hint_map_json` = JSON array of {hint, groups};
     /// `mode` = consumer mode (`dedicated` 专线 / `split` 分流);
+    /// `entry_mode` = `direct` (dial the issuer directly) / `relay` (via the disaster set);
+    /// `concurrency` = `single` (kick-old) / `multi`; `max_sessions` = session cap snapshot;
     /// `expires_at`/`max_uses` = token lifecycle window (None = never expires / unlimited).
     #[allow(clippy::too_many_arguments)]
     pub fn create_delegated_token(
@@ -27,6 +32,9 @@ impl Database {
         e2e_key_enc: &str,
         mode: &str,
         admin_scope: &str,
+        entry_mode: &str,
+        concurrency: &str,
+        max_sessions: i64,
         expires_at: Option<&str>,
         max_uses: Option<i64>,
     ) -> Result<DelegatedTokenRecord> {
@@ -35,9 +43,9 @@ impl Database {
         let id = uuid::Uuid::new_v4().to_string();
         let now = now_rfc3339();
         conn.execute(
-            "INSERT INTO delegated_token (id, token_hash, token_prefix, label, groups, hint_map, e2e_key_enc, mode, admin_scope, expires_at, max_uses, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-            params![id, token_hash, token_prefix, label, groups_json, hint_map_json, e2e_key_enc, mode, admin_scope, expires_at, max_uses, now],
+            "INSERT INTO delegated_token (id, token_hash, token_prefix, label, groups, hint_map, e2e_key_enc, mode, admin_scope, entry_mode, concurrency, max_sessions, expires_at, max_uses, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+            params![id, token_hash, token_prefix, label, groups_json, hint_map_json, e2e_key_enc, mode, admin_scope, entry_mode, concurrency, max_sessions, expires_at, max_uses, now],
         )
         .map_err(db_err)?;
         Ok(DelegatedTokenRecord {
@@ -50,6 +58,9 @@ impl Database {
             e2e_key_enc: e2e_key_enc.to_string(),
             mode: mode.to_string(),
             admin_scope: admin_scope.to_string(),
+            entry_mode: entry_mode.to_string(),
+            concurrency: concurrency.to_string(),
+            max_sessions,
             expires_at: expires_at.map(|s| s.to_string()),
             max_uses,
             used_count: 0,
@@ -101,10 +112,9 @@ impl Database {
     pub fn list_delegated_tokens(&self) -> Result<Vec<DelegatedTokenRecord>> {
         let conn = self.conn();
         let mut stmt = conn
-            .prepare(
-                "SELECT id, token_hash, token_prefix, label, groups, hint_map, e2e_key_enc, mode, admin_scope, expires_at, max_uses, used_count, created_at
-                 FROM delegated_token ORDER BY created_at DESC",
-            )
+            .prepare(&format!(
+                "SELECT {DELEGATED_COLS} FROM delegated_token ORDER BY created_at DESC"
+            ))
             .map_err(db_err)?;
         let mut rows = stmt.query([]).map_err(db_err)?;
         let mut out = Vec::new();
@@ -124,10 +134,9 @@ impl Database {
     pub fn get_delegated_token(&self, id: &str) -> Result<Option<DelegatedTokenRecord>> {
         let conn = self.conn();
         let mut stmt = conn
-            .prepare(
-                "SELECT id, token_hash, token_prefix, label, groups, hint_map, e2e_key_enc, mode, admin_scope, expires_at, max_uses, used_count, created_at
-                 FROM delegated_token WHERE id = ?1",
-            )
+            .prepare(&format!(
+                "SELECT {DELEGATED_COLS} FROM delegated_token WHERE id = ?1"
+            ))
             .map_err(db_err)?;
         let mut rows = stmt.query(params![id]).map_err(db_err)?;
         let mut rec = match rows.next().map_err(db_err)? {
@@ -198,13 +207,12 @@ impl Database {
     pub fn delegated_tokens_of_connector(&self, connector_id: &str) -> Result<Vec<DelegatedTokenRecord>> {
         let conn = self.conn();
         let mut stmt = conn
-            .prepare(
-                "SELECT t.id, t.token_hash, t.token_prefix, t.label, t.groups, t.hint_map, t.e2e_key_enc, t.mode, t.admin_scope, t.expires_at, t.max_uses, t.used_count, t.created_at
-                 FROM delegated_token t
+            .prepare(&format!(
+                "SELECT {DELEGATED_COLS} FROM delegated_token t
                  JOIN delegated_token_reg r ON r.token_id = t.id
                  WHERE r.connector_id = ?1
-                 ORDER BY t.created_at ASC",
-            )
+                 ORDER BY t.created_at ASC"
+            ))
             .map_err(db_err)?;
         let mut rows = stmt.query(params![connector_id]).map_err(db_err)?;
         let mut out = Vec::new();
@@ -214,20 +222,19 @@ impl Database {
         Ok(out)
     }
 
-    /// Resolve a token by the E2E key id (federation P3): any unique hex prefix of the token
-    /// hash ≥ 8 chars (12 since protocol v4; 8-char prefixes from pre-v4 clients still resolve
-    /// when unambiguous). Ambiguity fails closed (None).
+    /// Resolve a token by the E2E key id (federation P3): the kid is exactly the first 12 hex
+    /// chars of the token hash (protocol v4; shorter legacy prefixes no longer resolve).
+    /// Ambiguity fails closed (None).
     pub fn find_delegated_token_by_kid(&self, kid: &str) -> Result<Option<DelegatedTokenRecord>> {
-        if kid.len() < 8 || kid.len() > 64 || !kid.chars().all(|c| c.is_ascii_hexdigit()) {
+        if kid.len() != 12 || !kid.chars().all(|c| c.is_ascii_hexdigit()) {
             return Ok(None);
         }
         let conn = self.conn();
         // prefix match in SQL (LIKE with an anchored pattern — hex chars carry no wildcards)
         let mut stmt = conn
-            .prepare(
-                "SELECT id, token_hash, token_prefix, label, groups, hint_map, e2e_key_enc, mode, admin_scope, expires_at, max_uses, used_count, created_at
-                 FROM delegated_token WHERE token_hash LIKE ?1 || '%'",
-            )
+            .prepare(&format!(
+                "SELECT {DELEGATED_COLS} FROM delegated_token WHERE token_hash LIKE ?1 || '%'"
+            ))
             .map_err(db_err)?;
         let mut rows = stmt.query(params![kid]).map_err(db_err)?;
         let mut hits = Vec::new();
@@ -249,6 +256,9 @@ fn map_delegated_row(r: &rusqlite::Row) -> rusqlite::Result<DelegatedTokenRecord
         e2e_key_enc: r.get(6)?,
         mode: r.get(7)?,
         admin_scope: r.get(8)?,
+        entry_mode: r.get(9)?,
+        concurrency: r.get(10)?,
+        max_sessions: r.get(11)?,
         expires_at: r.get("expires_at")?,
         max_uses: r.get("max_uses")?,
         used_count: r.get("used_count")?,
@@ -260,6 +270,7 @@ fn map_delegated_row(r: &rusqlite::Row) -> rusqlite::Result<DelegatedTokenRecord
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::sha256_hex;
 
     fn mk_connector(db: &Database, name: &str) -> String {
         db.create_connector(name, "1.2.3.4:54430", "psk_x", "", true, "", "", "", "", None, "")
@@ -268,7 +279,7 @@ mod tests {
     }
 
     fn mk_token(db: &Database, hash: &str, label: &str) -> DelegatedTokenRecord {
-        db.create_delegated_token(hash, "psk_test01", label, "[\"g1\",\"g2\"]", "[{\"hint\":\"*.internal\",\"groups\":[\"git\"]}]", "v1:AAAA:BBBB", "split", "full", None, None)
+        db.create_delegated_token(hash, "psk_test01", label, "[\"g1\",\"g2\"]", "[{\"hint\":\"en_abcd\",\"groups\":[\"git\"]}]", "v1:AAAA:BBBB", "split", "full", "relay", "multi", 8, None, None)
             .expect("create delegated token")
     }
 
@@ -284,9 +295,14 @@ mod tests {
         assert_eq!(got.groups, "[\"g1\",\"g2\"]");
         assert_eq!(got.e2e_key_enc, "v1:AAAA:BBBB");
         assert_eq!(got.mode, "split");
+        // unified-issuance columns round-trip
+        assert_eq!(got.entry_mode, "relay");
+        assert_eq!(got.concurrency, "multi");
+        assert_eq!(got.max_sessions, 8);
 
         let list = db.list_delegated_tokens().unwrap();
         assert_eq!(list.len(), 1);
+        assert_eq!(list[0].entry_mode, "relay");
 
         db.delete_delegated_token(&rec.id).unwrap();
         assert!(db.get_delegated_token(&rec.id).unwrap().is_none());
@@ -329,17 +345,18 @@ mod tests {
     }
 
     #[test]
-    fn find_by_kid_unique_hit_only() {
+    fn find_by_kid_exact_12_hex_only() {
         let db = Database::in_memory().unwrap();
         let hash = "ef".repeat(32);
         mk_token(&db, &hash, "carol");
-        let kid = &hash[..8];
+        let kid = &hash[..12];
 
         let hit = db.find_delegated_token_by_kid(kid).unwrap().expect("unique hit");
         assert_eq!(hit.token_hash, hash);
-        assert!(db.find_delegated_token_by_kid("00000000").unwrap().is_none());
-        assert!(db.find_delegated_token_by_kid("not-hex!").unwrap().is_none());
-        assert!(db.find_delegated_token_by_kid("tooshort").unwrap().is_none());
+        assert!(db.find_delegated_token_by_kid("000000000000").unwrap().is_none());
+        assert!(db.find_delegated_token_by_kid("not-hex-not!").unwrap().is_none());
+        // legacy 8-char prefixes no longer resolve
+        assert!(db.find_delegated_token_by_kid(&hash[..8]).unwrap().is_none());
     }
 
     #[test]
@@ -354,8 +371,8 @@ mod tests {
         assert!(db.get_group(&gid).unwrap().unwrap().e2e_required);
         db.set_group_e2e_required(&gid, false).unwrap();
 
-        // attach an account -> marking must fail closed
-        db.create_account("u1", &super::super::hash_password("Passw0rd!ab").unwrap(), &gid, "")
+        // attach a relay token -> marking must fail closed
+        db.create_relay_token_with_quota(&sha256_hex(b"tok-att"), "psk_att", "", false, "full", Some(&gid), None)
             .unwrap();
         assert_eq!(db.group_attachment_count(&gid).unwrap(), 1);
         assert!(db.set_group_e2e_required(&gid, true).is_err());

@@ -1,7 +1,7 @@
 //! Shared small utilities, kept in one place to avoid verbatim copies.
 
 use std::net::IpAddr;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -15,10 +15,6 @@ use dashmap::DashMap;
 /// `AgileNet` is reserved for end-user-facing surfaces (productName, window
 /// titles, installer metadata). Single source of truth for the project.
 pub const BRAND_DIR: &str = ".anet";
-
-/// Legacy brand directory (pre-rename). Kept here so the one-shot migration
-/// below can locate the old layout. Safe to remove after a few releases.
-const LEGACY_DIR: &str = ".agile-net";
 
 /// Resolve `$HOME` (USERPROFILE on Windows, HOME elsewhere). Falls back to `.`
 /// so tests and edge cases don't panic — same behavior as the prior local
@@ -54,11 +50,6 @@ pub fn gui_data_dir() -> PathBuf {
     brand_root().join("gui")
 }
 
-/// Legacy brand root (`~/.agile-net`), used by the one-shot migration below.
-pub fn legacy_brand_dir() -> PathBuf {
-    home_dir().join(LEGACY_DIR)
-}
-
 /// Default config filename for `anet init` and bare `anet start`. The path
 /// prefix is `~/.anet/svc/`, but a bare filename is returned so callers can
 /// resolve it against CWD or the brand root as appropriate.
@@ -74,90 +65,14 @@ pub fn default_config_path() -> PathBuf {
 
 /// Resolve the default config for `anet-svc start` (no `--config` arg): prefer
 /// `~/.anet/svc/agile-net.toml` (brand default), fall back to `./agile-net.toml`
-/// in the CWD for legacy/compatibility (existing server installs that keep the
-/// config next to the binary). Returns the chosen path whether or not it exists.
+/// in the CWD (config kept next to the binary). Returns the chosen path whether
+/// or not it exists.
 pub fn resolve_default_config() -> PathBuf {
     let brand = default_config_path();
     if brand.exists() {
         return brand;
     }
     PathBuf::from(DEFAULT_CONFIG_FILENAME)
-}
-
-/// One-shot migration from the legacy flat `~/.agile-net` layout to the new
-/// split `~/.anet/{svc,gui,root}` layout. Idempotent:
-///   - legacy missing → no-op (fresh install)
-///   - new root already exists → no-op (already migrated, don't clobber)
-///
-/// Files are routed to their new owners; anything unrecognized is swept into
-/// the brand root to avoid data loss on future-version files. The legacy
-/// directory is removed if empty after the sweep.
-pub fn migrate_legacy_layout() -> std::io::Result<()> {
-    migrate_layout_at(&home_dir())
-}
-
-/// Testable form of [`migrate_legacy_layout`]: resolve legacy/new roots under
-/// the given `home` instead of the real `$HOME.
-pub fn migrate_layout_at(home: &Path) -> std::io::Result<()> {
-    let legacy = home.join(LEGACY_DIR);
-    let new_root = home.join(BRAND_DIR);
-
-    if !legacy.exists() {
-        return Ok(());
-    }
-    if new_root.exists() {
-        // Already migrated (or user pre-created the new dir). Don't touch.
-        return Ok(());
-    }
-
-    std::fs::create_dir_all(new_root.join("svc"))?;
-    std::fs::create_dir_all(new_root.join("gui"))?;
-
-    // GUI-only state files.
-    for f in [
-        "gui-settings.json",
-        "gui-audit.jsonl",
-        "gui-custom-rules.json",
-        "web-auth.json",
-        "sync-state.json",
-        "sync-config.json",
-    ] {
-        relocate(&legacy.join(f), &new_root.join("gui").join(f))?;
-    }
-    // GUI-only subdirectories.
-    for d in ["embedded-node", "mihomo"] {
-        relocate(&legacy.join(d), &new_root.join("gui").join(d))?;
-    }
-    // Brand-root shared (GUI + CLI client subcommand).
-    relocate(&legacy.join("credentials.json"), &new_root.join("credentials.json"))?;
-    relocate(&legacy.join("cache"), &new_root.join("cache"))?;
-    // svc-only.
-    relocate(&legacy.join("anet-svc.pid"), &new_root.join("svc").join("anet-svc.pid"))?;
-
-    // Sweep anything left into the brand root (forward-compat with future files).
-    if let Ok(entries) = std::fs::read_dir(&legacy) {
-        for entry in entries.flatten() {
-            let name = entry.file_name();
-            // Best-effort; ignore failures on individual leftover entries.
-            let _ = std::fs::rename(entry.path(), new_root.join(&name));
-        }
-    }
-
-    // Best-effort cleanup of the now-empty legacy directory.
-    let _ = std::fs::remove_dir(&legacy);
-    Ok(())
-}
-
-/// Move `from` to `to` if `from` exists. Source-missing is treated as success
-/// (nothing to relocate). Target parent is created on demand.
-fn relocate(from: &Path, to: &Path) -> std::io::Result<()> {
-    if !from.exists() {
-        return Ok(());
-    }
-    if let Some(parent) = to.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::rename(from, to)
 }
 
 /// SHA-256 hex digest (token storage hash, kicking sessions by hash, etc.).
@@ -422,84 +337,4 @@ mod tests {
         lim.record_failure(ip);
         assert!(matches!(lim.check(ip), Err(LoginBlockReason::Locked(_))));
     }
-
-    #[test]
-    fn migrate_skips_when_legacy_missing() {
-        // Fresh install: no legacy dir → no-op, no new dir created.
-        let tmp = temp_dir();
-        super::migrate_layout_at(&tmp).unwrap();
-        assert!(!tmp.join(BRAND_DIR_USE).exists());
-        assert!(!tmp.join(LEGACY_DIR_USE).exists());
-    }
-
-    #[test]
-    fn migrate_skips_when_new_root_exists() {
-        // Already migrated: don't clobber.
-        let tmp = temp_dir();
-        std::fs::create_dir_all(tmp.join(LEGACY_DIR_USE)).unwrap();
-        std::fs::create_dir_all(tmp.join(BRAND_DIR_USE)).unwrap();
-        std::fs::write(tmp.join(LEGACY_DIR_USE).join("stray.txt"), b"x").unwrap();
-        super::migrate_layout_at(&tmp).unwrap();
-        // Legacy untouched (we bail out before sweeping).
-        assert!(tmp.join(LEGACY_DIR_USE).join("stray.txt").exists());
-    }
-
-    #[test]
-    fn migrate_routes_files_to_correct_subdir() {
-        let tmp = temp_dir();
-        let legacy = tmp.join(LEGACY_DIR_USE);
-        std::fs::create_dir_all(&legacy).unwrap();
-
-        // GUI-only files.
-        std::fs::write(legacy.join("gui-settings.json"), b"{}").unwrap();
-        std::fs::write(legacy.join("web-auth.json"), b"{}").unwrap();
-        std::fs::create_dir_all(legacy.join("embedded-node")).unwrap();
-        std::fs::write(legacy.join("embedded-node").join("node.db"), b"db").unwrap();
-        std::fs::create_dir_all(legacy.join("mihomo")).unwrap();
-        // Root-shared.
-        std::fs::write(legacy.join("credentials.json"), b"{}").unwrap();
-        std::fs::create_dir_all(legacy.join("cache")).unwrap();
-        // svc-only.
-        std::fs::write(legacy.join("anet-svc.pid"), b"{}").unwrap();
-        // Unknown leftover (forward-compat sweep).
-        std::fs::write(legacy.join("future.bin"), b"x").unwrap();
-
-        super::migrate_layout_at(&tmp).unwrap();
-
-        let new_root = tmp.join(BRAND_DIR_USE);
-        assert!(new_root.join("gui").join("gui-settings.json").exists());
-        assert!(new_root.join("gui").join("web-auth.json").exists());
-        assert!(new_root.join("gui").join("embedded-node").join("node.db").exists());
-        assert!(new_root.join("gui").join("mihomo").is_dir());
-        assert!(new_root.join("credentials.json").exists());
-        assert!(new_root.join("cache").is_dir());
-        assert!(new_root.join("svc").join("anet-svc.pid").exists());
-        assert!(new_root.join("future.bin").exists());
-        // Legacy dir removed once empty.
-        assert!(!legacy.exists());
-    }
-
-    #[test]
-    fn migrate_is_idempotent() {
-        let tmp = temp_dir();
-        let legacy = tmp.join(LEGACY_DIR_USE);
-        std::fs::create_dir_all(&legacy).unwrap();
-        std::fs::write(legacy.join("credentials.json"), b"{}").unwrap();
-        super::migrate_layout_at(&tmp).unwrap();
-        // Second call is a no-op (legacy gone).
-        super::migrate_layout_at(&tmp).unwrap();
-        assert!(tmp.join(BRAND_DIR_USE).join("credentials.json").exists());
-    }
-
-    fn temp_dir() -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "anet-migrate-{}",
-            uuid::Uuid::new_v4()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
-    }
-
-    const BRAND_DIR_USE: &str = super::BRAND_DIR;
-    const LEGACY_DIR_USE: &str = super::LEGACY_DIR;
 }

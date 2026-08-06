@@ -5,7 +5,7 @@ when deploying and running AgileNet.
 
 For local-environment issues (port occupancy, system proxy residue, TUN, subscription kernel, etc.),
 run [Self-Diagnosis](#/guides/doctor) first for a one-click inspection — most items can be auto-fixed
-on the spot. This page focuses on cross-machine scenarios: links, certificates, accounts.
+on the spot. This page focuses on cross-machine scenarios: links, certificates, login.
 
 ## Common Diagnostic Methods and Log Paths
 
@@ -17,7 +17,7 @@ on the spot. This page focuses on cross-machine scenarios: links, certificates, 
 2. **anet-gui audit logs**:
    - Role-switch and exposure-change audits are written to `~/.anet/gui/gui-audit.jsonl` (`%USERPROFILE%\.anet\gui\gui-audit.jsonl` on Windows).
 3. **Node database audit**:
-   - The SQLite `audit_log` table records all management operations and login events, viewable via the Web console, `anet-svc cli audit list`, or `anet-svc tui`.
+   - The SQLite `audit_log` table records all management operations and login events, viewable via the Web console, `anet audit list`, or `anet tui`.
 
 ---
 
@@ -36,8 +36,8 @@ on the spot. This page focuses on cross-machine scenarios: links, certificates, 
   openssl x509 -in certs/relay-cert.pem -noout -fingerprint -sha256
   ```
 - **Update the client configuration**:
-  - `anet-gui`: re-import the latest `agilenet://connect?...` connect link.
-  - `anet-svc client`: edit the `pinned_fingerprint` field of the corresponding node in `client.toml`.
+  - `anet-gui`: re-import the latest `anet://connect?...` connect link.
+  - `anet-svc client`: replace the corresponding connect link in `nodes` in `client.toml` (fingerprint pinning is carried by the link's `fp`/`entryfp` parameters).
 
 ---
 
@@ -76,13 +76,13 @@ on the spot. This page focuses on cross-machine scenarios: links, certificates, 
 
 ---
 
-### 4. Account / Login Lockout (HTTP 429)
+### 4. Login Lockout (HTTP 429)
 
 **Symptom**: the Web console or CLI reports `42900 Too Many Requests` and login fails.
 
 **Cause**:
-- The anti-brute-force mechanism was triggered (by default, more than 5 failures within 1 minute locks the account/IP for 15 minutes).
+- The anti-brute-force mechanism was triggered (by default, more than 5 failures within 1 minute locks the source IP for 15 minutes).
 
 **Resolution**:
 - Wait for the 15-minute lockout countdown to expire.
-- Or, in urgent operations, connect directly to the database via the TUI (`anet-svc tui`) to make changes.
+- Forgot the admin password: `anet admin reset-password admin --offline` resets it directly in the database (local operation, no login; sessions are revoked).

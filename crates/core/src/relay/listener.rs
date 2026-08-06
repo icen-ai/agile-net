@@ -10,7 +10,7 @@
 use crate::error::{Error, Result};
 use crate::proto::frame::{Frame, FrameType};
 use crate::proto::message::{
-    AuthKind, AuthRequest, OpenChannel, PROTOCOL_VERSION, PROTOCOL_VERSION_FLOW_CONTROL,
+    AuthKind, AuthRequest, Concurrency, OpenChannel, PROTOCOL_VERSION, PROTOCOL_VERSION_FLOW_CONTROL,
 };
 use crate::proxy::router::{Outbound, ProxyRouter};
 use crate::relay::acl::PeerAcl;
@@ -66,18 +66,24 @@ pub enum AuthIdentity {
         /// the issuer-side token remark is the authoritative identity for admin displays.
         display: Option<String>,
     },
-    /// Client account, with target access control rules
-    Client {
-        account_id: String,
-        /// ACL rules (CIDR / exact domain / *.suffix domain)
-        acl: Vec<String>,
-        /// Federation P2: delegated-session stamp — forwarded Opens carry the token's group
-        /// tags, E2E hints bound the envelope vocabulary (None = regular account)
-        delegated: Option<DelegatedStamp>,
-    },
+    /// Delegated consumer session (unified issuance): authenticated by the listener itself
+    /// against the delegated token registries (persistent local first, then session-scoped).
+    Delegated(DelegatedIdentity),
 }
 
-/// Federation P2: stamp carried by a delegated client session (registered token).
+/// Identity of a delegated consumer session.
+#[derive(Debug, Clone)]
+pub struct DelegatedIdentity {
+    /// Consumer's self-reported node id (AuthRequest.node_id) — part of the session key
+    pub node_id: String,
+    /// ACL snapshot: the token's transparent rules plus its hint vocabulary
+    pub acl: Vec<String>,
+    /// Delegated-session stamp — forwarded Opens carry the token's group tags, E2E hints bound
+    /// the envelope vocabulary
+    pub stamp: DelegatedStamp,
+}
+
+/// Federation P2: stamp carried by a delegated consumer session (registered token).
 #[derive(Debug, Clone)]
 pub struct DelegatedStamp {
     /// Issuing fan-out endpoint (node_id), for audit and routing provenance
@@ -89,7 +95,8 @@ pub struct DelegatedStamp {
 }
 
 /// Federation P2: a delegated token registered by an online fan-out endpoint (session-scoped,
-/// relay-side volatile state — dropped when the issuer session ends, revoke-by-disconnect).
+/// relay-side volatile state — dropped when the issuer session ends, revoke-by-disconnect) or
+/// injected into the listener's persistent local registry (self-entry/direct mode).
 #[derive(Debug, Clone)]
 pub struct DelegatedToken {
     /// Issuer node_id (the fan-out session that registered this token)
@@ -101,6 +108,10 @@ pub struct DelegatedToken {
     pub acl_rules: Vec<String>,
     /// Coarse E2E routing vocabulary (validated against the issuer's advertised routes)
     pub hint_map: Vec<crate::proto::message::HintEntry>,
+    /// Consumer-session concurrency policy (enforced by the listener at auth)
+    pub concurrency: Concurrency,
+    /// Max simultaneous consumer sessions under the multi policy
+    pub max_sessions: u32,
 }
 
 /// Relay-side delegated token registry (token_hash -> token). Volatile by design: nothing is
@@ -124,6 +135,8 @@ pub const MAX_PUSHED_RULE_LEN: usize = 256;
 /// Cap for entrust registrations per issuer (anti-abuse: en_ words skip route validation, so a
 /// malicious issuer could otherwise fill relay memory with self-minted opaque IDs).
 pub const MAX_ENTRUST_PER_ISSUER: usize = 1024;
+/// Cap for a delegated token's `max_sessions` (anti-abuse bound on the consumer session table).
+pub const MAX_DELEGATED_SESSIONS: u32 = 1024;
 
 /// Sanitize pushed groups before pooling (drop offending entries, never reject the session).
 pub fn sanitize_pushed_groups(
@@ -197,13 +210,14 @@ pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     diff == 0
 }
 
-/// Node/client online-offline events (for control-plane status updates).
+/// Node/consumer online-offline events (for control-plane status updates).
 #[derive(Debug, Clone)]
 pub enum PeerEvent {
     NodeConnected { node_id: String },
     NodeDisconnected { node_id: String },
-    ClientConnected { account_id: String },
-    ClientDisconnected { account_id: String },
+    /// Delegated consumer session up/down; `session_key` = `delegated:<token_hash>:<node_id>`
+    ClientConnected { session_key: String },
+    ClientDisconnected { session_key: String },
     /// Restriction denial: a peer-initiated target connection was intercepted by PeerAcl (for control-plane audit).
     /// `peer_label` is the peer identifier (fan-in=node_id, fan-out=upstream_addr).
     AclDenied { peer_label: String, target: String },
@@ -245,6 +259,11 @@ pub struct RelayListener {
     peer_groups: Arc<DashMap<String, Vec<crate::proto::message::PushedGroupMsg>>>,
     /// Federation P2: delegated tokens registered by online fan-out endpoints (session-scoped)
     delegated: DelegatedRegistry,
+    /// Self-entry (direct mode): persistent local delegated token registry. Same value type as
+    /// the session-scoped registry, but the node layer injects the handle and registers/removes
+    /// entries directly at runtime — entries NEVER die with any session. Auth and route
+    /// resolution consult it before the session-scoped registry.
+    local_delegated: DelegatedRegistry,
     /// Federation P3 entrust mode: opaque routing words (en_xxx -> issuer node_id). Entries are
     /// registered from token_register hint_map entries carrying the en_ prefix (no advertised-route
     /// validation — the word is issuer-self-minted and semantics-free), and die with their issuer
@@ -252,7 +271,8 @@ pub struct RelayListener {
     entrust: Arc<DashMap<String, String>>,
     /// Aggregated queryable route table (RCU hot update)
     routes: Arc<arc_swap::ArcSwap<AdvertisedRoutes>>,
-    /// Online client sessions (account_id -> session handle list, for online checks and forced disconnect)
+    /// Online consumer sessions (session key -> session handle list, for online checks and forced
+    /// disconnect; delegated consumers key on `delegated:<token_hash>:<node_id>`)
     clients: Arc<DashMap<String, Vec<Arc<MuxSession>>>>,
     events: broadcast::Sender<PeerEvent>,
     active_connections: Arc<AtomicUsize>,
@@ -307,6 +327,7 @@ impl RelayListener {
             peer_advertise: Arc::new(DashMap::new()),
             peer_groups: Arc::new(DashMap::new()),
             delegated: Arc::new(DashMap::new()),
+            local_delegated: Arc::new(DashMap::new()),
             entrust: Arc::new(DashMap::new()),
             routes: Arc::new(arc_swap::ArcSwap::from_pointee(AdvertisedRoutes::default())),
             clients: Arc::new(DashMap::new()),
@@ -333,6 +354,14 @@ impl RelayListener {
     /// reads), so the two always see the same live state.
     pub fn with_delegated_registry(mut self, registry: DelegatedRegistry) -> Self {
         self.delegated = registry;
+        self
+    }
+
+    /// Inject the persistent local delegated token registry (self-entry/direct mode): the node
+    /// layer registers/removes entries through the handle at runtime; the listener consults it
+    /// before the session-scoped registry at auth and route resolution, and never clears it.
+    pub fn with_local_delegated_registry(mut self, registry: DelegatedRegistry) -> Self {
+        self.local_delegated = registry;
         self
     }
 
@@ -432,29 +461,97 @@ impl RelayListener {
             .collect()
     }
 
-    /// Federation P2: shared handle of the delegated token registry (the token validator
-    /// resolves delegated client auth against it; entries die with their issuer session).
+    /// Federation P2: shared handle of the delegated token registry (entries die with their
+    /// issuer session).
     pub fn delegated_registry(&self) -> DelegatedRegistry {
         self.delegated.clone()
     }
 
-    /// Number of online client accounts.
+    /// Self-entry (direct mode): shared handle of the persistent local delegated token registry
+    /// (the node layer registers/removes entries at runtime; never cleared by session logic).
+    pub fn local_delegated_registry(&self) -> DelegatedRegistry {
+        self.local_delegated.clone()
+    }
+
+    /// Resolve a delegated token by hash: persistent local registry first (self-entry/direct
+    /// mode), then the session-scoped registry.
+    fn resolve_delegated_token(&self, token_hash: &str) -> Option<DelegatedToken> {
+        self.local_delegated
+            .get(token_hash)
+            .map(|e| e.clone())
+            .or_else(|| self.delegated.get(token_hash).map(|e| e.clone()))
+    }
+
+    /// Delegated consumer auth (unified issuance): resolve the token against the delegated
+    /// registries and enforce the token's session concurrency policy — single kicks every older
+    /// session of the token; multi admits while active sessions stay below `max_sessions`.
+    fn delegated_auth(&self, auth: &AuthRequest, token_hash: &str) -> Option<AuthIdentity> {
+        let entry = self.resolve_delegated_token(token_hash)?;
+        match entry.concurrency {
+            Concurrency::Single => {
+                self.disconnect_delegated_token(token_hash);
+            }
+            Concurrency::Multi => {
+                if self.active_delegated_sessions(token_hash) >= entry.max_sessions as usize {
+                    warn!(token_hash, max = entry.max_sessions, "delegated session cap reached, rejecting auth");
+                    return None;
+                }
+            }
+        }
+        let mut acl = entry.acl_rules.clone();
+        acl.extend(entry.hint_map.iter().map(|h| h.hint.clone()));
+        Some(AuthIdentity::Delegated(DelegatedIdentity {
+            node_id: auth.node_id.clone(),
+            acl,
+            stamp: DelegatedStamp {
+                issuer: entry.issuer.clone(),
+                groups: entry.groups.clone(),
+                hints: entry.hint_map.iter().map(|h| h.hint.clone()).collect(),
+            },
+        }))
+    }
+
+    /// Active consumer sessions of one delegated token (any node_id).
+    fn active_delegated_sessions(&self, token_hash: &str) -> usize {
+        let prefix = delegated_session_prefix(token_hash);
+        self.clients
+            .iter()
+            .filter(|c| c.key().starts_with(&prefix))
+            .map(|c| c.value().len())
+            .sum()
+    }
+
+    /// Force-disconnect every consumer session authenticated from one delegated token (any
+    /// node_id) — token revocation, single-policy kick, issuer-session teardown. Returns the
+    /// number of disconnected sessions.
+    pub fn disconnect_delegated_token(&self, token_hash: &str) -> usize {
+        let prefix = delegated_session_prefix(token_hash);
+        let keys: Vec<String> = self
+            .clients
+            .iter()
+            .filter(|c| c.key().starts_with(&prefix))
+            .map(|c| c.key().clone())
+            .collect();
+        keys.iter().map(|k| self.disconnect_client(k)).sum()
+    }
+
+    /// Number of online consumer sessions (delegated session keys).
     pub fn online_client_count(&self) -> usize {
         self.clients.len()
     }
 
-    /// Whether the given client is online.
-    pub fn is_client_online(&self, account_id: &str) -> bool {
+    /// Whether a consumer session with the given key is online.
+    pub fn is_client_online(&self, session_key: &str) -> bool {
         self.clients
-            .get(account_id)
+            .get(session_key)
             .map(|sessions| !sessions.is_empty())
             .unwrap_or(false)
     }
 
-    /// Force-disconnect all sessions of a client account (called on disable/delete/password reset).
-    /// Returns the number of disconnected sessions.
-    pub fn disconnect_client(&self, account_id: &str) -> usize {
-        let Some((_, sessions)) = self.clients.remove(account_id) else {
+    /// Force-disconnect all sessions under one consumer session key. Returns the number of
+    /// disconnected sessions.
+    pub fn disconnect_client(&self, session_key: &str) -> usize {
+        let Some((_, sessions)) = self.clients.remove(session_key) else {
             return 0;
         };
         let count = sessions.len();
@@ -462,7 +559,7 @@ impl RelayListener {
             mux.shutdown();
         }
         let _ = self.events.send(PeerEvent::ClientDisconnected {
-            account_id: account_id.to_string(),
+            session_key: session_key.to_string(),
         });
         count
     }
@@ -534,6 +631,19 @@ impl RelayListener {
             }
         }
         None
+    }
+
+    /// Resolve a routing word against the delegated registries: local registry hints first
+    /// (self-entry/direct mode — the issuer is this very node, so Some(None) = terminate
+    /// locally), then the session-scoped entrust registry (en_xxx -> issuer node_id).
+    /// None = no delegated route at all (caller falls back to the advertised route table).
+    fn resolve_delegated_route(&self, word: &str) -> Option<Option<String>> {
+        for entry in self.local_delegated.iter() {
+            if entry.hint_map.iter().any(|h| h.hint == word) {
+                return Some(None);
+            }
+        }
+        self.entrust.get(word).map(|v| Some(v.clone()))
     }
 
     /// Start the listen service
@@ -657,17 +767,14 @@ impl RelayListener {
                 )
                 .await
             }
-            AuthIdentity::Client {
-                account_id,
-                acl,
-                delegated,
-            } => {
-                self.serve_client_session(
+            AuthIdentity::Delegated(identity) => {
+                let session_key = delegated_session_key(&token_hash, &identity.node_id);
+                self.serve_delegated_session(
                     tls_stream,
                     peer_addr,
-                    account_id,
-                    acl,
-                    delegated,
+                    session_key,
+                    identity.acl,
+                    identity.stamp,
                     token_hash,
                     flow_control,
                     limiter,
@@ -722,10 +829,18 @@ impl RelayListener {
             return Err(Error::Protocol("invalid node_id".into()));
         }
 
-        match self.validator.validate(&auth_req) {
+        let token_hash = sha256_hex(auth_req.token.as_bytes());
+        // node/relay tokens resolve through the injected validator hook; consumer auths
+        // (kind = Client) fall through to the listener's own delegated token registries
+        // (persistent local first, then session-scoped) with concurrency enforcement
+        let identity = match self.validator.validate(&auth_req) {
+            Some(identity) => Some(identity),
+            None if auth_req.kind == AuthKind::Client => self.delegated_auth(&auth_req, &token_hash),
+            None => None,
+        };
+        match identity {
             Some(identity) => {
                 self.clear_auth_failures(&peer_addr.ip());
-                let token_hash = sha256_hex(auth_req.token.as_bytes());
                 let peer_version = auth_req.version;
                 // handshake v2: push the control-plane endpoint when the downstream token carries the expose flag (old downstreams ignore unknown fields)
                 let auth_ok = match &identity {
@@ -801,7 +916,7 @@ impl RelayListener {
                 .collect();
             for hash in stale {
                 self.delegated.remove(&hash);
-                self.disconnect_client(&delegated_session_key(&hash));
+                self.disconnect_delegated_token(&hash);
             }
             let _ = self.events.send(PeerEvent::NodeDisconnected {
                 node_id: node_id.clone(),
@@ -882,7 +997,7 @@ impl RelayListener {
                 .collect();
             for hash in dead {
                 self.delegated.remove(&hash);
-                self.disconnect_client(&delegated_session_key(&hash));
+                self.disconnect_delegated_token(&hash);
             }
             // entrust words die with the issuer session too (same revoke-by-disconnect contract)
             self.entrust.retain(|_, v| v != &node_id);
@@ -911,8 +1026,18 @@ impl RelayListener {
                 label,
                 groups,
                 hint_map,
+                concurrency,
+                max_sessions,
             } => {
-                let (ok, error) = match self.register_delegated(node_id, &token_hash, &label, groups, hint_map) {
+                let (ok, error) = match self.register_delegated(
+                    node_id,
+                    &token_hash,
+                    &label,
+                    groups,
+                    hint_map,
+                    concurrency,
+                    max_sessions,
+                ) {
                     Ok(()) => {
                         info!(node = %node_id, label = %label, "delegated token registered");
                         let _ = self.events.send(PeerEvent::DelegationRegistered {
@@ -928,7 +1053,7 @@ impl RelayListener {
                 };
                 self.send_ctrl_ack(mux, token_hash, ok, error).await;
             }
-            C::TokenRevoke { token_hash } => {
+            C::TokenRevoke { token_hash, .. } => {
                 if let Some(label) = self.revoke_delegated(node_id, &token_hash) {
                     info!(node = %node_id, label = %label, "delegated token revoked");
                     let _ = self.events.send(PeerEvent::DelegationRevoked {
@@ -965,6 +1090,8 @@ impl RelayListener {
     ///   (a hint that routes nowhere — or to another peer — can never serve, fail closed);
     ///   entrust hints skip this check (self-minted opaque words, no other node's routes to steal)
     /// - one token_hash belongs to one issuer (a second issuer claiming it is rejected)
+    /// - `max_sessions` must be in 1..=MAX_DELEGATED_SESSIONS
+    #[allow(clippy::too_many_arguments)]
     fn register_delegated(
         &self,
         node_id: &str,
@@ -972,12 +1099,17 @@ impl RelayListener {
         label: &str,
         groups: Vec<String>,
         hint_map: Vec<crate::proto::message::HintEntry>,
+        concurrency: Concurrency,
+        max_sessions: u32,
     ) -> std::result::Result<(), String> {
         if token_hash.len() != 64 || !token_hash.bytes().all(|b| b.is_ascii_hexdigit()) {
             return Err("invalid token_hash".into());
         }
         if label.len() > 128 {
             return Err("label too long".into());
+        }
+        if max_sessions == 0 || max_sessions > MAX_DELEGATED_SESSIONS {
+            return Err("max_sessions out of range".into());
         }
         if let Some(existing) = self.delegated.get(token_hash)
             && existing.issuer != node_id
@@ -1063,12 +1195,14 @@ impl RelayListener {
                 groups: names,
                 acl_rules: rules,
                 hint_map,
+                concurrency,
+                max_sessions,
             },
         );
         Ok(())
     }
 
-    /// Drop a delegated token (issuer-scoped) and kick the client sessions it authenticated.
+    /// Drop a delegated token (issuer-scoped) and kick the consumer sessions it authenticated.
     /// Returns the label for audit when a registration existed.
     fn revoke_delegated(&self, node_id: &str, token_hash: &str) -> Option<String> {
         let (hash, tok) = self
@@ -1081,24 +1215,24 @@ impl RelayListener {
             }
         }
         let label = tok.label;
-        self.disconnect_client(&delegated_session_key(&hash));
+        self.disconnect_delegated_token(&hash);
         Some(label)
     }
 
-    /// Client session: handle inbound Open requests (ACL + downstream routing + direct connect).
+    /// Delegated consumer session: handle inbound Open requests (ACL + downstream routing + direct connect).
     #[allow(clippy::too_many_arguments)]
-    async fn serve_client_session(
+    async fn serve_delegated_session(
         self: &Arc<Self>,
         tls_stream: tokio_rustls::server::TlsStream<TcpStream>,
         peer_addr: SocketAddr,
-        account_id: String,
+        session_key: String,
         acl: Vec<String>,
-        delegated: Option<DelegatedStamp>,
+        stamp: DelegatedStamp,
         token_hash: String,
         flow_control: bool,
         limiter: Option<Arc<TokenBucket>>,
     ) -> Result<()> {
-        info!(peer = %peer_addr, account = %account_id, "client authenticated successfully");
+        info!(peer = %peer_addr, session = %session_key, "delegated consumer authenticated successfully");
 
         let acl_router = build_acl_router(&acl);
         let (open_tx, mut open_rx) = tokio::sync::mpsc::channel::<OpenRequest>(64);
@@ -1106,20 +1240,20 @@ impl RelayListener {
             MuxSession::start(tls_stream, 1, SessionEvents::open(open_tx), flow_control, limiter);
 
         self.clients
-            .entry(account_id.clone())
+            .entry(session_key.clone())
             .or_default()
             .push(mux.clone());
         let _ = self.events.send(PeerEvent::ClientConnected {
-            account_id: account_id.clone(),
+            session_key: session_key.clone(),
         });
 
-        // handle this client's Open requests until the connection drops
+        // handle this consumer's Open requests until the connection drops
         // (open_tx is released when the reader task ends and recv returns None)
         // concurrency cap: same as node sessions, guards against peer Open floods exhausting task/connection resources
         let open_permits = Arc::new(Semaphore::new(MAX_INBOUND_OPENS_PER_SESSION));
         while let Some(req) = open_rx.recv().await {
             let Ok(permit) = open_permits.clone().try_acquire_owned() else {
-                debug!(account = %account_id, channel = req.channel_id, "inbound open limit reached, rejecting");
+                debug!(session = %session_key, channel = req.channel_id, "inbound open limit reached, rejecting");
                 let _ = mux
                     .send_frame(Frame::empty(FrameType::OpenFail, req.channel_id))
                     .await;
@@ -1128,44 +1262,44 @@ impl RelayListener {
             let this = self.clone();
             let mux = mux.clone();
             let acl_router = acl_router.clone();
-            let delegated = delegated.clone();
+            let stamp = stamp.clone();
             let token_hash = token_hash.clone();
             tokio::spawn(async move {
                 let _permit = permit; // permit held by the task until the bridge ends
-                this.handle_client_open(mux, req, acl_router, delegated, token_hash).await;
+                this.handle_delegated_open(mux, req, acl_router, stamp, token_hash).await;
             });
         }
 
         let _ = reader_handle.await;
         // remove this session from the session table (may already have been cleared by disconnect_client)
-        if let Some(mut sessions) = self.clients.get_mut(&account_id) {
+        if let Some(mut sessions) = self.clients.get_mut(&session_key) {
             sessions.retain(|m| !Arc::ptr_eq(m, &mux));
             let empty = sessions.is_empty();
             drop(sessions);
             if empty {
-                self.clients.remove(&account_id);
+                self.clients.remove(&session_key);
             }
         }
         let _ = self.events.send(PeerEvent::ClientDisconnected {
-            account_id: account_id.clone(),
+            session_key: session_key.clone(),
         });
-        info!(account = %account_id, "client disconnected");
+        info!(session = %session_key, "delegated consumer disconnected");
         Ok(())
     }
 
-    /// Handle a client Open: ACL check -> delegated re-stamp (federation P2) -> routing, then bridge.
-    async fn handle_client_open(
+    /// Handle a consumer Open: ACL check -> delegated re-stamp (federation P2) -> routing, then bridge.
+    async fn handle_delegated_open(
         self: &Arc<Self>,
         mux: Arc<MuxSession>,
         req: OpenRequest,
         acl_router: Arc<ProxyRouter>,
-        delegated: Option<DelegatedStamp>,
+        stamp: DelegatedStamp,
         token_hash: String,
     ) {
         let open_req: OpenChannel = match serde_json::from_slice(&req.payload) {
             Ok(v) => v,
             Err(e) => {
-                warn!(error = %e, "invalid open payload from client");
+                warn!(error = %e, "invalid open payload from consumer");
                 let _ = mux
                     .send_frame(Frame::empty(FrameType::OpenFail, req.channel_id))
                     .await;
@@ -1175,52 +1309,41 @@ impl RelayListener {
 
         let target = format!("{}:{}", open_req.target_addr, open_req.target_port);
 
-        // ACL: the target must hit a rule of this account's group
-        // (delegated sessions: the rule snapshot covers transparent rules plus the hint vocabulary)
+        // ACL: the target must hit the token's rule snapshot
+        // (the snapshot covers transparent rules plus the hint vocabulary)
         if !acl_router.matches_target(&target) {
-            warn!(target = %target, "client open denied by ACL");
+            warn!(target = %target, "delegated open denied by ACL");
             let _ = mux
                 .send_frame(Frame::empty(FrameType::OpenFail, req.channel_id))
                 .await;
             return;
         }
 
-        // federation P2: re-stamp the Open of a delegated session before forwarding —
-        // transparent tier carries the token's group tags for the issuer's per-group
-        // enforcement; E2E envelopes pass through blind (kid/hint consistency checked)
-        let open_req = match delegated {
-            Some(stamp) => {
-                let mut o = open_req;
-                match &o.e2e {
-                    Some(e2e) => {
-                        // kid check is prefix-aware: v4+ clients seal 12-char kids, pre-v4
-                        // clients 8-char ones — both must resolve against the same token hash
-                        let kid_ok = e2e.kid.len() >= 8
-                            && e2e.kid.len() <= 64
-                            && e2e.kid.bytes().all(|b| b.is_ascii_hexdigit())
-                            && crate::relay::e2e::kid_of(&token_hash).starts_with(&e2e.kid);
-                        if !kid_ok
-                            || e2e.hint != o.target_addr
-                            || !stamp.hints.contains(&o.target_addr)
-                        {
-                            warn!(target = %target, "delegated e2e open rejected (kid/hint mismatch)");
-                            let _ = mux
-                                .send_frame(Frame::empty(FrameType::OpenFail, req.channel_id))
-                                .await;
-                            return;
-                        }
-                        o.groups = Vec::new(); // group tags travel sealed inside the blob
-                    }
-                    None => {
-                        o.groups = stamp.groups.clone();
-                    }
+        // federation P2: re-stamp the Open before forwarding — the transparent tier carries the
+        // token's group tags for the issuer's per-group enforcement; E2E envelopes pass through
+        // blind (kid/hint consistency checked)
+        let mut open_req = open_req;
+        match &open_req.e2e {
+            Some(e2e) => {
+                // kid is an exact 12-hex match against the session's token hash
+                if e2e.kid != crate::relay::e2e::kid_of(&token_hash)
+                    || e2e.hint != open_req.target_addr
+                    || !stamp.hints.contains(&open_req.target_addr)
+                {
+                    warn!(target = %target, "delegated e2e open rejected (kid/hint mismatch)");
+                    let _ = mux
+                        .send_frame(Frame::empty(FrameType::OpenFail, req.channel_id))
+                        .await;
+                    return;
                 }
-                o
+                open_req.groups = Vec::new(); // group tags travel sealed inside the blob
             }
-            None => open_req,
-        };
+            None => {
+                open_req.groups = stamp.groups.clone();
+            }
+        }
 
-        // client account traffic is already metered per account (traffic_log); transit pairs skip duplicate metering (from = None)
+        // consumer traffic is metered issuer-side; transit pairs skip duplicate metering (from = None)
         self.route_open(mux, req, open_req, target, None).await;
     }
 
@@ -1287,13 +1410,13 @@ impl RelayListener {
         let channel = mux.accept_channel(req.channel_id);
         let meter_from = self.transit.clone().zip(from.map(str::to_string));
 
-        // prefer downstream-node advertised routes, else local direct connect
-        // (entrust words — en_xxx opaque IDs — resolve through their own registry first)
-        let routed_peer = self
-            .entrust
-            .get(&open_req.target_addr)
-            .map(|r| r.clone())
-            .or_else(|| self.resolve_peer(&open_req.target_addr));
+        // routing resolution order: persistent local delegated hints (self-entry — the issuer
+        // is this very node, terminate locally) -> session-scoped entrust words (en_xxx ->
+        // issuer peer) -> advertised route table; no match = local direct connect
+        let routed_peer = match self.resolve_delegated_route(&open_req.target_addr) {
+            Some(peer) => peer,
+            None => self.resolve_peer(&open_req.target_addr),
+        };
         let bridged = if let Some(peer_id) = routed_peer {
             match self.open_channel_full(&peer_id, &open_req).await {
                 Ok(peer_channel) => {
@@ -1420,10 +1543,16 @@ impl Drop for ConnGuard {
     }
 }
 
-/// Client-session key of a delegated token (federation P2): sessions authenticated by a
-/// delegated token are tracked/kicked under this account id.
-pub fn delegated_session_key(token_hash: &str) -> String {
-    format!("delegated:{token_hash}")
+/// Consumer-session key of a delegated token (unified issuance): sessions authenticated by a
+/// delegated token are tracked/kicked under `delegated:<token_hash>:<node_id>` — one token may
+/// hold several concurrent consumer sessions (multi policy), distinguished by consumer node_id.
+pub fn delegated_session_key(token_hash: &str, node_id: &str) -> String {
+    format!("delegated:{token_hash}:{node_id}")
+}
+
+/// Key prefix covering every consumer session of one delegated token (any node_id).
+fn delegated_session_prefix(token_hash: &str) -> String {
+    format!("delegated:{token_hash}:")
 }
 
 /// Compile ACL rule strings into a ProxyRouter (a hit means allowed).

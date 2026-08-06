@@ -17,10 +17,9 @@ use axum::{
     Router,
     routing::{any, delete, get, post, put},
 };
-use dashmap::DashMap;
 use serde::Serialize;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 // Login rate limiter lives in core (shared by server/client); re-exported to keep the crate::api path
 pub use agile_net_core::util::{LoginBlockReason, LoginRateLimiter};
@@ -67,8 +66,6 @@ pub struct ApiState {
     pub refresh_limiter: LoginRateLimiter,
     /// Rate limit for admin-bootstrap ticket redemption (10/min/IP; tickets are enumerable, anti brute-force)
     pub bootstrap_limiter: LoginRateLimiter,
-    /// Short-lived connect_url cache after account create/reset (3 min, for QR code fetch; holds plaintext password, must not persist)
-    connect_url_cache: Arc<DashMap<String, (String, Instant)>>,
     /// Node public endpoint host (hot-updatable via the settings API at runtime)
     public_host: Arc<arc_swap::ArcSwap<String>>,
     /// Admin API port (connect_url points at this endpoint for login)
@@ -93,7 +90,6 @@ impl ApiState {
             login_limiter: LoginRateLimiter::new(),
             refresh_limiter: LoginRateLimiter::new().with_config(10, u32::MAX, 15),
             bootstrap_limiter: LoginRateLimiter::new().with_config(10, u32::MAX, 15),
-            connect_url_cache: Arc::new(DashMap::new()),
             public_host: Arc::new(arc_swap::ArcSwap::from_pointee(public_host)),
             api_port,
             relay_port,
@@ -110,7 +106,7 @@ impl ApiState {
         self.api_port = port;
     }
 
-    /// Client API access endpoint (for connect_url).
+    /// Public API endpoint (share links / ticket delivery).
     pub async fn public_api_endpoint(&self) -> (String, u16) {
         // Prefer the runtime setting from DB, fall back to the startup value
         let host = self
@@ -129,7 +125,7 @@ impl ApiState {
         (host, self.relay_port)
     }
 
-    /// Connect-url server value: `public_api_url` (full scheme://host[:port] override for
+    /// Declared API base address: `public_api_url` (full scheme://host[:port] override for
     /// reverse-proxy fronted APIs, DB config) > public_host:api_port.
     pub async fn public_api_addr(&self) -> String {
         if let Some(url) = self
@@ -201,8 +197,7 @@ impl ApiState {
                 addr,
             });
         }
-        let seen: std::collections::HashSet<String> =
-            out.iter().map(|e| e.addr.clone()).collect();
+        let seen: std::collections::HashSet<String> = out.iter().map(|e| e.addr.clone()).collect();
         // Local interface enumeration (fast syscall, issuance-path only)
         let mut lan = lan_ipv4_addrs()
             .into_iter()
@@ -236,26 +231,6 @@ impl ApiState {
     {
         let db = self.db.clone();
         offload(move || f(&db)).await
-    }
-
-    pub fn remember_connect_url(&self, account_id: &str, url: &str) {
-        // Sweep expired entries along the way
-        self.connect_url_cache
-            .retain(|_, (_, ts)| ts.elapsed() < Duration::from_secs(600));
-        self.connect_url_cache
-            .insert(account_id.to_string(), (url.to_string(), Instant::now()));
-    }
-
-    pub fn take_connect_url(&self, account_id: &str) -> Option<String> {
-        self.connect_url_cache.get(account_id).and_then(|e| {
-            let (url, ts) = e.value();
-            // Holds a plaintext password; cache for 3 minutes only
-            if ts.elapsed() < Duration::from_secs(180) {
-                Some(url.clone())
-            } else {
-                None
-            }
-        })
     }
 }
 
@@ -368,16 +343,6 @@ pub fn create_app(state: ApiState) -> Router {
             post(handlers::auth::admin_bootstrap),
         )
         .route("/api/v1/auth/me", get(handlers::auth::me))
-        // ---- Client API ----
-        .route("/api/v1/client/config", get(handlers::client::get_config))
-        .route(
-            "/api/v1/client/heartbeat",
-            post(handlers::client::heartbeat),
-        )
-        .route(
-            "/api/v1/client/console-ticket",
-            post(handlers::client::console_ticket),
-        )
         // ---- Admin: Rules ----
         .route(
             "/api/v1/admin/rules",
@@ -410,23 +375,6 @@ pub fn create_app(state: ApiState) -> Router {
             "/api/v1/admin/groups/{id}/detail",
             get(handlers::groups::get_group_detail),
         )
-        // ---- Admin: Accounts ----
-        .route(
-            "/api/v1/admin/accounts",
-            get(handlers::accounts::list_accounts).post(handlers::accounts::create_account),
-        )
-        .route(
-            "/api/v1/admin/accounts/{id}",
-            put(handlers::accounts::update_account).delete(handlers::accounts::delete_account),
-        )
-        .route(
-            "/api/v1/admin/accounts/{id}/reset-password",
-            post(handlers::accounts::reset_password),
-        )
-        .route(
-            "/api/v1/admin/accounts/{id}/qrcode",
-            get(handlers::accounts::qrcode),
-        )
         // ---- Admin: Admins ----
         .route(
             "/api/v1/admin/admins",
@@ -442,7 +390,6 @@ pub fn create_app(state: ApiState) -> Router {
         )
         // ---- Admin: Node ----
         .route("/api/v1/admin/node/status", get(handlers::node::status))
-        .route("/api/v1/admin/node/stats", get(handlers::node::stats))
         .route("/api/v1/admin/node/logs", get(handlers::node::logs))
         .route(
             "/api/v1/admin/node/settings",
@@ -464,7 +411,8 @@ pub fn create_app(state: ApiState) -> Router {
         )
         .route(
             "/api/v1/admin/connectors/{id}",
-            put(handlers::connectors::update_connector).delete(handlers::connectors::delete_connector),
+            put(handlers::connectors::update_connector)
+                .delete(handlers::connectors::delete_connector),
         )
         .route(
             "/api/v1/admin/connectors/{id}/enable",
@@ -514,4 +462,42 @@ pub fn create_app(state: ApiState) -> Router {
             get(handlers::audit::list_audit_logs),
         )
         .with_state(state)
+}
+
+// ==================== Embedded client-role mount (single-port unified web plane) ====================
+
+/// AdminAuth gate for the embedded client API: the svc client role shares the admin login
+/// (one JWT — the browser logged into the admin console calls `/api/v1/client/*` seamlessly).
+/// Scope tiers degrade fail-closed exactly like the admin endpoints (full: all; rules/ro: GET).
+async fn client_api_admin_guard(
+    axum::extract::State(state): axum::extract::State<ApiState>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    use axum::extract::FromRequestParts;
+    let (mut parts, body) = req.into_parts();
+    match extractors::AdminAuth::from_request_parts(&mut parts, &state).await {
+        Ok(_) => next.run(axum::http::Request::from_parts(parts, body)).await,
+        Err(resp) => resp,
+    }
+}
+
+/// Nest the client-role REST API at `/api/v1/client/*` behind AdminAuth.
+/// `audit` receives the sensitive-op events (credential export / console open; never plaintext).
+pub fn mount_client_api(
+    app: Router,
+    state: &ApiState,
+    engine: agile_net_client::AgileNetClient,
+    creds: Option<Arc<agile_net_client::CredentialStore>>,
+    audit: agile_net_client::api::ClientAudit,
+) -> Router {
+    let client_router: Router =
+        agile_net_client::api::client_api_router_with_audit(engine, creds, Some(audit));
+    app.nest(
+        "/api/v1/client",
+        client_router.layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            client_api_admin_guard,
+        )),
+    )
 }

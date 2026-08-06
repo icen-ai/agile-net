@@ -106,29 +106,6 @@ impl FromRequestParts<ApiState> for AdminAuth {
     }
 }
 
-/// Client role auth (enforced on client APIs).
-pub struct ClientAuth(pub Claims);
-
-impl FromRequestParts<ApiState> for ClientAuth {
-    type Rejection = Response;
-
-    async fn from_request_parts(
-        parts: &mut Parts,
-        state: &ApiState,
-    ) -> Result<Self, Self::Rejection> {
-        parts.extensions.insert(state.clone());
-        let claims = extract_claims(parts)?;
-        if claims.role != "client" {
-            return Err(err(
-                StatusCode::FORBIDDEN,
-                codes::FORBIDDEN,
-                "client role required",
-            ));
-        }
-        Ok(ClientAuth(claims))
-    }
-}
-
 /// Any authenticated identity.
 pub struct AnyAuth(pub Claims);
 

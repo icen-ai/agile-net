@@ -299,7 +299,7 @@ async fn xss_payload_stored_safely() {
     assert_eq!(remark, xss, "存储保持原文，渲染层负责转义");
 }
 
-/// B6: privilege escalation & resource enumeration — 404 for missing resources, 403 for client role on admin endpoints
+/// B6: privilege escalation & resource enumeration — 404 for missing resources, 403 for insufficient scope
 #[tokio::test]
 async fn authorization_enforced() {
     let (app, db, _jwt) = test_app().await;
@@ -318,70 +318,40 @@ async fn authorization_enforced() {
     let (status, _) = req(
         &app,
         "DELETE",
-        "/api/v1/admin/accounts/nonexistent-id",
+        "/api/v1/admin/groups/nonexistent-id",
         Some(&admin_token),
         None,
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 
-    // client role hitting admin API
-    let gid = db.create_group("g", "").unwrap().id;
-    db.create_account("c1", &hash_password("x").unwrap(), &gid, "")
+    // read-only scoped session (relay ticket) hitting a write endpoint
+    let ticket = db
+        .create_admin_ticket("relay", "psk_ro@downstream", "ro", 1, 600)
         .unwrap();
-    let (_, g) = req(
+    let (s, b) = req(
         &app,
         "POST",
-        "/api/v1/admin/groups",
-        Some(&admin_token),
-        Some(json!({"name":"g2"})),
-    )
-    .await;
-    let gid2 = g["data"]["id"].as_str().unwrap().to_string();
-    let (_, a) = req(
-        &app,
-        "POST",
-        "/api/v1/admin/accounts",
-        Some(&admin_token),
-        Some(json!({
-            "username": "c2user", "group_id": gid2,
-        })),
-    )
-    .await;
-    let pwd = a["data"]["password"].as_str().unwrap().to_string();
-    let (_, l) = req(
-        &app,
-        "POST",
-        "/api/v1/auth/login",
+        "/api/v1/auth/admin-bootstrap",
         None,
-        Some(json!({
-            "username": "c2user", "password": pwd,
-        })),
+        Some(json!({"ticket": ticket})),
     )
     .await;
-    let client_token = l["data"]["access_token"].as_str().unwrap().to_string();
+    assert_eq!(s, StatusCode::OK, "bootstrap: {b}");
+    let ro_token = b["data"]["access_token"].as_str().unwrap().to_string();
 
+    let (status, _) = req(&app, "GET", "/api/v1/admin/rules", Some(&ro_token), None).await;
+    assert_eq!(status, StatusCode::OK, "ro 档可读");
     let (status, body) = req(
         &app,
-        "GET",
-        "/api/v1/admin/accounts",
-        Some(&client_token),
-        None,
+        "POST",
+        "/api/v1/admin/rules",
+        Some(&ro_token),
+        Some(json!({"type":"host","value":"ro-denied.internal"})),
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
-    assert_eq!(body["code"], 40301);
-
-    // client role reading config (only its own is reachable)
-    let (status, _) = req(
-        &app,
-        "GET",
-        "/api/v1/client/config",
-        Some(&client_token),
-        None,
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["code"], 40300);
 
     // Unauthorized WS events (first message after upgrade authenticates: handshake 101, invalid token closes connection on first frame, no event stream)
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -424,7 +394,7 @@ async fn authorization_enforced() {
     // n == 0: server dropped the connection outright — also satisfies "close on unauthorized"
 }
 
-/// B7: mass assignment — unknown fields ignored, no privilege escalation
+/// B7: mass assignment — unknown/privileged fields ignored at issuance, server-side values win
 #[tokio::test]
 async fn mass_assignment_ignored() {
     let (app, _db, _jwt) = test_app().await;
@@ -439,44 +409,28 @@ async fn mass_assignment_ignored() {
     )
     .await;
     let gid = g["data"]["id"].as_str().unwrap().to_string();
-    let (_, a) = req(
+
+    // Try injecting token plaintext/hash and session/lifecycle counters
+    let (status, a) = req(
         &app,
         "POST",
-        "/api/v1/admin/accounts",
+        "/api/v1/admin/delegation/tokens",
         Some(&admin_token),
         Some(json!({
-            "username": "muser", "group_id": gid,
+            "label": "muser", "group_ids": [gid], "entry_mode": "direct",
+            "token": "psk_hacked000000000000000000000000000000000000000000",
+            "token_hash": "deadbeef", "max_sessions": 999, "used_count": 5,
         })),
     )
     .await;
-    let aid = a["data"]["id"].as_str().unwrap().to_string();
-    let pwd = a["data"]["password"].as_str().unwrap().to_string();
+    assert_eq!(status, StatusCode::CREATED, "issue: {a}");
 
-    // Try injecting role/is_admin/password_hash fields
-    let (status, _) = req(
-        &app,
-        "PUT",
-        &format!("/api/v1/admin/accounts/{aid}"),
-        Some(&admin_token),
-        Some(json!({
-            "remark": "x", "role": "admin", "is_admin": true, "password_hash": "plaintext",
-        })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
-
-    // Login still yields client role
-    let (_, l) = req(
-        &app,
-        "POST",
-        "/api/v1/auth/login",
-        None,
-        Some(json!({
-            "username": "muser", "password": pwd,
-        })),
-    )
-    .await;
-    assert_eq!(l["data"]["role"], "client", "批量赋值不能导致提权");
+    // server-generated plaintext wins; injected fields never land
+    let token = a["data"]["token"].as_str().unwrap();
+    assert!(token.starts_with("psk_"), "服务端生成明文: {token}");
+    assert_ne!(token, "psk_hacked000000000000000000000000000000000000000000");
+    assert_eq!(a["data"]["max_sessions"], 8, "max_sessions 取服务端快照");
+    assert_eq!(a["data"]["used_count"], 0);
 }
 
 /// B8: audit log leaks no passwords/tokens
@@ -494,17 +448,18 @@ async fn audit_log_no_credential_leak() {
     )
     .await;
     let gid = g["data"]["id"].as_str().unwrap().to_string();
-    let (_, a) = req(
+    let (s, a) = req(
         &app,
         "POST",
-        "/api/v1/admin/accounts",
+        "/api/v1/admin/delegation/tokens",
         Some(&token),
         Some(json!({
-            "username": "audituser", "group_id": gid,
+            "label": "audituser", "group_ids": [gid], "entry_mode": "direct",
         })),
     )
     .await;
-    let password = a["data"]["password"].as_str().unwrap().to_string();
+    assert_eq!(s, StatusCode::CREATED, "issue: {a}");
+    let plaintext = a["data"]["token"].as_str().unwrap().to_string();
 
     req(
         &app,
@@ -524,50 +479,14 @@ async fn audit_log_no_credential_leak() {
     )
     .await;
     let all = serde_json::to_string(&logs).unwrap();
-    assert!(!all.contains(&password), "审计日志泄露了账号密码！");
-    assert!(!all.contains("sk-"), "审计日志不应包含任何 sk- 密码");
+    assert!(!all.contains(&plaintext), "审计日志泄露了委托令牌明文！");
     // relay token plaintext must not appear either (only masked psk_ prefix allowed)
-    let leak = all.matches("psk_").any(|_| {
-        all.matches(|c: char| c.is_ascii_alphanumeric()).count() > 0
-            && all.contains("psk_")
-            && !all.contains("****")
-            && all.matches("psk_").count() > all.matches("psk_").count()
-    });
-    let _ = leak; // any psk_ occurrence must be masked
     for item in logs["data"]["items"].as_array().unwrap() {
         let detail = item["detail"].as_str().unwrap_or("");
         if detail.contains("psk_") {
             assert!(detail.contains("****"), "审计中的 token 必须掩码: {detail}");
         }
     }
-}
-
-/// B9: username header injection (CRLF) rejected
-#[tokio::test]
-async fn header_injection_rejected() {
-    let (app, _db, _jwt) = test_app().await;
-    let token = login(&app).await;
-    let (_, g) = req(
-        &app,
-        "POST",
-        "/api/v1/admin/groups",
-        Some(&token),
-        Some(json!({"name":"inj"})),
-    )
-    .await;
-    let gid = g["data"]["id"].as_str().unwrap().to_string();
-
-    let (status, _) = req(
-        &app,
-        "POST",
-        "/api/v1/admin/accounts",
-        Some(&token),
-        Some(json!({
-            "username": "evil\r\nX-Injected: 1", "group_id": gid,
-        })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
 /// B10: login response does not reveal user existence (uniform error message)

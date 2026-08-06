@@ -1,4 +1,4 @@
-//! Split from db/mod.rs: audit_log/traffic_log/node_traffic_log/refresh_token tables (pure move, no logic change)
+//! Split from db/mod.rs: audit_log/node_traffic_log/refresh_token tables (pure move, no logic change)
 
 use super::models::*;
 use super::pool::{Database, db_err, now_rfc3339};
@@ -86,99 +86,6 @@ impl Database {
             )
             .map_err(db_err)?;
         Ok(n)
-    }
-
-    // ==================== Traffic Log ====================
-
-    /// Upsert hourly-aggregated traffic stats
-    pub fn add_traffic(
-        &self,
-        account_id: &str,
-        bytes_tx: i64,
-        bytes_rx: i64,
-        connections: i64,
-    ) -> Result<()> {
-        let conn = self.conn();
-        let hour = current_hour_bucket();
-        conn.execute(
-            "INSERT INTO traffic_log (id, account_id, hour, bytes_tx, bytes_rx, connections)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-             ON CONFLICT(account_id, hour) DO UPDATE SET
-                bytes_tx = bytes_tx + ?4,
-                bytes_rx = bytes_rx + ?5,
-                connections = connections + ?6",
-            params![
-                uuid::Uuid::new_v4().to_string(),
-                account_id,
-                hour,
-                bytes_tx,
-                bytes_rx,
-                connections
-            ],
-        )
-        .map_err(db_err)?;
-        Ok(())
-    }
-
-    /// Traffic aggregated by account (window of `hours` hours)
-    pub fn traffic_by_account(&self, hours: i64) -> Result<(Vec<TrafficStatRecord>, i64, i64)> {
-        let conn = self.conn();
-        let since = hours_ago(hours);
-        let mut stmt = conn
-            .prepare(
-                "SELECT t.account_id, a.username, SUM(t.bytes_tx), SUM(t.bytes_rx), SUM(t.connections)
-                 FROM traffic_log t LEFT JOIN account a ON t.account_id = a.id
-                 WHERE t.hour >= ?1
-                 GROUP BY t.account_id ORDER BY SUM(t.bytes_rx) DESC",
-            )
-            .map_err(db_err)?;
-        let rows = stmt
-            .query_map(params![since], |r| {
-                Ok(TrafficStatRecord {
-                    account_id: r.get(0)?,
-                    username: r.get(1)?,
-                    bytes_tx: r.get::<_, Option<i64>>(2)?.unwrap_or(0),
-                    bytes_rx: r.get::<_, Option<i64>>(3)?.unwrap_or(0),
-                    connections: r.get::<_, Option<i64>>(4)?.unwrap_or(0),
-                })
-            })
-            .map_err(db_err)?;
-        let mut items = Vec::new();
-        let mut total_tx = 0i64;
-        let mut total_rx = 0i64;
-        for r in rows {
-            let rec = r.map_err(db_err)?;
-            total_tx += rec.bytes_tx;
-            total_rx += rec.bytes_rx;
-            items.push(rec);
-        }
-        Ok((items, total_tx, total_rx))
-    }
-
-    /// Traffic aggregated as a time series (one point per hour)
-    pub fn traffic_by_time(&self, hours: i64) -> Result<Vec<TrafficPoint>> {
-        let conn = self.conn();
-        let since = hours_ago(hours);
-        let mut stmt = conn
-            .prepare(
-                "SELECT hour, SUM(bytes_tx), SUM(bytes_rx) FROM traffic_log
-                 WHERE hour >= ?1 GROUP BY hour ORDER BY hour ASC",
-            )
-            .map_err(db_err)?;
-        let rows = stmt
-            .query_map(params![since], |r| {
-                Ok(TrafficPoint {
-                    time: r.get(0)?,
-                    bytes_tx: r.get::<_, Option<i64>>(1)?.unwrap_or(0),
-                    bytes_rx: r.get::<_, Option<i64>>(2)?.unwrap_or(0),
-                })
-            })
-            .map_err(db_err)?;
-        let mut items = Vec::new();
-        for r in rows {
-            items.push(r.map_err(db_err)?);
-        }
-        Ok(items)
     }
 
     // ==================== Node Traffic Log (node-level 3-dim traffic series) ====================
@@ -331,17 +238,6 @@ impl Database {
         .map_err(db_err)?;
         Ok(())
     }
-}
-
-/// Current hour bucket 'YYYY-MM-DDTHH:00:00Z'
-fn current_hour_bucket() -> String {
-    let now = chrono::Utc::now();
-    now.format("%Y-%m-%dT%H:00:00Z").to_string()
-}
-
-fn hours_ago(hours: i64) -> String {
-    let t = chrono::Utc::now() - chrono::Duration::hours(hours);
-    t.format("%Y-%m-%dT%H:00:00Z").to_string()
 }
 
 /// Current local hour bucket 'YYYY-MM-DD HH:00' (node_traffic_log / traffic_24h contract format)

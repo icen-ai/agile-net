@@ -107,7 +107,6 @@
       <div class="nav-item" id="nav-admin-back"><i data-ic="user"></i><span class="nav-label" data-i18n="menu.backClient">返回客户端</span></div>
       <div class="nav-sep"></div>
       <div class="nav-item active" data-aview="dashboard"><i data-ic="layout-dashboard"></i><span class="nav-label" data-i18n="menu.home">首页</span></div>
-      <div class="nav-item" data-aview="accounts"><i data-ic="users"></i><span class="nav-label" data-i18n="term.account">账号</span></div>
       <div class="nav-item" data-aview="groups"><i data-ic="shield"></i><span class="nav-label" data-i18n="menu.groups">权限</span></div>
       <div class="nav-item" data-aview="rules"><i data-ic="route"></i><span class="nav-label" data-i18n="term.rule">规则</span></div>
       <div class="nav-sep"></div>
@@ -282,6 +281,7 @@
         <div class="agtabs-pill">
           <button class="agtab active" data-agtab="listen" data-i18n="common.listen">监听</button>
           <button class="agtab" data-agtab="conn" data-i18n="fanout.tabConn">连接</button>
+          <button class="agtab" data-agtab="issue" data-i18n="fanout.tabIssue">签发</button>
         </div>
       </div>
 
@@ -294,7 +294,7 @@
           </div>
           <div class="role-list">
             <div class="role-row">
-              <div class="role-info"><b><span data-i18n="fanout.listenRole">扇出监听（服务端角色）</span> <span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip" data-i18n="fanout.listenTip">内嵌完整端点（Relay / 账号 / 规则 / 审计），本机可作为转发机或留守管理端</span></span></b></div>
+              <div class="role-info"><b><span data-i18n="fanout.listenRole">扇出监听（服务端角色）</span> <span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip" data-i18n="fanout.listenTip">内嵌完整端点（Relay / 规则 / 权限组 / 审计），本机可作为转发机或留守管理端</span></span></b></div>
               <label class="switch"><input type="checkbox" id="r-server"><span class="slider"></span></label>
             </div>
             <div id="server-panel" style="display:none">
@@ -308,7 +308,7 @@
                 <button class="ghost small" id="btn-pubhost-save" data-i18n="common.save">保存</button>
               </div>
               <div class="row" style="margin-top:8px">
-                <button id="btn-open-console" class="ghost small"><i data-ic="external-link" data-sz="13"></i> <span data-i18n="fanout.openConsole">打开控制台（账号 / Relay Token / 权限组）</span></button>
+                <button id="btn-open-console" class="ghost small"><i data-ic="external-link" data-sz="13"></i> <span data-i18n="fanout.openConsole">打开控制台（规则 / 权限组 / 审计）</span></button>
               </div>
             </div>
             <div class="role-row beta-soon">
@@ -335,6 +335,19 @@
             <button id="btn-fo-add" class="small"><i data-ic="plus" data-sz="13"></i> <span data-i18n="fanout.addConn">添加扇出连接</span></button>
           </div>
           <div id="fo-list"><div class="empty">尚未配置扇出连接</div></div>
+        </div>
+      </div>
+
+      <!-- Unified issuance: delegated tokens (four-dimension dialog + issued list; embedded node admin REST) -->
+      <div data-agpanel="issue" hidden>
+        <div class="card">
+          <h3><i data-ic="file-key"></i><span data-i18n="fanout.issuedList">已签发令牌</span>
+            <span class="h3-tools"><button class="ghost small icon-btn" id="btn-dt-refresh" title="刷新" data-i18n-title="common.refresh"><i data-ic="refresh-cw" data-sz="13"></i></button></span>
+          </h3>
+          <div class="row" style="margin-bottom:12px;justify-content:flex-end">
+            <button id="btn-dt-add" class="small"><i data-ic="plus" data-sz="13"></i> <span data-i18n="fanout.issue">签发委托令牌</span></button>
+          </div>
+          <div id="dt-list"><div class="empty">尚未签发</div></div>
         </div>
       </div>
     </section>
@@ -365,7 +378,7 @@
             <button class="ghost small icon-btn search-toggle" data-search="creds" title="搜索" data-i18n-title="common.search"><i data-ic="search" data-sz="13"></i></button>
           </span>
         </h3>
-        <div class="list-search" id="search-creds" hidden><input placeholder="搜索名称 / 账号 / 地址 / 状态" data-i18n-ph="fanin.searchPh"></div>
+        <div class="list-search" id="search-creds" hidden><input placeholder="搜索名称 / 地址 / 状态" data-i18n-ph="fanin.searchPh"></div>
         <div id="creds-list"><div class="empty">尚未添加扇入</div></div>
       </div>
     </section>
@@ -886,27 +899,26 @@
   </div>
 </aside>
 
-<!-- Manual fan-in connect (opened via the 手动连接 button next to 导入链接; field ids preserved = original bindings) -->
+<!-- Manual fan-in connect (opened via the 手动连接 button next to 导入链接; delegated credential form) -->
 <div class="modal-mask" id="manual-modal" style="display:none">
   <div class="modal sub-modal">
     <div class="sm-head">
       <span class="sm-logo"><i data-ic="plus" data-sz="20"></i></span>
       <div>
         <h3 data-i18n="fanin.manualConnect">手动连接</h3>
-        <div class="hint" data-i18n="fanin.manualHint">逐项填写扇入端点信息；有 anet:// 链接请直接用「导入链接」</div>
+        <div class="hint" data-i18n="fanin.manualHint">逐项填写委托凭据；有 anet:// 链接请直接用「导入链接」</div>
       </div>
     </div>
     <div class="sm-body">
-      <label data-i18n="fanin.addrLabel">扇入端点地址（host:port 或 https://…）</label>
-      <input id="m-addr" class="mono" placeholder="cdn.example.com:59090">
+      <label data-i18n="fanin.addrLabel">入口地址（host:port）</label>
+      <input id="m-addr" class="mono" placeholder="relay.example.com:54430">
+      <label data-i18n="fanin.tokenLabel">委托令牌</label>
+      <input id="m-token" class="mono" type="password" placeholder="psk_..." autocomplete="off">
       <div class="grid2">
-        <div><label data-i18n="term.account">账号</label><input id="m-user" placeholder="zhangsan"></div>
-        <div><label data-i18n="common.password">密码</label><input id="m-pass" type="password" placeholder="sk-..."></div>
+        <div><label data-i18n="fanin.fpLabel">证书指纹（可选，推荐）</label><input id="m-fp" class="mono" placeholder="SHA-256 hex"></div>
+        <div><label data-i18n="fanin.nameLabel">备注名</label><input id="m-name" maxlength="128"></div>
       </div>
-      <label data-i18n="fanin.pinLabel">证书固定 PEM 路径（可选，生产推荐）</label>
-      <input id="m-pin" class="mono" placeholder="certs/node.pem">
       <div class="row" style="margin-top:10px">
-        <label class="chk"><input type="checkbox" id="m-insecure"> <span data-i18n="fanin.insecure">跳过证书校验（仅开发）</span></label>
         <label class="chk"><input type="checkbox" id="m-hosts"> <span data-i18n="fanin.manageHosts">管理系统 hosts</span></label>
         <label class="chk"><input type="checkbox" id="m-save" checked> <span data-i18n="fanin.saveCred">保存凭据</span></label>
       </div>
@@ -1157,6 +1169,74 @@
     <div class="row" style="justify-content:flex-end">
       <button id="fo-cancel" class="ghost" data-i18n="common.cancel">取消</button>
       <button id="fo-ok" data-i18n="common.create">创建</button>
+    </div>
+  </div>
+</div>
+
+<!-- Unified issuance dialog (four-dimension linkage: entry × trust × route × concurrency; rules in dtSync) -->
+<div class="modal-mask" id="dt-modal" style="display:none">
+  <div class="modal sub-modal">
+    <div class="sm-head">
+      <span class="sm-logo"><i data-ic="file-key" data-sz="20"></i></span>
+      <div>
+        <h3 data-i18n="dt.title">签发委托令牌</h3>
+        <div class="hint" data-i18n="dt.sub">统一签发：入口 × 信任 × 路由 × 并发；令牌明文仅展示一次</div>
+      </div>
+    </div>
+    <div class="sm-body">
+      <label data-i18n="dt.label">备注（消费者标识）</label>
+      <input id="dt-label" maxlength="128" placeholder="例如：张三的笔记本" data-i18n-ph="dt.labelPh">
+
+      <label data-i18n="dt.entry">入口</label>
+      <div class="group-tabs" id="dt-entry" style="margin-bottom:4px">
+        <button class="group-tab" data-v="direct" data-i18n="dt.entryDirect">直连（本机监听）</button>
+        <button class="group-tab" data-v="relay" data-i18n="dt.entryRelay">委托（经扇出容灾集合）</button>
+      </div>
+      <div class="hint" id="dt-entry-hint" style="margin-top:0"></div>
+
+      <label data-i18n="dt.trust">信任</label>
+      <div class="group-tabs" id="dt-trust" style="margin-bottom:4px">
+        <button class="group-tab" data-v="plain" data-i18n="dt.trustPlain">明文</button>
+        <button class="group-tab" data-v="e2e" data-i18n="dt.trustE2e">端到端</button>
+        <button class="group-tab" data-v="admin" data-i18n="dt.trustAdmin">端到端 + 管理档</button>
+      </div>
+      <div id="dt-scope-row" style="display:none">
+        <label data-i18n="dt.scope">管理授权档</label>
+        <select id="dt-scope">
+          <option value="ro" data-i18n="dt.scopeRo">只读</option>
+          <option value="rules" data-i18n="dt.scopeRules">规则管理</option>
+          <option value="full" data-i18n="dt.scopeFull">完整管理</option>
+        </select>
+      </div>
+
+      <label data-i18n="dt.route">路由</label>
+      <div class="group-tabs" id="dt-route" style="margin-bottom:4px">
+        <button class="group-tab" data-v="dedicated" data-i18n="dt.routeDedicated">专线（全量路由）</button>
+        <button class="group-tab" data-v="split" data-i18n="dt.routeSplit">分流（词表下发）</button>
+      </div>
+
+      <label data-i18n="dt.concurrency">并发</label>
+      <div class="group-tabs" id="dt-conc" style="margin-bottom:4px">
+        <button class="group-tab" data-v="single" data-i18n="dt.concSingle">单端（踢旧）</button>
+        <button class="group-tab" data-v="multi" data-i18n="dt.concMulti">多端并存（≤8）</button>
+      </div>
+
+      <div id="dt-regs-row">
+        <label><span data-i18n="dt.regs">容灾集合</span> <span class="hint inline" data-i18n="dt.regsHint">勾选的扇出连接作为入口；恰好一个主入口</span></label>
+        <div id="dt-regs-list" style="max-height:120px;overflow-y:auto"></div>
+      </div>
+
+      <div id="dt-groups-row">
+        <label><span data-i18n="term.group">权限组</span> <span class="hint inline" id="dt-groups-hint"></span></label>
+        <div id="dt-groups-summary" class="hint" style="display:none"></div>
+        <div id="dt-groups-list" style="max-height:120px;overflow-y:auto"></div>
+      </div>
+
+      <div class="hint sm-err" id="dt-err"></div>
+    </div>
+    <div class="row" style="justify-content:flex-end">
+      <button id="dt-cancel" class="ghost" data-i18n="common.cancel">取消</button>
+      <button id="dt-ok" data-i18n="fanout.issue">签发</button>
     </div>
   </div>
 </div>

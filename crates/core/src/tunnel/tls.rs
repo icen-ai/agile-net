@@ -158,7 +158,7 @@ impl TlsConfigBuilder {
                 .with_no_client_auth()
         };
 
-        // ALPN mimicry (same list as the server; handshake with old ALPN-less peers is unaffected, backwards compatible)
+        // ALPN mimicry (same list as the server; ALPN-less peers still handshake fine)
         config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
         Ok(Arc::new(config))
     }

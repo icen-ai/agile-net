@@ -26,7 +26,7 @@ docker compose -f .docker/docker-compose.test.yaml up --abort-on-container-exit 
 | T2 | 同目标经 HTTP CONNECT |
 | T3 | ACL 拒绝：规则外目标必须失败 |
 | T4 | 多节点接入：同一客户端同时接 root 与 mid |
-| T5 | 长轮询配置热更新：新增规则客户端无需重连即生效 |
+| T5 | 规则热更新：新增规则无需重连即生效 |
 | T6 | 断链自愈：kick mid → 链路中断 → 自动重连恢复 |
 | T7 | 管理面穿透：握手下发控制端点 → 自动发现 → 票据链换取 scoped 管理会话（rules 档位强制） |
 
@@ -47,6 +47,6 @@ docker compose -f .docker/docker-compose.chain.yaml up -d
 编排要点：
 
 - 各节点 `AGILE_RELAY_TOKENS` 预置下游令牌（按哈希幂等）；支持 `psk_xxx|expose:rules` 暴露控制面
-- `AGILE_PUBLIC_HOST` 设为容器网络内可解析名，保证 connect_url/隧道端点正确
-- 配置文件挂 `/etc/agile-net/node.toml`：`[listener]` 开上游面，`[connector]` 接上游，
+- `AGILE_PUBLIC_HOST` 设为容器网络内可解析名，保证接入链接/隧道端点正确
+- 配置文件挂 `/etc/agile-net/node.toml`：`[listener]` 开上游面，`[[connectors]]` 接上游，
   `advertise` 通告本网段（多级时自动含下游链路）

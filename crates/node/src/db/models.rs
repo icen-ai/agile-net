@@ -36,13 +36,11 @@ pub struct GroupRecord {
     pub name: String,
     pub remark: String,
     /// E2E enforcement (federation P3): targets under this group require end-to-end encryption;
-    /// such groups may only hang on delegated tokens, never on accounts/relay tokens/connectors.
+    /// such groups may only hang on delegated tokens, never on relay tokens/connectors.
     #[serde(default)]
     pub e2e_required: bool,
     #[serde(default)]
     pub rule_count: i64,
-    #[serde(default)]
-    pub account_count: i64,
     /// Adoption lineage (federation P1): fan-in peer node_id + pushed group name of the source
     /// this group mirrors (both empty = plain local group). Mirrored groups are read-only and
     /// follow the source automatically; editing requires a copy.
@@ -50,30 +48,6 @@ pub struct GroupRecord {
     pub adopted_node: String,
     #[serde(default)]
     pub adopted_name: String,
-    pub created_at: String,
-    pub updated_at: String,
-}
-
-/// Client account record
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AccountRecord {
-    pub id: String,
-    pub username: String,
-    pub group_id: String,
-    #[serde(default)]
-    pub group_name: Option<String>,
-    pub enabled: bool,
-    /// "Manage this node" permission (admin connect URL)
-    #[serde(default)]
-    pub admin_console: bool,
-    #[serde(default)]
-    pub online: bool,
-    #[serde(default)]
-    pub last_seen_at: Option<String>,
-    /// Tunnel token validity window (None = never expires; password login unaffected)
-    #[serde(default)]
-    pub tunnel_expires_at: Option<String>,
-    pub remark: String,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -127,24 +101,6 @@ pub struct AuditLogRecord {
     pub detail: Option<String>,
     pub ip: Option<String>,
     pub created_at: String,
-}
-
-/// Traffic stat record
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TrafficStatRecord {
-    pub account_id: Option<String>,
-    pub username: Option<String>,
-    pub bytes_tx: i64,
-    pub bytes_rx: i64,
-    pub connections: i64,
-}
-
-/// Traffic time-series point
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TrafficPoint {
-    pub time: String,
-    pub bytes_tx: i64,
-    pub bytes_rx: i64,
 }
 
 /// Node-level hourly traffic point (traffic_24h contract: hour is local time "YYYY-MM-DD HH:00")
@@ -237,10 +193,12 @@ pub struct ConnectorView {
     pub updated_at: String,
 }
 
-/// Delegated token record (federation P2; DB row — e2e_key_enc is ciphertext, never log/audit it).
+/// Delegated token record (unified issuance; DB row — e2e_key_enc is ciphertext, never log/audit it).
 ///
-/// Issued by the resource owner directly to a consumer; registered upstream over the fan-out
-/// session (Ctrl frame, protocol v3) and living exactly as long as that session.
+/// Issued by the resource owner directly to a consumer. `entry_mode` = 'direct' (the consumer
+/// dials this issuer's own listener; local registration) or 'relay' (registered upstream over
+/// the fan-out session, disaster set, revoke-by-disconnect). `concurrency` = 'single' (a new
+/// session kicks the old) or 'multi' (up to `max_sessions` concurrent sessions).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DelegatedTokenRecord {
     pub id: String,
@@ -250,7 +208,7 @@ pub struct DelegatedTokenRecord {
     pub label: String,
     /// JSON array of local group IDs (resolved to names when building the registration frame)
     pub groups: String,
-    /// JSON array of {hint, groups} — coarse E2E routing vocabulary (federation P3)
+    /// JSON array of {hint, groups} — entrust routing vocabulary (en_ words only; empty = transparent tier)
     pub hint_map: String,
     /// E2E channel master key ciphertext (`v1:nonce_b64:ct_b64`; same mechanism as connector tokens)
     #[serde(skip_serializing, default)]
@@ -262,6 +220,12 @@ pub struct DelegatedTokenRecord {
     /// E2E admin channel (full additionally unlocks transit management of upstreams)
     #[serde(default)]
     pub admin_scope: String,
+    /// Entry mode: 'direct' (dial the issuer directly) | 'relay' (via the disaster set)
+    pub entry_mode: String,
+    /// Concurrency tier: 'single' (kick-old) | 'multi' (bounded by max_sessions)
+    pub concurrency: String,
+    /// Session cap for the multi tier (snapshot of node_config.delegation_max_sessions at issue time)
+    pub max_sessions: i64,
     /// Validity window (None = never expires)
     #[serde(default)]
     pub expires_at: Option<String>,
@@ -272,7 +236,7 @@ pub struct DelegatedTokenRecord {
     #[serde(default)]
     pub used_count: i64,
     pub created_at: String,
-    /// Disaster-set registration rows (one per upstream connector)
+    /// Disaster-set registration rows (one per upstream connector; empty for direct-entry tokens)
     #[serde(default)]
     pub regs: Vec<DelegatedTokenReg>,
 }

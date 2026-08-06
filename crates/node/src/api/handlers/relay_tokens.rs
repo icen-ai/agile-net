@@ -87,7 +87,11 @@ pub async fn create_token(
         match crate::db::normalize_expiry(&req.expires_at) {
             Ok(v) => {
                 if !crate::db::expiry_active(Some(&v)) {
-                    return err(StatusCode::BAD_REQUEST, codes::VALIDATION_FAILED, "过期时间不能早于当前时间");
+                    return err(
+                        StatusCode::BAD_REQUEST,
+                        codes::VALIDATION_FAILED,
+                        "过期时间不能早于当前时间",
+                    );
                 }
                 Some(v)
             }
@@ -167,7 +171,11 @@ pub async fn create_token(
                     .db_call(move |db| db.set_relay_token_lifecycle(&rid, exp.as_deref(), mu))
                     .await
                 {
-                    return err(StatusCode::INTERNAL_SERVER_ERROR, codes::INTERNAL, e.to_string());
+                    return err(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        codes::INTERNAL,
+                        e.to_string(),
+                    );
                 }
                 audit(
                     &state,
@@ -548,7 +556,9 @@ pub async fn update_token(
             &format!(
                 "expires_at={} max_uses={}",
                 expires_resp.as_deref().unwrap_or("∅"),
-                max_uses_resp.map(|v| v.to_string()).unwrap_or_else(|| "∅".into())
+                max_uses_resp
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "∅".into())
             ),
         )
         .await;
@@ -574,12 +584,8 @@ pub async fn list_tokens(AdminAuth(_): AdminAuth, State(state): State<ApiState>)
                 .map(|t| {
                     let mut v = serde_json::to_value(&t).unwrap_or_default();
                     v["lifecycle"] = serde_json::Value::String(
-                        super::lifecycle_status(
-                            t.expires_at.as_deref(),
-                            t.max_uses,
-                            t.used_count,
-                        )
-                        .into(),
+                        super::lifecycle_status(t.expires_at.as_deref(), t.max_uses, t.used_count)
+                            .into(),
                     );
                     v
                 })

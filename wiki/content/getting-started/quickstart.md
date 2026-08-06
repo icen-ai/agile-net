@@ -1,6 +1,6 @@
 # 快速上手
 
-五分钟跑通最小可用链路：**起节点 → 建账号 → 客户端接入 → 本地代理**。
+五分钟跑通最小可用链路：**起节点 → 统一签发 → 客户端接入 → 本地代理**。
 
 ## 1. 启动节点（anet-svc）
 
@@ -16,7 +16,7 @@ anet-svc start
 # agile-net.toml
 name = "my-node"
 db_path = "agile-net.db"
-public_host = "relay.example.com"   # connect_url 与隧道端点对外展示地址
+public_host = "relay.example.com"   # 接入链接与隧道端点对外展示地址
 
 [api]
 addr = "0.0.0.0:59090"
@@ -33,23 +33,25 @@ sni_hostname = "cdn.cloudflare.com"
 > 首次启动可用环境变量预置管理员：`AGILE_ADMIN_USERNAME=admin AGILE_ADMIN_PASSWORD='强密码(≥10位)'`；
 > 或启动后走 Web 后台初始化（下一步）。
 
-## 2. 初始化管理员并建账号
+## 2. 初始化管理员并签发接入令牌
 
 打开 `http://<节点>:59090`，完成管理员初始化（仅一次）。然后在 Web 后台：
 
 1. **权限组**：新建组（如 `office`）
 2. **路由规则**：添加内网网段，如 `ip-cidr 10.12.0.0/16`、`host git.internal`
 3. 回到权限组，把规则绑定到组
-4. **客户端账号**：新建账号（密码由服务端生成 `sk-` 48 位，仅展示一次）
+4. **扇入页 →「签发」页签**：统一签发——选组、入口「直连本端点」（direct）、
+   路由「专线」、并发「单会话」，签发委托令牌（`psk_` 48 位，明文仅展示一次）
 
-创建成功即得到接入链接：
+签发成功即得到接入链接：
 
 ```
-agilenet://connect?server=relay.example.com&port=59090&account=zhangsan&password=sk-...&tls=1&fp=<证书指纹>
+anet://connect?server=relay.example.com&port=54430&account=d:alice-laptop&password=psk_...&fp=<证书指纹>
 ```
 
 > 证书指纹（`fp`）使客户端一键完成证书固定（pinning），无需 insecure。
-> 勾选「同时授予管理权限」会生成管理版链接（`&admin=1`），见「核心概念 → 带内管理面」。
+> 四维度：入口（直连本端点 / 经扇出会合点）× 信任（明文 / E2E / E2E+管理档）×
+> 路由（专线 / 分流）× 并发（单会话踢旧 / 多会话并存），见「联邦与签发委托」。
 
 ## 3. 客户端接入（anet-gui）
 
@@ -63,18 +65,16 @@ agilenet://connect?server=relay.example.com&port=59090&account=zhangsan&password
 
 ## 4. 无 GUI 的终端（anet-svc client）
 
-服务器/容器里的终端角色用 `client` 子命令：
+服务器/容器里的终端角色用 `client` 子命令，节点清单为链接式 `nodes`：
 
 ```toml
 # client.toml
 proxy_port = 57890
 manage_hosts = true
 
-[[nodes]]
-addr = "https://relay.example.com:59090"
-username = "zhangsan"
-password = "sk-..."
-pinned_fingerprint = "<证书指纹>"
+nodes = [
+  "anet://connect?server=relay.example.com&port=54430&account=d:alice-laptop&password=psk_...&fp=<证书指纹>",
+]
 ```
 
 ```bash
@@ -94,6 +94,6 @@ curl -x http://127.0.0.1:57890 http://git.internal/
 
 到这里最小链路已通。进阶：
 
-- 多级中继链：`anet-svc serve` 同时配置 `[connector]`（接上游）与 `[listener]`（供下游），见「架构与双产物」
-- 图形化管全网：`anet-gui` 开启服务端角色 + 管理版接入链接，见「带内管理面」
+- 多级中继链：同时配置 `[[connectors]]`（接上游）与 `[listener]`（供下游），见「架构与双产物」
+- 图形化管全网：`anet-gui` 开启服务端角色 + 管理档签发链接（E2E + `eadmin`），见「带内管理面」
 - 命令行管理：`anet`，见「命令行 anet」

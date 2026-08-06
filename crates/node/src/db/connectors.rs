@@ -372,7 +372,7 @@ impl Database {
         Ok(())
     }
 
-    /// Bump the config version (called on rule/group/account-group changes)
+    /// Bump the config version (called on rule/group changes)
     pub fn bump_config_version(&self) -> Result<u64> {
         let current = self.get_config("config_version")?;
         let next = current.and_then(|v| v.parse::<u64>().ok()).unwrap_or(0) + 1;

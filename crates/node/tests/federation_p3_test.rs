@@ -225,8 +225,8 @@ async fn p3_e2e_blind_relay_and_fail_close() {
     let token = body["data"]["token"].as_str().unwrap().to_string();
     let share_url = body["data"]["share_url"].as_str().unwrap().to_string();
     assert!(
-        share_url.contains("ehint=relay.internal"),
-        "auto-derived hint rides the link: {share_url}"
+        share_url.contains("&en=en_"),
+        "the entrust word rides the link: {share_url}"
     );
 
     // registration arrives at B (state polling via C's API)
@@ -256,9 +256,8 @@ async fn p3_e2e_blind_relay_and_fail_close() {
         vec!["git-pub".to_string()],
         "B never sees the fine group"
     );
-    // the entrust word rides first (zero-disclosure routing), the legacy advertise-derived hint
-    // stays as the old-client fallback — both registered on B (coexistence)
-    assert_eq!(entry.hint_map.len(), 2);
+    // the entrust word is the whole routing vocabulary (zero disclosure; no legacy hints)
+    assert_eq!(entry.hint_map.len(), 1);
     assert!(
         entry.hint_map[0]
             .hint
@@ -266,7 +265,6 @@ async fn p3_e2e_blind_relay_and_fail_close() {
         "the entrust word leads the hint map: {:?}",
         entry.hint_map
     );
-    assert_eq!(entry.hint_map[1].hint, "relay.internal");
     assert!(
         !entry.acl_rules.iter().any(|r| r.contains("127.0.0.1")),
         "B's delegated ACL must not contain R1: {:?}",
@@ -275,22 +273,24 @@ async fn p3_e2e_blind_relay_and_fail_close() {
 
     // ---- A: import the link verbatim (parse path), connect and reach R1 via E2E ----
     let parsed = agile_net_client::parse_connect_url(&share_url).expect("parse delegate link");
-    assert!(parsed.delegated);
-    assert_eq!(parsed.ehint.as_deref(), Some("relay.internal"));
+    assert!(
+        parsed
+            .en
+            .as_deref()
+            .is_some_and(|w| w.starts_with(agile_net_core::relay::e2e::ENTRUST_PREFIX)),
+        "entrust word parsed from the link"
+    );
     let a = AgileNetClient::new();
     let state = a
         .connect(ConnectParams {
             addr: parsed.addr,
-            username: parsed.username,
-            password: parsed.password,
+            label: parsed.label,
+            token: parsed.token,
             insecure: true,
-            pinned_cert_path: None,
             pinned_fingerprint: parsed.pinned_fingerprint,
             manage_hosts: false,
-            delegated: parsed.delegated,
             entries: parsed.entries,
             entry_fps: parsed.entry_fps,
-            ehint: parsed.ehint,
             en: parsed.en,
             emode: parsed.emode,
             eadmin: parsed.eadmin,
@@ -324,8 +324,8 @@ async fn p3_e2e_blind_relay_and_fail_close() {
     let body: serde_json::Value = resp.json().await.unwrap();
     let mallory_url = body["data"]["share_url"].as_str().unwrap().to_string();
     assert!(
-        !mallory_url.contains("ehint="),
-        "transparent tier has no hint"
+        !mallory_url.contains("&en="),
+        "transparent tier has no entrust word"
     );
     // wait for the second token's registration before dialing (the sync task polls every 2s)
     for _ in 0..60 {
@@ -351,16 +351,13 @@ async fn p3_e2e_blind_relay_and_fail_close() {
     let a2 = AgileNetClient::new();
     a2.connect(ConnectParams {
         addr: parsed2.addr,
-        username: parsed2.username,
-        password: parsed2.password,
+        label: parsed2.label,
+        token: parsed2.token,
         insecure: true,
-        pinned_cert_path: None,
         pinned_fingerprint: parsed2.pinned_fingerprint,
         manage_hosts: false,
-        delegated: parsed2.delegated,
         entries: parsed2.entries,
         entry_fps: parsed2.entry_fps,
-        ehint: parsed2.ehint,
         en: parsed2.en,
         emode: parsed2.emode,
         eadmin: parsed2.eadmin,
@@ -539,16 +536,13 @@ async fn p3_split_tier_rule_delivery() {
     let a = AgileNetClient::new();
     a.connect(ConnectParams {
         addr: parsed.addr,
-        username: parsed.username,
-        password: parsed.password,
+        label: parsed.label,
+        token: parsed.token,
         insecure: true,
-        pinned_cert_path: None,
         pinned_fingerprint: parsed.pinned_fingerprint,
         manage_hosts: false,
-        delegated: parsed.delegated,
         entries: parsed.entries,
         entry_fps: parsed.entry_fps,
-        ehint: parsed.ehint,
         en: parsed.en,
         emode: parsed.emode,
         eadmin: parsed.eadmin,
@@ -743,16 +737,13 @@ async fn p3_delegated_admin_and_transit_management() {
     let state = a
         .connect(ConnectParams {
             addr: parsed.addr,
-            username: parsed.username,
-            password: parsed.password,
+            label: parsed.label,
+            token: parsed.token,
             insecure: true,
-            pinned_cert_path: None,
             pinned_fingerprint: parsed.pinned_fingerprint,
             manage_hosts: false,
-            delegated: parsed.delegated,
             entries: parsed.entries,
             entry_fps: parsed.entry_fps,
-            ehint: parsed.ehint,
             en: parsed.en,
             emode: parsed.emode,
             eadmin: parsed.eadmin,
@@ -990,7 +981,6 @@ async fn p3_entrust_zero_disclosure() {
 
     // ---- B's entrust registry routes the word back to C ----
     let parsed = agile_net_client::parse_connect_url(&share_url).expect("parse entrust link");
-    assert!(parsed.delegated);
     let en = parsed.en.clone().expect("entrust word parsed");
     let listener = b.runtime().listener.clone().expect("listener");
     let issuer = listener
@@ -1003,16 +993,13 @@ async fn p3_entrust_zero_disclosure() {
     let state = a
         .connect(ConnectParams {
             addr: parsed.addr,
-            username: parsed.username,
-            password: parsed.password,
+            label: parsed.label,
+            token: parsed.token,
             insecure: true,
-            pinned_cert_path: None,
             pinned_fingerprint: parsed.pinned_fingerprint,
             manage_hosts: false,
-            delegated: parsed.delegated,
             entries: parsed.entries,
             entry_fps: parsed.entry_fps,
-            ehint: parsed.ehint,
             en: parsed.en,
             emode: parsed.emode,
             eadmin: parsed.eadmin,

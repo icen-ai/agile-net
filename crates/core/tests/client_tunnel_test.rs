@@ -1,15 +1,19 @@
-//! Client data-plane E2E tests (M4 full path)
+//! Delegated consumer data-plane E2E tests (M4 full path)
 //!
-//! Path: Client(SOCKS5) → ClientTunnel → Node-A(listener, ACL) → Node-B(connector) → Echo Server
+//! Path: consumer(SOCKS5) → ClientTunnel → Node-A(listener, delegated registry ACL) → Node-B(connector) → Echo Server
 
 use agile_net_core::error::Result;
-use agile_net_core::proto::message::AuthRequest;
+use agile_net_core::proto::message::{AuthRequest, Concurrency};
 use agile_net_core::proxy::ProxyInbound;
 use agile_net_core::proxy::router::{Outbound, ProxyRouter};
-use agile_net_core::relay::listener::{AuthIdentity, RelayListener, TokenValidator};
+use agile_net_core::relay::listener::{
+    AuthIdentity, DelegatedRegistry, DelegatedToken, RelayListener, TokenValidator,
+    delegated_session_key,
+};
 use agile_net_core::relay::{RelayConnector, constant_time_eq};
 use agile_net_core::tunnel::client_tunnel::ClientTunnel;
 use agile_net_core::tunnel::opener::ChannelOpener;
+use agile_net_core::util::sha256_hex;
 use arc_swap::ArcSwap;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -24,39 +28,47 @@ fn get_free_addr() -> SocketAddr {
     addr
 }
 
-/// Test validator: node PSK + client tunnel_token (with ACL)
+/// Test validator: node PSK only (consumer auth is resolved by the listener itself against the
+/// delegated token registry)
 struct TestValidator;
 
 impl TokenValidator for TestValidator {
     fn validate(&self, auth: &AuthRequest) -> Option<AuthIdentity> {
-        match auth.kind {
-            agile_net_core::proto::message::AuthKind::Node => {
-                if constant_time_eq(auth.token.as_bytes(), b"node-psk") {
-                    Some(AuthIdentity::Node {
-                        node_id: auth.node_id.clone(),
-                        advertise: auth.advertise.clone(),
-                        groups: auth.groups.clone(),
-                        control: None,
-                        acl: None,
-                        display: None,
-                    })
-                } else {
-                    None
-                }
-            }
-            agile_net_core::proto::message::AuthKind::Client => {
-                if constant_time_eq(auth.token.as_bytes(), b"tun_secret") {
-                    Some(AuthIdentity::Client {
-                        account_id: auth.node_id.clone(),
-                        acl: vec!["127.0.0.0/8".to_string()],
-                        delegated: None,
-                    })
-                } else {
-                    None
-                }
-            }
+        if auth.kind != agile_net_core::proto::message::AuthKind::Node {
+            return None;
+        }
+        if constant_time_eq(auth.token.as_bytes(), b"node-psk") {
+            Some(AuthIdentity::Node {
+                node_id: auth.node_id.clone(),
+                advertise: auth.advertise.clone(),
+                groups: auth.groups.clone(),
+                control: None,
+                acl: None,
+                display: None,
+            })
+        } else {
+            None
         }
     }
+}
+
+/// Delegated token registry holding one token ("tun_secret", loopback-only ACL, multi sessions).
+fn test_delegated_registry() -> (DelegatedRegistry, String) {
+    let hash = sha256_hex(b"tun_secret");
+    let registry: DelegatedRegistry = Arc::new(dashmap::DashMap::new());
+    registry.insert(
+        hash.clone(),
+        DelegatedToken {
+            issuer: "issuer-x".into(),
+            label: "test-consumer".into(),
+            groups: vec![],
+            acl_rules: vec!["127.0.0.0/8".to_string()],
+            hint_map: vec![],
+            concurrency: Concurrency::Multi,
+            max_sessions: 8,
+        },
+    );
+    (registry, hash)
 }
 
 async fn start_echo_server(addr: SocketAddr) {
@@ -78,27 +90,35 @@ async fn start_echo_server(addr: SocketAddr) {
     });
 }
 
-/// Full path: client reaches the internal echo through a two-node tunnel chain
+async fn start_listener(addr: SocketAddr) -> Arc<RelayListener> {
+    let (registry, _) = test_delegated_registry();
+    let listener = Arc::new(
+        RelayListener::with_validator(
+            addr,
+            Arc::new(TestValidator),
+            agile_net_core::tunnel::tls::TlsConfigBuilder::new()
+                .build_server()
+                .map(|(cfg, _)| tokio_rustls::TlsAcceptor::from(cfg))
+                .unwrap(),
+        )
+        .with_delegated_registry(registry),
+    );
+    let l = listener.clone();
+    tokio::spawn(async move {
+        let _ = l.start().await;
+    });
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    listener
+}
+
+/// Full path: consumer reaches the internal echo through a two-node tunnel chain
 #[tokio::test]
 async fn client_to_node_to_downstream_chain() -> Result<()> {
     let echo_addr = get_free_addr();
     let relay_addr = get_free_addr();
 
     start_echo_server(echo_addr).await;
-
-    // Node-A: upstream listener (validates node PSK and client tunnel_token)
-    let listener = Arc::new(RelayListener::with_validator(
-        relay_addr,
-        Arc::new(TestValidator),
-        agile_net_core::tunnel::tls::TlsConfigBuilder::new()
-            .build_server()
-            .map(|(cfg, _)| tokio_rustls::TlsAcceptor::from(cfg))?,
-    ));
-    let l = listener.clone();
-    tokio::spawn(async move {
-        let _ = l.start().await;
-    });
-    tokio::time::sleep(Duration::from_millis(80)).await;
+    let listener = start_listener(relay_addr).await;
 
     // Node-B: downstream connector, advertises 127.0.0.0/8
     let connector = RelayConnector::new(relay_addr, "node-b", "node-psk")?
@@ -111,15 +131,16 @@ async fn client_to_node_to_downstream_chain() -> Result<()> {
         Some("node-b".to_string())
     );
 
-    // Client: tunnel + local SOCKS5 inbound
+    // consumer client: tunnel + local SOCKS5 inbound
     let tunnel = Arc::new(ClientTunnel::new_insecure(
         relay_addr,
-        "acc-zhangsan",
+        "consumer-zhangsan",
         "tun_secret",
     )?);
     tunnel.connect().await?;
     tokio::time::sleep(Duration::from_millis(50)).await;
-    assert!(listener.is_client_online("acc-zhangsan"));
+    let hash = sha256_hex(b"tun_secret");
+    assert!(listener.is_client_online(&delegated_session_key(&hash, "consumer-zhangsan")));
 
     let mut router = ProxyRouter::new();
     router
@@ -158,33 +179,21 @@ async fn client_to_node_to_downstream_chain() -> Result<()> {
     Ok(())
 }
 
-/// ACL deny: target outside the client group's rules
+/// ACL deny: target outside the delegated token's rule snapshot
 #[tokio::test]
 async fn client_acl_denied() -> Result<()> {
     let relay_addr = get_free_addr();
+    let _listener = start_listener(relay_addr).await;
 
-    let listener = Arc::new(RelayListener::with_validator(
-        relay_addr,
-        Arc::new(TestValidator),
-        agile_net_core::tunnel::tls::TlsConfigBuilder::new()
-            .build_server()
-            .map(|(cfg, _)| tokio_rustls::TlsAcceptor::from(cfg))?,
-    ));
-    let l = listener.clone();
-    tokio::spawn(async move {
-        let _ = l.start().await;
-    });
-    tokio::time::sleep(Duration::from_millis(80)).await;
-
-    let tunnel = ClientTunnel::new_insecure(relay_addr, "acc-lisi", "tun_secret")?;
+    let tunnel = ClientTunnel::new_insecure(relay_addr, "consumer-lisi", "tun_secret")?;
     tunnel.connect().await?;
 
     // 10.9.9.9 is outside the ACL (127.0.0.0/8) → Open must fail
     let res = tunnel.open_channel("10.9.9.9", 8080).await;
     assert!(res.is_err(), "ACL 之外的目标必须被拒绝");
 
-    // wrong tunnel_token fails auth outright
-    let bad = ClientTunnel::new_insecure(relay_addr, "acc-lisi", "tun_wrong")?;
+    // unknown delegated token fails auth outright
+    let bad = ClientTunnel::new_insecure(relay_addr, "consumer-lisi", "tun_wrong")?;
     assert!(bad.connect().await.is_err());
 
     Ok(())
@@ -197,21 +206,9 @@ async fn client_tunnel_traffic_counters() -> Result<()> {
     let relay_addr = get_free_addr();
 
     start_echo_server(echo_addr).await;
+    let _listener = start_listener(relay_addr).await;
 
-    let listener = Arc::new(RelayListener::with_validator(
-        relay_addr,
-        Arc::new(TestValidator),
-        agile_net_core::tunnel::tls::TlsConfigBuilder::new()
-            .build_server()
-            .map(|(cfg, _)| tokio_rustls::TlsAcceptor::from(cfg))?,
-    ));
-    let l = listener.clone();
-    tokio::spawn(async move {
-        let _ = l.start().await;
-    });
-    tokio::time::sleep(Duration::from_millis(80)).await;
-
-    let tunnel = ClientTunnel::new_insecure(relay_addr, "acc-wangwu", "tun_secret")?;
+    let tunnel = ClientTunnel::new_insecure(relay_addr, "consumer-wangwu", "tun_secret")?;
     // (0, 0) before connecting
     assert_eq!(tunnel.traffic().await, (0, 0));
 

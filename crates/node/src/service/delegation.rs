@@ -1,26 +1,46 @@
-//! Delegated token issuance and fan-out session registration (federation P2, issuer side).
+//! Delegated token issuance and fan-out session registration (unified issuance, issuer side).
 //!
 //! Storage discipline mirrors relay tokens: the plaintext (`psk_` + 48 chars) is returned once
 //! at issuance; the DB holds the SHA-256 hash only. The E2E master key (federation P3,
 //! HKDF(token)) is derived at issuance and stored AES-256-GCM encrypted — the second and last
 //! reversible-storage exception, same machine key as connector tokens (never logged/audited).
+//!
+//! Entry modes: `relay` tokens ride the disaster set (registered upstream over each fan-out
+//! session, revoke-by-disconnect); `direct` tokens are dialed at this issuer's own listener and
+//! self-registered into the listener's delegated registry (see `sync_local_direct`).
 
 use crate::db::models::DelegatedTokenRecord;
 use crate::db::{Database, generate_relay_token, sha256_hex};
-use agile_net_core::proto::message::{CtrlMessage, HintEntry};
+use agile_net_core::proto::message::{Concurrency, CtrlMessage, HintEntry};
+use agile_net_core::relay::{DelegatedRegistry, DelegatedToken};
 use anyhow::{Result, bail};
-use std::net::IpAddr;
+
+/// DB string -> wire enum (unknown values fail closed to the stricter `Single` tier).
+pub(crate) fn concurrency_of(s: &str) -> Concurrency {
+    match s {
+        "multi" => Concurrency::Multi,
+        _ => Concurrency::Single,
+    }
+}
 
 /// Issue a delegated token and set its disaster set (one row per upstream connector).
 /// Returns the record and the plaintext (shown once, inside the share link).
+///
+/// `entry_mode`: `relay` = registered upstream via the disaster set (`regs` must be non-empty
+/// with exactly one primary); `direct` = the consumer dials this issuer's own listener (`regs`
+/// may be empty). `concurrency`: `single` (a new session kicks the old) / `multi` (bounded by
+/// `max_sessions`, snapshotted by the caller from node_config.delegation_max_sessions).
+#[allow(clippy::too_many_arguments)]
 pub fn issue_token(
     db: &Database,
     label: &str,
     group_ids: &[String],
-    hint_map: &[HintEntry],
     regs: &[(String, bool)],
     mode: &str,
     admin_scope: &str,
+    entry_mode: &str,
+    concurrency: &str,
+    max_sessions: i64,
 ) -> Result<(DelegatedTokenRecord, String)> {
     if label.len() > 128 {
         bail!("备注过长（≤128 字符）");
@@ -31,11 +51,22 @@ pub fn issue_token(
     if !["", "ro", "rules", "full"].contains(&admin_scope) {
         bail!("未知的管理授权档位: {admin_scope}");
     }
-    if regs.is_empty() {
-        bail!("容灾集合不能为空（至少选择一个扇出上游）");
+    if entry_mode != "direct" && entry_mode != "relay" {
+        bail!("未知的入口模式: {entry_mode}");
     }
-    if !regs.iter().any(|r| r.1) {
-        bail!("必须指定一个主入口");
+    if concurrency != "single" && concurrency != "multi" {
+        bail!("未知的并发档位: {concurrency}");
+    }
+    if max_sessions < 1 {
+        bail!("并发上限必须 ≥ 1");
+    }
+    if entry_mode == "relay" {
+        if regs.is_empty() {
+            bail!("容灾集合不能为空（至少选择一个扇出上游）");
+        }
+        if !regs.iter().any(|r| r.1) {
+            bail!("必须指定一个主入口");
+        }
     }
     for gid in group_ids {
         if db.get_group(gid)?.is_none() {
@@ -53,32 +84,25 @@ pub fn issue_token(
     let plaintext = generate_relay_token(); // same entropy as relay tokens (psk_ + 48)
     let token_hash = sha256_hex(plaintext.as_bytes());
 
-    // federation P3 entrust mode: every E2E token carries its opaque entrust word as the FIRST
-    // hint (en_<12 hex of token_hash>) — routing without rule disclosure; the issuer no longer
-    // needs push_groups or advertise to serve E2E delegation. A caller-supplied or
-    // advertise-derived legacy hint stays behind it as the old-client / old-relay fallback.
+    // federation P3 entrust mode: an E2E token carries exactly one hint — its opaque entrust
+    // word (en_<12 hex of token_hash>), routing without rule disclosure; the issuer needs no
+    // push_groups or advertise to serve E2E delegation. The transparent tier (no e2e_required
+    // group) carries no routing vocabulary at all.
     let e2e_names: Vec<String> = group_ids
         .iter()
         .filter_map(|gid| db.get_group(gid).ok().flatten())
         .filter(|g| g.e2e_required)
         .map(|g| g.name)
         .collect();
-    let mut hint_map = hint_map.to_vec();
-    if !e2e_names.is_empty()
-        && !hint_map
-            .iter()
-            .any(|h| h.hint.starts_with(agile_net_core::relay::e2e::ENTRUST_PREFIX))
-    {
-        hint_map.insert(
-            0,
-            HintEntry {
-                hint: agile_net_core::relay::e2e::entrust_id_of(&token_hash),
-                groups: e2e_names,
-            },
-        );
-    }
+    let hint_map: Vec<HintEntry> = if e2e_names.is_empty() {
+        Vec::new()
+    } else {
+        vec![HintEntry {
+            hint: agile_net_core::relay::e2e::entrust_id_of(&token_hash),
+            groups: e2e_names,
+        }]
+    };
     // a bootstrap ticket must never cross a relay in plaintext — admin requires the E2E channel
-    // (evaluated after the entrust prepend: any e2e_required group satisfies it)
     if !admin_scope.is_empty() && hint_map.is_empty() {
         bail!("授权管理要求引用组含端到端加密组（票据经 E2E 通道下发）");
     }
@@ -98,6 +122,9 @@ pub fn issue_token(
         &e2e_key_enc,
         mode,
         admin_scope,
+        entry_mode,
+        concurrency,
+        max_sessions,
         None,
         None,
     )?;
@@ -107,7 +134,8 @@ pub fn issue_token(
 }
 
 /// Delete a delegated token; returns the record (with regs) so the caller can send the
-/// revocation frame to every online upstream of the disaster set.
+/// revocation frame to every online upstream of the disaster set (relay mode) or drop the
+/// local registration (direct mode).
 pub fn revoke_token(db: &Database, id: &str) -> Result<Option<DelegatedTokenRecord>> {
     let Some(rec) = db.get_delegated_token(id)? else {
         return Ok(None);
@@ -131,38 +159,9 @@ pub fn build_register_msg(db: &Database, rec: &DelegatedTokenRecord) -> CtrlMess
         label: rec.label.clone(),
         groups: names,
         hint_map: serde_json::from_str(&rec.hint_map).unwrap_or_default(),
+        concurrency: concurrency_of(&rec.concurrency),
+        max_sessions: rec.max_sessions.clamp(1, u32::MAX as i64) as u32,
     }
-}
-
-/// Derive a placeholder routing hint from the issuer's advertised routes (federation P3).
-///
-/// The hint is a literal address that must resolve back to this issuer on the relay's route
-/// table — CIDR -> network address + 1, `*.suffix` wildcard -> `relay<suffix>`, exact host ->
-/// itself. One shared hint covers every E2E group (the coarsest vocabulary: the relay learns
-/// nothing about which group a connection belongs to). None when nothing is advertised.
-pub fn derive_hint(advertise: &[String]) -> Option<String> {
-    for entry in advertise {
-        let entry = entry.trim();
-        if entry.is_empty() {
-            continue;
-        }
-        if let Ok(net) = entry.parse::<ip_network::IpNetwork>() {
-            let host = match net.network_address() {
-                IpAddr::V4(v4) => IpAddr::V4(std::net::Ipv4Addr::from(u32::from(v4).wrapping_add(1))),
-                IpAddr::V6(v6) => IpAddr::V6(std::net::Ipv6Addr::from(u128::from(v6).wrapping_add(1))),
-            };
-            return Some(host.to_string());
-        }
-        if entry.contains('*') {
-            let suffix = entry.trim_start_matches('*');
-            if !suffix.is_empty() {
-                return Some(format!("relay{suffix}"));
-            }
-            continue;
-        }
-        return Some(entry.to_string());
-    }
-    None
 }
 
 /// Recover the E2E master key of a token (issuer side, E2E unwrap path; never expose via API).
@@ -174,6 +173,76 @@ pub fn e2e_key_of(db: &Database, rec: &DelegatedTokenRecord) -> Result<[u8; 32]>
         .try_into()
         .map_err(|_| anyhow::anyhow!("e2e key length invalid: {len}"))?;
     Ok(key)
+}
+
+// ==================== Direct-entry local self-registration ====================
+
+/// Reconcile the direct-entry tokens of this issuer into the listener's persistent local
+/// delegated registry (idempotent full sync: startup warm-up plus the incremental
+/// issue/revoke path).
+///
+/// The local registry (`RelayListener::local_delegated_registry()`) is owned exclusively by
+/// this node layer — entries never die with any session and the listener consults it before
+/// the session-scoped registry at auth and route resolution. The sync therefore converges the
+/// whole map to the live direct-entry set: expired/exhausted tokens and revoked rows drop out,
+/// group/rule edits re-enter with a fresh ACL snapshot.
+pub fn sync_local_direct(registry: &DelegatedRegistry, node_id: &str, db: &Database) {
+    let mut desired = std::collections::HashSet::new();
+    for rec in db.list_delegated_tokens().unwrap_or_default() {
+        if rec.entry_mode != "direct" {
+            continue;
+        }
+        // token lifecycle: a dead token is never registered (the engine's in-session gate
+        // refuses its opens as the backstop)
+        if !crate::db::expiry_active(rec.expires_at.as_deref())
+            || crate::db::uses_exhausted(rec.max_uses, rec.used_count)
+        {
+            continue;
+        }
+        desired.insert(rec.token_hash.clone());
+        registry.insert(rec.token_hash.clone(), local_entry(node_id, &rec, db));
+    }
+    // drop stale entries (revoked / expired / switched entry mode)
+    let stale: Vec<String> = registry
+        .iter()
+        .filter(|e| !desired.contains(e.key()))
+        .map(|e| e.key().clone())
+        .collect();
+    for hash in stale {
+        registry.remove(&hash);
+    }
+}
+
+/// One local registry entry for a direct-entry token: group IDs resolve to names, the
+/// transparent-tier ACL snapshot is the union of the token's group rules (mirroring the
+/// relay-side registration semantics); the concurrency policy is enforced by the listener
+/// at consumer-session auth.
+fn local_entry(node_id: &str, rec: &DelegatedTokenRecord, db: &Database) -> DelegatedToken {
+    let group_ids: Vec<String> = serde_json::from_str(&rec.groups).unwrap_or_default();
+    let mut groups = Vec::with_capacity(group_ids.len());
+    let mut acl_rules: Vec<String> = Vec::new();
+    for gid in &group_ids {
+        match db.get_group(gid) {
+            Ok(Some(g)) => groups.push(g.name),
+            _ => tracing::warn!(group_id = %gid, token = %rec.id, "direct token references a missing group (skipped)"),
+        }
+        if let Ok(rs) = db.rules_of_group(gid) {
+            for r in rs {
+                if !acl_rules.contains(&r.value) {
+                    acl_rules.push(r.value);
+                }
+            }
+        }
+    }
+    DelegatedToken {
+        issuer: node_id.to_string(),
+        label: rec.label.clone(),
+        groups,
+        acl_rules,
+        hint_map: serde_json::from_str(&rec.hint_map).unwrap_or_default(),
+        concurrency: concurrency_of(&rec.concurrency),
+        max_sessions: rec.max_sessions.clamp(1, u32::MAX as i64) as u32,
+    }
 }
 
 // ==================== DelegationEngine (data-plane hooks, issuer endpoint) ====================
@@ -242,23 +311,16 @@ impl DelegationEngine {
         std::sync::Arc::new(Self::default())
     }
 
-    /// kid lookup (prefix-unique): cache keys are 12-char since protocol v4, but envelopes from
-    /// pre-v4 clients carry 8-char kids — accept any unique prefix ≥ 8 chars, else fail closed.
+    /// kid lookup: cache keys are exactly the 12-hex kid of the token hash (protocol v4);
+    /// anything else (including legacy 8-char prefixes) fails closed.
     fn key_entry<'a>(
         cache: &'a std::collections::HashMap<String, KeyEntry>,
         kid: &str,
     ) -> Option<&'a KeyEntry> {
-        if kid.len() < 8 || !kid.bytes().all(|b| b.is_ascii_hexdigit()) {
+        if kid.len() != 12 || !kid.bytes().all(|b| b.is_ascii_hexdigit()) {
             return None;
         }
-        if let Some(e) = cache.get(kid) {
-            return Some(e);
-        }
-        let mut hits = cache.iter().filter(|(k, _)| k.starts_with(kid));
-        match (hits.next(), hits.next()) {
-            (Some((_, e)), None) => Some(e),
-            _ => None,
-        }
+        cache.get(kid)
     }
 
     /// Wire the admin runtime (issuer API endpoint + upstream registry + ticket minter);
@@ -432,7 +494,7 @@ impl agile_net_core::relay::DelegationHooks for DelegationEngine {
             if let Some(port) = rt.control_api.load().as_ref().map(|a| a.1) {
                 // a fresh bootstrap ticket per config pull (per fan-out session); the exchange
                 // on the issuer API attributes the session to deleg:<label>@<kid>
-                // (kind stays 'relay' — the admin_ticket CHECK constraint only allows account/relay;
+                // (kind stays 'relay' — the admin_ticket CHECK constraint only allows relay;
                 // the deleg: subject prefix carries the attribution)
                 let subject = format!("deleg:{}@{}", entry.label, &kid[..8.min(kid.len())]);
                 if let Ok(ticket) = rt.db.create_admin_ticket(
@@ -510,19 +572,31 @@ mod tests {
         db.create_group(name, "").expect("group").id
     }
 
+    fn mk_e2e_group(db: &Database, name: &str) -> String {
+        let gid = mk_group(db, name);
+        db.set_group_e2e_required(&gid, true).expect("mark e2e");
+        gid
+    }
+
     fn mk_connector(db: &Database, name: &str) -> String {
         db.create_connector(name, "1.2.3.4:54430", "psk_x", "", true, "", "", "", "", None, "")
             .expect("connector")
             .id
     }
 
+    /// Issue a relay-mode token with a single-entry disaster set.
+    fn issue_relay(db: &Database, label: &str, group_ids: &[String], admin_scope: &str) -> (DelegatedTokenRecord, String) {
+        let cid = mk_connector(db, &format!("up-{label}"));
+        issue_token(db, label, group_ids, &[(cid, true)], "dedicated", admin_scope, "relay", "single", 8)
+            .expect("issue relay token")
+    }
+
     #[test]
     fn issue_stores_hash_and_recoverable_e2e_key() {
         let db = Database::in_memory().unwrap();
         let gid = mk_group(&db, "git");
-        let cid = mk_connector(&db, "up-1");
 
-        let (rec, plaintext) = issue_token(&db, "alice", std::slice::from_ref(&gid), &[], &[(cid.clone(), true)], "dedicated", "").unwrap();
+        let (rec, plaintext) = issue_relay(&db, "alice", std::slice::from_ref(&gid), "");
         assert!(plaintext.starts_with("psk_"));
         assert_eq!(plaintext.len(), 4 + 48);
         assert_eq!(rec.token_prefix, plaintext[..8]);
@@ -534,8 +608,13 @@ mod tests {
         assert_eq!(key, agile_net_core::relay::e2e::derive_key(&plaintext));
         // disaster set persisted with the primary flag
         assert_eq!(rec.regs.len(), 1);
-        assert_eq!(rec.regs[0].connector_id, cid);
         assert!(rec.regs[0].is_primary);
+        // unified-issuance fields
+        assert_eq!(rec.entry_mode, "relay");
+        assert_eq!(rec.concurrency, "single");
+        assert_eq!(rec.max_sessions, 8);
+        // transparent tier (no e2e group): no routing vocabulary at all
+        assert_eq!(rec.hint_map, "[]");
     }
 
     #[test]
@@ -544,16 +623,99 @@ mod tests {
         let gid = mk_group(&db, "git");
         let cid = mk_connector(&db, "up-1");
 
-        // empty disaster set
-        assert!(issue_token(&db, "a", &[gid.clone()], &[], &[], "dedicated", "").is_err());
-        // no primary entry
-        assert!(issue_token(&db, "a", &[gid.clone()], &[], &[(cid.clone(), false)], "dedicated", "").is_err());
+        // relay mode: empty disaster set
+        assert!(issue_token(&db, "a", std::slice::from_ref(&gid), &[], "dedicated", "", "relay", "single", 8).is_err());
+        // relay mode: no primary entry
+        assert!(issue_token(&db, "a", std::slice::from_ref(&gid), &[(cid.clone(), false)], "dedicated", "", "relay", "single", 8).is_err());
         // missing group
-        assert!(issue_token(&db, "a", &["no-such-group".into()], &[], &[(cid.clone(), true)], "dedicated", "").is_err());
+        assert!(issue_token(&db, "a", &["no-such-group".into()], &[(cid.clone(), true)], "dedicated", "", "relay", "single", 8).is_err());
         // missing connector
-        assert!(issue_token(&db, "a", &[gid.clone()], &[], &[("no-such-conn".into(), true)], "dedicated", "").is_err());
+        assert!(issue_token(&db, "a", std::slice::from_ref(&gid), &[("no-such-conn".into(), true)], "dedicated", "", "relay", "single", 8).is_err());
         // oversized label
-        assert!(issue_token(&db, &"x".repeat(200), &[gid], &[], &[(cid, true)], "dedicated", "").is_err());
+        assert!(issue_token(&db, &"x".repeat(200), std::slice::from_ref(&gid), &[(cid.clone(), true)], "dedicated", "", "relay", "single", 8).is_err());
+        // unknown entry mode / concurrency / bad cap
+        assert!(issue_token(&db, "a", std::slice::from_ref(&gid), &[(cid.clone(), true)], "dedicated", "", "wormhole", "single", 8).is_err());
+        assert!(issue_token(&db, "a", std::slice::from_ref(&gid), &[(cid.clone(), true)], "dedicated", "", "relay", "plenty", 8).is_err());
+        assert!(issue_token(&db, "a", std::slice::from_ref(&gid), &[(cid, true)], "dedicated", "", "relay", "single", 0).is_err());
+        // admin without an e2e group
+        assert!(issue_token(&db, "a", &[gid], &[], "dedicated", "ro", "direct", "single", 8).is_err());
+    }
+
+    #[test]
+    fn issue_direct_allows_empty_regs() {
+        let db = Database::in_memory().unwrap();
+        let gid = mk_group(&db, "git");
+
+        // direct mode: no disaster set needed
+        let (rec, _) = issue_token(&db, "local-alice", &[gid], &[], "dedicated", "", "direct", "multi", 4)
+            .expect("direct issue with empty regs");
+        assert_eq!(rec.entry_mode, "direct");
+        assert_eq!(rec.concurrency, "multi");
+        assert_eq!(rec.max_sessions, 4);
+        assert!(rec.regs.is_empty());
+    }
+
+    #[test]
+    fn issue_e2e_group_carries_entrust_word_only() {
+        let db = Database::in_memory().unwrap();
+        let gid = mk_e2e_group(&db, "db-prod");
+
+        let (rec, _) = issue_relay(&db, "e2e-alice", &[gid], "");
+        let hints: Vec<HintEntry> = serde_json::from_str(&rec.hint_map).unwrap();
+        assert_eq!(hints.len(), 1);
+        assert_eq!(
+            hints[0].hint,
+            agile_net_core::relay::e2e::entrust_id_of(&rec.token_hash),
+            "exactly the opaque entrust word, no legacy fallback hints"
+        );
+        assert_eq!(hints[0].groups, vec!["db-prod".to_string()]);
+    }
+
+    #[test]
+    fn sync_local_direct_reconciles_registry() {
+        let db = Database::in_memory().unwrap();
+        let gid = mk_group(&db, "git");
+        let rid = db.create_rule("ip-cidr", "10.9.0.0/16", false, "").unwrap().id;
+        db.set_group_rules(&gid, std::slice::from_ref(&rid)).unwrap();
+        let registry: DelegatedRegistry = Default::default();
+
+        // one direct token + one relay token: only the direct one self-registers
+        let (direct, _) = issue_token(&db, "d1", std::slice::from_ref(&gid), &[], "dedicated", "", "direct", "single", 8).unwrap();
+        let (_relay, _) = issue_relay(&db, "r1", std::slice::from_ref(&gid), "");
+        sync_local_direct(&registry, "node-a", &db);
+        assert!(registry.contains_key(&direct.token_hash));
+        assert_eq!(registry.len(), 1);
+        let entry = registry.get(&direct.token_hash).unwrap();
+        assert_eq!(entry.issuer, "node-a");
+        assert_eq!(entry.groups, vec!["git".to_string()]);
+        assert_eq!(entry.acl_rules, vec!["10.9.0.0/16".to_string()]);
+        drop(entry);
+
+        // re-sync is idempotent; the map converges to the desired set (the local registry is
+        // exclusively node-owned — anything not in the DB direct set drops out)
+        registry.insert("ff".repeat(32), DelegatedToken {
+            issuer: "other-node".into(),
+            label: "foreign".into(),
+            groups: vec![],
+            acl_rules: vec![],
+            hint_map: vec![],
+            concurrency: Concurrency::Single,
+            max_sessions: 8,
+        });
+        sync_local_direct(&registry, "node-a", &db);
+        assert_eq!(registry.len(), 1);
+        assert!(registry.contains_key(&direct.token_hash));
+
+        // revoke the direct token -> the local entry drops out on the next sync
+        revoke_token(&db, &direct.id).unwrap();
+        sync_local_direct(&registry, "node-a", &db);
+        assert!(registry.is_empty());
+
+        // an expired direct token is never registered
+        let (dead, _) = issue_token(&db, "d2", &[gid], &[], "dedicated", "", "direct", "single", 8).unwrap();
+        db.set_delegated_token_lifecycle(&dead.id, Some("2020-01-01T00:00:00Z"), None).unwrap();
+        sync_local_direct(&registry, "node-a", &db);
+        assert!(!registry.contains_key(&dead.token_hash));
     }
 
     #[test]
@@ -565,8 +727,7 @@ mod tests {
         let r2 = db.create_rule("host", "*.internal", false, "").unwrap().id;
         db.set_group_rules(&g1, &[r1.clone(), r2]).unwrap();
         db.set_group_rules(&g2, &[r1]).unwrap(); // same value bound to both groups -> dedup
-        let cid = mk_connector(&db, "up-1");
-        let (rec, _) = issue_token(&db, "alice", &[g1, g2], &[], &[(cid, true)], "dedicated", "").unwrap();
+        let (rec, _) = issue_relay(&db, "alice", &[g1, g2], "");
 
         let engine = DelegationEngine::new();
         engine.refresh_keys(&db);
@@ -583,18 +744,8 @@ mod tests {
     #[test]
     fn engine_admin_config_ticket_and_scope() {
         let db = Database::in_memory().unwrap();
-        let gid = mk_group(&db, "db-fine");
-        let cid = mk_connector(&db, "up-1");
-        let (rec, _) = issue_token(
-            &db,
-            "root-laptop",
-            &[gid],
-            &[HintEntry { hint: "relay.internal".into(), groups: vec!["db-fine".into()] }],
-            &[(cid, true)],
-            "dedicated",
-            "full",
-        )
-        .unwrap();
+        let gid = mk_e2e_group(&db, "db-fine");
+        let (rec, _) = issue_relay(&db, "root-laptop", &[gid], "full");
         let engine = DelegationEngine::new();
         engine.refresh_keys(&db);
         engine.refresh_groups(&db);
@@ -617,17 +768,18 @@ mod tests {
         let db = Database::in_memory().unwrap();
         let g1 = mk_group(&db, "git");
         let g2 = mk_group(&db, "ops");
-        let cid = mk_connector(&db, "up-1");
-        let (rec, _) = issue_token(&db, "alice", &[g1.clone(), g2.clone()], &[], &[(cid, true)], "dedicated", "").unwrap();
+        let (rec, _) = issue_relay(&db, "alice", &[g1.clone(), g2.clone()], "");
 
         let msg = build_register_msg(&db, &rec);
-        let CtrlMessage::TokenRegister { token_hash, label, groups, hint_map } = msg else {
+        let CtrlMessage::TokenRegister { token_hash, label, groups, hint_map, concurrency, max_sessions } = msg else {
             panic!("expected TokenRegister");
         };
         assert_eq!(token_hash, rec.token_hash);
         assert_eq!(label, "alice");
         assert_eq!(groups, vec!["git".to_string(), "ops".to_string()]);
         assert!(hint_map.is_empty());
+        assert_eq!(concurrency, Concurrency::Single);
+        assert_eq!(max_sessions, 8);
 
         // delete one group: it is skipped (warn only), the registration still goes out
         db.delete_group(&g1, false).unwrap();
@@ -642,8 +794,7 @@ mod tests {
     fn revoke_returns_record_for_frames() {
         let db = Database::in_memory().unwrap();
         let gid = mk_group(&db, "git");
-        let cid = mk_connector(&db, "up-1");
-        let (rec, _) = issue_token(&db, "alice", &[gid], &[], &[(cid, true)], "dedicated", "").unwrap();
+        let (rec, _) = issue_relay(&db, "alice", &[gid], "");
 
         let revoked = revoke_token(&db, &rec.id).unwrap().expect("existed");
         assert_eq!(revoked.token_hash, rec.token_hash);
@@ -704,14 +855,13 @@ mod tests {
 
         let db = Database::in_memory().unwrap();
         let gid = mk_group(&db, "db-prod");
-        let cid = mk_connector(&db, "up-1");
-        let (rec, plaintext) = issue_token(&db, "alice", &[gid], &[], &[(cid, true)], "dedicated", "").unwrap();
+        let (rec, plaintext) = issue_relay(&db, "alice", &[gid], "");
 
         let engine = DelegationEngine::new();
         engine.refresh_keys(&db);
 
         let key = derive_key(&plaintext);
-        let (env, cipher) = seal_open(
+        let (env, _cipher) = seal_open(
             &key,
             kid_of(&rec.token_hash),
             "relay.internal",
@@ -724,11 +874,10 @@ mod tests {
         let (payload, _cipher) = engine.e2e_unwrap(&env).unwrap().expect("endpoint role");
         assert_eq!(payload.target_addr, "10.2.0.5");
         assert_eq!(payload.target_port, 5432);
-        drop(cipher);
 
         // transit role: unknown kid passes through (None, never an error)
         let foreign = agile_net_core::proto::message::E2eOpen {
-            kid: "ffffffff".into(),
+            kid: "ffffffffffff".into(),
             ..env.clone()
         };
         assert!(engine.e2e_unwrap(&foreign).unwrap().is_none());
@@ -751,8 +900,7 @@ mod tests {
 
         let db = Database::in_memory().unwrap();
         let gid = mk_group(&db, "db-prod");
-        let cid = mk_connector(&db, "up-1");
-        let (rec, plaintext) = issue_token(&db, "alice", &[gid], &[], &[(cid, true)], "dedicated", "").unwrap();
+        let (rec, plaintext) = issue_relay(&db, "alice", &[gid], "");
         let key = derive_key(&plaintext);
         let seal = || {
             seal_open(&key, kid_of(&rec.token_hash), "h", "10.2.0.5", 5432, &[]).0

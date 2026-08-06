@@ -30,7 +30,7 @@ mod tests {
     /// qrcode (generation, already a dependency) -> PNG -> rqrr decode roundtrip.
     #[test]
     fn qr_roundtrip_png() {
-        let link = "anet://connect?server=relay.example.com&port=59090&account=alice&password=sk-x&fp=ab12";
+        let link = "anet://connect?server=relay.example.com&port=59090&account=d:alice&password=psk_x&fp=ab12";
         let code = qrcode::QrCode::new(link.as_bytes()).unwrap();
         let img = code
             .render::<image::Luma<u8>>()

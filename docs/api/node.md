@@ -36,11 +36,6 @@
       "active_connections": 15,
       "rule_count": 8
     },
-    "accounts": {
-      "total": 12,
-      "online": 5,
-      "disabled": 2
-    },
     "system": {
       "cpu_usage": 3.2,
       "memory_mb": 85,
@@ -87,57 +82,6 @@
 - `traffic_24h`：最近 24 小时按小时聚合（本地时间 `YYYY-MM-DD HH:00`；无数据小时缺省；
   fanin/fanout 跨标识汇总、transit 跨途径对汇总；数据源 `node_traffic_log` 表分钟级采样差分）。
 - 三维互为独立视角：同一字节可能在 fanin 与 transit 中各计一次（前者按对端会话、后者按途径对）。
-
----
-
-## GET `/api/v1/admin/node/stats`
-
-流量统计。
-
-### 查询参数
-
-| 参数 | 类型 | 默认 | 说明 |
-|------|------|------|------|
-| `period` | string | `1h` | `1h` / `24h` / `7d` / `30d` |
-| `group_by` | string | `account` | `account` / `rule` / `time` |
-
-### 响应 200 (group_by=account)
-
-```json
-{
-  "code": 0,
-  "data": {
-    "period": "24h",
-    "total_tx": 1073741824,
-    "total_rx": 2147483648,
-    "breakdown": [
-      {
-        "account_id": "uuid",
-        "username": "zhangsan",
-        "bytes_tx": 536870912,
-        "bytes_rx": 1073741824,
-        "connections": 45
-      }
-    ]
-  }
-}
-```
-
-### 响应 200 (group_by=time)
-
-```json
-{
-  "code": 0,
-  "data": {
-    "period": "24h",
-    "interval": "1h",
-    "points": [
-      { "time": "2025-07-30T00:00:00Z", "bytes_tx": 10240, "bytes_rx": 20480 },
-      { "time": "2025-07-30T01:00:00Z", "bytes_tx": 15360, "bytes_rx": 30720 }
-    ]
-  }
-}
-```
 
 ---
 
@@ -258,8 +202,9 @@
 }
 ```
 
-端点不在线 / 上送组不存在均返回 40400。采纳后的本地组与手工创建的组完全同构，可直接授权给账号；
-资源主侧的后续变更不会自动同步（采纳是显式动作，再次采纳生成 `·N` 新组）。
+端点不在线 / 上送组不存在均返回 40400。采纳后的本地组与手工创建的组同构（只读活镜像，
+`federation/adopted/{id}/copy` 可复制为可编辑本地组）；资源主侧的后续变更经 watcher
+漂移写跟随（源离线保留快照）。
 
 ---
 
@@ -390,7 +335,7 @@ agilenet_rules_total 8
 ```
 
 指标：`uptime`、`peers`、`online_clients`、`peer_bytes{node_id,direction}`、
-`proxy_active/total_connections`、`proxy_bytes{direction}`、`accounts_total/disabled`、`rules_total`。
+`proxy_active/total_connections`、`proxy_bytes{direction}`、`rules_total`。
 
 ---
 
@@ -425,17 +370,17 @@ agilenet_rules_total 8
 
 ### 认证
 
-```
-ws://node:443/api/v1/admin/node/events?token=<access_token>
-```
+浏览器 WebSocket 无法设置请求头；为不让 token 进访问日志与浏览器历史，认证走
+**升级后首条消息**：连接建立后立即发送 access_token（5s 超时），服务端校验 admin
+角色与 scope 档位（fail-closed）后才开始推送事件。
 
 ### 事件格式
 
 ```json
 {
-  "type": "account.online",
+  "type": "consumer.online",
   "time": "2025-07-30T14:30:00Z",
-  "data": { "account_id": "uuid", "username": "zhangsan", "remote_addr": "1.2.3.4" }
+  "data": { "session_key": "uuid" }
 }
 ```
 
@@ -443,10 +388,11 @@ ws://node:443/api/v1/admin/node/events?token=<access_token>
 
 | type | 触发时机 |
 |------|---------|
-| `account.online` | 客户端上线 |
-| `account.offline` | 客户端下线 |
+| `consumer.online` | 消费者（委托令牌会话）上线（data.session_key） |
+| `consumer.offline` | 消费者下线（data.session_key） |
 | `connector.connected` | 下游节点连入 |
 | `connector.disconnected` | 下游节点断开 |
 | `peer.acl_denied` | 对端流量被收敛拒绝（data 含对端标识 `peer_label` 与 `target`） |
-| `config.updated` | 规则/权限组变更 |
+| `delegation.registered` | 委托令牌在本端点注册（data 含 `node_id` 与 `label`） |
+| `delegation.revoked` | 委托令牌注册被吊销（data 含 `node_id` 与 `label`） |
 | `stats.snapshot` | 每 30s 发送一次流量快照 |

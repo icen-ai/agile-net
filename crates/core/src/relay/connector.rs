@@ -59,8 +59,8 @@ pub enum ConnectionState {
 pub struct DelegationConfig {
     pub rules: Vec<String>,
     // Named group breakdown of the vocabulary (docs/todo/e2e.md §7.2.1): lets the consumer
-    // seal per-target accurate group identities instead of always inheriting the token's full
-    // set. Absent on pre-v4 issuers — the consumer falls back to the inherit-all behavior.
+    // seal per-target accurate group identities instead of always inheriting the token's
+    // full set.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub groups: Vec<DelegationGroupEntry>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -164,7 +164,7 @@ pub struct RelayConnector {
     hooks: Option<Arc<dyn DelegationHooks>>,
     /// Current session mux handle (available while connected; used by control-plane diagnostics to open streams)
     current_mux: Arc<arc_swap::ArcSwapOption<MuxSession>>,
-    /// Negotiated upstream protocol version (0 = not connected / unknown; gates v3 delegation features)
+    /// Negotiated upstream protocol version (0 = not connected / unknown; informational only — v4 behavior is unconditional)
     upstream_version: Arc<AtomicU32>,
     /// Federation P2: latest registration/revocation ack per delegated token hash (control plane replies)
     delegation_acks: Arc<dashmap::DashMap<String, (bool, String)>>,
@@ -343,9 +343,7 @@ impl RelayConnector {
         self.state() == ConnectionState::Connected
     }
 
-    /// Negotiated upstream protocol version of the current session (0 = not connected / unknown).
-    /// Federation P2 delegation features (Ctrl-frame token register/revoke) require
-    /// `>= PROTOCOL_VERSION_DELEGATION` — the issuer must stay silent towards older upstreams.
+    /// Negotiated upstream protocol version of the current session (0 = not connected / unknown; informational only — v4 behavior is unconditional).
     pub fn upstream_version(&self) -> u32 {
         self.upstream_version.load(Ordering::Relaxed)
     }
@@ -468,7 +466,7 @@ impl RelayConnector {
 
         // flow control negotiation: enable per-channel window flow control when both sides are >= v2
         let flow_control = server_version >= PROTOCOL_VERSION_FLOW_CONTROL;
-        // publish the negotiated version (gates v3 delegation: Ctrl-frame token register/revoke)
+        // publish the negotiated version (informational; v4 behavior is unconditional)
         self.upstream_version.store(server_version, Ordering::Relaxed);
         debug!(
             server_version,
@@ -554,7 +552,7 @@ impl RelayConnector {
                         });
                     }
                     Some(payload) = ctrl_rx.recv() => {
-                        // session control plane (v3): only TokenAck flows relay -> issuer
+                        // session control plane: only TokenAck flows relay -> issuer
                         match serde_json::from_slice::<CtrlMessage>(&payload) {
                             Ok(CtrlMessage::TokenAck { token_hash, ok, error }) => {
                                 debug!(ok, error = %error, "delegation ack received");

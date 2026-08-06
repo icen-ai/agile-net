@@ -1,65 +1,57 @@
-//! Unified `anet://` link primitives (federation P1 §2.7) — the single Rust parse/build base.
+//! Unified `anet://` link primitives — the single Rust parse/build base.
 //!
 //! Link shapes (three-piece set: entry address + credential + entry cert fingerprint):
-//! - fan-in account: `anet://connect?server=H&port=P&account=U&password=W&fp=FP[&admin=1]`
-//! - fan-out peer:   `anet://fanout?server=H&port=P&token=psk_...&sni=SNI&fp=FP`
+//! - delegated credential: `anet://connect?server=H&port=P&account=d:<label>&password=psk_...&fp=FP`
+//!   (plus `entry`/`entryfp` disaster set, `en` entrust word, `emode`, `eadmin`)
+//! - fan-out peer:         `anet://fanout?server=H&port=P&token=psk_...&sni=SNI&fp=FP`
 //!
 //! `server` may be a full `https://host[:port]` form (API behind a reverse proxy; the port
-//! param is then ignored). Generation always uses the new `anet://` scheme; parsing accepts
-//! the legacy `agilenet://` scheme forever (smooth migration). The frontend twin is
-//! `apps/desktop/ui/aglink.js` (shared by desktop and admin UI) — keep behaviors aligned.
+//! param is then ignored). Only the `anet://` scheme is recognized — anything else is an
+//! error. The frontend twin is `apps/desktop/ui/aglink.js` (shared by desktop and admin UI) —
+//! keep behaviors aligned.
 
 use serde::{Deserialize, Serialize};
 
-/// Current link scheme (generation target).
+/// The only link scheme.
 pub const LINK_SCHEME: &str = "anet://";
-/// Legacy scheme (parse-only, forever compatible).
-pub const LEGACY_LINK_SCHEME: &str = "agilenet://";
 
 /// Default admin API port (connect links).
 pub const DEFAULT_API_PORT: u16 = 59090;
 /// Default relay listener port (fanout links).
 pub const DEFAULT_RELAY_PORT: u16 = 54430;
 
-/// Parsed fan-in account link (`anet://connect?...`).
+/// Parsed delegated-credential link (`anet://connect?...`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConnectLink {
-    /// API endpoint address (host:port; or the full scheme form when server carried one)
+    /// Primary entry address (host:port; or the full scheme form when server carried one)
     pub addr: String,
+    /// Account field — delegated credentials carry the `d:<label>` mark
     pub account: String,
+    /// Password field — delegated credentials carry the token plaintext
     pub password: String,
     #[serde(default)]
     pub pinned_fingerprint: Option<String>,
     #[serde(default)]
     pub insecure: bool,
-    /// Admin link flag (admin=1: the holder can manage the node; strong warning on import)
-    #[serde(default)]
-    pub admin: bool,
-    /// Federation P2 disaster set: full entry list including the primary (failover order);
-    /// empty = single entry (`addr`), the pre-P2 behavior
+    /// Disaster set: full entry list including the primary (failover order);
+    /// empty = single entry (`addr`)
     #[serde(default)]
     pub entries: Vec<String>,
     /// Per-entry relay cert fingerprints (parallel to `entries`; "" = fall back to TOFU)
     #[serde(default)]
     pub entry_fps: Vec<String>,
-    /// Federation P3 E2E routing hint (delegated links only): when present the client seals
-    /// every Open into an E2E envelope addressed by this hint; absent = transparent tier
-    #[serde(default)]
-    pub ehint: Option<String>,
-    /// Federation P3 entrust word (delegated E2E links only): opaque `en_xxx` routing ID — the
-    /// zero-disclosure path (the relay needs no pushed groups / advertised routes). New clients
-    /// prefer it over `ehint` on entrust-capable relays; `ehint` stays as the legacy fallback.
-    /// Older clients ignore it and stay on `ehint`.
+    /// Entrust word (delegated E2E links only): opaque `en_xxx` routing ID — the
+    /// zero-disclosure path (the relay needs no pushed groups / advertised routes).
+    /// Absent = transparent tier (no E2E envelope).
     #[serde(default)]
     pub en: Option<String>,
-    /// Federation P3 consumer mode (delegated E2E links only): `split` = pull the token's rule
-    /// vocabulary (E2E-sealed) and route selectively; absent = `dedicated` (whole machine
-    /// captured, the 专线 tier). Older clients ignore it and stay on dedicated.
+    /// Consumer mode (delegated E2E links only): `split` = pull the token's rule
+    /// vocabulary (E2E-sealed) and route selectively; absent = `dedicated` (whole
+    /// machine captured, the 专线 tier).
     #[serde(default)]
     pub emode: Option<String>,
-    /// Federation P3 admin capability hint (delegated E2E links only): the token may pull a
-    /// bootstrap ticket over the E2E config channel and manage the issuer. Older clients
-    /// ignore it and simply lose the console entry (data plane unaffected).
+    /// Delegated admin capability hint (delegated E2E links only): the token may pull a
+    /// bootstrap ticket over the E2E config channel and manage the issuer.
     #[serde(default)]
     pub eadmin: bool,
 }
@@ -74,7 +66,7 @@ impl ConnectLink {
         }
     }
 
-    /// Whether this is a delegated credential (federation P2: account carries the `d:` mark).
+    /// Whether this is a delegated credential (account carries the `d:` mark).
     pub fn is_delegated(&self) -> bool {
         self.account.starts_with("d:")
     }
@@ -82,12 +74,6 @@ impl ConnectLink {
     /// Delegated token label (the `d:` mark stripped).
     pub fn delegated_label(&self) -> Option<&str> {
         self.account.strip_prefix("d:")
-    }
-
-    /// Effective E2E routing word for simple consumers (display / version-unaware paths):
-    /// the entrust word when present, else the legacy hint.
-    pub fn effective_hint(&self) -> Option<&str> {
-        self.en.as_deref().or(self.ehint.as_deref())
     }
 }
 
@@ -106,17 +92,10 @@ pub struct FanoutLink {
     pub insecure: bool,
 }
 
-/// Strip the scheme + role prefix (`anet://connect?` / `agilenet://connect?` etc.); None on mismatch.
+/// Strip the scheme + role prefix (`anet://connect?` etc.); None on mismatch.
 fn strip_role_prefix<'a>(url: &'a str, role: &str) -> Option<&'a str> {
-    for scheme in [LINK_SCHEME, LEGACY_LINK_SCHEME] {
-        if let Some(rest) = url.strip_prefix(scheme)
-            && let Some(rest) = rest.strip_prefix(role)
-            && let Some(rest) = rest.strip_prefix('?')
-        {
-            return Some(rest);
-        }
-    }
-    None
+    let rest = url.strip_prefix(LINK_SCHEME)?;
+    rest.strip_prefix(role)?.strip_prefix('?')
 }
 
 /// Resolve the server field: a full `https://host[:port]` form wins as-is; otherwise bare
@@ -137,7 +116,7 @@ fn truthy(v: &str) -> bool {
     v == "1" || v.eq_ignore_ascii_case("true")
 }
 
-/// Parse an `anet://connect?...` URL (legacy `agilenet://` accepted).
+/// Parse an `anet://connect?...` URL.
 pub fn parse_connect_url(url: &str) -> std::result::Result<ConnectLink, String> {
     let rest = strip_role_prefix(url.trim(), "connect")
         .ok_or_else(|| "无效的接入链接前缀".to_string())?;
@@ -147,10 +126,8 @@ pub fn parse_connect_url(url: &str) -> std::result::Result<ConnectLink, String> 
     let mut password = String::new();
     let mut fp: Option<String> = None;
     let mut insecure = false;
-    let mut admin = false;
     let mut entries: Vec<String> = Vec::new();
     let mut entry_fps: Vec<String> = Vec::new();
-    let mut ehint: Option<String> = None;
     let mut en: Option<String> = None;
     let mut emode: Option<String> = None;
     let mut eadmin = false;
@@ -165,18 +142,15 @@ pub fn parse_connect_url(url: &str) -> std::result::Result<ConnectLink, String> 
             "password" => password = v,
             "fp" => fp = Some(v),
             "insecure" => insecure = truthy(&v),
-            "admin" => admin = truthy(&v),
-            // federation P2 disaster set: comma-separated full entry list (failover order)
+            // disaster set: comma-separated full entry list (failover order)
             "entry" => entries = v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
             // parallel per-entry fingerprints (empty item = TOFU for that entry)
             "entryfp" => entry_fps = v.split(',').map(|s| s.trim().to_string()).collect(),
-            // federation P3: E2E routing hint (delegated links; client seals every Open when set)
-            "ehint" => ehint = Some(v),
-            // federation P3 entrust mode: opaque en_xxx routing word (preferred over ehint when set)
+            // entrust mode: opaque en_xxx routing word (E2E; absent = transparent tier)
             "en" => en = Some(v),
-            // federation P3 split tier: pull the rule vocabulary and route selectively
+            // split tier: pull the rule vocabulary and route selectively
             "emode" => emode = Some(v),
-            // federation P3 delegated admin: the token may manage the issuer (ticket via config channel)
+            // delegated admin: the token may manage the issuer (ticket via config channel)
             "eadmin" => eadmin = truthy(&v),
             _ => {}
         }
@@ -192,17 +166,15 @@ pub fn parse_connect_url(url: &str) -> std::result::Result<ConnectLink, String> 
         password,
         pinned_fingerprint: fp,
         insecure,
-        admin,
         entries,
         entry_fps,
-        ehint,
         en,
         emode,
         eadmin,
     })
 }
 
-/// Parse an `anet://fanout?...` URL (legacy `agilenet://` accepted).
+/// Parse an `anet://fanout?...` URL.
 pub fn parse_fanout_url(url: &str) -> std::result::Result<FanoutLink, String> {
     let rest = strip_role_prefix(url.trim(), "fanout")
         .ok_or_else(|| "无效的扇出链接前缀".to_string())?;
@@ -283,27 +255,6 @@ fn server_params(addr: &str) -> (String, Option<u16>) {
     }
 }
 
-/// Build an anet://connect URL (contains the plaintext password; share with care).
-/// A full-scheme addr (`https://host[:port]`, reverse-proxy fronted API) stays whole in the
-/// server param (the port param carries a relay/API-port semantic and must not apply).
-pub fn build_connect_url(
-    addr: &str,
-    account: &str,
-    password: &str,
-    pinned_fingerprint: Option<&str>,
-) -> String {
-    let server = server_query(addr, DEFAULT_API_PORT);
-    let mut url = format!(
-        "anet://connect?{server}&account={}&password={}",
-        url_encode(account),
-        url_encode(password),
-    );
-    if let Some(fp) = pinned_fingerprint.filter(|s| !s.is_empty()) {
-        url.push_str(&format!("&tls=1&fp={fp}"));
-    }
-    url
-}
-
 /// Build an anet://fanout URL (contains the fan-out token; share with care).
 pub fn build_fanout_url(
     addr: &str,
@@ -322,20 +273,18 @@ pub fn build_fanout_url(
     url
 }
 
-/// Build a delegated-credential link (federation P2; contains the token plaintext, share with care).
+/// Build a delegated-credential link (contains the token plaintext, share with care).
 ///
 /// Shape: `anet://connect` with the `d:<label>` account mark (import UIs show "issued by <C>"),
 /// `server`/`fp` = the primary entry, `entry`/`entryfp` = the full disaster set in failover
 /// order (per-entry relay fingerprints; an empty item falls back to TOFU). The token lives in
 /// `password` — a delegated credential is a pure data-plane key: the client dials the relay
 /// directly (no API roundtrip), so the server param always carries an explicit relay port.
-#[allow(clippy::too_many_arguments)] // the delegation word set (ehint/en/emode/eadmin) rides positional to mirror the URL params
 pub fn build_delegate_url(
     primary_addr: &str,
     label: &str,
     token: &str,
     entries: &[(String, String)],
-    ehint: Option<&str>,
     en: Option<&str>,
     emode: Option<&str>,
     eadmin: bool,
@@ -357,9 +306,6 @@ pub fn build_delegate_url(
     );
     if !primary_fp.is_empty() {
         url.push_str(&format!("&fp={primary_fp}"));
-    }
-    if let Some(hint) = ehint.filter(|s| !s.is_empty()) {
-        url.push_str(&format!("&ehint={}", url_encode(hint)));
     }
     if let Some(word) = en.filter(|s| !s.is_empty()) {
         url.push_str(&format!("&en={}", url_encode(word)));
@@ -406,43 +352,36 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_new_scheme_connect() {
+    fn parse_connect() {
         let p = parse_connect_url(
-            "anet://connect?server=anet.example.com&port=59090&account=alice&password=sk-x&fp=ab12",
+            "anet://connect?server=anet.example.com&port=54430&account=d:alice&password=psk_x&fp=ab12",
         )
         .expect("parse");
-        assert_eq!(p.addr, "anet.example.com:59090");
-        assert_eq!(p.account, "alice");
-        assert_eq!(p.password, "sk-x");
+        assert_eq!(p.addr, "anet.example.com:54430");
+        assert_eq!(p.account, "d:alice");
+        assert_eq!(p.password, "psk_x");
         assert_eq!(p.pinned_fingerprint.as_deref(), Some("ab12"));
-        assert!(!p.admin);
     }
 
     #[test]
-    fn parse_legacy_scheme_still_works() {
-        let p = parse_connect_url("agilenet://connect?server=1.2.3.4&port=59090&account=a&password=b")
-            .expect("legacy parse");
-        assert_eq!(p.addr, "1.2.3.4:59090");
+    fn rejects_non_anet_scheme() {
+        assert!(parse_connect_url("agilenet://connect?server=1.2.3.4&port=54430&account=d:a&password=b").is_err());
+        assert!(parse_fanout_url("agilenet://fanout?server=b:54430&token=psk_x").is_err());
+        assert!(parse_connect_url("http://connect?server=b:1&account=d:a&password=c").is_err());
     }
 
     #[test]
     fn parse_full_scheme_server_wins() {
         let p = parse_connect_url(
-            "anet://connect?server=https%3A%2F%2Fanet.example.com&account=a&password=b",
+            "anet://connect?server=https%3A%2F%2Fanet.example.com&account=d:a&password=b",
         )
         .expect("parse");
         assert_eq!(p.addr, "https://anet.example.com");
         let p = parse_connect_url(
-            "anet://connect?server=https%3A%2F%2Fanet.example.com%3A8443&account=a&password=b",
+            "anet://connect?server=https%3A%2F%2Fanet.example.com%3A8443&account=d:a&password=b",
         )
         .expect("parse with port");
         assert_eq!(p.addr, "https://anet.example.com:8443");
-    }
-
-    #[test]
-    fn parse_admin_flag() {
-        let p = parse_connect_url("anet://connect?server=h:1&account=a&password=b&admin=1").unwrap();
-        assert!(p.admin);
     }
 
     #[test]
@@ -461,33 +400,15 @@ mod tests {
     }
 
     #[test]
-    fn connect_roundtrip_and_admin_flag() {
-        let url = build_connect_url("1.2.3.4:59090", "u", "p", Some("ab"));
-        assert!(url.starts_with("anet://connect?"));
-        let p = parse_connect_url(&url).expect("roundtrip");
-        assert_eq!(p.account, "u");
-        assert_eq!(p.password, "p");
-        assert_eq!(p.pinned_fingerprint.as_deref(), Some("ab"));
-    }
-
-    #[test]
     fn rejects_missing_params() {
         assert!(parse_fanout_url("anet://fanout?server=b:54430").is_err());
         assert!(parse_connect_url("anet://connect?server=b:1").is_err());
-        assert!(parse_connect_url("http://connect?server=b:1&account=a&password=c").is_err());
-    }
-
-    #[test]
-    fn build_full_scheme_addr_kept_whole() {
-        let url = build_connect_url("https://anet.example.com", "u", "p", None);
-        assert_eq!(url, "anet://connect?server=https%3A%2F%2Fanet.example.com&account=u&password=p");
-        let p = parse_connect_url(&url).unwrap();
-        assert_eq!(p.addr, "https://anet.example.com");
     }
 
     #[test]
     fn password_special_chars_encoded() {
-        let url = build_connect_url("h:1", "u", "p&=x%", None);
+        let entries = vec![("h:54430".to_string(), String::new())];
+        let url = build_delegate_url("h:54430", "u", "p&=x%", &entries, None, None, false);
         let p = parse_connect_url(&url).unwrap();
         assert_eq!(p.password, "p&=x%");
     }
@@ -499,17 +420,14 @@ mod tests {
             ("b2.example.com:54430".to_string(), "".to_string()),
             ("10.0.0.3:54430".to_string(), "cc33".to_string()),
         ];
-        let url = build_delegate_url("b1.example.com:54430", "alice-laptop", "psk_secret", &entries, Some("relay.internal"), Some("en_a1b2c3d4e5f6"), Some("split"), true);
+        let url = build_delegate_url("b1.example.com:54430", "alice-laptop", "psk_secret", &entries, Some("en_a1b2c3d4e5f6"), Some("split"), true);
         let p = parse_connect_url(&url).expect("parse delegate link");
         assert!(p.is_delegated());
         assert_eq!(p.delegated_label(), Some("alice-laptop"));
         assert_eq!(p.addr, "b1.example.com:54430");
         assert_eq!(p.password, "psk_secret");
         assert_eq!(p.pinned_fingerprint.as_deref(), Some("aa11"));
-        assert_eq!(p.ehint.as_deref(), Some("relay.internal"));
         assert_eq!(p.en.as_deref(), Some("en_a1b2c3d4e5f6"));
-        // the entrust word wins as the effective routing word
-        assert_eq!(p.effective_hint(), Some("en_a1b2c3d4e5f6"));
         assert_eq!(p.emode.as_deref(), Some("split"));
         assert!(p.eadmin);
         assert_eq!(
@@ -526,24 +444,24 @@ mod tests {
     #[test]
     fn delegate_url_single_entry_omits_entry_params() {
         let entries = vec![("b1.example.com:54430".to_string(), "aa11".to_string())];
-        let url = build_delegate_url("b1.example.com:54430", "bob", "psk_x", &entries, None, None, None, false);
+        let url = build_delegate_url("b1.example.com:54430", "bob", "psk_x", &entries, None, None, false);
         assert!(!url.contains("entry="));
-        assert!(!url.contains("ehint="));
         assert!(!url.contains("&en="));
         assert!(!url.contains("emode="));
         assert!(!url.contains("eadmin="));
         let p = parse_connect_url(&url).unwrap();
         assert_eq!(p.entries(), vec!["b1.example.com:54430".to_string()]);
-        assert_eq!(p.ehint, None);
         assert_eq!(p.en, None);
         assert_eq!(p.emode, None);
+        assert!(!p.eadmin);
     }
 
     #[test]
-    fn plain_connect_link_has_single_entry_and_no_delegation() {
-        let p = parse_connect_url("anet://connect?server=h:1&account=u&password=p").unwrap();
-        assert!(!p.is_delegated());
+    fn transparent_delegate_link_has_no_entrust_word() {
+        let p = parse_connect_url("anet://connect?server=h:1&account=d:u&password=p").unwrap();
+        assert!(p.is_delegated());
         assert_eq!(p.entries(), vec!["h:1".to_string()]);
         assert!(p.entry_fps.is_empty());
+        assert_eq!(p.en, None);
     }
 }

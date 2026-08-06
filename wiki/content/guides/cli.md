@@ -6,7 +6,6 @@
 - ID 前缀解析：输入前几位即可（如 `anet rule delete 3f2a`）
 - `--json` 机器可读输出，默认表格输出
 - `--api <url>` 覆盖端点地址（默认读会话或 `http://127.0.0.1:59090`）
-- 兼容：`anet-svc cli ...` 旧式入口仍可用（已废弃，等同顶层同名命令）
 
 ## 首装：初始化向导
 
@@ -62,17 +61,12 @@ anet group update office --name 新名称
 anet group delete office [--force]
 ```
 
-## 客户端账号
+## 统一签发（消费者接入）
 
-```bash
-anet account add --username zhangsan --group office
-# 输出 sk- 密码与 connect_url（仅一次）
-anet account add --username ops --group office --admin   # 管理版接入链接（签发记审计）
-anet account list [--group office] [--enabled true]
-anet account update 8c1d --enabled false / --admin true
-anet account reset-password 8c1d
-anet account delete 8c1d
-```
+消费者接入无账号层——资源主直接签发委托令牌（令牌即身份）。签发走 Web 后台
+扇入页「签发」页签或 API `POST /api/v1/admin/delegation/tokens`（四维度：入口
+direct/relay × 信任 明文/E2E/E2E+管理档 × 路由 dedicated/split × 并发 single/multi），
+产出 `anet://connect?...` 接入链接（明文仅签发时展示一次）。
 
 ## Relay 令牌
 

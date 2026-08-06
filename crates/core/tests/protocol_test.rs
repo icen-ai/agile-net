@@ -1,36 +1,28 @@
-//! Protocol v3/v4 compatibility matrix (federation P2/P3):
-//! - OpenChannel extension fields (groups / e2e) are serde-defaulted: new peers parse legacy
-//!   payloads, legacy peers ignore the new fields
-//! - Ctrl frames flow over the mux session control plane and reach subscribers only
-//! - version constants keep their ordering (flow control v2 <= delegation v3 <= entrust v4)
+//! Protocol v4 wire-format tests (federation P2/P3, unified issuance):
+//! - PROTOCOL_VERSION is 4 and no version-gated feature constants exist (v4 is the only behavior)
+//! - OpenChannel extension fields (groups / e2e) round-trip; a plain Open serializes minimal
+//! - Ctrl token_register/revoke frames carry the session concurrency policy fields and flow
+//!   over the mux session control plane to subscribers only
 
 use agile_net_core::proto::frame::{Frame, FrameType};
 use agile_net_core::proto::message::{
-    CtrlMessage, E2eOpen, HintEntry, OpenChannel, PROTOCOL_VERSION, PROTOCOL_VERSION_DELEGATION,
-    PROTOCOL_VERSION_ENTRUST, PROTOCOL_VERSION_FLOW_CONTROL,
+    Concurrency, CtrlMessage, E2eOpen, HintEntry, OpenChannel, PROTOCOL_VERSION,
+    PROTOCOL_VERSION_FLOW_CONTROL,
 };
 use agile_net_core::relay::mux::{MuxSession, SessionEvents};
 use bytes::Bytes;
 
-/// A v1/v2 peer's view of the Open payload (only the two original fields).
-#[derive(serde::Deserialize)]
-struct LegacyOpenChannel {
-    target_addr: String,
-    target_port: u16,
+#[test]
+fn protocol_version_is_v4() {
+    assert_eq!(PROTOCOL_VERSION, 4);
+    assert_eq!(PROTOCOL_VERSION_FLOW_CONTROL, 2);
 }
 
 #[test]
-fn version_constants_ordered() {
-    assert_eq!(PROTOCOL_VERSION, PROTOCOL_VERSION_ENTRUST);
-    assert!(PROTOCOL_VERSION_ENTRUST > PROTOCOL_VERSION_DELEGATION);
-    assert!(PROTOCOL_VERSION_DELEGATION > PROTOCOL_VERSION_FLOW_CONTROL);
-}
-
-#[test]
-fn open_channel_parses_legacy_payload() {
-    // payload produced by a v1/v2 peer (no groups/e2e keys at all)
-    let legacy = serde_json::json!({ "target_addr": "10.0.0.1", "target_port": 5432 });
-    let open: OpenChannel = serde_json::from_value(legacy).unwrap();
+fn open_channel_minimal_payload_parses() {
+    // the plain-Open wire shape carries only the two target fields
+    let wire = serde_json::json!({ "target_addr": "10.0.0.1", "target_port": 5432 });
+    let open: OpenChannel = serde_json::from_value(wire).unwrap();
     assert_eq!(open.target_addr, "10.0.0.1");
     assert_eq!(open.target_port, 5432);
     assert!(open.groups.is_empty());
@@ -38,31 +30,28 @@ fn open_channel_parses_legacy_payload() {
 }
 
 #[test]
-fn open_channel_extension_invisible_to_legacy_peers() {
-    // a v3 peer stamps group tags + an E2E envelope; a legacy peer must still parse fine
+fn open_channel_extension_roundtrip() {
     let open = OpenChannel {
         target_addr: "git.internal".into(),
         target_port: 22,
         groups: vec!["git".into(), "ops".into()],
         e2e: Some(E2eOpen {
-            kid: "0123abcd".into(),
+            kid: "0123abcd5678".into(),
             hint: "git.internal".into(),
             blob: "AAECAwQ=".into(),
         }),
     };
     let json = serde_json::to_value(&open).unwrap();
-    let legacy: LegacyOpenChannel = serde_json::from_value(json.clone()).unwrap();
-    assert_eq!(legacy.target_addr, "git.internal");
-    assert_eq!(legacy.target_port, 22);
-    // and a v3 peer round-trips the same payload losslessly
     let back: OpenChannel = serde_json::from_value(json).unwrap();
+    assert_eq!(back.target_addr, "git.internal");
+    assert_eq!(back.target_port, 22);
     assert_eq!(back.groups, vec!["git".to_string(), "ops".to_string()]);
-    assert_eq!(back.e2e.as_ref().unwrap().kid, "0123abcd");
+    assert_eq!(back.e2e.as_ref().unwrap().kid, "0123abcd5678");
 }
 
 #[test]
 fn open_channel_plain_serializes_without_extension_keys() {
-    // a transparent Open must produce the exact legacy payload shape (no noise for old peers)
+    // a transparent Open must produce the exact minimal payload shape (no noise on the wire)
     let json = serde_json::to_value(OpenChannel::new("1.2.3.4", 80)).unwrap();
     assert_eq!(json, serde_json::json!({ "target_addr": "1.2.3.4", "target_port": 80 }));
 }
@@ -74,26 +63,47 @@ fn ctrl_message_wire_format() {
         label: "alice-laptop".into(),
         groups: vec!["git".into()],
         hint_map: vec![HintEntry {
-            hint: "*.internal".into(),
+            hint: "en_0123abcd5678".into(),
             groups: vec!["git".into()],
         }],
+        concurrency: Concurrency::Multi,
+        max_sessions: 8,
     };
     let json = serde_json::to_value(&register).unwrap();
     assert_eq!(json["op"], "token_register");
     assert_eq!(json["label"], "alice-laptop");
-    assert_eq!(json["hint_map"][0]["hint"], "*.internal");
+    assert_eq!(json["hint_map"][0]["hint"], "en_0123abcd5678");
+    assert_eq!(json["concurrency"], "multi");
+    assert_eq!(json["max_sessions"], 8);
     let back: CtrlMessage = serde_json::from_value(json).unwrap();
-    let CtrlMessage::TokenRegister { token_hash, groups, .. } = back else {
+    let CtrlMessage::TokenRegister {
+        token_hash,
+        groups,
+        concurrency,
+        max_sessions,
+        ..
+    } = back
+    else {
         panic!("expected TokenRegister");
     };
     assert_eq!(token_hash, "ab".repeat(32));
     assert_eq!(groups, vec!["git".to_string()]);
+    assert_eq!(concurrency, Concurrency::Multi);
+    assert_eq!(max_sessions, 8);
 
     let revoke = serde_json::to_value(CtrlMessage::TokenRevoke {
         token_hash: "cd".repeat(32),
+        concurrency: Concurrency::Single,
+        max_sessions: 1,
     })
     .unwrap();
     assert_eq!(revoke["op"], "token_revoke");
+    assert_eq!(revoke["concurrency"], "single");
+    let back: CtrlMessage = serde_json::from_value(revoke).unwrap();
+    let CtrlMessage::TokenRevoke { token_hash, .. } = back else {
+        panic!("expected TokenRevoke");
+    };
+    assert_eq!(token_hash, "cd".repeat(32));
 
     let ack = serde_json::to_value(CtrlMessage::TokenAck {
         token_hash: "ef".repeat(32),
@@ -129,6 +139,8 @@ async fn ctrl_frame_reaches_ctrl_subscriber() {
 
     let msg = serde_json::to_vec(&CtrlMessage::TokenRevoke {
         token_hash: "ff".repeat(32),
+        concurrency: Concurrency::Single,
+        max_sessions: 1,
     })
     .unwrap();
     a.send_frame(Frame::new(FrameType::Ctrl, 0, Bytes::from(msg.clone())))
@@ -144,8 +156,8 @@ async fn ctrl_frame_reaches_ctrl_subscriber() {
 
 #[tokio::test]
 async fn ctrl_frame_dropped_without_subscriber() {
-    // a peer that did not subscribe to Ctrl (e.g. a plain client) must not stall or error —
-    // the frame is simply dropped (v2 peers never send Ctrl anyway)
+    // a peer that did not subscribe to Ctrl (e.g. a plain consumer client) must not stall or
+    // error — the frame is simply dropped
     let (s1, s2) = tokio::io::duplex(4096);
     let (a, _h1) = MuxSession::start(s1, 1, SessionEvents::default(), false, None);
     let (_b, _h2) = MuxSession::start(s2, 2, SessionEvents::default(), false, None);
@@ -153,8 +165,7 @@ async fn ctrl_frame_dropped_without_subscriber() {
     a.send_frame(Frame::new(FrameType::Ctrl, 0, Bytes::from_static(b"{}")))
         .await
         .unwrap();
-    // session stays alive: opening a channel still works afterwards would require an Open
-    // subscriber; assert liveness via traffic counters staying consistent instead
+    // session stays alive: assert liveness via traffic counters staying consistent
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     assert_eq!(a.channel_count(), 0);
 }

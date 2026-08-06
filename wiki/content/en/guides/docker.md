@@ -48,6 +48,6 @@ From the host you can connect to root directly with `anet-svc client` or anet-gu
 Orchestration notes:
 
 - Each node pre-provisions downstream tokens via `AGILE_RELAY_TOKENS` (idempotent by hash); the `psk_xxx|expose:rules` syntax exposes the control plane
-- Set `AGILE_PUBLIC_HOST` to a name resolvable inside the container network, so that connect_url and tunnel endpoints are correct
-- Mount the config file at `/etc/agile-net/node.toml`: `[listener]` opens the upstream-facing side, `[connector]` connects to the upstream,
+- Set `AGILE_PUBLIC_HOST` to a name resolvable inside the container network, so that share links and tunnel endpoints are correct
+- Mount the config file at `/etc/agile-net/node.toml`: `[listener]` opens the upstream-facing side, `[[connectors]]` connects to the upstream,
   and `advertise` announces the local segment (with multi-level setups, downstream links are included automatically)

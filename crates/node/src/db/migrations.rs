@@ -1,4 +1,8 @@
 //! Split from db/mod.rs: versioned migrations (pure move, no logic change)
+//!
+//! The pre-release migration chain (v1~v15) is collapsed into a single baseline v1 holding the
+//! final schema; the version-table mechanism stays in place for post-release upgrades (append
+//! new entries to the end of MIGRATIONS, never edit the baseline).
 
 use super::pool::{Database, db_err};
 use agile_net_core::error::Result;
@@ -6,11 +10,10 @@ use rusqlite::params;
 use tracing::info;
 
 /// Current schema version (monotonic; append new migrations to the end of MIGRATIONS).
-const MIGRATIONS: &[(u32, &str, &str)] = &[
-    (
-        1,
-        "initial_schema",
-        r#"
+const MIGRATIONS: &[(u32, &str, &str)] = &[(
+    1,
+    "baseline",
+    r#"
     CREATE TABLE admin (
         id         TEXT PRIMARY KEY,
         username   TEXT NOT NULL UNIQUE,
@@ -32,11 +35,14 @@ const MIGRATIONS: &[(u32, &str, &str)] = &[
     CREATE INDEX idx_rule_type ON rule(type);
 
     CREATE TABLE "group" (
-        id         TEXT PRIMARY KEY,
-        name       TEXT NOT NULL UNIQUE,
-        remark     TEXT NOT NULL DEFAULT '',
-        created_at TEXT NOT NULL DEFAULT (datetime('now')),
-        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        id           TEXT PRIMARY KEY,
+        name         TEXT NOT NULL UNIQUE,
+        remark       TEXT NOT NULL DEFAULT '',
+        e2e_required INTEGER NOT NULL DEFAULT 0,
+        adopted_node TEXT NOT NULL DEFAULT '',
+        adopted_name TEXT NOT NULL DEFAULT '',
+        created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
     CREATE TABLE group_rule (
@@ -46,34 +52,31 @@ const MIGRATIONS: &[(u32, &str, &str)] = &[
     );
     CREATE INDEX idx_group_rule_rule ON group_rule(rule_id);
 
-    CREATE TABLE account (
-        id                TEXT PRIMARY KEY,
-        username          TEXT NOT NULL UNIQUE,
-        password          TEXT NOT NULL,
-        group_id          TEXT NOT NULL REFERENCES "group"(id),
-        enabled           INTEGER NOT NULL DEFAULT 1,
-        remark            TEXT NOT NULL DEFAULT '',
-        tunnel_token_hash TEXT,
-        last_seen_at      TEXT,
-        created_at        TEXT NOT NULL DEFAULT (datetime('now')),
-        updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
-    );
-    CREATE INDEX idx_account_group ON account(group_id);
-    CREATE INDEX idx_account_enabled ON account(enabled);
-
+    -- Fan-in relay token. group_id holds a comma-separated group set (multi-group ACL; no FK —
+    -- dangling ids converge to deny-all in the ACL registry). Lifecycle: expires_at / max_uses /
+    -- used_count (NULL = never expires / unlimited).
     CREATE TABLE relay_token (
-        id           TEXT PRIMARY KEY,
-        token_hash   TEXT NOT NULL UNIQUE,
-        token_prefix TEXT NOT NULL,
-        remark       TEXT NOT NULL DEFAULT '',
-        last_used_at TEXT,
-        created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+        id              TEXT PRIMARY KEY,
+        token_hash      TEXT NOT NULL UNIQUE,
+        token_prefix    TEXT NOT NULL,
+        remark          TEXT NOT NULL DEFAULT '',
+        last_used_at    TEXT,
+        expose_control  INTEGER NOT NULL DEFAULT 0,
+        control_scope   TEXT NOT NULL DEFAULT 'full',
+        group_id        TEXT,
+        rate_limit_kbps INTEGER,
+        expires_at      TEXT,
+        max_uses        INTEGER,
+        used_count      INTEGER NOT NULL DEFAULT 0,
+        created_at      TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
     CREATE TABLE node_config (
         key   TEXT PRIMARY KEY,
-        value TEXT NOT NULL
+        value TEXT NOT NULL DEFAULT ''
     );
+    -- Unified issuance: default session cap snapshotted into delegated_token.max_sessions at issue time
+    INSERT INTO node_config (key, value) VALUES ('delegation_max_sessions', '8');
 
     CREATE TABLE audit_log (
         id         TEXT PRIMARY KEY,
@@ -88,18 +91,6 @@ const MIGRATIONS: &[(u32, &str, &str)] = &[
     CREATE INDEX idx_audit_action ON audit_log(action);
     CREATE INDEX idx_audit_time ON audit_log(created_at);
 
-    CREATE TABLE traffic_log (
-        id          TEXT PRIMARY KEY,
-        account_id  TEXT REFERENCES account(id) ON DELETE SET NULL,
-        hour        TEXT NOT NULL,
-        bytes_tx    INTEGER NOT NULL DEFAULT 0,
-        bytes_rx    INTEGER NOT NULL DEFAULT 0,
-        connections INTEGER NOT NULL DEFAULT 0,
-        UNIQUE(account_id, hour)
-    );
-    CREATE INDEX idx_traffic_hour ON traffic_log(hour);
-    CREATE INDEX idx_traffic_account ON traffic_log(account_id);
-
     CREATE TABLE refresh_token (
         jti_hash   TEXT PRIMARY KEY,
         subject    TEXT NOT NULL,
@@ -108,22 +99,14 @@ const MIGRATIONS: &[(u32, &str, &str)] = &[
         revoked    INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
-    "#,
-    ),
-    (
-        2,
-        "admin_console_and_tickets",
-        r#"
-    -- Admin connect URL: an account may be granted the "manage this node" permission
-    ALTER TABLE account ADD COLUMN admin_console INTEGER NOT NULL DEFAULT 0;
 
     -- Admin bootstrap ticket: one-time (or time-limited) credential exchanged for an admin
-    -- session via the console channel / relay exposure. Only the SHA-256 hash is stored;
-    -- the plaintext is returned once at issuance.
+    -- session via the relay-exposed control plane / delegation admin channel. Only the
+    -- SHA-256 hash is stored; the plaintext is returned once at issuance.
     CREATE TABLE admin_ticket (
         id          TEXT PRIMARY KEY,
         ticket_hash TEXT NOT NULL UNIQUE,
-        kind        TEXT NOT NULL CHECK(kind IN ('account','relay')),
+        kind        TEXT NOT NULL CHECK(kind IN ('relay')),
         subject     TEXT NOT NULL,
         scope       TEXT NOT NULL DEFAULT 'full' CHECK(scope IN ('ro','rules','full')),
         uses        INTEGER NOT NULL DEFAULT 0,
@@ -132,58 +115,30 @@ const MIGRATIONS: &[(u32, &str, &str)] = &[
         created_at  TEXT NOT NULL DEFAULT (datetime('now'))
     );
     CREATE INDEX idx_admin_ticket_exp ON admin_ticket(expires_at);
-    "#,
-    ),
-    (
-        3,
-        "relay_token_expose_control",
-        r#"
-    -- "Expose control plane" switch for relay links: allow this fan-in relay to manage this node (default off)
-    ALTER TABLE relay_token ADD COLUMN expose_control INTEGER NOT NULL DEFAULT 0;
-    -- Admin grant scope: ro (read-only) / rules (read-only + rule write) / full (full access)
-    ALTER TABLE relay_token ADD COLUMN control_scope TEXT NOT NULL DEFAULT 'full';
-    "#,
-    ),
-    (
-        4,
-        "peer_acl_connector",
-        r#"
-    -- ACL mount point for fan-in peers (NULL = no restriction, allow all)
-    ALTER TABLE relay_token ADD COLUMN group_id TEXT REFERENCES "group"(id);
 
-    -- Fan-out connectors in DB (first-class resource; token_enc stored encrypted, see docs/todo/peer-acl.md §4/§5)
+    -- Fan-out connectors (first-class resource; token_enc stored encrypted). group_id holds a
+    -- comma-separated group set (same multi-group ACL semantics as relay_token; no FK).
     CREATE TABLE connector (
-        id           TEXT PRIMARY KEY,
-        name         TEXT NOT NULL UNIQUE,
-        upstream_addr TEXT NOT NULL,
-        token_enc    TEXT NOT NULL,
-        sni_hostname TEXT NOT NULL DEFAULT '',
-        insecure     INTEGER NOT NULL DEFAULT 0,
-        advertise    TEXT NOT NULL DEFAULT '',
-        group_id     TEXT REFERENCES "group"(id),
-        enabled      INTEGER NOT NULL DEFAULT 1,
-        remark       TEXT NOT NULL DEFAULT '',
-        created_at   TEXT NOT NULL DEFAULT (datetime('now')),
-        updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
+        id                 TEXT PRIMARY KEY,
+        name               TEXT NOT NULL UNIQUE,
+        upstream_addr      TEXT NOT NULL,
+        token_enc          TEXT NOT NULL,
+        sni_hostname       TEXT NOT NULL DEFAULT '',
+        insecure           INTEGER NOT NULL DEFAULT 0,
+        advertise          TEXT NOT NULL DEFAULT '',
+        group_id           TEXT,
+        enabled            INTEGER NOT NULL DEFAULT 1,
+        remark             TEXT NOT NULL DEFAULT '',
+        ca_cert_path       TEXT NOT NULL DEFAULT '',
+        pinned_cert_path   TEXT NOT NULL DEFAULT '',
+        pinned_fingerprint TEXT NOT NULL DEFAULT '',
+        push_groups        TEXT NOT NULL DEFAULT '',
+        created_at         TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at         TEXT NOT NULL DEFAULT (datetime('now'))
     );
     CREATE INDEX idx_connector_group ON connector(group_id);
-    "#,
-    ),
-    (
-        5,
-        "connector_cert_paths",
-        r#"
-    -- Align fan-out connector cert-pinning capability with core ConnectorConfig (columns missed in design doc §4;
-    -- empty string = unused; precedence pinned > ca > insecure matches the TOML assembly logic)
-    ALTER TABLE connector ADD COLUMN ca_cert_path TEXT NOT NULL DEFAULT '';
-    ALTER TABLE connector ADD COLUMN pinned_cert_path TEXT NOT NULL DEFAULT '';
-    "#,
-    ),
-    (
-        6,
-        "node_traffic_log",
-        r#"
-    -- Node-level hourly traffic series (3 dims: fan-in peer / fan-out / relay transit; per-account traffic stays in traffic_log, unaffected)
+
+    -- Node-level hourly traffic series (3 dims: fan-in peer / fan-out / relay transit)
     -- dim: fanin=fan-in peer (src=peer node_id) / fanout=fan-out (src=connector name)
     --      / transit=relay transit (src=origin, dst=terminus)
     -- hour is a local-time bucket 'YYYY-MM-DD HH:00' (status traffic_24h contract format)
@@ -198,44 +153,15 @@ const MIGRATIONS: &[(u32, &str, &str)] = &[
         UNIQUE(dim, src, dst, hour)
     );
     CREATE INDEX idx_node_traffic_hour ON node_traffic_log(hour);
-    "#,
-    ),
-    (
-        7,
-        "relay_token_rate_limit",
-        r#"
-    -- Relay token bandwidth quota (KB/s; NULL = unlimited). Fan-in session rate limiting enforced by core TokenBucket.
-    ALTER TABLE relay_token ADD COLUMN rate_limit_kbps INTEGER;
-    "#,
-    ),
-    (
-        8,
-        "connector_pinned_fingerprint",
-        r#"
-    -- Fan-out cert fingerprint pinning (SHA-256 hex, distributed out-of-band; empty = unused).
-    -- Lets connectors verify self-signed mimicry certs without insecure or cert files.
-    ALTER TABLE connector ADD COLUMN pinned_fingerprint TEXT NOT NULL DEFAULT '';
-    "#,
-    ),
-    (
-        9,
-        "connector_push_groups",
-        r#"
-    -- Policy upload (federation P1): local group IDs pushed upstream with the fan-out handshake
-    -- (comma-separated; empty = no upload). The upstream pools them source-tagged for one-click adoption.
-    ALTER TABLE connector ADD COLUMN push_groups TEXT NOT NULL DEFAULT '';
-    "#,
-    ),
-    (
-        10,
-        "delegation_and_e2e",
-        r#"
-    -- Delegated tokens (federation P2): the resource owner issues consumer credentials directly,
-    -- registered upstream over the fan-out session (session-scoped, revoke-by-disconnect).
-    -- groups = JSON array of local group IDs (resolved to names at registration time);
-    -- hint_map = JSON array of {hint, groups} (coarse E2E routing vocabulary);
-    -- e2e_key_enc = E2E channel master key, AES-256-GCM encrypted like connector tokens
-    -- (federation P3: HKDF(token) at issuance; second reversible-storage exception, same mechanism).
+
+    -- Delegated tokens (unified issuance): the resource owner issues consumer credentials
+    -- directly. entry_mode: 'direct' (consumer dials this issuer's own listener, local
+    -- registration) | 'relay' (registered upstream over the fan-out session, disaster set).
+    -- concurrency: 'single' (a new session kicks the old) | 'multi' (up to max_sessions).
+    -- max_sessions snapshots node_config.delegation_max_sessions at issue time.
+    -- groups = JSON array of local group IDs; hint_map = JSON array of {hint, groups}
+    -- (entrust words only; empty for the transparent tier); e2e_key_enc = E2E channel master
+    -- key, AES-256-GCM encrypted like connector tokens.
     CREATE TABLE delegated_token (
         id           TEXT PRIMARY KEY,
         token_hash   TEXT NOT NULL UNIQUE,
@@ -244,134 +170,27 @@ const MIGRATIONS: &[(u32, &str, &str)] = &[
         groups       TEXT NOT NULL DEFAULT '[]',
         hint_map     TEXT NOT NULL DEFAULT '[]',
         e2e_key_enc  TEXT NOT NULL DEFAULT '',
+        mode         TEXT NOT NULL DEFAULT 'dedicated',
+        admin_scope  TEXT NOT NULL DEFAULT '',
+        entry_mode   TEXT NOT NULL DEFAULT 'relay' CHECK(entry_mode IN ('direct','relay')),
+        concurrency  TEXT NOT NULL DEFAULT 'single' CHECK(concurrency IN ('single','multi')),
+        max_sessions INTEGER NOT NULL DEFAULT 8,
+        expires_at   TEXT,
+        max_uses     INTEGER,
+        used_count   INTEGER NOT NULL DEFAULT 0,
         created_at   TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
-    -- Disaster-set registration: one row per upstream connector (is_primary=1 marks the primary entry);
-    -- re-registered automatically whenever the fan-out session (re)connects.
+    -- Disaster-set registration of relay-entry tokens: one row per upstream connector
+    -- (is_primary=1 marks the primary entry); re-registered on every fan-out (re)connect.
     CREATE TABLE delegated_token_reg (
         token_id     TEXT NOT NULL REFERENCES delegated_token(id) ON DELETE CASCADE,
         connector_id TEXT NOT NULL REFERENCES connector(id) ON DELETE CASCADE,
         is_primary   INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY (token_id, connector_id)
     );
-
-    -- E2E enforcement flag (federation P3): an e2e_required group may only hang on delegated
-    -- tokens — never on local accounts / relay tokens / connectors (those principals have no E2E key).
-    ALTER TABLE "group" ADD COLUMN e2e_required INTEGER NOT NULL DEFAULT 0;
     "#,
-    ),
-    (
-        11,
-        "delegated_token_mode",
-        r#"
-    -- Consumer mode of a delegated token (federation P3): 'dedicated' (专线 — the consumer's
-    -- whole machine is captured, the rule vocabulary stays hidden) or 'split' (分流 — the
-    -- vocabulary is delivered E2E-sealed on pull, the consumer routes selectively).
-    -- Display + link-rebuild metadata; enforcement paths are unchanged.
-    ALTER TABLE delegated_token ADD COLUMN mode TEXT NOT NULL DEFAULT 'dedicated';
-    "#,
-    ),
-    (
-        12,
-        "group_adoption_lineage",
-        r#"
-    -- Adopted-group lineage (federation P1 acceptance): an adopted group is a live read-only
-    -- mirror of the pushed source (adopted_node = fan-in peer node_id, adopted_name = pushed
-    -- group name). The sync engine re-applies the source's rules/E2E flag on every watcher
-    -- tick; editing requires an explicit copy. Empty = plain local group.
-    ALTER TABLE "group" ADD COLUMN adopted_node TEXT NOT NULL DEFAULT '';
-    ALTER TABLE "group" ADD COLUMN adopted_name TEXT NOT NULL DEFAULT '';
-    "#,
-    ),
-    (
-        13,
-        "delegated_token_admin_scope",
-        r#"
-    -- Delegated admin capability (federation P3): '' = data-plane only; ro/rules/full =
-    -- the consumer may pull a bootstrap ticket over the E2E config channel and manage this
-    -- issuer (full additionally unlocks transit management of discovered upstreams).
-    -- Requires an E2E hint at issuance — a ticket must never cross a relay in plaintext.
-    ALTER TABLE delegated_token ADD COLUMN admin_scope TEXT NOT NULL DEFAULT '';
-    "#,
-    ),
-    (
-        14,
-        "multi_group_acl",
-        r#"
-    -- Multi-group ACL: relay_token.group_id / connector.group_id now hold a comma-separated
-    -- group set (single id = one-element set, fully backward compatible; the ACL is the union
-    -- of member rules). A CSV set cannot satisfy REFERENCES "group"(id), so both tables are
-    -- rebuilt without the single-value FK. Deleting a group now leaves dangling ids in
-    -- token/connector sets on purpose: the ACL registry converges them to deny-all
-    -- (fail-closed), and attachment counting is CSV-aware in Rust (group_attachment_count).
-    PRAGMA foreign_keys=OFF;
-    BEGIN;
-
-    CREATE TABLE relay_token_v14 (
-        id              TEXT PRIMARY KEY,
-        token_hash      TEXT NOT NULL UNIQUE,
-        token_prefix    TEXT NOT NULL,
-        remark          TEXT NOT NULL DEFAULT '',
-        last_used_at    TEXT,
-        expose_control  INTEGER NOT NULL DEFAULT 0,
-        control_scope   TEXT NOT NULL DEFAULT 'full',
-        group_id        TEXT,
-        rate_limit_kbps INTEGER,
-        created_at      TEXT NOT NULL DEFAULT (datetime('now'))
-    );
-    INSERT INTO relay_token_v14 (id, token_hash, token_prefix, remark, last_used_at, expose_control, control_scope, group_id, rate_limit_kbps, created_at)
-        SELECT id, token_hash, token_prefix, remark, last_used_at, expose_control, control_scope, group_id, rate_limit_kbps, created_at FROM relay_token;
-    DROP TABLE relay_token;
-    ALTER TABLE relay_token_v14 RENAME TO relay_token;
-
-    CREATE TABLE connector_v14 (
-        id                 TEXT PRIMARY KEY,
-        name               TEXT NOT NULL UNIQUE,
-        upstream_addr      TEXT NOT NULL,
-        token_enc          TEXT NOT NULL,
-        sni_hostname       TEXT NOT NULL DEFAULT '',
-        insecure           INTEGER NOT NULL DEFAULT 0,
-        advertise          TEXT NOT NULL DEFAULT '',
-        group_id           TEXT,
-        enabled            INTEGER NOT NULL DEFAULT 1,
-        remark             TEXT NOT NULL DEFAULT '',
-        created_at         TEXT NOT NULL DEFAULT (datetime('now')),
-        updated_at         TEXT NOT NULL DEFAULT (datetime('now')),
-        ca_cert_path       TEXT NOT NULL DEFAULT '',
-        pinned_cert_path   TEXT NOT NULL DEFAULT '',
-        pinned_fingerprint TEXT NOT NULL DEFAULT '',
-        push_groups        TEXT NOT NULL DEFAULT ''
-    );
-    INSERT INTO connector_v14 (id, name, upstream_addr, token_enc, sni_hostname, insecure, advertise, group_id, enabled, remark, created_at, updated_at, ca_cert_path, pinned_cert_path, pinned_fingerprint, push_groups)
-        SELECT id, name, upstream_addr, token_enc, sni_hostname, insecure, advertise, group_id, enabled, remark, created_at, updated_at, ca_cert_path, pinned_cert_path, pinned_fingerprint, push_groups FROM connector;
-    DROP TABLE connector;
-    ALTER TABLE connector_v14 RENAME TO connector;
-    CREATE INDEX idx_connector_group ON connector(group_id);
-
-    COMMIT;
-    PRAGMA foreign_keys=ON;
-    "#,
-    ),
-    (
-        15,
-        "token_lifecycle",
-        r#"
-    -- Token lifecycle (docs/todo/e2e.md §8): optional expiry / usage caps for every token type.
-    -- NULL = never expires / unlimited — all existing tokens stay unrestricted (backward compatible).
-    -- relay_token:  expires_at (ISO datetime) + max_uses / used_count (successful fan-in auths)
-    -- delegated_token: expires_at + max_uses / used_count (data-plane opens, counted on the issuer)
-    -- account: tunnel_expires_at (tunnel token validity window; password login unaffected)
-    ALTER TABLE relay_token ADD COLUMN expires_at TEXT;
-    ALTER TABLE relay_token ADD COLUMN max_uses INTEGER;
-    ALTER TABLE relay_token ADD COLUMN used_count INTEGER NOT NULL DEFAULT 0;
-    ALTER TABLE delegated_token ADD COLUMN expires_at TEXT;
-    ALTER TABLE delegated_token ADD COLUMN max_uses INTEGER;
-    ALTER TABLE delegated_token ADD COLUMN used_count INTEGER NOT NULL DEFAULT 0;
-    ALTER TABLE account ADD COLUMN tunnel_expires_at TEXT;
-    "#,
-    ),
-];
+)];
 
 impl Database {
     /// Run versioned migrations
@@ -414,351 +233,129 @@ impl Database {
 mod tests {
     use super::*;
 
-    /// Create a group, return its id
-    fn mk_group(db: &Database, name: &str) -> String {
-        db.create_group(name, "").expect("create group").id
+    /// Names of every user table in the database (migration bookkeeping excluded).
+    fn table_names(db: &Database) -> Vec<String> {
+        let conn = db.conn();
+        let mut stmt = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE '\\_migration' ESCAPE '\\' AND name NOT LIKE 'sqlite_%' ORDER BY name")
+            .unwrap();
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0)).unwrap();
+        rows.map(|r| r.unwrap()).collect()
+    }
+
+    /// Column names of one table (PRAGMA table_info; quoted — `group` is a SQL keyword).
+    fn column_names(db: &Database, table: &str) -> Vec<String> {
+        let conn = db.conn();
+        let mut stmt = conn
+            .prepare(&format!("PRAGMA table_info(\"{table}\")"))
+            .unwrap();
+        let rows = stmt.query_map([], |r| r.get::<_, String>(1)).unwrap();
+        rows.map(|r| r.unwrap()).collect()
     }
 
     #[test]
-    fn migration_v4_upgrades_old_db() {
-        // Build a legacy DB file with only v1~v3 applied
-        let path = std::env::temp_dir().join(format!("anet-db-mig-test-{}.db", uuid::Uuid::new_v4()));
-        {
-            let conn = rusqlite::Connection::open(&path).expect("open raw conn");
-            conn.execute_batch(
-                "CREATE TABLE _migration (
-                    version INTEGER PRIMARY KEY,
-                    name TEXT NOT NULL,
-                    applied_at TEXT NOT NULL DEFAULT (datetime('now'))
-                );",
-            )
-            .unwrap();
-            for (version, name, sql) in MIGRATIONS.iter().take(3) {
-                conn.execute_batch(sql).unwrap();
-                conn.execute(
-                    "INSERT INTO _migration (version, name) VALUES (?1, ?2)",
-                    params![version, name],
-                )
-                .unwrap();
-            }
-            // Insert a relay_token under the old schema (no group_id column)
-            conn.execute(
-                "INSERT INTO relay_token (id, token_hash, token_prefix, remark, expose_control, control_scope, created_at)
-                 VALUES ('tok-old', 'hash-old', 'psk_abcd', 'legacy', 0, 'full', '2026-01-01T00:00:00Z')",
-                [],
-            )
-            .unwrap();
-        }
-
-        // Opening triggers v4 migration: old rows kept, new columns NULL (unrestricted), connector table usable
-        {
-            let db = Database::open(&path).expect("open migrated db");
-            let tok = db
-                .get_relay_token("tok-old")
-                .expect("get")
-                .expect("old token exists");
-            assert_eq!(tok.token_prefix, "psk_abcd");
-            assert_eq!(tok.group_id, None);
-            assert_eq!(tok.group_name, None);
-            assert!(db.list_connectors().expect("connector table").is_empty());
-
-            // After migration, old rows can be attached to a group directly
-            let gid = mk_group(&db, "g1");
-            db.set_relay_token_group("tok-old", Some(&gid)).expect("set group");
-            let tok = db.get_relay_token("tok-old").expect("get2").unwrap();
-            assert_eq!(tok.group_id.as_deref(), Some(gid.as_str()));
-            assert_eq!(tok.group_name.as_deref(), Some("g1"));
-        }
-
-        let _ = std::fs::remove_file(&path);
-        let _ = std::fs::remove_file(path.with_extension("db-wal"));
-        let _ = std::fs::remove_file(path.with_extension("db-shm"));
-    }
-
-    #[test]
-    fn migration_v5_upgrades_old_db() {
-        // Build a legacy DB file with only v1~v4 applied (connector table without cert path columns)
-        let path = std::env::temp_dir().join(format!("anet-db-mig5-test-{}.db", uuid::Uuid::new_v4()));
-        {
-            let conn = rusqlite::Connection::open(&path).expect("open raw conn");
-            conn.execute_batch(
-                "CREATE TABLE _migration (
-                    version INTEGER PRIMARY KEY,
-                    name TEXT NOT NULL,
-                    applied_at TEXT NOT NULL DEFAULT (datetime('now'))
-                );",
-            )
-            .unwrap();
-            for (version, name, sql) in MIGRATIONS.iter().take(4) {
-                conn.execute_batch(sql).unwrap();
-                conn.execute(
-                    "INSERT INTO _migration (version, name) VALUES (?1, ?2)",
-                    params![version, name],
-                )
-                .unwrap();
-            }
-            // Insert a connector under the old schema (no ca_cert_path / pinned_cert_path columns)
-            conn.execute(
-                "INSERT INTO connector (id, name, upstream_addr, token_enc, sni_hostname, insecure, advertise, group_id, enabled, remark, created_at, updated_at)
-                 VALUES ('conn-old', 'site-old', '1.2.3.4:54430', 'v1:AAAA:BBBB', '', 1, '', NULL, 1, 'legacy', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
-                [],
-            )
-            .unwrap();
-        }
-
-        // Opening triggers v5 migration: old rows kept, new columns default to empty string
-        {
-            let db = Database::open(&path).expect("open migrated db");
-            let rec = db
-                .get_connector("conn-old")
-                .expect("get")
-                .expect("old connector exists");
-            assert_eq!(rec.name, "site-old");
-            assert_eq!(rec.ca_cert_path, "");
-            assert_eq!(rec.pinned_cert_path, "");
-            assert_eq!(rec.pinned_fingerprint, "");
-
-            // After migration, cert paths can be written directly
-            db.update_connector(
-                "conn-old",
-                "site-old",
-                "1.2.3.4:54430",
-                None,
-                "",
-                false,
-                "/etc/anet/ca.pem",
-                "",
-                "",
-                "",
-                None,
-                "",
-            )
-            .expect("update cert path");
-            let rec = db.get_connector("conn-old").unwrap().unwrap();
-            assert_eq!(rec.ca_cert_path, "/etc/anet/ca.pem");
-            // The list view also carries the new columns
-            let views = db.list_connectors().unwrap();
-            assert_eq!(views.len(), 1);
-            assert_eq!(views[0].ca_cert_path, "/etc/anet/ca.pem");
-        }
-
-        let _ = std::fs::remove_file(&path);
-        let _ = std::fs::remove_file(path.with_extension("db-wal"));
-        let _ = std::fs::remove_file(path.with_extension("db-shm"));
-    }
-
-    #[test]
-    fn migration_v7_upgrades_old_db() {
-        // Build a legacy DB file with only v1~v6 applied (relay_token without rate_limit_kbps column)
-        let path = std::env::temp_dir().join(format!("anet-db-mig7-test-{}.db", uuid::Uuid::new_v4()));
-        {
-            let conn = rusqlite::Connection::open(&path).expect("open raw conn");
-            conn.execute_batch(
-                "CREATE TABLE _migration (
-                    version INTEGER PRIMARY KEY,
-                    name TEXT NOT NULL,
-                    applied_at TEXT NOT NULL DEFAULT (datetime('now'))
-                );",
-            )
-            .unwrap();
-            for (version, name, sql) in MIGRATIONS.iter().take(6) {
-                conn.execute_batch(sql).unwrap();
-                conn.execute(
-                    "INSERT INTO _migration (version, name) VALUES (?1, ?2)",
-                    params![version, name],
-                )
-                .unwrap();
-            }
-            // Insert a relay_token under the old schema (no rate_limit_kbps column)
-            conn.execute(
-                "INSERT INTO relay_token (id, token_hash, token_prefix, remark, expose_control, control_scope, created_at)
-                 VALUES ('tok-old', 'hash-old', 'psk_abcd', 'legacy', 0, 'full', '2026-01-01T00:00:00Z')",
-                [],
-            )
-            .unwrap();
-        }
-
-        // Opening triggers v7 migration: old rows kept, new column NULL (unlimited)
-        {
-            let db = Database::open(&path).expect("open migrated db");
-            let tok = db
-                .get_relay_token("tok-old")
-                .expect("get")
-                .expect("old token exists");
-            assert_eq!(tok.token_prefix, "psk_abcd");
-            assert_eq!(tok.rate_limit_kbps, None);
-            assert_eq!(db.get_relay_token_rate_limit("hash-old").unwrap(), None);
-
-            // After migration, quota can be set/cleared on old rows directly
-            db.set_relay_token_rate_limit("tok-old", Some(10240))
-                .expect("set rate limit");
-            let tok = db.get_relay_token("tok-old").unwrap().unwrap();
-            assert_eq!(tok.rate_limit_kbps, Some(10240));
-            assert_eq!(
-                db.get_relay_token_rate_limit("hash-old").unwrap(),
-                Some(10240)
-            );
-            db.set_relay_token_rate_limit("tok-old", None)
-                .expect("clear rate limit");
-            assert_eq!(
-                db.get_relay_token("tok-old").unwrap().unwrap().rate_limit_kbps,
-                None
-            );
-        }
-
-        let _ = std::fs::remove_file(&path);
-        let _ = std::fs::remove_file(path.with_extension("db-wal"));
-        let _ = std::fs::remove_file(path.with_extension("db-shm"));
-    }
-
-    #[test]
-    fn migration_v9_upgrades_old_db() {
-        // Build a legacy DB file with only v1~v8 applied (connector without push_groups column)
-        let path = std::env::temp_dir().join(format!("anet-db-mig9-test-{}.db", uuid::Uuid::new_v4()));
-        {
-            let conn = rusqlite::Connection::open(&path).expect("open raw conn");
-            conn.execute_batch(
-                "CREATE TABLE _migration (
-                    version INTEGER PRIMARY KEY,
-                    name TEXT NOT NULL,
-                    applied_at TEXT NOT NULL DEFAULT (datetime('now'))
-                );",
-            )
-            .unwrap();
-            for (version, name, sql) in MIGRATIONS.iter().take(8) {
-                conn.execute_batch(sql).unwrap();
-                conn.execute(
-                    "INSERT INTO _migration (version, name) VALUES (?1, ?2)",
-                    params![version, name],
-                )
-                .unwrap();
-            }
-            // Insert a connector under the old schema (no push_groups column)
-            conn.execute(
-                "INSERT INTO connector (id, name, upstream_addr, token_enc, sni_hostname, insecure, ca_cert_path, pinned_cert_path, advertise, group_id, enabled, remark, created_at, updated_at, pinned_fingerprint)
-                 VALUES ('conn-old', 'site-old', '1.2.3.4:54430', 'v1:AAAA:BBBB', '', 1, '', '', '', NULL, 1, 'legacy', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '')",
-                [],
-            )
-            .unwrap();
-        }
-
-        // Opening triggers v9 migration: old rows kept, new column defaults to '' (no upload)
-        {
-            let db = Database::open(&path).expect("open migrated db");
-            let rec = db
-                .get_connector("conn-old")
-                .expect("get")
-                .expect("old connector exists");
-            assert_eq!(rec.push_groups, "");
-            assert_eq!(db.list_connectors().unwrap()[0].push_groups, "");
-
-            // After migration, push groups can be set on old rows directly
-            let gid = mk_group(&db, "git");
-            db.set_connector_push_groups("conn-old", &gid)
-                .expect("set push groups");
-            let rec = db.get_connector("conn-old").unwrap().unwrap();
-            assert_eq!(rec.push_groups, gid);
-            db.set_connector_push_groups("conn-old", "").expect("clear");
-            assert_eq!(db.get_connector("conn-old").unwrap().unwrap().push_groups, "");
-        }
-
-        let _ = std::fs::remove_file(&path);
-        let _ = std::fs::remove_file(path.with_extension("db-wal"));
-        let _ = std::fs::remove_file(path.with_extension("db-shm"));
-    }
-
-    #[test]
-    fn migration_v10_upgrades_old_db() {
-        // Build a legacy DB file with only v1~v9 applied (no delegation tables, group without e2e_required)
-        let path = std::env::temp_dir().join(format!("anet-db-mig10-test-{}.db", uuid::Uuid::new_v4()));
-        {
-            let conn = rusqlite::Connection::open(&path).expect("open raw conn");
-            conn.execute_batch(
-                "CREATE TABLE _migration (
-                    version INTEGER PRIMARY KEY,
-                    name TEXT NOT NULL,
-                    applied_at TEXT NOT NULL DEFAULT (datetime('now'))
-                );",
-            )
-            .unwrap();
-            for (version, name, sql) in MIGRATIONS.iter().take(9) {
-                conn.execute_batch(sql).unwrap();
-                conn.execute(
-                    "INSERT INTO _migration (version, name) VALUES (?1, ?2)",
-                    params![version, name],
-                )
-                .unwrap();
-            }
-            // A group + connector under the old schema
-            conn.execute(
-                "INSERT INTO \"group\" (id, name, remark, created_at, updated_at)
-                 VALUES ('g-old', 'legacy', '', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
-                [],
-            )
-            .unwrap();
-            conn.execute(
-                "INSERT INTO connector (id, name, upstream_addr, token_enc, sni_hostname, insecure, ca_cert_path, pinned_cert_path, advertise, group_id, enabled, remark, created_at, updated_at, pinned_fingerprint, push_groups)
-                 VALUES ('conn-old', 'site-old', '1.2.3.4:54430', 'v1:AAAA:BBBB', '', 1, '', '', '', NULL, 1, 'legacy', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '', '')",
-                [],
-            )
-            .unwrap();
-        }
-
-        // Opening triggers v10: old rows gain e2e_required=0; delegation tables usable with the old connector
-        {
-            let db = Database::open(&path).expect("open migrated db");
-            let g = db.get_group("g-old").expect("get").expect("old group exists");
-            assert!(!g.e2e_required);
-            assert_eq!(db.group_attachment_count("g-old").unwrap(), 0);
-            db.set_group_e2e_required("g-old", true).expect("free group can be marked");
-
-            let tok = db
-                .create_delegated_token(&"ab".repeat(32), "psk_test01", "legacy-issue", "[]", "[]", "v1:AAAA:CCCC", "dedicated", "", None, None)
-                .expect("create delegated token");
-            assert_eq!(tok.mode, "dedicated");
-            db.set_delegated_token_regs(&tok.id, &[("conn-old".to_string(), true)])
-                .expect("set regs on old connector");
-            let regs = db.delegated_regs_of(&tok.id).unwrap();
-            assert_eq!(regs.len(), 1);
-            assert_eq!(regs[0].connector_id, "conn-old");
-            assert!(regs[0].is_primary);
-        }
-
-        let _ = std::fs::remove_file(&path);
-        let _ = std::fs::remove_file(path.with_extension("db-wal"));
-        let _ = std::fs::remove_file(path.with_extension("db-shm"));
-    }
-
-    #[test]
-    fn migration_v14_multi_group_acl() {
-        // Fresh DB runs every migration incl. v14: a comma-separated group set must store
-        // on both ACL principals (the old single-value FK would have rejected it).
+    fn baseline_creates_final_schema() {
         let db = Database::in_memory().expect("in-memory db");
-        let g1 = mk_group(&db, "mg-a");
-        let g2 = mk_group(&db, "mg-b");
-        let set = format!("{g1},{g2}");
+        let mut tables = table_names(&db);
+        tables.sort();
+        assert_eq!(
+            tables,
+            vec![
+                "admin",
+                "admin_ticket",
+                "audit_log",
+                "connector",
+                "delegated_token",
+                "delegated_token_reg",
+                "group",
+                "group_rule",
+                "node_config",
+                "node_traffic_log",
+                "refresh_token",
+                "relay_token",
+                "rule",
+            ],
+            "baseline table set (no account / traffic_log)"
+        );
 
-        let rec = db
-            .create_connector("mg-conn", "127.0.0.1:54430", "psk_mgtest", "", true, "", "", "", "", Some(&set), "")
-            .expect("connector with group set");
-        assert_eq!(rec.group_id.as_deref(), Some(set.as_str()));
-        let tok = db
-            .create_relay_token_with_quota(&"cd".repeat(32), "psk_mgtest", "", false, "full", Some(&set), None)
-            .expect("relay token with group set");
-        assert_eq!(tok.group_id.as_deref(), Some(set.as_str()));
+        // relay_token / connector are created directly in their final (post-v14/v15) shape
+        for col in [
+            "expose_control",
+            "control_scope",
+            "group_id",
+            "rate_limit_kbps",
+            "expires_at",
+            "max_uses",
+            "used_count",
+        ] {
+            assert!(
+                column_names(&db, "relay_token").contains(&col.to_string()),
+                "relay_token.{col}"
+            );
+        }
+        for col in [
+            "ca_cert_path",
+            "pinned_cert_path",
+            "pinned_fingerprint",
+            "push_groups",
+        ] {
+            assert!(
+                column_names(&db, "connector").contains(&col.to_string()),
+                "connector.{col}"
+            );
+        }
 
-        // CSV membership counts as an attachment on each member (e2e guard stays closed)
-        assert_eq!(db.group_attachment_count(&g1).unwrap(), 2);
-        assert_eq!(db.group_attachment_count(&g2).unwrap(), 2);
-        assert!(db.set_group_e2e_required(&g1, true).is_err());
+        // delegated_token carries the unified-issuance columns
+        let cols = column_names(&db, "delegated_token");
+        for col in [
+            "mode",
+            "admin_scope",
+            "entry_mode",
+            "concurrency",
+            "max_sessions",
+            "expires_at",
+            "max_uses",
+            "used_count",
+        ] {
+            assert!(cols.contains(&col.to_string()), "delegated_token.{col}");
+        }
 
-        // group names resolve per member for display
-        let view = db
-            .list_connectors()
-            .unwrap()
-            .into_iter()
-            .find(|c| c.id == rec.id)
-            .expect("connector view");
-        assert_eq!(view.group_name.as_deref(), Some("mg-a,mg-b"));
+        // group carries the e2e flag + adoption lineage
+        let cols = column_names(&db, "group");
+        for col in ["e2e_required", "adopted_node", "adopted_name"] {
+            assert!(cols.contains(&col.to_string()), "group.{col}");
+        }
+
+        // unified-issuance default: session cap source for issuance snapshots
+        assert_eq!(
+            db.get_config("delegation_max_sessions").unwrap().as_deref(),
+            Some("8")
+        );
+    }
+
+    #[test]
+    fn baseline_migrate_is_idempotent() {
+        let path = std::env::temp_dir().join(format!("anet-db-baseline-test-{}.db", uuid::Uuid::new_v4()));
+        {
+            let db = Database::open(&path).expect("first open");
+            db.set_config("sentinel", "1").unwrap();
+        }
+        // second open: baseline already applied, no error, data kept
+        {
+            let db = Database::open(&path).expect("second open");
+            assert_eq!(db.get_config("sentinel").unwrap().as_deref(), Some("1"));
+            assert_eq!(
+                db.get_config("delegation_max_sessions").unwrap().as_deref(),
+                Some("8")
+            );
+            let conn = db.conn();
+            let applied: i64 = conn
+                .query_row("SELECT COUNT(*) FROM _migration", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(applied, 1);
+        }
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
     }
 }

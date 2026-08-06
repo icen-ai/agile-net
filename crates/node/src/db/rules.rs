@@ -217,39 +217,6 @@ impl Database {
         Ok(items)
     }
 
-    /// List all rules reachable by an account (via its group)
-    pub fn rules_of_account(&self, account_id: &str) -> Result<Vec<RuleRecord>> {
-        let conn = self.conn();
-        let mut stmt = conn
-            .prepare(
-                "SELECT r.id, r.type, r.value, r.resolve, r.remark, r.created_at, r.updated_at, 0
-                 FROM rule r
-                 JOIN group_rule gr ON r.id = gr.rule_id
-                 JOIN account a ON a.group_id = gr.group_id
-                 WHERE a.id = ?1",
-            )
-            .map_err(db_err)?;
-        let rows = stmt
-            .query_map(params![account_id], |r| {
-                Ok(RuleRecord {
-                    id: r.get(0)?,
-                    rule_type: r.get(1)?,
-                    value: r.get(2)?,
-                    resolve: r.get::<_, i32>(3)? != 0,
-                    remark: r.get(4)?,
-                    created_at: r.get(5)?,
-                    updated_at: r.get(6)?,
-                    group_count: r.get(7)?,
-                })
-            })
-            .map_err(db_err)?;
-        let mut items = Vec::new();
-        for r in rows {
-            items.push(r.map_err(db_err)?);
-        }
-        Ok(items)
-    }
-
     // ==================== Group ====================
 
     pub fn list_groups(
@@ -270,7 +237,6 @@ impl Database {
             &conn,
             "g.id, g.name, g.remark, g.created_at, g.updated_at,
              (SELECT COUNT(*) FROM group_rule gr WHERE gr.group_id = g.id),
-             (SELECT COUNT(*) FROM account a WHERE a.group_id = g.id),
              g.e2e_required, g.adopted_node, g.adopted_name",
             "\"group\" g",
             &where_clauses,
@@ -288,7 +254,6 @@ impl Database {
             .prepare(
                 "SELECT g.id, g.name, g.remark, g.created_at, g.updated_at,
                         (SELECT COUNT(*) FROM group_rule gr WHERE gr.group_id = g.id),
-                        (SELECT COUNT(*) FROM account a WHERE a.group_id = g.id),
                         g.e2e_required, g.adopted_node, g.adopted_name
                  FROM \"group\" g WHERE g.id = ?1",
             )
@@ -304,7 +269,7 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn
             .prepare(
-                "SELECT g.id, g.name, g.remark, g.created_at, g.updated_at, 0, 0, g.e2e_required, g.adopted_node, g.adopted_name FROM \"group\" g WHERE g.name = ?1",
+                "SELECT g.id, g.name, g.remark, g.created_at, g.updated_at, 0, g.e2e_required, g.adopted_node, g.adopted_name FROM \"group\" g WHERE g.name = ?1",
             )
             .map_err(db_err)?;
         let mut rows = stmt.query(params![name]).map_err(db_err)?;
@@ -329,7 +294,6 @@ impl Database {
             remark: remark.to_string(),
             e2e_required: false,
             rule_count: 0,
-            account_count: 0,
             adopted_node: String::new(),
             adopted_name: String::new(),
             created_at: now.clone(),
@@ -375,18 +339,6 @@ impl Database {
         Ok(())
     }
 
-    pub fn count_accounts_in_group(&self, group_id: &str) -> Result<i64> {
-        let conn = self.conn();
-        let count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM account WHERE group_id = ?1",
-                params![group_id],
-                |r| r.get(0),
-            )
-            .map_err(db_err)?;
-        Ok(count)
-    }
-
     /// Stamp adoption lineage on a freshly adopted group (federation P1 acceptance).
     pub fn set_group_adoption(&self, id: &str, node: &str, src_name: &str) -> Result<()> {
         let conn = self.conn();
@@ -405,7 +357,6 @@ impl Database {
             .prepare(
                 "SELECT g.id, g.name, g.remark, g.created_at, g.updated_at,
                         (SELECT COUNT(*) FROM group_rule gr WHERE gr.group_id = g.id),
-                        (SELECT COUNT(*) FROM account a WHERE a.group_id = g.id),
                         g.e2e_required, g.adopted_node, g.adopted_name
                  FROM \"group\" g WHERE g.adopted_node != ''",
             )
@@ -423,7 +374,7 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn
             .prepare(
-                "SELECT g.id, g.name, g.remark, g.created_at, g.updated_at, 0, 0, g.e2e_required, g.adopted_node, g.adopted_name
+                "SELECT g.id, g.name, g.remark, g.created_at, g.updated_at, 0, g.e2e_required, g.adopted_node, g.adopted_name
                  FROM \"group\" g WHERE g.adopted_node = ?1 AND g.adopted_name = ?2",
             )
             .map_err(db_err)?;
@@ -434,12 +385,10 @@ impl Database {
         })
     }
 
-    pub fn delete_group(&self, id: &str, force: bool) -> Result<()> {
+    pub fn delete_group(&self, id: &str, _force: bool) -> Result<()> {
+        // group_rule bindings cascade via FK; token/connector CSV sets dangle on purpose
+        // (the ACL registry converges them to deny-all, fail-closed)
         let conn = self.conn();
-        if force {
-            conn.execute("DELETE FROM account WHERE group_id = ?1", params![id])
-                .map_err(db_err)?;
-        }
         conn.execute("DELETE FROM \"group\" WHERE id = ?1", params![id])
             .map_err(db_err)?;
         Ok(())
@@ -451,19 +400,13 @@ impl Database {
         Ok(groups.into_iter().map(|g| (g.id, g.name)).collect())
     }
 
-    /// Total references from principals without an E2E key (accounts + relay tokens + connectors).
+    /// Total references from principals without an E2E key (relay tokens + connectors).
     /// An e2e_required group must stay attachable to delegated tokens only (federation P3 §1.4).
     /// relay_token / connector store a comma-separated group set (multi-group ACL) — membership
-    /// is checked in Rust; accounts stay single-group (exact match in SQL).
+    /// is checked in Rust.
     pub fn group_attachment_count(&self, group_id: &str) -> Result<i64> {
         let conn = self.conn();
-        let mut count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM account WHERE group_id = ?1",
-                params![group_id],
-                |r| r.get(0),
-            )
-            .map_err(db_err)?;
+        let mut count: i64 = 0;
         for table in ["relay_token", "connector"] {
             let mut stmt = conn
                 .prepare(&format!("SELECT group_id FROM {table} WHERE group_id IS NOT NULL"))
@@ -482,11 +425,11 @@ impl Database {
     }
 
     /// Set the E2E enforcement flag (federation P3). Refuses to mark a group still referenced by
-    /// accounts / relay tokens / connectors (those principals have no E2E key — fail closed).
+    /// relay tokens / connectors (those principals have no E2E key — fail closed).
     pub fn set_group_e2e_required(&self, id: &str, required: bool) -> Result<()> {
         if required && self.group_attachment_count(id)? > 0 {
             return Err(agile_net_core::error::Error::Other(
-                "该组仍被账号/扇入令牌/扇出连接引用，不可标记端到端加密".into(),
+                "该组仍被扇入令牌/扇出连接引用，不可标记端到端加密".into(),
             ));
         }
         let conn = self.conn();
@@ -520,9 +463,8 @@ fn map_group_row(r: &rusqlite::Row) -> rusqlite::Result<GroupRecord> {
         created_at: r.get(3)?,
         updated_at: r.get(4)?,
         rule_count: r.get(5)?,
-        account_count: r.get(6)?,
-        e2e_required: r.get::<_, i64>(7)? != 0,
-        adopted_node: r.get(8)?,
-        adopted_name: r.get(9)?,
+        e2e_required: r.get::<_, i64>(6)? != 0,
+        adopted_node: r.get(7)?,
+        adopted_name: r.get(8)?,
     })
 }

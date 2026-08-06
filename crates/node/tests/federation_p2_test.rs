@@ -130,16 +130,13 @@ async fn socks_echo(proxy_port: u16, target_ip: [u8; 4], target_port: u16, paylo
 fn delegated_params(entries: Vec<String>, label: &str, token: &str) -> ConnectParams {
     ConnectParams {
         addr: entries[0].clone(),
-        username: format!("d:{label}"),
-        password: token.to_string(),
+        label: label.to_string(),
+        token: token.to_string(),
         insecure: true,
-        pinned_cert_path: None,
         pinned_fingerprint: None,
         manage_hosts: false,
-        delegated: true,
         entries,
         entry_fps: Vec::new(),
-        ehint: None,
         en: None,
         emode: None,
         eadmin: false,
@@ -149,16 +146,12 @@ fn delegated_params(entries: Vec<String>, label: &str, token: &str) -> ConnectPa
 struct Fanout {
     port: u16,
     server: NodeServer,
-    base: String,
-    token: String,
     _dir: std::path::PathBuf,
 }
 
 async fn boot_fanout(tag: &str, psk: &str) -> Fanout {
     let port = free_port();
     let (server, dir) = boot(tag, Some(port)).await;
-    let base = format!("http://{}", server.api_addr());
-    let token = admin_token(&base).await;
     server
         .db()
         .create_relay_token_with_quota(
@@ -174,8 +167,6 @@ async fn boot_fanout(tag: &str, psk: &str) -> Fanout {
     Fanout {
         port,
         server,
-        base,
-        token,
         _dir: dir,
     }
 }
@@ -353,7 +344,7 @@ async fn p2_full_chain_and_failover() {
         .await
         .expect("delegated connect");
     assert_eq!(state.status, NodeStatus::Connected);
-    assert!(state.delegated);
+    assert_eq!(state.label, "alice");
     assert_eq!(state.current_entry, entries[0]);
     a.start_proxy(0).await.unwrap();
     let proxy_port = a.proxy_port();

@@ -29,19 +29,22 @@ pub struct GroupRow {
     pub id: String,
     pub name: String,
     pub rule_count: i64,
-    pub account_count: i64,
     pub remark: String,
 }
 
 #[derive(Default, Clone)]
-pub struct AccountRow {
+pub struct DelegatedRow {
     pub id: String,
-    pub username: String,
-    pub group_name: String,
-    pub online: bool,
-    pub enabled: bool,
-    pub last_seen: String,
-    pub remark: String,
+    pub prefix: String,
+    pub label: String,
+    /// Consumer mode: dedicated 专线 / split 分流
+    pub mode: String,
+    /// Entry mode: direct / relay
+    pub entry_mode: String,
+    /// Concurrency tier: single / multi
+    pub concurrency: String,
+    pub max_sessions: i64,
+    pub created_at: String,
 }
 
 #[derive(Default, Clone)]
@@ -121,7 +124,6 @@ impl Source {
                 let d: Value = s.call("GET", "/api/v1/admin/node/status", None)?;
                 let l = &d["roles"]["listener"];
                 let cs_summary = d["roles"]["connector_status"].as_str().unwrap_or("disabled");
-                let a = &d["accounts"];
                 Ok(DashboardRow {
                     name: d["node_name"].as_str().unwrap_or("-").into(),
                     version: format!("v{}", d["version"].as_str().unwrap_or("-")),
@@ -163,15 +165,6 @@ impl Source {
                                     .unwrap_or_else(|| "-".into())
                             },
                         ),
-                        (
-                            "账号".into(),
-                            format!(
-                                "共 {} · 在线 {} · 禁用 {}",
-                                a["total"].as_i64().unwrap_or(0),
-                                a["online"].as_i64().unwrap_or(0),
-                                a["disabled"].as_i64().unwrap_or(0)
-                            ),
-                        ),
                     ],
                 })
             }
@@ -181,12 +174,11 @@ impl Source {
                     .ok()
                     .flatten()
                     .unwrap_or_else(|| "AgileNet 端点".into());
-                let (total, disabled) = db.account_stats().unwrap_or((0, 0));
                 Ok(DashboardRow {
                     name,
                     version: format!("v{}", env!("CARGO_PKG_VERSION")),
                     config_version: db.config_version().unwrap_or(0),
-                    extra: vec![("账号".into(), format!("共 {total} · 禁用 {disabled}"))],
+                    extra: Vec::new(),
                 })
             }
         }
@@ -240,7 +232,6 @@ impl Source {
                         id: g["id"].as_str().unwrap_or_default().into(),
                         name: g["name"].as_str().unwrap_or("-").into(),
                         rule_count: g["rule_count"].as_i64().unwrap_or(0),
-                        account_count: g["account_count"].as_i64().unwrap_or(0),
                         remark: g["remark"].as_str().unwrap_or("").into(),
                     })
                     .collect())
@@ -253,45 +244,45 @@ impl Source {
                     id: g.id,
                     name: g.name,
                     rule_count: g.rule_count,
-                    account_count: g.account_count,
                     remark: g.remark,
                 })
                 .collect()),
         }
     }
 
-    pub fn accounts(&mut self) -> Result<Vec<AccountRow>> {
+    pub fn delegated(&mut self) -> Result<Vec<DelegatedRow>> {
         match self {
             Source::Api(s) => {
-                let d = s.call("GET", "/api/v1/admin/accounts?page_size=500", None)?;
+                let d = s.call("GET", "/api/v1/admin/delegation/tokens", None)?;
                 Ok(d["items"]
                     .as_array()
                     .cloned()
                     .unwrap_or_default()
                     .iter()
-                    .map(|a| AccountRow {
-                        id: a["id"].as_str().unwrap_or_default().into(),
-                        username: a["username"].as_str().unwrap_or("-").into(),
-                        group_name: a["group_name"].as_str().unwrap_or("-").into(),
-                        online: a["online"].as_bool().unwrap_or(false),
-                        enabled: a["enabled"].as_bool().unwrap_or(false),
-                        last_seen: a["last_seen_at"].as_str().unwrap_or("从未").into(),
-                        remark: a["remark"].as_str().unwrap_or("").into(),
+                    .map(|t| DelegatedRow {
+                        id: t["id"].as_str().unwrap_or_default().into(),
+                        prefix: t["token_prefix"].as_str().unwrap_or("-").into(),
+                        label: t["label"].as_str().unwrap_or("-").into(),
+                        mode: t["mode"].as_str().unwrap_or("dedicated").into(),
+                        entry_mode: t["entry_mode"].as_str().unwrap_or("-").into(),
+                        concurrency: t["concurrency"].as_str().unwrap_or("-").into(),
+                        max_sessions: t["max_sessions"].as_i64().unwrap_or(0),
+                        created_at: t["created_at"].as_str().unwrap_or("-").into(),
                     })
                     .collect())
             }
             Source::Db(db) => Ok(db
-                .list_accounts(1, 500, None, None, None)?
-                .0
+                .list_delegated_tokens()?
                 .into_iter()
-                .map(|a| AccountRow {
-                    id: a.id,
-                    username: a.username,
-                    group_name: a.group_name.unwrap_or_else(|| "-".into()),
-                    online: false,
-                    enabled: a.enabled,
-                    last_seen: a.last_seen_at.unwrap_or_else(|| "从未".into()),
-                    remark: a.remark,
+                .map(|t| DelegatedRow {
+                    id: t.id,
+                    prefix: t.token_prefix,
+                    label: t.label,
+                    mode: t.mode,
+                    entry_mode: t.entry_mode,
+                    concurrency: t.concurrency,
+                    max_sessions: t.max_sessions,
+                    created_at: t.created_at,
                 })
                 .collect()),
         }
@@ -407,20 +398,6 @@ impl Source {
 
     // ---------- Writes (API mode only; DB read-only is gated by the caller via readonly) ----------
 
-    pub fn set_account_enabled(&mut self, id: &str, enabled: bool) -> Result<()> {
-        match self {
-            Source::Api(s) => {
-                s.call(
-                    "PUT",
-                    &format!("/api/v1/admin/accounts/{id}"),
-                    Some(serde_json::json!({ "enabled": enabled })),
-                )?;
-                Ok(())
-            }
-            Source::Db(_) => Err(anyhow!("只读模式（数据库直连）")),
-        }
-    }
-
     /// Returns the plaintext token (visible only this once).
     pub fn create_token(&mut self, remark: &str) -> Result<String> {
         match self {
@@ -459,10 +436,14 @@ impl Source {
         }
     }
 
-    pub fn delete_account(&mut self, id: &str) -> Result<()> {
+    pub fn delete_delegated(&mut self, id: &str) -> Result<()> {
         match self {
             Source::Api(s) => {
-                s.call("DELETE", &format!("/api/v1/admin/accounts/{id}"), None)?;
+                s.call(
+                    "DELETE",
+                    &format!("/api/v1/admin/delegation/tokens/{id}"),
+                    None,
+                )?;
                 Ok(())
             }
             Source::Db(_) => Err(anyhow!("只读模式（数据库直连）")),
@@ -607,5 +588,33 @@ mod tests {
         assert_eq!(conns[0].group_name, "G1");
         assert!(conns[0].enabled);
         assert!(conns[0].state.is_empty()); // DB read-only has no runtime state
+    }
+
+    #[test]
+    fn db_delegated_rows_carry_concurrency_fields() {
+        let db = Database::open(tmp_db("delegated")).unwrap();
+        db.create_delegated_token(
+            "hash-d1",
+            "d_d1",
+            "label-1",
+            "[]",
+            "[]",
+            "",
+            "dedicated",
+            "",
+            "direct",
+            "multi",
+            8,
+            None,
+            None,
+        )
+        .unwrap();
+        let mut src = Source::Db(db);
+        let rows = src.delegated().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].prefix, "d_d1");
+        assert_eq!(rows[0].entry_mode, "direct");
+        assert_eq!(rows[0].concurrency, "multi");
+        assert_eq!(rows[0].max_sessions, 8);
     }
 }

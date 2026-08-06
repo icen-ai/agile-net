@@ -7,7 +7,7 @@
 name = "my-node"
 # SQLite 路径（DATABASE_PATH 环境变量可覆盖）
 db_path = "agile-net.db"
-# connect_url / 隧道端点对外地址（AGILE_PUBLIC_HOST 可覆盖）
+# 接入链接 / 隧道端点对外地址（AGILE_PUBLIC_HOST 可覆盖）
 public_host = "relay.example.com"
 
 [api]
@@ -47,6 +47,14 @@ advertise = ["10.12.0.0/16", "git.internal"]   # 向对端通告的可服务网�
 addr = "127.0.0.1:1080"                # 非 loopback 必须配置认证
 # username = "u"
 # password = "p"
+
+# 进程内嵌客户端角色（可选）：anet-svc 进程内直接起客户端引擎，消费委托链接
+# [client]
+# proxy_port = 57890
+# manage_hosts = true
+# nodes = [
+#   "anet://connect?server=b1.example.com&port=54430&account=d:alice-laptop&password=psk_...&fp=aa11",
+# ]
 
 # ACME 自动证书（Let's Encrypt TLS-ALPN-01，热替换免停机）
 # [acme]
@@ -95,16 +103,15 @@ manage_hosts = true          # resolve 规则自动维护系统 hosts（需管�
 # username = "u"
 # password = "p"
 
-[[nodes]]
-addr = "https://relay.example.com:59090"   # 或 host:port
-username = "zhangsan"
-password = "sk-..."
-# insecure = true
-# pinned_cert_path = "certs/node-a.pem"    # 证书固定 PEM
-pinned_fingerprint = "ab12..."             # 或指纹固定（connect_url 自带）
+# 链接式节点清单：一条 anet://connect 委托链接一个节点
+#（签发端统一签发产出，内含入口地址 + 委托令牌 + 证书指纹钉值三件套；
+#  容灾集合 entry/entryfp、E2E en、分流 emode=split、管理档 eadmin=1 均由链接承载）
+nodes = [
+  "anet://connect?server=relay.example.com&port=54430&account=d:alice-laptop&password=psk_...&fp=ab12...",
+]
 ```
 
-多节点：写多个 `[[nodes]]`，路由按连接顺序合并（先连优先，标准最长前缀匹配仍优先）。
+多节点：`nodes` 写多条链接，路由按连接顺序合并（先连优先，标准最长前缀匹配仍优先）。
 
 ## 规则类型
 

@@ -24,7 +24,7 @@
   </a>
   <a class="card-link" href="#/getting-started/quickstart">
     <div class="cl-title"><i data-ic="rocket" data-sz="15"></i>快速上手</div>
-    <div class="cl-desc">五分钟跑通：起节点 → 建账号 → 接入链接 → 本地代理</div>
+    <div class="cl-desc">五分钟跑通：起节点 → 统一签发 → 接入链接 → 本地代理</div>
   </a>
   <a class="card-link" href="#/concepts/architecture">
     <div class="cl-title"><i data-ic="network" data-sz="15"></i>架构与双产物</div>

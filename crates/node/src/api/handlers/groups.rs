@@ -22,7 +22,7 @@ pub struct ListQuery {
 }
 
 /// Federation P3: an e2e_required group may hang only on delegated tokens — every other
-/// attach path (account / relay token / connector) rejects it with this uniform error.
+/// attach path (relay token / connector) rejects it with this uniform error.
 pub(crate) fn reject_e2e_group(g: &crate::db::models::GroupRecord) -> Option<Response> {
     g.e2e_required.then(|| {
         err(
@@ -62,7 +62,7 @@ pub async fn get_group(
     State(state): State<ApiState>,
     Path(id): Path<String>,
 ) -> Response {
-    // Group + its rules + its accounts merged into one blocking task
+    // Group + its rules merged into one blocking task
     let gid = id.clone();
     let result = state
         .db_call(move |db| {
@@ -70,13 +70,10 @@ pub async fn get_group(
                 return Ok(None);
             };
             let rules = db.rules_of_group(&gid).unwrap_or_default();
-            let (accounts, _) = db
-                .list_accounts(1, 100, Some(&gid), None, None)
-                .unwrap_or_default();
-            Ok(Some((group, rules, accounts)))
+            Ok(Some((group, rules)))
         })
         .await;
-    let (group, rules, accounts) = match result {
+    let (group, rules) = match result {
         Ok(Some(v)) => v,
         Ok(None) => return err(StatusCode::NOT_FOUND, codes::NOT_FOUND, "group not found"),
         Err(e) => {
@@ -87,44 +84,36 @@ pub async fn get_group(
             );
         }
     };
-    let accounts: Vec<_> = accounts
-        .into_iter()
-        .map(|a| json!({ "id": a.id, "username": a.username, "enabled": a.enabled }))
-        .collect();
 
     ok(json!({
         "id": group.id,
         "name": group.name,
         "remark": group.remark,
         "rules": rules,
-        "accounts": accounts,
         "created_at": group.created_at,
         "updated_at": group.updated_at,
     }))
 }
 
-/// Group detail: the three kinds of identities mounted under it (accounts + fan-in tokens + fan-out peers, each with id and name fields).
+/// Group detail: the identities mounted under it (fan-in tokens + fan-out peers, each with id and name fields).
 pub async fn get_group_detail(
     AdminAuth(_): AdminAuth,
     State(state): State<ApiState>,
     Path(id): Path<String>,
 ) -> Response {
-    // Group existence + the three identity lists merged into one blocking task
+    // Group existence + the two identity lists merged into one blocking task
     let gid = id.clone();
     let result = state
         .db_call(move |db| {
             if db.get_group(&gid).unwrap_or(None).is_none() {
                 return Ok(None);
             }
-            let (accounts, _) = db
-                .list_accounts(1, 1000, Some(&gid), None, None)
-                .unwrap_or_default();
             let relay_tokens = db.list_relay_tokens().unwrap_or_default();
             let connectors = db.list_connectors().unwrap_or_default();
-            Ok(Some((accounts, relay_tokens, connectors)))
+            Ok(Some((relay_tokens, connectors)))
         })
         .await;
-    let Some((accounts, relay_tokens, connectors)) = (match result {
+    let Some((relay_tokens, connectors)) = (match result {
         Ok(v) => v,
         Err(e) => {
             return err(
@@ -136,13 +125,13 @@ pub async fn get_group_detail(
     }) else {
         return err(StatusCode::NOT_FOUND, codes::NOT_FOUND, "group not found");
     };
-    let accounts: Vec<_> = accounts
-        .into_iter()
-        .map(|a| json!({ "id": a.id, "username": a.username, "enabled": a.enabled }))
-        .collect();
     let relay_tokens: Vec<_> = relay_tokens
         .into_iter()
-        .filter(|t| t.group_id.as_deref().is_some_and(|set| set.split(',').any(|s| s.trim() == id)))
+        .filter(|t| {
+            t.group_id
+                .as_deref()
+                .is_some_and(|set| set.split(',').any(|s| s.trim() == id))
+        })
         .map(|t| json!({ "id": t.id, "token_prefix": t.token_prefix, "remark": t.remark }))
         .collect();
     let connectors: Vec<_> = connectors
@@ -152,7 +141,6 @@ pub async fn get_group_detail(
         .collect();
 
     ok(json!({
-        "accounts": accounts,
         "relay_tokens": relay_tokens,
         "connectors": connectors,
     }))
@@ -264,7 +252,7 @@ pub async fn create_group(
 pub struct UpdateGroupRequest {
     pub name: Option<String>,
     pub remark: Option<String>,
-    /// Federation P3: set/clear the E2E enforcement flag (marking fails while accounts,
+    /// Federation P3: set/clear the E2E enforcement flag (marking fails while
     /// relay tokens or connectors still reference the group — they have no E2E key)
     #[serde(default)]
     pub e2e_required: Option<bool>,
@@ -278,7 +266,10 @@ pub async fn update_group(
     Json(req): Json<UpdateGroupRequest>,
 ) -> Response {
     let gid = id.clone();
-    let existing = state.db_call(move |db| db.get_group(&gid)).await.unwrap_or(None);
+    let existing = state
+        .db_call(move |db| db.get_group(&gid))
+        .await
+        .unwrap_or(None);
     let Some(existing) = existing else {
         return err(StatusCode::NOT_FOUND, codes::NOT_FOUND, "group not found");
     };
@@ -331,8 +322,14 @@ pub async fn update_group(
             .await
         {
             Ok(()) => {}
-            // guard tripped: the group is still referenced by accounts / relay tokens / connectors
-            Err(e) => return err(StatusCode::BAD_REQUEST, codes::VALIDATION_FAILED, e.to_string()),
+            // guard tripped: the group is still referenced by relay tokens / connectors
+            Err(e) => {
+                return err(
+                    StatusCode::BAD_REQUEST,
+                    codes::VALIDATION_FAILED,
+                    e.to_string(),
+                );
+            }
         }
         audit(
             &state,
@@ -370,7 +367,10 @@ pub async fn set_group_rules(
     Json(req): Json<SetGroupRulesRequest>,
 ) -> Response {
     let gid = id.clone();
-    let existing = state.db_call(move |db| db.get_group(&gid)).await.unwrap_or(None);
+    let existing = state
+        .db_call(move |db| db.get_group(&gid))
+        .await
+        .unwrap_or(None);
     let Some(existing) = existing else {
         return err(StatusCode::NOT_FOUND, codes::NOT_FOUND, "group not found");
     };
@@ -432,18 +432,11 @@ pub async fn set_group_rules(
     ok(json!({ "rule_count": req.rule_ids.len() }))
 }
 
-#[derive(Deserialize)]
-pub struct ForceQuery {
-    #[serde(default)]
-    pub force: bool,
-}
-
 pub async fn delete_group(
     AdminAuth(claims): AdminAuth,
     State(state): State<ApiState>,
     ClientIp(ip): ClientIp,
     Path(id): Path<String>,
-    Query(q): Query<ForceQuery>,
 ) -> Response {
     let gid = id.clone();
     let exists = state
@@ -454,37 +447,16 @@ pub async fn delete_group(
     if !exists {
         return err(StatusCode::NOT_FOUND, codes::NOT_FOUND, "group not found");
     }
-    let gid = id.clone();
-    let account_count = state
-        .db_call(move |db| db.count_accounts_in_group(&gid))
-        .await
-        .unwrap_or(0);
-    if account_count > 0 && !q.force {
-        return err(
-            StatusCode::CONFLICT,
-            codes::DUPLICATE,
-            format!("group has {account_count} accounts, reassign or delete them first"),
-        );
-    }
-    let force = q.force;
     let aid = id.clone();
     match state
         .db_call(move |db| {
-            db.delete_group(&id, force)?;
+            db.delete_group(&id, false)?;
             db.bump_config_version()
         })
         .await
     {
         Ok(_) => {
-            audit(
-                &state,
-                &claims,
-                &ip,
-                "group.delete",
-                Some(&aid),
-                &format!("force={} account_count={}", q.force, account_count),
-            )
-            .await;
+            audit(&state, &claims, &ip, "group.delete", Some(&aid), "").await;
             ok(json!(null))
         }
         Err(e) => err(

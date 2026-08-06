@@ -5,15 +5,14 @@
 //! session / `--offline`, degrades to a direct **read-only** DB fallback (the status bar
 //! shows the degradation reason).
 //!
-//! Tabs: Dashboard / Rules / Groups / Accounts / Tokens / Fan-out / Audit
-//! Keys: Tab/arrows switch tabs, up/down select a row, r refresh, e enable/disable an
-//!       account (API mode), n mint a Relay Token (API mode), d delete the selected row
-//!       (y to confirm, API mode), q quit.
+//! Tabs: Dashboard / Rules / Groups / Tokens / Delegated / Fan-out / Audit
+//! Keys: Tab/arrows switch tabs, up/down select a row, r refresh, n mint a Relay Token
+//!       (API mode), d delete the selected row (y to confirm, API mode), q quit.
 
 pub mod source;
 
 use source::{
-    AccountRow, AuditRow, ConnectOutcome, ConnectorRow, DashboardRow, GroupRow, RuleRow, Source,
+    AuditRow, ConnectOutcome, ConnectorRow, DashboardRow, DelegatedRow, GroupRow, RuleRow, Source,
     TokenRow,
 };
 
@@ -43,8 +42,8 @@ pub enum Tab {
     Dashboard,
     Rules,
     Groups,
-    Accounts,
     Tokens,
+    Delegated,
     Connectors,
     Audit,
 }
@@ -54,8 +53,8 @@ impl Tab {
         Tab::Dashboard,
         Tab::Rules,
         Tab::Groups,
-        Tab::Accounts,
         Tab::Tokens,
+        Tab::Delegated,
         Tab::Connectors,
         Tab::Audit,
     ];
@@ -65,8 +64,8 @@ impl Tab {
             Tab::Dashboard => "概览",
             Tab::Rules => "规则",
             Tab::Groups => "权限组",
-            Tab::Accounts => "账号",
             Tab::Tokens => "令牌",
+            Tab::Delegated => "委托",
             Tab::Connectors => "扇出",
             Tab::Audit => "审计",
         }
@@ -77,8 +76,8 @@ impl Tab {
             Tab::Dashboard => 0,
             Tab::Rules => 1,
             Tab::Groups => 2,
-            Tab::Accounts => 3,
-            Tab::Tokens => 4,
+            Tab::Tokens => 3,
+            Tab::Delegated => 4,
             Tab::Connectors => 5,
             Tab::Audit => 6,
         }
@@ -96,7 +95,7 @@ pub struct TuiApp {
     pub dashboard: DashboardRow,
     pub rules: Vec<RuleRow>,
     pub groups: Vec<GroupRow>,
-    pub accounts: Vec<AccountRow>,
+    pub delegated: Vec<DelegatedRow>,
     pub tokens: Vec<TokenRow>,
     pub connectors: Vec<ConnectorRow>,
     pub audit_logs: Vec<AuditRow>,
@@ -115,7 +114,7 @@ impl TuiApp {
             dashboard: DashboardRow::default(),
             rules: Vec::new(),
             groups: Vec::new(),
-            accounts: Vec::new(),
+            delegated: Vec::new(),
             tokens: Vec::new(),
             connectors: Vec::new(),
             audit_logs: Vec::new(),
@@ -140,8 +139,8 @@ impl TuiApp {
         if let Ok(items) = self.source.groups() {
             self.groups = items;
         }
-        if let Ok(items) = self.source.accounts() {
-            self.accounts = items;
+        if let Ok(items) = self.source.delegated() {
+            self.delegated = items;
         }
         if let Ok(items) = self.source.tokens() {
             self.tokens = items;
@@ -159,7 +158,7 @@ impl TuiApp {
             Tab::Dashboard => 0,
             Tab::Rules => self.rules.len(),
             Tab::Groups => self.groups.len(),
-            Tab::Accounts => self.accounts.len(),
+            Tab::Delegated => self.delegated.len(),
             Tab::Tokens => self.tokens.len(),
             Tab::Connectors => self.connectors.len(),
             Tab::Audit => self.audit_logs.len(),
@@ -203,7 +202,6 @@ impl TuiApp {
                 self.refresh();
                 self.status_msg = "已刷新".into();
             }
-            KeyCode::Char('e') => self.toggle_selected_account(),
             KeyCode::Char('n') => self.create_token_action(),
             KeyCode::Char('d') => {
                 if self.current_row_count() > 0
@@ -232,30 +230,6 @@ impl TuiApp {
         let current = self.selected_index().unwrap_or(0) as i32;
         let next = (current + delta).rem_euclid(count as i32);
         self.table_state.select(Some(next as usize));
-    }
-
-    fn toggle_selected_account(&mut self) {
-        if self.current_tab != Tab::Accounts {
-            return;
-        }
-        if self.source.readonly() {
-            self.status_msg = "只读模式（数据库直连）：启停需 API 管理模式".into();
-            return;
-        }
-        if let Some(account) = self.selected_index().and_then(|i| self.accounts.get(i)).cloned() {
-            let new_enabled = !account.enabled;
-            match self.source.set_account_enabled(&account.id, new_enabled) {
-                Ok(_) => {
-                    self.status_msg = format!(
-                        "账号 {} 已{}（已落审计）",
-                        account.username,
-                        if new_enabled { "启用" } else { "禁用" }
-                    );
-                    self.refresh();
-                }
-                Err(e) => self.status_msg = format!("操作失败: {e}"),
-            }
-        }
     }
 
     fn create_token_action(&mut self) {
@@ -291,11 +265,11 @@ impl TuiApp {
                 .get(idx)
                 .map(|g| g.id.clone())
                 .map(|id| self.source.delete_group(&id)),
-            Tab::Accounts => self
-                .accounts
+            Tab::Delegated => self
+                .delegated
                 .get(idx)
-                .map(|a| a.id.clone())
-                .map(|id| self.source.delete_account(&id)),
+                .map(|t| t.id.clone())
+                .map(|id| self.source.delete_delegated(&id)),
             Tab::Tokens => self
                 .tokens
                 .get(idx)
@@ -350,7 +324,7 @@ impl TuiApp {
             Tab::Dashboard => self.render_dashboard(f, chunks[1]),
             Tab::Rules => self.render_rules(f, chunks[1]),
             Tab::Groups => self.render_groups(f, chunks[1]),
-            Tab::Accounts => self.render_accounts(f, chunks[1]),
+            Tab::Delegated => self.render_delegated(f, chunks[1]),
             Tab::Tokens => self.render_tokens(f, chunks[1]),
             Tab::Connectors => self.render_connectors(f, chunks[1]),
             Tab::Audit => self.render_audit(f, chunks[1]),
@@ -358,7 +332,7 @@ impl TuiApp {
 
         // status bar (data-source label pinned: mode and degradation reason at a glance)
         let footer = Paragraph::new(format!(
-            "{} | {} | [Tab]切换 [↑↓]选择 [r]刷新 [e]启停 [n]令牌 [d]删除 [q]退出",
+            "{} | {} | [Tab]切换 [↑↓]选择 [r]刷新 [n]令牌 [d]删除 [q]退出",
             self.source.label(),
             self.status_msg
         ))
@@ -434,7 +408,6 @@ impl TuiApp {
                 Row::new(vec![
                     Cell::from(g.name.clone()),
                     Cell::from(format!("{}", g.rule_count)),
-                    Cell::from(format!("{}", g.account_count)),
                     Cell::from(g.remark.clone()),
                 ])
             })
@@ -444,55 +417,60 @@ impl TuiApp {
             [
                 Constraint::Min(16),
                 Constraint::Length(8),
-                Constraint::Length(8),
                 Constraint::Min(20),
             ],
         )
         .header(
-            Row::new(vec!["名称", "规则数", "账号数", "备注"])
-                .style(Style::default().fg(Color::Yellow)),
+            Row::new(vec!["名称", "规则数", "备注"]).style(Style::default().fg(Color::Yellow)),
         )
         .row_highlight_style(Style::default().bg(Color::DarkGray))
         .block(Block::default().borders(Borders::ALL).title("权限组"));
         f.render_stateful_widget(table, area, &mut self.table_state);
     }
 
-    fn render_accounts(&mut self, f: &mut Frame, area: ratatui::layout::Rect) {
+    fn render_delegated(&mut self, f: &mut Frame, area: ratatui::layout::Rect) {
         let rows: Vec<Row> = self
-            .accounts
+            .delegated
             .iter()
-            .map(|a| {
-                let status = if a.enabled { "启用" } else { "禁用" };
-                let online = if a.online { "在线" } else { "离线" };
+            .map(|t| {
+                let mode = if t.mode == "split" { "分流" } else { "专线" };
+                let entry = if t.entry_mode == "direct" {
+                    "直连"
+                } else {
+                    "中继"
+                };
+                let conc = if t.concurrency == "multi" {
+                    format!("多路≤{}", t.max_sessions)
+                } else {
+                    "单路".to_string()
+                };
                 Row::new(vec![
-                    Cell::from(a.username.clone()),
-                    Cell::from(a.group_name.clone()),
-                    Cell::from(format!("{status}/{online}")),
-                    Cell::from(a.last_seen.clone()),
-                    Cell::from(a.remark.clone()),
+                    Cell::from(t.prefix.clone()),
+                    Cell::from(t.label.clone()),
+                    Cell::from(mode),
+                    Cell::from(entry),
+                    Cell::from(conc),
+                    Cell::from(t.created_at.clone()),
                 ])
             })
             .collect();
         let table = Table::new(
             rows,
             [
-                Constraint::Min(14),
-                Constraint::Length(12),
+                Constraint::Length(16),
+                Constraint::Min(16),
+                Constraint::Length(8),
+                Constraint::Length(8),
                 Constraint::Length(10),
                 Constraint::Length(22),
-                Constraint::Min(14),
             ],
         )
         .header(
-            Row::new(vec!["账号", "权限组", "状态", "最后在线", "备注"])
+            Row::new(vec!["Token 前缀", "标签", "模式", "入口", "并发", "创建时间"])
                 .style(Style::default().fg(Color::Yellow)),
         )
         .row_highlight_style(Style::default().bg(Color::DarkGray))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("客户端账号（按 e 启停）"),
-        );
+        .block(Block::default().borders(Borders::ALL).title("签发委托"));
         f.render_stateful_widget(table, area, &mut self.table_state);
     }
 

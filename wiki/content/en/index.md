@@ -24,7 +24,7 @@
   </a>
   <a class="card-link" href="#/getting-started/quickstart">
     <div class="cl-title"><i data-ic="rocket" data-sz="15"></i>Quick Start</div>
-    <div class="cl-desc">Up and running in five minutes: start a node → create an account → access link → local proxy</div>
+    <div class="cl-desc">Up and running in five minutes: start a node → issue a token → access link → local proxy</div>
   </a>
   <a class="card-link" href="#/concepts/architecture">
     <div class="cl-title"><i data-ic="network" data-sz="15"></i>Architecture</div>

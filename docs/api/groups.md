@@ -2,7 +2,10 @@
 
 权限组管理，仅 Admin 可操作。
 
-权限组是规则和账号之间的桥梁：一个账号属于一个权限组，权限组包含多条规则。
+权限组是规则和身份之间的桥梁：规则挂进权限组，签发令牌、扇入令牌（relay token）与扇出
+对端（connector）通过引用权限组获得收敛后的可达面。组可标记 `e2e_required`（E2E 强制组）：
+该组只可挂在签发令牌上（扇入/扇出身份没有 E2E 密钥），引用它的签发令牌自动携带
+entrust 路由词，消费者全部 Open 端到端加密。
 
 ---
 
@@ -30,7 +33,7 @@
         "name": "开发组",
         "remark": "前后端开发人员",
         "rule_count": 3,
-        "account_count": 5,
+        "e2e_required": false,
         "created_at": "2025-07-30T10:00:00Z",
         "updated_at": "2025-07-30T10:00:00Z"
       }
@@ -57,12 +60,10 @@
     "id": "uuid",
     "name": "开发组",
     "remark": "前后端开发人员",
+    "e2e_required": false,
     "rules": [
       { "id": "uuid", "type": "ip-cidr", "value": "10.12.0.0/16", "remark": "办公网" },
       { "id": "uuid", "type": "host", "value": "git.internal", "remark": "Git" }
-    ],
-    "accounts": [
-      { "id": "uuid", "username": "zhangsan", "enabled": true }
     ],
     "created_at": "2025-07-30T10:00:00Z",
     "updated_at": "2025-07-30T10:00:00Z"
@@ -74,7 +75,7 @@
 
 ## GET `/api/v1/admin/groups/:id/detail`
 
-权限组身份总览：返回组下三类身份（账号 + 扇入令牌 + 扇出对端）。
+权限组身份总览：返回挂在组下的身份（扇入令牌 + 扇出对端）。
 
 ### 响应 200
 
@@ -82,7 +83,6 @@
 {
   "code": 0,
   "data": {
-    "accounts": [{ "id": "uuid", "username": "zhangsan", "enabled": true }],
     "relay_tokens": [{ "id": "uuid", "token_prefix": "psk_xxxx", "remark": "分公司跳板" }],
     "connectors": [{ "id": "uuid", "name": "机房B", "upstream_addr": "relay-b.example.com:54430", "enabled": true }]
   }
@@ -101,7 +101,8 @@
 {
   "name": "开发组",
   "remark": "前后端开发人员",
-  "rule_ids": ["uuid1", "uuid2"]
+  "rule_ids": ["uuid1", "uuid2"],
+  "e2e_required": false
 }
 ```
 
@@ -110,6 +111,7 @@
 | `name` | 必填，1-64 字符，全局唯一 |
 | `remark` | 可选，0-256 字符 |
 | `rule_ids` | 可选，关联的规则 ID 列表；ID 不存在返回 40400 |
+| `e2e_required` | 可选，默认 false；创建即标记 E2E 强制组 |
 
 ### 响应 201
 
@@ -126,11 +128,17 @@
 ```json
 {
   "name": "开发组(含前端)",
-  "remark": "更新备注"
+  "remark": "更新备注",
+  "e2e_required": true
 }
 ```
 
 所有字段可选。**不包含 `rule_ids`**，规则关联通过下面的专用接口管理。
+
+`e2e_required` 三态：缺省 = 不变；`true` 标记 E2E 强制——**若组仍被扇入令牌或扇出
+connector 引用则拒绝**（这些身份没有 E2E 密钥，fail-closed）；`false` 取消标记。
+
+跟随上送的采纳组为只读活镜像，更新返回 400——请先复制为本地组再编辑。
 
 ### 响应 200
 
@@ -169,18 +177,7 @@
 
 ## DELETE `/api/v1/admin/groups/:id`
 
-删除权限组。
-
-如果组下还有账号，返回 40900：
-
-```json
-{
-  "code": 40900,
-  "message": "group has 3 accounts, reassign or delete them first"
-}
-```
-
-`?force=true` 强制删除，组下账号同时删除。
+删除权限组，同时解除全部规则关联。
 
 ### 响应 200
 

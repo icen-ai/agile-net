@@ -1,7 +1,8 @@
 //! Relay session rate-limit quota provider: relay_token.rate_limit_kbps (KB/s) -> core TokenBucket (B/s).
 //!
-//! Quotas are configured per relay_token row (fan-in peer dimension); client accounts
-//! (AuthIdentity::Client) authenticate against the account table and always get None here.
+//! Quotas are configured per relay_token row (fan-in peer dimension); delegated consumer
+//! sessions (AuthIdentity::Delegated, unified issuance) carry no bandwidth quota column and
+//! always get None here.
 
 use crate::db::Database;
 use agile_net_core::relay::listener::AuthIdentity;
@@ -24,7 +25,7 @@ pub fn relay_token_rate_limit_bps_by_hash(db: &Database, token_hash: &str) -> Op
 pub fn token_rate_limit_bps(identity: &AuthIdentity, token_hash: &str, db: &Database) -> Option<u64> {
     match identity {
         AuthIdentity::Node { .. } => relay_token_rate_limit_bps_by_hash(db, token_hash),
-        AuthIdentity::Client { .. } => None, // client accounts bypass relay_token quotas
+        AuthIdentity::Delegated(_) => None, // delegated tokens carry no relay_token quota
     }
 }
 
@@ -62,13 +63,17 @@ mod tests {
     #[test]
     fn provider_identity_mapping() {
         let db = Database::in_memory().unwrap();
-        // Client variant: always None
-        let client = AuthIdentity::Client {
-            account_id: "acc-1".into(),
+        // Delegated variant: always None (no quota column on delegated tokens)
+        let consumer = AuthIdentity::Delegated(agile_net_core::relay::listener::DelegatedIdentity {
+            node_id: "consumer-1".into(),
             acl: vec![],
-            delegated: None,
-        };
-        assert_eq!(token_rate_limit_bps(&client, "any-hash", &db), None);
+            stamp: agile_net_core::relay::listener::DelegatedStamp {
+                issuer: "issuer-1".into(),
+                groups: vec![],
+                hints: vec![],
+            },
+        });
+        assert_eq!(token_rate_limit_bps(&consumer, "any-hash", &db), None);
         // Node variant: maps to a relay_token row by token hash
         let node = AuthIdentity::Node {
             node_id: "n-1".into(),

@@ -81,96 +81,51 @@ pub(crate) async fn console_url(
             Ok(format!("http://{addr}/{embed}"))
         }
         (Some(node_id), None) => {
-            // Delegated admin (federation P3): the ticket is pulled over the E2E config channel;
-            // the console bridges to the issuer's loopback API via the reserved admin target
-            let is_delegated = state
+            // Delegated admin console: every node is delegated now — the ticket is pulled over
+            // the E2E config channel; the console bridges to the issuer's loopback API via the
+            // reserved admin target
+            let (ticket, _) = state
                 .client
-                .get_node(&node_id)
-                .await
-                .map(|n| n.delegated)
-                .unwrap_or(false);
-            if is_delegated {
-                let (ticket, _) = state
-                    .client
-                    .delegated_console_ticket(&node_id)
-                    .ok_or("该委托凭据未授予管理权限（或配置尚未拉取完成）")?;
-                let opener = state.client.opener(&node_id).ok_or("节点未连接")?;
-                let fwd_key = format!("{node_id}|deleg-admin");
-                let local_port = ensure_console_forwarder(
-                    &state,
-                    &fwd_key,
-                    opener,
-                    agile_net_core::relay::e2e::DELEGATION_ADMIN_TARGET,
-                    0,
-                )
-                .await?;
-                roles::audit(
-                    "admin.console_access",
-                    serde_json::json!({"target": node_id, "path": "本机→委托 E2E 通道→签发端", "identity": "deleg 票据"}),
-                );
-                return Ok(format!(
-                    "http://127.0.0.1:{local_port}/{embed}#boot={ticket}"
-                ));
-            }
-            // Admin bootstrap ticket (one-time, 10 min TTL; the node side checks admin_console authorization)
-            let (ticket, api_port) = state.client.console_ticket(&node_id).await.map_err(map_err)?;
+                .delegated_console_ticket(&node_id)
+                .ok_or("该委托凭据未授予管理权限（或配置尚未拉取完成）")?;
             let opener = state.client.opener(&node_id).ok_or("节点未连接")?;
-            let local_port = ensure_console_forwarder(&state, &node_id, opener, "127.0.0.1", api_port).await?;
+            let fwd_key = format!("{node_id}|deleg-admin");
+            let local_port = ensure_console_forwarder(
+                &state,
+                &fwd_key,
+                opener,
+                agile_net_core::relay::e2e::DELEGATION_ADMIN_TARGET,
+                0,
+            )
+            .await?;
             roles::audit(
                 "admin.console_access",
-                serde_json::json!({"target": node_id, "path": "本机→客户端隧道", "identity": "管理链接"}),
+                serde_json::json!({"target": node_id, "path": "本机→委托 E2E 通道→签发端", "identity": "deleg 票据"}),
             );
             Ok(format!(
                 "http://127.0.0.1:{local_port}/{embed}#boot={ticket}"
             ))
         }
         (Some(node_id), Some(upstream)) => {
-            // Delegated transit management (federation P3, full scope): the upstream's control
+            // Delegated transit management (full scope): the upstream's control
             // endpoint is dialed through the issuer's fan-out session (reserved upstream: target)
-            let is_delegated = state
+            let (ticket, _, _, scope) = state
                 .client
-                .get_node(&node_id)
-                .await
-                .map(|n| n.delegated)
-                .unwrap_or(false);
-            if is_delegated {
-                let (ticket, _, _, scope) = state
-                    .client
-                    .delegated_upstream_ticket(&node_id, &upstream)
-                    .ok_or("上游未被发现或未授予穿透管理")?;
-                let opener = state.client.opener(&node_id).ok_or("节点未连接")?;
-                let fwd_key = format!("{node_id}|deleg|{upstream}");
-                let target = format!(
-                    "{}{}",
-                    agile_net_core::relay::e2e::DELEGATION_UPSTREAM_PREFIX,
-                    upstream
-                );
-                let local_port = ensure_console_forwarder(&state, &fwd_key, opener, &target, 0).await?;
-                roles::audit(
-                    "admin.console_access",
-                    serde_json::json!({
-                        "target": upstream,
-                        "path": format!("本机→委托 E2E 通道→{node_id}→relay"),
-                        "identity": format!("relay 票据（scope={scope}）"),
-                    }),
-                );
-                return Ok(format!(
-                    "http://127.0.0.1:{local_port}/{embed}#boot={ticket}"
-                ));
-            }
-            let (ticket, api_host, api_port, scope) = state
-                .client
-                .upstream_console_ticket(&node_id, &upstream)
-                .await
-                .map_err(map_err)?;
-            let fwd_key = format!("{node_id}|{upstream}");
+                .delegated_upstream_ticket(&node_id, &upstream)
+                .ok_or("上游未被发现或未授予穿透管理")?;
             let opener = state.client.opener(&node_id).ok_or("节点未连接")?;
-            let local_port = ensure_console_forwarder(&state, &fwd_key, opener, &api_host, api_port).await?;
+            let fwd_key = format!("{node_id}|deleg|{upstream}");
+            let target = format!(
+                "{}{}",
+                agile_net_core::relay::e2e::DELEGATION_UPSTREAM_PREFIX,
+                upstream
+            );
+            let local_port = ensure_console_forwarder(&state, &fwd_key, opener, &target, 0).await?;
             roles::audit(
                 "admin.console_access",
                 serde_json::json!({
                     "target": upstream,
-                    "path": format!("本机→{node_id}→relay"),
+                    "path": format!("本机→委托 E2E 通道→{node_id}→relay"),
                     "identity": format!("relay 票据（scope={scope}）"),
                 }),
             );

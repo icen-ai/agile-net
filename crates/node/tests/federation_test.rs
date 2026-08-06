@@ -1,7 +1,7 @@
 //! Federation P1 end-to-end test (acceptance of docs/todo/federation.md §4-P1):
 //! resource owner C pushes policy groups with its fan-out handshake; upstream B pools them
-//! source-tagged; the B admin adopts "C's git group" in one click and grants it to account A —
-//! without C ever touching an account on B.
+//! source-tagged; the B admin adopts "C's git group" in one click and issues a delegated token
+//! for consumer A against it — without C ever touching a credential on B.
 
 use agile_net_core::config::node::{ListenerConfig, NodeConfig};
 use agile_net_node::service::{NodeServer, NodeServerOptions};
@@ -294,28 +294,27 @@ async fn federation_push_pool_adopt_grant() {
         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
     }
 
-    // Grant to consumer A: create an account on B bound to the adopted group
+    // Grant to consumer A: issue a delegated token on B bound to the adopted group (direct entry)
     let resp = http
-        .post(format!("{b_base}/api/v1/admin/accounts"))
+        .post(format!("{b_base}/api/v1/admin/delegation/tokens"))
         .bearer_auth(&b_token)
-        .json(&serde_json::json!({ "username": "consumer-a", "group_id": adopted_gid, "remark": "" }))
+        .json(&serde_json::json!({ "label": "consumer-a", "group_ids": [adopted_gid], "entry_mode": "direct" }))
         .send()
         .await
         .unwrap();
     let status = resp.status();
     let body: serde_json::Value = resp.json().await.unwrap();
-    assert_eq!(status, 201, "create account: {body}");
-    assert!(
-        body["data"]["connect_url"]
-            .as_str()
-            .unwrap()
-            .starts_with("anet://connect?")
-    );
+    assert_eq!(status, 201, "issue delegated token: {body}");
+    let share_url = body["data"]["share_url"].as_str().unwrap();
+    assert!(share_url.starts_with("anet://connect?"));
+    let parsed = agile_net_core::link::parse_connect_url(share_url).expect("share_url parses");
+    assert_eq!(parsed.delegated_label(), Some("consumer-a"));
 
-    // The adopted ACL actually drives fan-in auth: A's tunnel rules resolve to C's targets.
+    // The adopted ACL actually drives fan-in auth: the token's group resolves to C's targets.
     // (Data-plane reachability of C's intra-net is covered by the route-convergence chain tests.)
-    let rules = b.db().rules_of_account(body["data"]["id"].as_str().unwrap());
-    let values: Vec<String> = rules
+    let values: Vec<String> = b
+        .db()
+        .rules_of_group(&adopted_gid)
         .unwrap()
         .into_iter()
         .map(|r| r.value)
@@ -327,79 +326,21 @@ async fn federation_push_pool_adopt_grant() {
     b.stop().await;
 }
 
-// ==================== adopted-group data plane (regression: preset bypass shadowing) ====================
+// ==================== adopted-group delegated grant (issuer-side ACL) ====================
 
-use agile_net_client::{AgileNetClient, ConnectParams, CustomBypassRule, CustomRules, NodeStatus};
+use agile_net_client::{AgileNetClient, ConnectParams, NodeStatus};
 use agile_net_core::proxy::router::Outbound;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-async fn start_echo_server(port: u16) {
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
-        .await
-        .unwrap();
-    tokio::spawn(async move {
-        loop {
-            let Ok((mut sock, _)) = listener.accept().await else {
-                break;
-            };
-            tokio::spawn(async move {
-                let mut buf = vec![0u8; 64 * 1024];
-                loop {
-                    match sock.read(&mut buf).await {
-                        Ok(0) | Err(_) => break,
-                        Ok(n) => {
-                            if sock.write_all(&buf[..n]).await.is_err() {
-                                break;
-                            }
-                        }
-                    }
-                }
-            });
-        }
-    });
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-}
-
-/// SOCKS5 CONNECT through the client's local proxy; returns whether the echo roundtrip worked.
-async fn socks_echo(proxy_port: u16, target_ip: [u8; 4], target_port: u16, payload: &[u8]) -> bool {
-    let Ok(mut sock) = tokio::net::TcpStream::connect(("127.0.0.1", proxy_port)).await else {
-        return false;
-    };
-    if sock.write_all(&[0x05, 0x01, 0x00]).await.is_err() {
-        return false;
-    }
-    let mut resp = [0u8; 2];
-    if sock.read_exact(&mut resp).await.is_err() || resp != [0x05, 0x00] {
-        return false;
-    }
-    let mut req = vec![0x05, 0x01, 0x00, 0x01];
-    req.extend_from_slice(&target_ip);
-    req.extend_from_slice(&target_port.to_be_bytes());
-    if sock.write_all(&req).await.is_err() {
-        return false;
-    }
-    let mut head = [0u8; 10];
-    if sock.read_exact(&mut head).await.is_err() || head[1] != 0x00 {
-        return false;
-    }
-    if sock.write_all(payload).await.is_err() {
-        return false;
-    }
-    let mut buf = vec![0u8; payload.len()];
-    matches!(
-        tokio::time::timeout(std::time::Duration::from_secs(3), sock.read_exact(&mut buf)).await,
-        Ok(Ok(_))
-    ) && buf == payload
-}
-
-/// Regression (user report): C pushes a group, B adopts it and binds it to account A, yet A could
-/// not reach the group's segments. Root cause: the desktop's built-in direct presets (10.*, 127.*,
-/// …) were baked into the custom bypass layer, which the proxy inbound evaluates BEFORE merged
-/// routes — the wide preset shadowed the adopted group's tunnel route and the traffic went direct.
-/// Fix: presets bake into a weaker tier that yields to any narrower explicit route
-/// (ProxyRouter::decide_inbound).
+/// New-world chain: C pushes a group, B adopts it, B issues a direct delegated token against the
+/// adopted group — the issuer-side ACL snapshot (union of the mirror's rules) is what gates the
+/// fan-in Open on B, and the consumer session authenticates against B's persistent local registry.
+/// (The old preset-shadowing regression is obsolete by design: for the dedicated tier the LAN
+/// presets now intentionally win — 专线委托 LAN 保持直连 — so no preset is seeded. The multi-hop
+/// data plane to C's own segment is covered by federation_p2/p3: a transparent open forwarded to
+/// another issuer carries this issuer's local group stamps, which the far endpoint fail-closes
+/// on unless it issued them — B-issued tokens terminate at B by design.)
 #[tokio::test]
-async fn federation_adopted_group_data_plane() {
+async fn federation_adopted_group_delegated_grant() {
     // ---- B: the public rendezvous ----
     let relay_port = free_port();
     let (b, _bdir) = boot("b", Some(relay_port)).await;
@@ -419,9 +360,7 @@ async fn federation_adopted_group_data_plane() {
         )
         .expect("create relay token");
 
-    // ---- C: group with a loopback CIDR (stands in for C's intra-net segment) + echo server ----
-    let echo_port = free_port();
-    start_echo_server(echo_port).await;
+    // ---- C: group with a loopback CIDR (stands in for C's intra-net segment) ----
     let (c, _cdir) = boot("c", None).await;
     let gid = c.db().create_group("git", "代码组").expect("group").id;
     let rid = c
@@ -470,7 +409,7 @@ async fn federation_adopted_group_data_plane() {
     }
     let c_node = c_node.expect("pushed group rules must converge into B's route table");
 
-    // ---- B: one-click adoption + account A bound to the adopted group ----
+    // ---- B: one-click adoption + delegated token bound to the adopted group (direct entry) ----
     let resp = http
         .post(format!("{b_base}/api/v1/admin/federation/adopt"))
         .bearer_auth(&b_token)
@@ -483,68 +422,65 @@ async fn federation_adopted_group_data_plane() {
     let adopted_gid = body["data"]["id"].as_str().unwrap().to_string();
 
     let resp = http
-        .post(format!("{b_base}/api/v1/admin/accounts"))
+        .post(format!("{b_base}/api/v1/admin/delegation/tokens"))
         .bearer_auth(&b_token)
-        .json(&serde_json::json!({ "username": "consumer-a", "group_id": adopted_gid, "remark": "" }))
+        .json(&serde_json::json!({ "label": "consumer-a", "group_ids": [adopted_gid], "entry_mode": "direct" }))
         .send()
         .await
         .unwrap();
     let status = resp.status();
     let body: serde_json::Value = resp.json().await.unwrap();
-    assert_eq!(status, 201, "create account: {body}");
-    let password = body["data"]["password"].as_str().unwrap().to_string();
+    assert_eq!(status, 201, "issue delegated token: {body}");
+    let plaintext = body["data"]["token"].as_str().unwrap().to_string();
 
-    // ---- A: desktop-equivalent preset seed (built-in direct defaults) + full login flow ----
+    // The adopted mirror's rules land in B's issuer-side ACL snapshot at issuance
+    // (the fan-in enforcement point for this token's consumers)
+    let token_hash = agile_net_node::db::sha256_hex(plaintext.as_bytes());
+    let listener = b.runtime().listener.clone().expect("listener");
+    let entry = listener
+        .local_delegated_registry()
+        .get(&token_hash)
+        .expect("direct token self-registers on B at issuance")
+        .clone();
+    assert_eq!(entry.groups, vec!["git@for peer-c".to_string()]);
+    assert!(
+        entry.acl_rules.iter().any(|r| r == "127.0.0.1/32"),
+        "ACL snapshot from the adopted mirror: {:?}",
+        entry.acl_rules
+    );
+
+    // ---- A: delegated consumer dials B's own listener (direct entry = TLS already end-to-end) ----
     let a = AgileNetClient::new();
-    a.set_custom_rules(CustomRules {
-        bypass: vec![CustomBypassRule {
-            pattern: "127.*".into(),
-            via_subscription: false,
-            sort: 1, // built-in preset tier
-        }],
-        hosts: vec![],
-    });
     let state = a
         .connect(ConnectParams {
-            addr: b.api_addr().to_string(),
-            username: "consumer-a".into(),
-            password,
+            addr: format!("127.0.0.1:{relay_port}"),
+            label: "consumer-a".into(),
+            token: plaintext,
             insecure: true,
-            pinned_cert_path: None,
             pinned_fingerprint: None,
             manage_hosts: false,
-            delegated: false,
             entries: Vec::new(),
             entry_fps: Vec::new(),
-            ehint: None,
             en: None,
             emode: None,
             eadmin: false,
         })
         .await
-        .expect("account connect");
+        .expect("delegated connect");
     assert_eq!(state.status, NodeStatus::Connected);
     assert!(
-        state.rules.iter().any(|r| r.value == "127.0.0.1/32"),
-        "adopted group rules ride the client config: {:?}",
+        state.rules.iter().any(|r| r.value == "0.0.0.0/0"),
+        "dedicated tier registers the catch-all route: {:?}",
         state.rules
     );
 
-    // The regression assertion: the 127.* preset must not shadow the adopted tunnel route
+    // No preset bypass seeded: the catch-all tunnel route wins the inbound decision
     assert!(
         matches!(
             a.proxy_router().decide_inbound("127.0.0.1"),
             Outbound::Tunnel { .. }
         ),
-        "preset bypass must not shadow the adopted group route"
-    );
-
-    // Data plane: A reaches C's segment through B (ACL pass on B, route to C, C dials locally)
-    a.start_proxy(0).await.unwrap();
-    let proxy_port = a.proxy_port();
-    assert!(
-        socks_echo(proxy_port, [127, 0, 0, 1], echo_port, b"adopted-data-plane").await,
-        "A reaches the adopted group's segment through B -> C"
+        "dedicated tier routes the segment through the tunnel"
     );
 
     a.disconnect_all().await;

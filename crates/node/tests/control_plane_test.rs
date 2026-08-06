@@ -1,12 +1,13 @@
 //! P2 control-plane exposure and manageable-upstream discovery integration tests (handshake v2).
 //!
 //! Topology: node A (listener + relay_token.expose_control) ← node B (connector).
-//! Assert: B auto-discovers A's control endpoint → admin client config gets manageable →
-//! ticket chain exchanges for a scoped admin session (rules tier enforced) → toggle change audited.
+//! Assert: B auto-discovers A's control endpoint → the manageable stream opener reaches A's API
+//! through the fan-out session → ticket chain exchanges for a scoped admin session
+//! (rules tier enforced) → toggle change audited.
 
 use agile_net_core::config::NodeConfig;
 use agile_net_core::config::node::{ConnectorConfig, ListenerConfig};
-use agile_net_node::db::{Database, hash_password, sha256_hex};
+use agile_net_node::db::{Database, sha256_hex};
 use agile_net_node::service::{NodeServer, NodeServerOptions};
 
 use std::time::Duration;
@@ -214,82 +215,10 @@ async fn handshake_v2_control_offer_and_manageable_discovery() {
         "relay 换取审计应归因令牌前缀与下游节点: {items:?}"
     );
 
-    // 4. B's admin client: config carries manageable, console-ticket fetches upstream ticket
-    let db_b = b.db();
-    let gid = {
-        let r = http
-            .post(format!("http://{}/api/v1/auth/init", b.api_addr()))
-            .json(&serde_json::json!({"username": "admin", "password": "AdminPass123!"}))
-            .send()
-            .await
-            .unwrap();
-        assert!(r.status().is_success());
-        let r = http
-            .post(format!("http://{}/api/v1/auth/login", b.api_addr()))
-            .json(&serde_json::json!({"username": "admin", "password": "AdminPass123!"}))
-            .send()
-            .await
-            .unwrap();
-        let bt = r.json::<serde_json::Value>().await.unwrap()["data"]["access_token"]
-            .as_str()
-            .unwrap()
-            .to_string();
-        let r = http
-            .post(format!("http://{}/api/v1/admin/groups", b.api_addr()))
-            .bearer_auth(&bt)
-            .json(&serde_json::json!({"name": "ops"}))
-            .send()
-            .await
-            .unwrap();
-        r.json::<serde_json::Value>().await.unwrap()["data"]["id"]
-            .as_str()
-            .unwrap()
-            .to_string()
-    };
-    let pw = agile_net_node::db::generate_password();
-    let acc = db_b
-        .create_account_with_admin("carol", &hash_password(&pw).unwrap(), &gid, "", true)
-        .unwrap();
-    assert!(acc.admin_console);
-
-    let r = http
-        .post(format!("http://{}/api/v1/auth/login", b.api_addr()))
-        .json(&serde_json::json!({"username": "carol", "password": pw}))
-        .send()
-        .await
-        .unwrap();
-    let ctoken = r.json::<serde_json::Value>().await.unwrap()["data"]["access_token"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    let r = http
-        .get(format!("http://{}/api/v1/client/config", b.api_addr()))
-        .bearer_auth(&ctoken)
-        .send()
-        .await
-        .unwrap();
-    let j: serde_json::Value = r.json().await.unwrap();
-    let manageable = j["data"]["manageable"].as_array().unwrap();
-    assert!(
-        manageable.iter().any(|m| m["node_name"] == "node-root"),
-        "管理版客户端应自动发现可管理上游: {manageable:?}"
-    );
-
-    // console-ticket upstream: returns current handshake-v2 ticket
-    let r = http
-        .post(format!(
-            "http://{}/api/v1/client/console-ticket",
-            b.api_addr()
-        ))
-        .bearer_auth(&ctoken)
-        .json(&serde_json::json!({"upstream": "node-root"}))
-        .send()
-        .await
-        .unwrap();
-    let j: serde_json::Value = r.json().await.unwrap();
-    assert_eq!(j["code"].as_u64(), Some(0), "console-ticket: {j}");
-    assert!(j["data"]["ticket"].as_str().unwrap().starts_with("adt_"));
-    assert_eq!(j["data"]["scope"].as_str(), Some("rules"));
+    // 4. B's runtime keeps the discovered offer (the desktop console forwarder rides
+    //    open_manageable_stream; account-based client config/ticket APIs are gone)
+    let offer2 = b.runtime().manageable.iter().next().map(|i| i.clone());
+    assert!(offer2.is_some(), "B 应持续持有 A 的可管理上游发现");
 
     b.stop().await;
     a.stop().await;

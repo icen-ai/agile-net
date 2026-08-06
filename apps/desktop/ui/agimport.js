@@ -107,10 +107,9 @@ function open(cfg) {
   function badgesHtml(p) {
     const b = [];
     b.push('<span class="badge b-info">' + (p.role === 'fanout' ? T('import.roleFanout') : T('import.roleConnect')) + '</span>');
-    if (p.role === 'connect' && p.delegated) b.push('<span class="badge b-warn">' + T('import.delegated') + '</span>');
-    if (p.role === 'connect' && (p.en || p.ehint)) b.push('<span class="badge b-warn">' + T('import.e2e') + '</span>');
-    if (p.role === 'connect' && (p.en || p.ehint)) b.push('<span class="badge ' + (p.emode === 'split' ? 'b-info' : 'b-off') + '">' + (p.emode === 'split' ? T('import.split') : T('import.dedicated')) + '</span>');
-    if (p.role === 'connect' && (p.admin || p.eadmin)) b.push('<span class="badge b-warn">' + T('import.adminScope') + '</span>');
+    if (p.role === 'connect' && p.en) b.push('<span class="badge b-warn">' + T('import.e2e') + '</span>');
+    if (p.role === 'connect' && p.en) b.push('<span class="badge ' + (p.emode === 'split' ? 'b-info' : 'b-off') + '">' + (p.emode === 'split' ? T('import.split') : T('import.dedicated')) + '</span>');
+    if (p.role === 'connect' && p.eadmin) b.push('<span class="badge b-warn">' + T('import.adminScope') + '</span>');
     if (p.insecure) b.push('<span class="badge b-warn">' + T('import.insecure') + '</span>');
     return '<div class="agimp-badges">' + b.join(' ') + '</div>';
   }
@@ -133,8 +132,8 @@ function open(cfg) {
     if (p.role === 'connect') {
       h += row(T('import.entry'), '<span class="mono">' + esc(p.addr) + '</span>' +
         ((p.entries || []).length > 1 ? ' <span class="badge b-info">' + T('import.entries', { n: p.entries.length }) + '</span>' : ''));
-      h += row(T('import.account'), esc(p.delegated ? ('d:' + p.label) : p.account), true);
-      if (p.en || p.ehint) h += row(T('import.e2e'), '<span class="mono">' + esc(p.en || p.ehint) + '</span>');
+      h += row(T('import.account'), esc(p.account), true);
+      if (p.en) h += row(T('import.e2e'), '<span class="mono">' + esc(p.en) + '</span>');
     } else {
       h += row(T('import.target'), '<span class="mono">' + esc(p.addr) + '</span>');
       if (p.sni) h += row('SNI', '<span class="mono">' + esc(p.sni) + '</span>');

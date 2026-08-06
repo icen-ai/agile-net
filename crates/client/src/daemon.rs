@@ -5,12 +5,10 @@
 //! proxy_port = 57890
 //! manage_hosts = true
 //!
-//! [[nodes]]
-//! addr = "https://node-a.example.com:59090"
-//! username = "zhangsan"
-//! password = "sk-..."
-//! insecure = false
-//! # pinned_cert_path = "certs/node-a.pem"
+//! # One delegated connect link per node (anet://connect?...&account=d:<label>&password=psk_...)
+//! nodes = [
+//!   "anet://connect?server=b1.example.com&port=54430&account=d:alice-laptop&password=psk_...&fp=aa11",
+//! ]
 //! ```
 
 use crate::{AgileNetClient, ConnectParams};
@@ -25,27 +23,15 @@ struct ClientFileConfig {
     proxy_auth: Option<ProxyAuth>,
     #[serde(default)]
     manage_hosts: bool,
+    /// Delegated connect links (anet://connect?...), one per node
     #[serde(default)]
-    nodes: Vec<NodeEntry>,
+    nodes: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct ProxyAuth {
     username: String,
     password: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct NodeEntry {
-    addr: String,
-    username: String,
-    password: String,
-    #[serde(default)]
-    insecure: bool,
-    #[serde(default)]
-    pinned_cert_path: Option<String>,
-    #[serde(default)]
-    pinned_fingerprint: Option<String>,
 }
 
 fn default_proxy_port() -> u16 {
@@ -61,28 +47,32 @@ pub async fn run(config_path: &str) -> Result<()> {
     let client = AgileNetClient::new();
 
     // Connect all nodes (a failure does not block other nodes)
-    for node in &config.nodes {
+    for link in &config.nodes {
+        let parsed = match crate::parse_connect_url(link) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::error!(error = %e, "invalid node link, skipped");
+                continue;
+            }
+        };
         let params = ConnectParams {
-            addr: node.addr.clone(),
-            username: node.username.clone(),
-            password: node.password.clone(),
-            insecure: node.insecure,
-            pinned_cert_path: node.pinned_cert_path.clone(),
-            pinned_fingerprint: node.pinned_fingerprint.clone(),
+            addr: parsed.addr.clone(),
+            label: parsed.label,
+            token: parsed.token,
+            insecure: parsed.insecure,
+            pinned_fingerprint: parsed.pinned_fingerprint,
             manage_hosts: config.manage_hosts,
-            delegated: false,
-            entries: Vec::new(),
-            entry_fps: Vec::new(),
-            ehint: None,
-            en: None,
-            emode: None,
-            eadmin: false,
+            entries: parsed.entries,
+            entry_fps: parsed.entry_fps,
+            en: parsed.en,
+            emode: parsed.emode,
+            eadmin: parsed.eadmin,
         };
         match client.connect(params).await {
             Ok(state) => {
                 tracing::info!(node = %state.node_id, rules = state.rules.len(), "node connected")
             }
-            Err(e) => tracing::error!(addr = %node.addr, error = %e, "node connect failed"),
+            Err(e) => tracing::error!(error = %e, "node connect failed"),
         }
     }
 

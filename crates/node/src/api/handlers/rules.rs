@@ -371,7 +371,12 @@ pub async fn batch_import(
                                 .unwrap_or_default();
                             if let Some(existing) = items.iter().find(|i| i.value == value) {
                                 if db
-                                    .update_rule(&existing.id, None, Some(r.resolve), Some(&r.remark))
+                                    .update_rule(
+                                        &existing.id,
+                                        None,
+                                        Some(r.resolve),
+                                        Some(&r.remark),
+                                    )
                                     .is_ok()
                                 {
                                     updated += 1;

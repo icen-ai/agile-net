@@ -10,12 +10,12 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use tauri::{Emitter, Manager};
 
-/// Forward deep links (anet:// / legacy agilenet://) and .anet file-association paths to the
+/// Forward deep links (anet://) and .anet file-association paths to the
 /// frontend as `ag-open-payload` (kind: link|file), focusing the main window (federation P1).
 fn open_payloads_from_argv(app: &tauri::AppHandle, argv: &[String]) {
     let mut hit = false;
     for arg in argv.iter().skip(1) {
-        if arg.starts_with("anet://") || arg.starts_with("agilenet://") {
+        if arg.starts_with("anet://") {
             let _ = app.emit_to(
                 "main",
                 "ag-open-payload",
@@ -129,13 +129,6 @@ pub(crate) fn map_err<E: std::fmt::Display>(e: E) -> String {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // One-shot data layout migration (~/.agile-net → ~/.anet/{svc,gui,root}).
-    // Idempotent: no-op if legacy dir absent or new dir already exists. Must run
-    // before any module loads `~/.anet/...` paths (RoleSettings, credentials, …).
-    if let Err(e) = agile_net_core::util::migrate_legacy_layout() {
-        eprintln!("warn: legacy layout migration failed: {e}; continuing");
-    }
-
     let app_log_buf = agile_net_node::logs::LogBuffer::new();
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
@@ -213,6 +206,9 @@ pub fn run() {
             update_server_connector,
             remove_server_connector,
             list_embedded_groups,
+            list_delegated_tokens,
+            issue_delegated_token,
+            revoke_delegated_token,
             uninstall_app,
             list_subscriptions,
             add_subscription,
@@ -315,7 +311,7 @@ pub fn run() {
                         .or_else(|_| serde_json::from_str(event.payload()).map(|u: String| vec![u]))
                         .unwrap_or_default();
                     let argv: Vec<String> = std::iter::once(String::new())
-                        .chain(urls.into_iter().filter(|u| u.starts_with("anet://") || u.starts_with("agilenet://")))
+                        .chain(urls.into_iter().filter(|u| u.starts_with("anet://")))
                         .collect();
                     if argv.len() > 1 {
                         open_payloads_from_argv(&handle, &argv);

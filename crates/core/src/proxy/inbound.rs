@@ -75,7 +75,7 @@ impl ProxyInbound {
         }
     }
 
-    /// Register a RelayListener as fallback channel opener (backwards compatible).
+    /// Register a RelayListener as fallback channel opener.
     pub fn with_relay_listener(mut self, relay_listener: Arc<RelayListener>) -> Self {
         self.default_opener = Some(relay_listener);
         self

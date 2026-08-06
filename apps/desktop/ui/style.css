@@ -245,6 +245,7 @@ input[type="checkbox"]:disabled { opacity: .5; cursor: not-allowed; }
 .group-tab { padding: 6px 16px; font-size: 13px; font-weight: 600; color: var(--dim); cursor: pointer; border-radius: 999px; background: none; user-select: none; transition: background .15s, color .15s; }
 .group-tab:hover { background: none; color: var(--text-strong); }
 .group-tab.active { background: var(--accent); color: var(--accent-fg); }
+.group-tab:disabled { opacity: .45; cursor: not-allowed; }
 .node-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; }
 .snode-card { position: relative; display: block; border: 1px solid var(--border); border-radius: 11px; padding: 12px 13px; background: var(--panel2); cursor: pointer; transition: border-color .15s, background .15s, transform var(--dur) var(--ease), box-shadow var(--dur) var(--ease); }
 .snode-card:hover { border-color: var(--border2); background: var(--chip); transform: translateY(-1px); box-shadow: var(--shadow-2); }

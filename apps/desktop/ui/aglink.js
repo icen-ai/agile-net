@@ -1,17 +1,18 @@
 'use strict';
-/* AgileNet unified link parser/builder (aglink, federation P1 §2.7):
+/* AgileNet unified link parser/builder (aglink):
    desktop loads via <script src="aglink.js">; admin UI serves it embedded via crates/node/src/ui/mod.rs at /ui/aglink.js
    (same mechanism as agutil.js / agchart.js). THE single parser shared by every form on both ends —
    paste-to-import must never fork a second implementation.
    Link shapes (three-piece set: entry address + credential + entry cert fingerprint):
-     fan-in account:  anet://connect?server=H&port=P&account=U&password=W&fp=FP[&admin=1]
-     fan-out peer:    anet://fanout?server=H&port=P&token=psk_...&sni=SNI&fp=FP
+     delegated credential: anet://connect?server=H&port=P&account=d:<label>&password=psk_...&fp=FP
+                           (+ entry/entryfp disaster set, en entrust word, emode, eadmin)
+     fan-out peer:         anet://fanout?server=H&port=P&token=psk_...&sni=SNI&fp=FP
    `server` may be a full `https://host[:port]` form (API behind a reverse proxy; the port param is then ignored).
-   Generation always uses the new `anet://` scheme; parsing accepts the legacy `agilenet://` scheme forever (smooth migration).
+   Only the `anet://` scheme is recognized — anything else is an error.
    Errors are returned as neutral codes ({ error: 'bad_prefix'|'bad_role'|'missing_params'|'bad_port' }) — the caller maps them to i18n. */
 (function () {
 
-const SCHEMES = ['anet://', 'agilenet://'];
+const SCHEMES = ['anet://'];
 const ROLES = ['connect', 'fanout'];
 
 function urlDecode(s) {
@@ -62,12 +63,12 @@ function resolveServer(p, defaultPort) {
 function truthy(v) { return v === '1' || String(v).toLowerCase() === 'true'; }
 
 /* Parse a unified link. Returns:
-   { role:'connect', server, addr, account, password, fp, insecure, admin, delegated, label,
-     entries[], entryFps[] } |
+   { role:'connect', server, addr, account, password, fp, insecure, delegated, label,
+     entries[], entryFps[], en, emode, eadmin } |
    { role:'fanout',  server, addr, token, sni, fp, insecure } |
    { error }
-   Federation P2: connect links may carry the disaster set (entry/entryfp, comma-joined parallel
-   lists; empty = single entry) and the `d:<label>` account mark of a delegated credential. */
+   Connect links carry delegated credentials: the disaster set (entry/entryfp, comma-joined
+   parallel lists; empty = single entry) and the `d:<label>` account mark. */
 function parse(url) {
   const sp = splitUrl(url);
   if (sp.error) return sp;
@@ -84,18 +85,16 @@ function parse(url) {
     return {
       role: 'connect', server: sv.server, addr: sv.addr,
       account: p.account, password: p.password,
-      fp: p.fp || '', insecure: truthy(p.insecure), admin: truthy(p.admin),
+      fp: p.fp || '', insecure: truthy(p.insecure),
       delegated, label: delegated ? p.account.slice(2) : '',
       entries: entries.length ? entries : [sv.addr],
       entryFps: entries.length ? entryFps : [p.fp || ''],
-      // federation P3: E2E routing hint (delegated links; the client seals every Open when set)
-      ehint: p.ehint || '',
-      // federation P3 entrust word (en_xxx opaque routing ID; preferred over ehint on v4+ relays)
+      // entrust word (en_xxx opaque routing ID; every Open is E2E-sealed when set)
       en: p.en || '',
-      // federation P3 consumer tier: 'split' = E2E rule delivery (route selectively);
+      // consumer tier: 'split' = E2E rule delivery (route selectively);
       // absent = dedicated 专线 (whole machine captured)
       emode: p.emode || '',
-      // federation P3 delegated admin capability hint (ticket pull via the E2E config channel)
+      // delegated admin capability hint (ticket pull via the E2E config channel)
       eadmin: truthy(p.eadmin),
     };
   }
@@ -123,20 +122,19 @@ function serverParams(addr) {
   return [['server', m[1]], ['port', m[2] || '']];
 }
 
-/* Build a fan-in account link (anet://connect?...). Pass `entries:[{addr,fp}]` (federation P2
-   disaster set, primary first) to append entry/entryfp; a single-entry set stays parameter-free. */
+/* Build a delegated-credential link (anet://connect?...). Pass `entries:[{addr,fp}]`
+   (disaster set, primary first) to append entry/entryfp; a single-entry set stays parameter-free. */
 function buildConnect(f) {
   const params = [
     ...serverParams(f.addr || f.server),
     ['account', f.account], ['password', f.password],
-    ['fp', f.fp], ['insecure', !!f.insecure], ['admin', !!f.admin],
+    ['fp', f.fp], ['insecure', !!f.insecure],
   ];
   const entries = (f.entries || []).filter(e => e && e.addr);
   if (entries.length > 1) {
     params.push(['entry', entries.map(e => e.addr).join(',')]);
     params.push(['entryfp', entries.map(e => e.fp || '').join(',')]);
   }
-  if (f.ehint) params.push(['ehint', f.ehint]);
   if (f.en) params.push(['en', f.en]);
   if (f.emode === 'split') params.push(['emode', 'split']);
   if (f.eadmin) params.push(['eadmin', '1']);

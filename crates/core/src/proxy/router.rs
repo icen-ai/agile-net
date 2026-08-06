@@ -242,8 +242,8 @@ impl ProxyRouter {
     /// user bypass > narrower explicit route > preset bypass (built-in direct defaults) >
     /// catch-all route / default outbound.
     ///
-    /// A preset (e.g. direct `10.*`) yields to any explicit route narrower than catch-all, so an
-    /// account / adopted-group rule (e.g. `10.12.0.0/16` via tunnel) is never shadowed by the
+    /// A preset (e.g. direct `10.*`) yields to any explicit route narrower than catch-all, so a
+    /// delegated / adopted-group rule (e.g. `10.12.0.0/16` via tunnel) is never shadowed by the
     /// built-in LAN presets. Catch-all routes (`0.0.0.0/0`, `::/0`, wildcard domain — dedicated
     /// delegated full-tunnel) still let the presets keep loopback/LAN traffic direct.
     /// Input is a bare hostname or IP string (no port; hosts mapping is applied by the caller).
@@ -596,8 +596,8 @@ mod tests {
     }
 
     /// Inbound precedence (decide_inbound): user bypass > narrower explicit route > preset bypass >
-    /// catch-all route / default. Regression: a built-in LAN preset (10.*, direct) must not shadow an
-    /// account/adopted-group tunnel rule (10.12.0.0/16) — the "adopted group unreachable" bug.
+    /// catch-all route / default. Regression: a built-in LAN preset (10.*, direct) must not shadow a
+    /// delegated/adopted-group tunnel rule (10.12.0.0/16) — the "adopted group unreachable" bug.
     #[test]
     fn decide_inbound_precedence() {
         let mut router = ProxyRouter::new();

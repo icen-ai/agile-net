@@ -242,13 +242,17 @@ window.addEventListener('DOMContentLoaded', async () => {
   $('connect-url-hero').addEventListener('keydown', e => { if (e.key === 'Enter') $('btn-import-hero').click(); });
   $('connect-url-hero').focus();
   $('btn-connect').onclick = () => {
-    const addr = $('m-addr').value.trim(), user = $('m-user').value.trim(), pass = $('m-pass').value;
-    if (!addr || !user || !pass) { toast(AgI18n.t('app.err.fillAll'), 'err'); return; }
+    const addr = $('m-addr').value.trim(), token = $('m-token').value.trim();
+    const name = $('m-name').value.trim(), fp = $('m-fp').value.trim().toLowerCase();
+    if (!addr || !token) { toast(AgI18n.t('app.err.fillAll'), 'err'); return; }
+    if (fp && !/^[0-9a-f]{64}$/.test(fp)) { toast(AgI18n.t('fanin.fpInvalid'), 'err'); return; }
     $('manual-modal').style.display = 'none';
+    // Delegated credential: the remark doubles as the token label (display identity; the issuer
+    // authenticates by token hash only). Fallback label = entry host.
     connectWith({
-      addr, username: user, password: pass,
-      insecure: $('m-insecure').checked,
-      pinned_cert_path: $('m-pin').value.trim() || null,
+      addr, label: name || addr.split(':')[0], token,
+      insecure: false,
+      pinned_fingerprint: fp || null,
       manage_hosts: $('m-hosts').checked,
       save_credential: $('m-save').checked,
     }, $('btn-connect'));

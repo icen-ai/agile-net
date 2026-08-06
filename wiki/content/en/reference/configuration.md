@@ -7,7 +7,7 @@
 name = "my-node"
 # SQLite 路径（DATABASE_PATH 环境变量可覆盖）
 db_path = "agile-net.db"
-# connect_url / 隧道端点对外地址（AGILE_PUBLIC_HOST 可覆盖）
+# Public address for share links / tunnel endpoints (AGILE_PUBLIC_HOST overrides)
 public_host = "relay.example.com"
 
 [api]
@@ -47,6 +47,14 @@ advertise = ["10.12.0.0/16", "git.internal"]   # 向对端通告的可服务网�
 addr = "127.0.0.1:1080"                # 非 loopback 必须配置认证
 # username = "u"
 # password = "p"
+
+# In-process embedded client role (optional): the client engine runs inside anet-svc
+# [client]
+# proxy_port = 57890
+# manage_hosts = true
+# nodes = [
+#   "anet://connect?server=b1.example.com&port=54430&account=d:alice-laptop&password=psk_...&fp=aa11",
+# ]
 
 # ACME 自动证书（Let's Encrypt TLS-ALPN-01，热替换免停机）
 # [acme]
@@ -100,16 +108,16 @@ manage_hosts = true          # resolve 规则自动维护系统 hosts（需管�
 # username = "u"
 # password = "p"
 
-[[nodes]]
-addr = "https://relay.example.com:59090"   # 或 host:port
-username = "zhangsan"
-password = "sk-..."
-# insecure = true
-# pinned_cert_path = "certs/node-a.pem"    # 证书固定 PEM
-pinned_fingerprint = "ab12..."             # 或指纹固定（connect_url 自带）
+# Link-style node list: one anet://connect delegated link per node
+# (produced by unified issuance on the issuer; carries entry address + delegated token
+#  + cert fingerprint pinning; disaster set entry/entryfp, E2E en, split emode=split,
+#  management eadmin=1 are all carried by link parameters)
+nodes = [
+  "anet://connect?server=relay.example.com&port=54430&account=d:alice-laptop&password=psk_...&fp=ab12...",
+]
 ```
 
-Multiple nodes: write multiple `[[nodes]]` blocks; routes merge in connection order (first-connected wins, while standard longest-prefix matching still takes precedence).
+Multiple nodes: put multiple links in `nodes`; routes merge in connection order (first-connected wins, while standard longest-prefix matching still takes precedence).
 
 ## Rule Types
 

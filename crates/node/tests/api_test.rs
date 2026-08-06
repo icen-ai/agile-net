@@ -233,20 +233,21 @@ async fn login_rate_limited() {
 
 #[tokio::test]
 async fn unauthenticated_and_role_enforcement() {
-    let (app, _db) = test_app().await;
+    let (app, db) = test_app().await;
     // No token
     let (status, body) = req(&app, "GET", "/api/v1/admin/rules", None, None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     assert_eq!(body["code"], 40100);
 
-    // client role on admin API → 403
-    let admin_token = init_and_login(&app).await;
-    let account_token = create_account_and_login(&app, &admin_token).await;
+    // non-admin role on admin API → 403 (defense-in-depth; signed with the same persisted secret)
+    init_and_login(&app).await;
+    let jwt = JwtService::load_or_create(db.clone()).unwrap();
+    let alien = jwt.issue("uid-x", "ghost", "client").unwrap();
     let (status, body) = req(
         &app,
         "GET",
         "/api/v1/admin/rules",
-        Some(&account_token),
+        Some(&alien.access_token),
         None,
     )
     .await;
@@ -467,57 +468,12 @@ async fn groups_flow() {
     assert_eq!(status, StatusCode::OK);
 }
 
-// ==================== Accounts ====================
+// ==================== Delegated tokens (unified issuance) ====================
 
-/// Create group + account; returns client login token.
-async fn create_account_and_login(app: &Router, admin_token: &str) -> String {
-    let (_, body) = req(
-        app,
-        "POST",
-        "/api/v1/admin/groups",
-        Some(admin_token),
-        Some(json!({
-            "name": "默认组",
-        })),
-    )
-    .await;
-    let group_id = body["data"]["id"].as_str().unwrap().to_string();
-
-    let (status, body) = req(
-        app,
-        "POST",
-        "/api/v1/admin/accounts",
-        Some(admin_token),
-        Some(json!({
-            "username": "zhangsan",
-            "group_id": group_id,
-            "remark": "张三",
-        })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::CREATED);
-    let password = body["data"]["password"].as_str().unwrap().to_string();
-
-    let (status, body) = req(
-        app,
-        "POST",
-        "/api/v1/auth/login",
-        None,
-        Some(json!({
-            "username": "zhangsan",
-            "password": password,
-        })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["data"]["role"], "client");
-    assert!(body["data"]["tunnel_token"].is_string());
-    body["data"]["access_token"].as_str().unwrap().to_string()
-}
-
+/// Unified issuance API contract: direct entry, defaults, share link round-trip, lifecycle, revoke.
 #[tokio::test]
-async fn accounts_strong_password_and_lifecycle() {
-    let (app, _db) = test_app().await;
+async fn delegation_issue_contract() {
+    let (app, db) = test_app().await;
     let token = init_and_login(&app).await;
 
     let (_, body) = req(
@@ -525,254 +481,109 @@ async fn accounts_strong_password_and_lifecycle() {
         "POST",
         "/api/v1/admin/groups",
         Some(&token),
-        Some(json!({
-            "name": "运维组",
-        })),
+        Some(json!({ "name": "签发组" })),
     )
     .await;
-    let group_id = body["data"]["id"].as_str().unwrap().to_string();
+    let gid = body["data"]["id"].as_str().unwrap().to_string();
 
-    // Create account: server generates strong password
-    let (status, body) = req(
-        &app,
-        "POST",
-        "/api/v1/admin/accounts",
-        Some(&token),
-        Some(json!({
-            "username": "lisi",
-            "group_id": group_id,
-        })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::CREATED);
-    let password = body["data"]["password"].as_str().unwrap();
-    // "sk-" prefix + 48 chars = 51 total, mixed case + digits
-    assert!(password.starts_with("sk-"));
-    assert_eq!(password.len(), 51);
-    assert!(
-        body["data"]["connect_url"]
-            .as_str()
-            .unwrap()
-            .starts_with("anet://connect?")
-    );
-    // Issuance responses carry share-endpoint candidates (federation P1)
-    assert!(body["data"]["endpoints"].is_array());
-    let account_id = body["data"]["id"].as_str().unwrap().to_string();
-
-    // Weak username rejected
+    // relay entry without a disaster set → 400
     let (status, _) = req(
         &app,
         "POST",
-        "/api/v1/admin/accounts",
+        "/api/v1/admin/delegation/tokens",
         Some(&token),
         Some(json!({
-            "username": "a",
-            "group_id": group_id,
+            "label": "x", "group_ids": [gid], "entry_mode": "relay",
         })),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 
-    // Reset password
+    // unknown admin scope → 400
+    let (status, _) = req(
+        &app,
+        "POST",
+        "/api/v1/admin/delegation/tokens",
+        Some(&token),
+        Some(json!({
+            "label": "x", "group_ids": [gid], "entry_mode": "direct", "admin_scope": "root",
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // max_sessions snapshot comes from node_config.delegation_max_sessions (default 8)
+    db.set_config("delegation_max_sessions", "3").unwrap();
+
+    // direct entry: no disaster set needed; defaults dedicated/single
     let (status, body) = req(
         &app,
         "POST",
-        &format!("/api/v1/admin/accounts/{account_id}/reset-password"),
-        Some(&token),
-        None,
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
-    let new_password = body["data"]["password"].as_str().unwrap();
-    assert!(new_password.starts_with("sk-"));
-    assert_ne!(new_password, password);
-
-    // Old password dead; new one logs in
-    let (status, _) = req(
-        &app,
-        "POST",
-        "/api/v1/auth/login",
-        None,
-        Some(json!({
-            "username": "lisi", "password": password,
-        })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED);
-    let (status, _) = req(
-        &app,
-        "POST",
-        "/api/v1/auth/login",
-        None,
-        Some(json!({
-            "username": "lisi", "password": new_password,
-        })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
-
-    // Disable → login rejected
-    let (status, _) = req(
-        &app,
-        "PUT",
-        &format!("/api/v1/admin/accounts/{account_id}"),
+        "/api/v1/admin/delegation/tokens",
         Some(&token),
         Some(json!({
-            "enabled": false,
+            "label": "直连档", "group_ids": [gid], "entry_mode": "direct", "concurrency": "multi",
         })),
     )
     .await;
-    assert_eq!(status, StatusCode::OK);
-    let (status, _) = req(
-        &app,
-        "POST",
-        "/api/v1/auth/login",
-        None,
-        Some(json!({
-            "username": "lisi", "password": new_password,
-        })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(status, StatusCode::CREATED, "issue: {body}");
+    let data = &body["data"];
+    let plaintext = data["token"].as_str().unwrap().to_string();
+    assert!(plaintext.starts_with("psk_"));
+    assert_eq!(data["entry_mode"], "direct");
+    assert_eq!(data["concurrency"], "multi");
+    assert_eq!(data["max_sessions"], 3, "快照应读 node_config");
+    assert_eq!(data["mode"], "dedicated");
+    assert_eq!(data["admin_scope"], "");
+    assert_eq!(data["lifecycle"], "active");
+    assert_eq!(data["groups"][0]["name"], "签发组");
+    let token_id = data["id"].as_str().unwrap().to_string();
 
-    // Delete group with accounts → 409
-    let (status, _) = req(
-        &app,
-        "DELETE",
-        &format!("/api/v1/admin/groups/{group_id}"),
-        Some(&token),
-        None,
-    )
-    .await;
-    assert_eq!(status, StatusCode::CONFLICT);
+    // share link: anet://connect with the d: mark; parses back to the same credential
+    let share_url = data["share_url"].as_str().expect("share_url");
+    assert!(share_url.starts_with("anet://connect?"), "share_url: {share_url}");
+    let parsed = agile_net_core::link::parse_connect_url(share_url).expect("share_url parses");
+    assert!(parsed.is_delegated());
+    assert_eq!(parsed.delegated_label(), Some("直连档"));
+    assert_eq!(parsed.password, plaintext);
+    assert!(parsed.en.is_none(), "透明档不带 entrust 词");
 
-    // Delete account
-    let (status, _) = req(
-        &app,
-        "DELETE",
-        &format!("/api/v1/admin/accounts/{account_id}"),
-        Some(&token),
-        None,
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
-}
-
-// ==================== Client config ====================
-
-#[tokio::test]
-async fn client_config_scoped_by_group() {
-    let (app, db) = test_app().await;
-    let admin_token = init_and_login(&app).await;
-
-    // Two rules; only one bound to the account's group
-    let (_, b1) = req(
-        &app,
-        "POST",
-        "/api/v1/admin/rules",
-        Some(&admin_token),
-        Some(json!({
-            "type": "ip-cidr", "value": "10.12.0.0/16",
-        })),
-    )
-    .await;
-    let rule_a = b1["data"]["id"].as_str().unwrap().to_string();
-    req(
-        &app,
-        "POST",
-        "/api/v1/admin/rules",
-        Some(&admin_token),
-        Some(json!({
-            "type": "ip-cidr", "value": "192.168.0.0/16",
-        })),
-    )
-    .await;
-
-    let (_, body) = req(
-        &app,
-        "POST",
-        "/api/v1/admin/groups",
-        Some(&admin_token),
-        Some(json!({
-            "name": "一组", "rule_ids": [rule_a],
-        })),
-    )
-    .await;
-    let group_id = body["data"]["id"].as_str().unwrap().to_string();
-
-    let (_, body) = req(
-        &app,
-        "POST",
-        "/api/v1/admin/accounts",
-        Some(&admin_token),
-        Some(json!({
-            "username": "wangwu", "group_id": group_id,
-        })),
-    )
-    .await;
-    let password = body["data"]["password"].as_str().unwrap().to_string();
-
-    let (_, body) = req(
-        &app,
-        "POST",
-        "/api/v1/auth/login",
-        None,
-        Some(json!({
-            "username": "wangwu", "password": password,
-        })),
-    )
-    .await;
-    let client_token = body["data"]["access_token"].as_str().unwrap().to_string();
-
-    // Fetch config: only bound rules visible
+    // list: no plaintext, same shape
     let (status, body) = req(
         &app,
         "GET",
-        "/api/v1/client/config",
-        Some(&client_token),
+        "/api/v1/admin/delegation/tokens",
+        Some(&token),
         None,
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    let rules = body["data"]["rules"].as_array().unwrap();
-    assert_eq!(rules.len(), 1);
-    assert_eq!(rules[0]["value"], "10.12.0.0/16");
-    assert!(body["data"]["tunnel"]["port"].is_number());
-    let version = body["data"]["version"].as_u64().unwrap();
+    let items = body["data"]["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert!(items[0].get("token").is_none());
+    assert_eq!(items[0]["entry_mode"], "direct");
+    assert_eq!(items[0]["max_sessions"], 3);
 
-    // Heartbeat
+    // revoke → gone from the list
     let (status, body) = req(
         &app,
-        "POST",
-        "/api/v1/client/heartbeat",
-        Some(&client_token),
-        Some(json!({
-            "uptime": 10, "bytes_tx": 100, "bytes_rx": 200, "active_connections": 1,
-        })),
+        "DELETE",
+        &format!("/api/v1/admin/delegation/tokens/{token_id}"),
+        Some(&token),
+        None,
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["data"]["force_disconnect"], false);
-
-    // Rule change bumps config version
-    req(
+    assert_eq!(body["data"]["revoked"], true);
+    let (_, body) = req(
         &app,
-        "POST",
-        "/api/v1/admin/rules",
-        Some(&admin_token),
-        Some(json!({
-            "type": "host", "value": "git.internal",
-        })),
+        "GET",
+        "/api/v1/admin/delegation/tokens",
+        Some(&token),
+        None,
     )
     .await;
-    let new_version = db.config_version().unwrap();
-    assert!(new_version > version);
-
-    // Heartbeat bytes counted in stats
-    let (rows, tx, rx) = db.traffic_by_account(1).unwrap();
-    assert_eq!(rows.len(), 1);
-    assert_eq!(tx, 100);
-    assert_eq!(rx, 200);
+    assert_eq!(body["data"]["items"].as_array().unwrap().len(), 0);
 }
 
 // ==================== Relay Token ====================

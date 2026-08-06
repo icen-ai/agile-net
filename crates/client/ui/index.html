@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title data-i18n="cl.title">AgileNet 客户端</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%233C3F43' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z'/></svg>">
+<script>try{document.documentElement.dataset.theme=localStorage.getItem('ag_theme')||'light'}catch(e){}</script>
+<link rel="stylesheet" href="/ui/tokens.css">
+<link rel="stylesheet" href="/ui/components.css">
+<link rel="stylesheet" href="/client/style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand"><i data-ic="zap" data-sz="16"></i><span class="brand-name">AgileNet</span><span class="role-badge" data-i18n="cl.role">客户端</span></div>
+  <div class="top-actions">
+    <div class="adm-menu" id="adm-menu">
+      <button class="btn ghost small" id="adm-menu-btn"><i data-ic="layout-dashboard" data-sz="14"></i><span data-i18n="cl.adminMenu">管理端</span><i data-ic="chevron-down" data-sz="13"></i></button>
+      <div class="adm-drop" id="adm-drop" hidden></div>
+    </div>
+    <button class="btn ghost small" id="theme-btn" data-i18n-title="cl.theme" title="切换主题"></button>
+  </div>
+</header>
+
+<main class="wrap">
+  <section class="card">
+    <div class="card-head">
+      <h2><i data-ic="orbit" data-sz="15"></i><span data-i18n="cl.nodes">节点</span></h2>
+      <div class="head-actions">
+        <button class="btn ghost small" id="btn-refresh" data-i18n-title="common.refresh" title="刷新"><i data-ic="refresh-cw" data-sz="13"></i></button>
+        <button class="btn primary small" id="btn-import"><i data-ic="link" data-sz="13"></i><span data-i18n="cl.importLink">导入链接</span></button>
+      </div>
+    </div>
+    <div id="node-list"></div>
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <h2><i data-ic="earth" data-sz="15"></i><span data-i18n="cl.proxy">本地代理</span></h2>
+      <span class="pill pill-dim" id="proxy-pill"></span>
+    </div>
+    <div class="proxy-row">
+      <input id="proxy-port" type="number" min="1" max="65535" value="57890">
+      <button class="btn primary small" id="btn-proxy-start"><i data-ic="power" data-sz="13"></i><span data-i18n="cl.start">启动</span></button>
+      <button class="btn ghost small" id="btn-proxy-stop" hidden><span data-i18n="cl.stop">停止</span></button>
+      <span class="dim" id="proxy-addr"></span>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <h2><i data-ic="file-key" data-sz="15"></i><span data-i18n="cl.creds">凭据</span></h2>
+    </div>
+    <div id="cred-list"></div>
+  </section>
+</main>
+
+<div id="toasts"></div>
+<div id="modal-root"></div>
+
+<script src="/ui/agi18n.js"></script>
+<script src="/ui/aglang.js"></script>
+<script src="/client/lang.js"></script>
+<script src="/ui/icons.js"></script>
+<script src="/ui/agutil.js"></script>
+<script src="/ui/aglink.js"></script>
+<script src="/ui/aganet.js"></script>
+<script src="/ui/agimport.js"></script>
+<script src="/client/app.js"></script>
+</body>
+</html>

@@ -17,7 +17,7 @@ use crate::tunnel::tls::TlsConfigBuilder;
 use bytes::Bytes;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::time::Duration;
 use tokio::net::TcpStream;
 use tokio::sync::{Mutex, Notify};
@@ -34,16 +34,13 @@ const MAX_BACKOFF: Duration = Duration::from_secs(60);
 /// Client tunnel: data-plane connection to a single node.
 pub struct ClientTunnel {
     upstream_addr: SocketAddr,
-    account_id: String,
+    node_id: String,
     /// tunnel_token (rotated by the server on login/refresh; reconnects must use the latest value)
     tunnel_token: std::sync::Arc<std::sync::RwLock<String>>,
     tls_connector: TlsConnector,
     sni_hostname: String,
     session: Arc<Mutex<Option<Arc<MuxSession>>>>,
     state: Arc<AtomicU8>,
-    /// Negotiated upstream protocol version of the current session (0 = not connected / unknown);
-    /// the delegated E2E opener consults it to pick entrust (en_xxx, v4+) vs legacy hints.
-    server_version: Arc<AtomicU32>,
     shutdown_notify: Arc<Notify>,
     shutdown_flag: Arc<AtomicBool>,
 }
@@ -52,20 +49,19 @@ impl ClientTunnel {
     /// Create with a custom TLS config (cert pinning recommended in production).
     pub fn with_tls_builder(
         upstream_addr: SocketAddr,
-        account_id: impl Into<String>,
+        node_id: impl Into<String>,
         tunnel_token: impl Into<String>,
         tls_builder: TlsConfigBuilder,
     ) -> Result<Self> {
         let client_config = tls_builder.build_client()?;
         Ok(Self {
             upstream_addr,
-            account_id: account_id.into(),
+            node_id: node_id.into(),
             tunnel_token: std::sync::Arc::new(std::sync::RwLock::new(tunnel_token.into())),
             tls_connector: TlsConnector::from(client_config),
             sni_hostname: tls_builder.sni_hostname,
             session: Arc::new(Mutex::new(None)),
             state: Arc::new(AtomicU8::new(ConnectionState::Disconnected as u8)),
-            server_version: Arc::new(AtomicU32::new(0)),
             shutdown_notify: Arc::new(Notify::new()),
             shutdown_flag: Arc::new(AtomicBool::new(false)),
         })
@@ -74,12 +70,12 @@ impl ClientTunnel {
     /// Create in dev mode (no server cert verification, debug only).
     pub fn new_insecure(
         upstream_addr: SocketAddr,
-        account_id: impl Into<String>,
+        node_id: impl Into<String>,
         tunnel_token: impl Into<String>,
     ) -> Result<Self> {
         Self::with_tls_builder(
             upstream_addr,
-            account_id,
+            node_id,
             tunnel_token,
             TlsConfigBuilder::new().allow_self_signed(true),
         )
@@ -95,11 +91,6 @@ impl ClientTunnel {
 
     pub fn is_connected(&self) -> bool {
         self.state() == ConnectionState::Connected
-    }
-
-    /// Negotiated upstream protocol version of the current session (0 = not connected / unknown).
-    pub fn server_version(&self) -> u32 {
-        self.server_version.load(Ordering::Relaxed)
     }
 
     /// Data-plane traffic counters (up bytes, down bytes): up = to the node, down = from the node.
@@ -134,7 +125,7 @@ impl ClientTunnel {
         *self.session.lock().await = Some(session);
         self.state
             .store(ConnectionState::Connected as u8, Ordering::Relaxed);
-        info!(upstream = %self.upstream_addr, account = %self.account_id, "client tunnel established");
+        info!(upstream = %self.upstream_addr, node_id = %self.node_id, "client tunnel established");
         Ok(())
     }
 
@@ -145,7 +136,7 @@ impl ClientTunnel {
         let mut tls_stream = self.tls_connector.connect(server_name, tcp_stream).await?;
 
         let auth_req = AuthRequest {
-            node_id: self.account_id.clone(),
+            node_id: self.node_id.clone(),
             token: self
                 .tunnel_token
                 .read()
@@ -183,7 +174,6 @@ impl ClientTunnel {
 
         // the client is the only side issuing Open on this session; use even channel_ids
         let flow_control = server_version >= PROTOCOL_VERSION_FLOW_CONTROL;
-        self.server_version.store(server_version, Ordering::Relaxed);
         // no session rate limit on the client side (if limited, the peer listener's injected bucket back-pressures at ingress)
         let (mux, reader_handle) = MuxSession::start(
             tls_stream,

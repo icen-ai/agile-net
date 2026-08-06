@@ -4,7 +4,7 @@
 //! and the policy groups it pushed at auth (source-tagged by node_id, namespace isolation).
 //! Adoption materializes a pushed group into a local group (rules reused by unique
 //! (type, value), group name suffixed `@<node_id>`), so the resource owner's policy becomes
-//! grantable to local accounts without the upstream admin re-typing a single rule.
+//! grantable to local identities without the upstream admin re-typing a single rule.
 
 use super::audit;
 use crate::api::extractors::{AdminAuth, ClientIp};
@@ -112,7 +112,11 @@ pub async fn adopt(
     ClientIp(ip): ClientIp,
     Json(req): Json<AdoptRequest>,
 ) -> Response {
-    if req.node_id.is_empty() || req.node_id.len() > 128 || req.group.is_empty() || req.group.len() > 128 {
+    if req.node_id.is_empty()
+        || req.node_id.len() > 128
+        || req.group.is_empty()
+        || req.group.len() > 128
+    {
         return err(
             StatusCode::BAD_REQUEST,
             codes::VALIDATION_FAILED,
@@ -224,7 +228,10 @@ pub async fn adopt(
                 &ip,
                 "federation.adopt",
                 Some(&group.id),
-                &format!("{}@{} rules={} reused={}", req.group, req.node_id, total, reused),
+                &format!(
+                    "{}@{} rules={} reused={}",
+                    req.group, req.node_id, total, reused
+                ),
             )
             .await;
             ok(json!({
@@ -281,11 +288,23 @@ pub async fn copy_adopted(
 
     match copied {
         Ok(Ok((group, n))) => {
-            audit(&state, &claims, &ip, "federation.copy", Some(&group.id), &group.name).await;
+            audit(
+                &state,
+                &claims,
+                &ip,
+                "federation.copy",
+                Some(&group.id),
+                &group.name,
+            )
+            .await;
             ok(json!({ "id": group.id, "name": group.name, "rule_count": n }))
         }
         Ok(Err(msg)) => err(StatusCode::BAD_REQUEST, codes::VALIDATION_FAILED, msg),
-        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, codes::INTERNAL, e.to_string()),
+        Err(e) => err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            codes::INTERNAL,
+            e.to_string(),
+        ),
     }
 }
 

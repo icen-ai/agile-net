@@ -5,12 +5,11 @@
 //!
 //! Submodules split by domain (pure move, no logic change): pool (connection pool and
 //! shared helpers) / migrations (versioned migrations) / paginate (shared paged-query helper) /
-//! admin / rules / accounts / connectors / delegation (federation P2) / logs.
+//! admin / rules / relay_tokens / connectors / delegation (unified issuance) / logs.
 //! Public paths `db::xxx` are unchanged.
 
 pub mod models;
 
-mod accounts;
 mod admin;
 mod connectors;
 mod delegation;
@@ -18,6 +17,7 @@ mod logs;
 mod migrations;
 mod paginate;
 mod pool;
+mod relay_tokens;
 mod rules;
 
 pub use pool::Database;
@@ -52,19 +52,9 @@ pub fn verify_password(password: &str, password_hash: &str) -> Result<bool> {
         .is_ok())
 }
 
-/// Generate a strong password (sk style: `sk-` + 48 mixed chars, ~286 bits entropy)
-pub fn generate_password() -> String {
-    format!("sk-{}", random_alnum(48))
-}
-
 /// Generate a Relay PSK token (`psk_` + 48 chars)
 pub fn generate_relay_token() -> String {
     format!("psk_{}", random_alnum(48))
-}
-
-/// Generate a Tunnel token (`tun_` + 48 chars)
-pub fn generate_tunnel_token() -> String {
-    format!("tun_{}", random_alnum(48))
 }
 
 /// Generate a random secret (hex, 64 chars; for JWT secret etc.)

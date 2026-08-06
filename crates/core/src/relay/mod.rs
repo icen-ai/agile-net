@@ -20,8 +20,9 @@ pub use connector::{
 };
 pub use limit::TokenBucket;
 pub use listener::{
-    AuthIdentity, DelegatedRegistry, DelegatedStamp, DelegatedToken, PeerEvent, RelayListener,
-    StaticTokenValidator, TokenValidator, build_acl_router, constant_time_eq, delegated_session_key,
+    AuthIdentity, DelegatedIdentity, DelegatedRegistry, DelegatedStamp, DelegatedToken, PeerEvent,
+    RelayListener, StaticTokenValidator, TokenValidator, build_acl_router, constant_time_eq,
+    delegated_session_key,
 };
 pub use mux::{MuxChannel, MuxSession, SessionEvents};
 pub use transit::{FROM_PROXY, TO_LOCAL, TransitMeter, TransitPair};

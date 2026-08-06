@@ -3,8 +3,8 @@
 ## 角色与通信关系
 
 ```
-Client ──────── HTTPS ────────> Node (API + Tunnel)
-Admin  ──────── HTTPS ────────> Node (API + Web UI)
+Admin  ──────── HTTPS ────────> Node (API + 管理端 SPA / + 客户端 SPA /client)
+Client ──────── TLS ──────────> Node (Relay 数据面，委托令牌即身份)
 Node   ──────── TLS ──────────> Node (Relay Protocol)
 ```
 
@@ -68,11 +68,9 @@ Node   ──────── TLS ──────────> Node (Relay 
 
 | 模块 | 文件 | 说明 |
 |------|------|------|
-| 认证 | [auth.md](auth.md) | 登录、刷新、登出 |
-| 客户端配置 | [config.md](config.md) | 拉取配置、长轮询、心跳 |
+| 认证 | [auth.md](auth.md) | 登录、刷新、登出（管理端/客户端 SPA 共用 AdminAuth） |
 | 规则管理 | [rules.md](rules.md) | CRUD + 批量导入 |
-| 权限组管理 | [groups.md](groups.md) | CRUD + 规则绑定 + 三类身份总览 |
-| 账号管理 | [accounts.md](accounts.md) | CRUD + 密码生成 + 二维码 |
+| 权限组管理 | [groups.md](groups.md) | CRUD + 规则绑定 + 身份总览 |
 | 扇出管理 | [connectors.md](connectors.md) | connector CRUD + 启停 + 对端收敛 + 策略上送 |
-| 签发委托 | [delegation.md](delegation.md) | 委托令牌签发/吊销 + 容灾集合 + E2E 路由词 |
+| 统一签发 | [delegation.md](delegation.md) | 委托令牌签发/吊销 + 入口/信任/路由/并发四维度 |
 | 节点状态 | [node.md](node.md) | 状态查询 + 流量统计 + WebSocket 事件 |

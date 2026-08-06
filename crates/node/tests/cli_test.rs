@@ -203,27 +203,22 @@ async fn cli_full_workflow_against_live_api() {
     .await
     .unwrap();
 
-    // Add group + account
+    // Add group
     agile_net_node::cli::run_cli(Cli::parse_from(["anet", "group", "add", "--name", "cli组"]))
         .await
         .unwrap();
-    agile_net_node::cli::run_cli(Cli::parse_from([
-        "anet",
-        "account",
-        "add",
-        "--username",
-        "cliuser",
-        "--group",
-        "cli组",
-    ]))
-    .await
-    .unwrap();
 
     // Verify data landed in DB
     let (rules, total) = db.list_rules(1, 20, None, Some("10.99")).unwrap();
     assert_eq!(total, 1);
     assert_eq!(rules[0].value, "10.99.0.0/16");
-    assert!(db.get_account_by_username("cliuser").unwrap().is_some());
+    assert!(
+        db.list_groups(1, 100, None)
+            .unwrap()
+            .0
+            .iter()
+            .any(|g| g.name == "cli组")
+    );
 
     // relay token
     agile_net_node::cli::run_cli(Cli::parse_from([

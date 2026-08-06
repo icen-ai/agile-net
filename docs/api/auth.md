@@ -1,6 +1,6 @@
 # Auth API
 
-客户端和 Admin 共用登录入口，通过返回的 `role` 区分身份。
+管理面认证。管理端 SPA（`/`）与客户端 SPA（`/client`）共用同一 AdminAuth 登录。
 
 ---
 
@@ -27,7 +27,6 @@
   "data": {
     "access_token": "eyJ...",
     "refresh_token": "eyJ...",
-    "tunnel_token": "tun_xxxx",
     "role": "admin",
     "expires_in": 900
   }
@@ -36,10 +35,9 @@
 
 | 字段 | 说明 |
 |------|------|
-| `access_token` | API 认证，15min (admin) / 1h (client) |
-| `refresh_token` | 刷新用，7d (admin) / 30d (client) |
-| `tunnel_token` | 仅 role=client 返回，隧道数据面认证用，30d |
-| `role` | `"admin"` 或 `"client"` |
+| `access_token` | API 认证，15min |
+| `refresh_token` | 刷新用，7d |
+| `role` | 恒为 `"admin"` |
 | `expires_in` | access_token 剩余秒数 |
 
 ### 错误
@@ -70,13 +68,11 @@
   "code": 0,
   "data": {
     "access_token": "eyJ...",
-    "tunnel_token": "tun_yyyy",
+    "role": "admin",
     "expires_in": 900
   }
 }
 ```
-
-`tunnel_token` 仅 client 角色返回，每次刷新时一起更新。
 
 ### 错误
 
@@ -143,7 +139,7 @@ Authorization: Bearer <access_token>
 
 ## PUT `/api/v1/auth/password`
 
-修改当前管理员自己的密码（仅 admin 角色）。成功后吊销本人全部 refresh_token，需重新登录。
+修改当前管理员自己的密码。成功后吊销本人全部 refresh_token，需重新登录。
 
 ### 请求
 

@@ -428,21 +428,12 @@ async fn relay_token_group_mount_via_api() {
 }
 
 #[tokio::test]
-async fn group_detail_lists_three_identity_kinds() {
+async fn group_detail_lists_mounted_identities() {
     let (app, _) = test_app().await;
     let token = init_and_login(&app).await;
     let gid = mk_group(&app, &token, "peers").await;
 
-    // Mount three identity kinds: account / fan-in token / fan-out peer
-    let (status, _) = req(
-        &app,
-        "POST",
-        "/api/v1/admin/accounts",
-        Some(&token),
-        Some(json!({ "username": "alice", "group_id": gid })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::CREATED);
+    // Mount the two identity kinds: fan-in token / fan-out peer
     let (status, _) = req(
         &app,
         "POST",
@@ -476,11 +467,8 @@ async fn group_detail_lists_three_identity_kinds() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "detail: {body}");
-    let accounts = body["data"]["accounts"].as_array().unwrap();
     let relay_tokens = body["data"]["relay_tokens"].as_array().unwrap();
     let connectors = body["data"]["connectors"].as_array().unwrap();
-    assert_eq!(accounts.len(), 1);
-    assert_eq!(accounts[0]["username"], "alice");
     assert_eq!(relay_tokens.len(), 1);
     assert!(relay_tokens[0]["token_prefix"].is_string());
     assert_eq!(connectors.len(), 1);

@@ -53,13 +53,11 @@
   "plugins": {
     "deep-link": {
       "desktop": {
-        "schemes": ["anet", "agilenet"]
+        "schemes": ["anet"]
       },
       "mobile": [
         { "scheme": ["anet"], "host": "connect" },
-        { "scheme": ["anet"], "host": "fanout" },
-        { "scheme": ["agilenet"], "host": "connect" },
-        { "scheme": ["agilenet"], "host": "fanout" }
+        { "scheme": ["anet"], "host": "fanout" }
       ]
     }
   }

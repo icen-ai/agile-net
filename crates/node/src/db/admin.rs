@@ -125,8 +125,8 @@ impl Database {
 
     /// Issue an admin bootstrap ticket: plaintext returned once; only the SHA-256 hash is stored.
     ///
-    /// kind: account (admin connect URL) / relay (relay-exposed control plane);
-    /// subject: account_id or "psk_prefix@fan-in node name"; max_uses > 1 allows repeated use within TTL (relay case).
+    /// kind: relay only (relay-exposed control plane / delegation admin channel);
+    /// subject: "psk_prefix@fan-in node name" or "deleg:<label>@<kid>"; max_uses > 1 allows repeated use within TTL.
     pub fn create_admin_ticket(
         &self,
         kind: &str,

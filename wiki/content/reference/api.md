@@ -1,13 +1,15 @@
 # REST API
 
-节点管理面与客户端接口。基路径 `/api/v1`，JSON 内容，JWT Bearer 认证。
+节点管理面接口。基路径 `/api/v1`，JSON 内容，JWT Bearer 认证。
+anet-svc 单端口统一 Web：`/` 管理端 SPA、`/client` 客户端 SPA、`/api/v1/client/*`
+客户端 SPA 管理接口（同 AdminAuth 共享登录）。
 
 ## 基础约定
 
 | 项 | 值 |
 | --- | --- |
 | 认证 | `Authorization: Bearer <jwt>`（`/api/v1/auth/*` 公开端点除外） |
-| 角色 | `admin`（管理面）/ `client`（客户端）；AdminAuth 强制 scope 三档（ro/rules/full） |
+| 角色 | 管理面仅 `admin` 一种身份；AdminAuth 强制 scope 三档（ro/rules/full） |
 | 时间 | ISO 8601（`2026-07-31T12:00:00Z`） |
 | ID | UUIDv4 |
 | 分页 | `page`（≥1）、`page_size`（1~100），响应含 `items/total/page/page_size` |
@@ -18,7 +20,7 @@
 // 成功
 { "code": 0, "data": { } }
 // 失败
-{ "code": 40001, "message": "username already exists" }
+{ "code": 40001, "message": "name already exists" }
 ```
 
 错误码段见「参考 → 错误码」。
@@ -28,50 +30,51 @@
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | POST | `/api/v1/auth/init` | 首次初始化管理员（仅无 admin 时可用） |
-| POST | `/api/v1/auth/login` | 登录（admin 或 client 账号；限流+锁定） |
-| POST | `/api/v1/auth/refresh` | 刷新令牌（轮换 refresh + tunnel_token） |
+| POST | `/api/v1/auth/login` | 登录（管理员；限流+锁定） |
+| POST | `/api/v1/auth/refresh` | 刷新令牌（轮换 refresh） |
 | POST | `/api/v1/auth/logout` | 登出（吊销 refresh） |
 | GET | `/api/v1/auth/me` | 当前身份（含 scope） |
 | PUT | `/api/v1/auth/password` | 修改管理员密码 |
 | POST | `/api/v1/auth/admin-bootstrap` | 管理引导票据换取 scoped 管理会话 |
 
-## 客户端 API（client 角色）
-
-| 方法 | 路径 | 说明 |
-| --- | --- | --- |
-| GET | `/api/v1/client/config` | 拉取路由配置；`?wait=true&version=N` 长轮询（超时返回 304）。响应含 `admin_console` 与 `manageable`（管理版账号） |
-| POST | `/api/v1/client/heartbeat` | 心跳上报（在线状态 + 流量增量；`force_disconnect` 响应即下线） |
-| POST | `/api/v1/client/console-ticket` | 申请管理引导票据（`admin_console` 账号；`{"upstream":"节点名"}` 取上游票据） |
-
-## 管理：规则 / 组 / 账号
+## 管理：规则 / 组
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | GET/POST | `/api/v1/admin/rules` | 列表（类型/搜索/分页）/ 创建 |
 | PUT/DELETE | `/api/v1/admin/rules/{id}` | 更新 / 删除 |
 | POST | `/api/v1/admin/rules/batch` | 批量导入（JSON/NDJSON） |
-| GET/POST | `/api/v1/admin/groups` | 列表 / 创建 |
-| GET/PUT/DELETE | `/api/v1/admin/groups/{id}` | 详情 / 更新 / 删除（占用需 `force`） |
-| GET | `/api/v1/admin/groups/{id}/detail` | 组详情：名下账号 + 扇入令牌 + 扇出对端三类身份 |
+| GET/POST | `/api/v1/admin/groups` | 列表 / 创建（`e2e_required` 标记 E2E 强制组） |
+| GET/PUT/DELETE | `/api/v1/admin/groups/{id}` | 详情 / 更新 / 删除 |
+| GET | `/api/v1/admin/groups/{id}/detail` | 组身份总览：扇入令牌 + 扇出对端 |
 | PUT | `/api/v1/admin/groups/{id}/rules` | 整组绑定规则 |
-| GET/POST | `/api/v1/admin/accounts` | 列表 / 创建（`admin_console` 授予管理权限） |
-| PUT/DELETE | `/api/v1/admin/accounts/{id}` | 更新（含启停、管理权限授予/收回）/ 删除 |
-| POST | `/api/v1/admin/accounts/{id}/reset-password` | 重置密码（新密码 + connect_url 仅一次） |
-| GET | `/api/v1/admin/accounts/{id}/qrcode` | 接入链接二维码（SVG，创建/重置后 10 分钟可取） |
+
+## 管理：统一签发（delegation）
+
+资源主直接向消费者签发接入凭据（令牌即身份，无账号层）。四维度：入口
+`entry_mode`（direct 直连签发者本机 listener / relay 经容灾集合会合点）× 信任档
+（明文 / E2E / E2E+管理档 `admin_scope`）× 路由 `mode`（dedicated 专线 / split 分流）×
+并发 `concurrency`（single 踢旧 / multi 并存 ≤ max_sessions，签发时读
+node_config `delegation_max_sessions` 快照，默认 8）。
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/v1/admin/delegation/tokens` | 已签列表（组名已解析、容灾集合逐上游注册状态、entry_mode/concurrency/max_sessions、lifecycle 徽标） |
+| POST | `/api/v1/admin/delegation/tokens` | 签发（明文与 `anet://connect` 分享链接仅此一次） |
+| DELETE | `/api/v1/admin/delegation/tokens/{id}` | 吊销（在线上游发吊销帧，活动会话即踢） |
 
 ## 管理：节点 / 令牌 / 审计
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET | `/api/v1/admin/node/status` | 节点状态（角色/连接/账号统计/可管理上游） |
-| GET | `/api/v1/admin/node/stats` | 流量统计（`period`、`group_by`） |
+| GET | `/api/v1/admin/node/status` | 节点状态（角色/连接/可管理上游/24h 流量序列） |
 | GET | `/api/v1/admin/node/logs` | 内存日志缓冲 |
 | GET | `/api/v1/admin/node/metrics` | 系统资源指标 |
 | PUT | `/api/v1/admin/node/settings` | 节点设置（名称/公网地址） |
-| POST | `/api/v1/admin/node/kick` | 踢除下游节点或客户端会话 |
-| GET | `/api/v1/admin/node/events` | WebSocket 实时事件流 |
+| POST | `/api/v1/admin/node/kick` | 踢除下游节点会话 |
+| GET | `/api/v1/admin/node/events` | WebSocket 实时事件流（`consumer.online/offline` 等；升级后首条消息认证） |
 | GET/POST | `/api/v1/admin/node/relay-tokens` | 令牌列表 / 创建（`group_id` 收敛组、`expose_control`+`control_scope`） |
-| PUT/DELETE | `/api/v1/admin/node/relay-tokens/{id}` | 更新（暴露开关/档位；`group_id` 三态：缺省=不变、`null`=不收敛、字符串=挂组）/ 吊销（踢会话） |
+| PUT/DELETE | `/api/v1/admin/node/relay-tokens/{id}` | 更新（暴露开关/档位；`group_id` 三态）/ 吊销（踢会话） |
 | GET/POST | `/api/v1/admin/admins` | 管理员列表 / 创建 |
 | DELETE | `/api/v1/admin/admins/{id}` | 删除管理员 |
 | GET | `/api/v1/admin/audit-logs` | 审计日志（动作过滤/分页） |
@@ -88,7 +91,7 @@
 | POST | `/api/v1/admin/connectors/{id}/enable` | 启用（装配起连） |
 | POST | `/api/v1/admin/connectors/{id}/disable` | 禁用（断开连接，记录保留） |
 
-扇出 token 是对端签发的连接凭据：AES-256-GCM 加密落库（全库唯一可逆例外），创建后不回显。
+扇出 token 是对端签发的连接凭据：AES-256-GCM 加密落库（可逆例外之一），创建后不回显。
 
 ## 速率与约束
 
@@ -98,9 +101,8 @@
 
 ## 客户端 Web 远程面 API (anet-gui 开关C)
 
-当 `anet-gui` 开启「Web 远程面」时，本地 HTTP 服务（默认 `127.0.0.1:59291`）暴露与上述规范完全一致的 REST API 接口。
+当 `anet-gui` 开启「Web 远程面」时，本地 HTTP 服务（默认 `127.0.0.1:59291`）暴露客户端管理 REST API。
 
 - **管理员初始化与登录**：`/api/v1/auth/init` / `/api/v1/auth/login`
 - **节点与网络控制**：`GET/POST /api/v1/nodes`（节点列表与发起连接）
 - **敏感导出约束**：凭据与接入链接导出属敏感操作，请求必须携带 `confirm=true`（如 `GET /api/v1/credentials/export?confirm=true`），否则返回 `40001` 错误码要求二次确认，并记入客户端审计。
-

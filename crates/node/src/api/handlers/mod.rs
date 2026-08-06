@@ -1,10 +1,8 @@
 //! Handler collection
 
-pub mod accounts;
 pub mod admins;
 pub mod audit;
 pub mod auth;
-pub mod client;
 pub mod connectors;
 pub mod delegation;
 pub mod federation;

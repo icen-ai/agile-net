@@ -1,20 +1,28 @@
-//! Client control-plane Web API (the server side of anet-gui switch C "Web remote panel").
+//! Client control-plane Web API (the server side of anet-gui switch C "Web remote panel",
+//! and the svc embedded client role behind the node admin login).
 //!
-//! Maps the ~15 desktop management commands to REST endpoints, with unified `{code,data}` / `{code,message}`
-//! envelopes and error-code ranges; admin auth matches server-side strength:
-//! - Admin password stored as argon2id hash (verification injected by the host via [`ClientWebAuth`])
-//! - Login issues an HS256 JWT (12h); auth failures are rate-limited per IP (5/min, locked 15 min after consecutive failures)
-//! - Login outcomes and credential exports are persisted via the audit callback; never log password/token plaintext
-//! - Credential export is sensitive and requires a `confirm=true` second confirmation (error code 40001 otherwise)
+//! Two serving modes share one REST router:
+//! - Embedded: [`client_api_router`] / [`client_api_router_with_audit`] expose pure REST routes
+//!   (nodes / credentials / proxy / parse-connect-url / consoles) with NO auth middleware —
+//!   the host mounts them under its own guard (the node nests them at `/api/v1/client/*`
+//!   behind AdminAuth, sharing the admin JWT).
+//! - Standalone: [`start_client_api`] wraps the same router with its own password auth
+//!   (`/api/v1/auth/login|init` + HS256 JWT, 12h) and optional SPA hosting; this is what the
+//!   desktop Web remote panel keeps using.
+//!
+//! Security (unchanged): admin password argon2id (host-injected), login rate-limited per IP
+//! (5/min, locked 15 min after consecutive failures), audits never contain password/token
+//! plaintext, credential export requires a `confirm=true` second confirmation (code 40001).
 
 use crate::{AgileNetClient, ConnectParams, Credential, CredentialStore, NodeState};
 
+use agile_net_core::tunnel::opener::ChannelOpener;
 use agile_net_core::util::{LoginBlockReason, LoginRateLimiter};
 use anyhow::Result;
 use axum::{
     Json, Router,
     extract::{Query, State},
-    http::{StatusCode, header},
+    http::{StatusCode, header, request::Parts},
     middleware::Next,
     response::{IntoResponse, Response},
     routing::{delete, get, post},
@@ -38,6 +46,9 @@ pub trait ClientWebAuth: Send + Sync {
     fn audit(&self, action: &str, detail: serde_json::Value);
 }
 
+/// Audit callback of the pure REST router (credential export / console open; never plaintext).
+pub type ClientAudit = Arc<dyn Fn(&str, serde_json::Value) + Send + Sync>;
+
 /// SPA static assets (path → content), injected by the host via include_str!.
 pub struct SpaAssets {
     pub index: &'static str,
@@ -59,12 +70,75 @@ pub struct SpaAssets {
     pub app_settings_js: &'static str,
 }
 
+/// State of the pure REST router (auth lives with the host).
 #[derive(Clone)]
-struct ApiState {
+struct ClientApiState {
     client: AgileNetClient,
     creds: Option<Arc<CredentialStore>>,
+    audit: Option<ClientAudit>,
+    /// Loopback console forwarders (key -> bound port; accept tasks live for the process,
+    /// same ensure-pattern as the desktop host)
+    consoles: ConsoleRegistry,
+}
+
+type ConsoleRegistry = Arc<tokio::sync::Mutex<std::collections::HashMap<String, u16>>>;
+
+/// Standalone-mode auth state (password login + rate limiting; desktop Web remote panel).
+#[derive(Clone)]
+struct StandaloneState {
     auth: Arc<dyn ClientWebAuth>,
     limiter: LoginRateLimiter,
+}
+
+/// Pure REST router of the client control plane (no auth middleware; the host guards it).
+///
+/// Paths are relative (`/nodes`, `/credentials`, …): nest at `/api/v1` to reproduce the
+/// standalone shape, or at `/api/v1/client` for the svc single-port mount.
+pub fn client_api_router<S>(client: AgileNetClient, creds: Option<Arc<CredentialStore>>) -> Router<S>
+where
+    S: Clone + Send + Sync + 'static,
+{
+    client_api_router_with_audit(client, creds, None)
+}
+
+/// [`client_api_router`] with a sensitive-op audit callback (export / console open).
+pub fn client_api_router_with_audit<S>(
+    client: AgileNetClient,
+    creds: Option<Arc<CredentialStore>>,
+    audit: Option<ClientAudit>,
+) -> Router<S>
+where
+    S: Clone + Send + Sync + 'static,
+{
+    let state = ClientApiState {
+        client,
+        creds,
+        audit,
+        consoles: ConsoleRegistry::default(),
+    };
+    Router::new()
+        // ---- Nodes ----
+        .route("/nodes", get(list_nodes).post(connect_node))
+        .route("/nodes/disconnect", post(disconnect_node))
+        .route(
+            "/nodes/paused-rules",
+            get(get_paused_rules).put(set_paused_rules),
+        )
+        .route("/nodes/paused-rules/toggle", post(toggle_rule_paused))
+        // ---- Credentials ----
+        .route("/credentials", get(list_credentials))
+        .route("/credentials", delete(delete_credential))
+        .route("/credentials/export", get(export_credential))
+        // ---- Proxy ----
+        .route("/proxy/start", post(start_proxy))
+        .route("/proxy/stop", post(stop_proxy))
+        .route("/proxy/status", get(proxy_status))
+        // ---- Delegated admin consoles ----
+        .route("/consoles", get(list_consoles))
+        .route("/consoles/open", post(open_console))
+        // ---- Util ----
+        .route("/parse-connect-url", post(parse_connect_url))
+        .with_state(state)
 }
 
 /// Handle of a running Web API (`stop` is idempotent).
@@ -90,7 +164,8 @@ impl ClientApiHandle {
     }
 }
 
-/// Start the client control-plane Web API.
+/// Start the standalone client control-plane Web API (self-contained password auth + optional
+/// SPA hosting; the desktop Web remote panel mode).
 pub async fn start_client_api(
     client: AgileNetClient,
     creds: Option<Arc<CredentialStore>>,
@@ -98,43 +173,28 @@ pub async fn start_client_api(
     listen: SocketAddr,
     spa: Option<SpaAssets>,
 ) -> Result<ClientApiHandle> {
-    let state = ApiState {
-        client,
-        creds,
-        auth,
+    let standalone = StandaloneState {
+        auth: auth.clone(),
         limiter: LoginRateLimiter::new(),
     };
+    let audit: ClientAudit = Arc::new(move |action: &str, detail: serde_json::Value| {
+        auth.audit(action, detail);
+    });
 
-    let mut app = Router::new()
-        // ---- Auth (Public) ----
+    // REST routes keep the historical /api/v1/* shape; login/init stay public, the guard
+    // below covers everything defined so far (SPA routes merge after it, unguarded).
+    let rest: Router = client_api_router_with_audit(client, creds, Some(audit));
+    let auth_routes: Router = Router::new()
         .route("/api/v1/auth/login", post(login))
         .route("/api/v1/auth/init", post(init_password))
-        // ---- Nodes ----
-        .route("/api/v1/nodes", get(list_nodes).post(connect_node))
-        .route("/api/v1/nodes/disconnect", post(disconnect_node))
-        .route(
-            "/api/v1/nodes/paused-rules",
-            get(get_paused_rules).put(set_paused_rules),
-        )
-        .route(
-            "/api/v1/nodes/paused-rules/toggle",
-            post(toggle_rule_paused),
-        )
-        // ---- Credentials ----
-        .route("/api/v1/credentials", get(list_credentials))
-        .route("/api/v1/credentials", delete(delete_credential))
-        .route("/api/v1/credentials/export", get(export_credential))
-        // ---- Proxy ----
-        .route("/api/v1/proxy/start", post(start_proxy))
-        .route("/api/v1/proxy/stop", post(stop_proxy))
-        .route("/api/v1/proxy/status", get(proxy_status))
-        // ---- Util ----
-        .route("/api/v1/parse-connect-url", post(parse_connect_url))
+        .with_state(standalone.clone());
+    let mut app = Router::new()
+        .nest("/api/v1", rest)
+        .merge(auth_routes)
         .layer(axum::middleware::from_fn_with_state(
-            state.clone(),
+            standalone,
             auth_middleware,
-        ))
-        .with_state(state);
+        ));
 
     if let Some(spa) = spa {
         app = app.merge(spa_router(spa));
@@ -270,7 +330,7 @@ mod codes {
     pub const INTERNAL: u32 = 50000;
 }
 
-// ==================== auth ====================
+// ==================== auth (standalone mode) ====================
 
 #[derive(Debug, Serialize, Deserialize)]
 struct Claims {
@@ -302,15 +362,19 @@ fn verify_token(secret: &str, token: &str) -> bool {
     .is_ok()
 }
 
-/// Source-IP extractor (injected via the ConnectInfo extension).
+/// Source-IP extractor (injected via the ConnectInfo extension; state-agnostic so both
+/// serving modes — and the node-nested mount — can use it).
 struct ClientIp(IpAddr);
 
-impl axum::extract::FromRequestParts<ApiState> for ClientIp {
+impl<S> axum::extract::FromRequestParts<S> for ClientIp
+where
+    S: Send + Sync,
+{
     type Rejection = Response;
 
     async fn from_request_parts(
-        parts: &mut axum::http::request::Parts,
-        _state: &ApiState,
+        parts: &mut Parts,
+        _state: &S,
     ) -> std::result::Result<Self, Self::Rejection> {
         let ip = parts
             .extensions
@@ -322,7 +386,7 @@ impl axum::extract::FromRequestParts<ApiState> for ClientIp {
 }
 
 async fn auth_middleware(
-    State(state): State<ApiState>,
+    State(state): State<StandaloneState>,
     req: axum::extract::Request,
     next: Next,
 ) -> Response {
@@ -355,7 +419,7 @@ struct PasswordReq {
 }
 
 async fn login(
-    State(state): State<ApiState>,
+    State(state): State<StandaloneState>,
     ClientIp(ip): ClientIp,
     Json(req): Json<PasswordReq>,
 ) -> Response {
@@ -414,7 +478,7 @@ async fn login(
 
 /// First-run admin password initialization (available only when unset).
 async fn init_password(
-    State(state): State<ApiState>,
+    State(state): State<StandaloneState>,
     ClientIp(ip): ClientIp,
     Json(req): Json<PasswordReq>,
 ) -> Response {
@@ -465,30 +529,24 @@ fn rand_u64() -> u64 {
 
 // ==================== command mapping (same semantics as desktop IPC) ====================
 
+/// Delegated connect input (the only connection mode).
 #[derive(Debug, Deserialize)]
 struct ConnectInput {
     addr: String,
-    username: String,
-    password: String,
+    label: String,
+    token: String,
     #[serde(default)]
     insecure: bool,
-    #[serde(default)]
-    pinned_cert_path: Option<String>,
     #[serde(default)]
     pinned_fingerprint: Option<String>,
     #[serde(default)]
     manage_hosts: bool,
     #[serde(default)]
     save_credential: bool,
-    /// Federation P2/P3 delegated credential fields (all optional, plain accounts unaffected)
-    #[serde(default)]
-    delegated: bool,
     #[serde(default)]
     entries: Vec<String>,
     #[serde(default)]
     entry_fps: Vec<String>,
-    #[serde(default)]
-    ehint: Option<String>,
     #[serde(default)]
     en: Option<String>,
     #[serde(default)]
@@ -497,19 +555,16 @@ struct ConnectInput {
     eadmin: bool,
 }
 
-async fn connect_node(State(state): State<ApiState>, Json(input): Json<ConnectInput>) -> Response {
+async fn connect_node(State(state): State<ClientApiState>, Json(input): Json<ConnectInput>) -> Response {
     let params = ConnectParams {
         addr: input.addr.clone(),
-        username: input.username.clone(),
-        password: input.password.clone(),
+        label: input.label.clone(),
+        token: input.token.clone(),
         insecure: input.insecure,
-        pinned_cert_path: input.pinned_cert_path.clone(),
         pinned_fingerprint: input.pinned_fingerprint.clone(),
         manage_hosts: input.manage_hosts,
-        delegated: input.delegated,
         entries: input.entries.clone(),
         entry_fps: input.entry_fps.clone(),
-        ehint: input.ehint.clone(),
         en: input.en.clone(),
         emode: input.emode.clone(),
         eadmin: input.eadmin,
@@ -526,15 +581,13 @@ async fn connect_node(State(state): State<ApiState>, Json(input): Json<ConnectIn
                 &node_state.node_id,
                 &Credential {
                     addr: input.addr,
-                    username: input.username,
-                    password: input.password,
+                    label: input.label,
+                    token: input.token,
                     name: None,
                     insecure: input.insecure,
                     pinned_fingerprint: input.pinned_fingerprint,
-                    delegated: input.delegated,
                     entries: input.entries,
                     entry_fps: input.entry_fps,
-                    ehint: input.ehint,
                     en: input.en,
                     emode: input.emode,
                     eadmin: input.eadmin,
@@ -550,12 +603,12 @@ struct NodeIdReq {
     node_id: String,
 }
 
-async fn disconnect_node(State(state): State<ApiState>, Json(req): Json<NodeIdReq>) -> Response {
+async fn disconnect_node(State(state): State<ClientApiState>, Json(req): Json<NodeIdReq>) -> Response {
     state.client.disconnect(&req.node_id).await;
     ok(serde_json::json!({ "disconnected": true }))
 }
 
-async fn list_nodes(State(state): State<ApiState>) -> Response {
+async fn list_nodes(State(state): State<ClientApiState>) -> Response {
     let mut nodes: Vec<NodeState> = state.client.list_nodes().await;
     for n in &mut nodes {
         n.status = state.client.node_status(&n.node_id);
@@ -568,7 +621,7 @@ struct PausedQuery {
     node_id: String,
 }
 
-async fn get_paused_rules(State(state): State<ApiState>, Query(q): Query<PausedQuery>) -> Response {
+async fn get_paused_rules(State(state): State<ClientApiState>, Query(q): Query<PausedQuery>) -> Response {
     ok(state.client.get_paused_rules(&q.node_id))
 }
 
@@ -579,7 +632,7 @@ struct SetPausedReq {
 }
 
 async fn set_paused_rules(
-    State(state): State<ApiState>,
+    State(state): State<ClientApiState>,
     Json(req): Json<SetPausedReq>,
 ) -> Response {
     state.client.set_paused_rules(&req.node_id, req.keys);
@@ -594,7 +647,7 @@ struct TogglePausedReq {
 }
 
 async fn toggle_rule_paused(
-    State(state): State<ApiState>,
+    State(state): State<ClientApiState>,
     Json(req): Json<TogglePausedReq>,
 ) -> Response {
     state
@@ -603,7 +656,7 @@ async fn toggle_rule_paused(
     ok(serde_json::json!({ "updated": true }))
 }
 
-async fn list_credentials(State(state): State<ApiState>) -> Response {
+async fn list_credentials(State(state): State<ClientApiState>) -> Response {
     let mut out: Vec<(String, Credential)> = Vec::new();
     if let Some(store) = &state.creds {
         for key in store.keys().await {
@@ -621,7 +674,7 @@ struct CredKeyQuery {
 }
 
 async fn delete_credential(
-    State(state): State<ApiState>,
+    State(state): State<ClientApiState>,
     Query(q): Query<CredKeyQuery>,
 ) -> Response {
     if let Some(store) = &state.creds {
@@ -637,9 +690,9 @@ struct ExportQuery {
     confirm: bool,
 }
 
-/// Export a connect URL (contains plaintext password) — Web exposure requires a `confirm=true` second confirmation.
+/// Export a connect URL (contains the token plaintext) — Web exposure requires a `confirm=true` second confirmation.
 async fn export_credential(
-    State(state): State<ApiState>,
+    State(state): State<ClientApiState>,
     ClientIp(ip): ClientIp,
     Query(q): Query<ExportQuery>,
 ) -> Response {
@@ -647,7 +700,7 @@ async fn export_credential(
         return err(
             StatusCode::CONFLICT,
             codes::VALIDATION_FAILED,
-            "凭据导出含明文密码，需二次确认（confirm=true）",
+            "凭据导出含明文令牌，需二次确认（confirm=true）",
         );
     }
     let Some(store) = &state.creds else {
@@ -664,10 +717,12 @@ async fn export_credential(
             "凭据不存在或已删除",
         );
     };
-    state.auth.audit(
-        "web.credential_export",
-        serde_json::json!({"key": q.key, "ip": ip.to_string()}),
-    );
+    if let Some(audit) = &state.audit {
+        audit(
+            "web.credential_export",
+            serde_json::json!({"key": q.key, "ip": ip.to_string()}),
+        );
+    }
     ok(crate::connect_url_of(&c))
 }
 
@@ -676,19 +731,19 @@ struct StartProxyReq {
     port: u16,
 }
 
-async fn start_proxy(State(state): State<ApiState>, Json(req): Json<StartProxyReq>) -> Response {
+async fn start_proxy(State(state): State<ClientApiState>, Json(req): Json<StartProxyReq>) -> Response {
     match state.client.start_proxy(req.port).await {
         Ok(()) => ok(state.client.proxy_port()),
         Err(e) => err(StatusCode::BAD_REQUEST, codes::BAD_REQUEST, e.to_string()),
     }
 }
 
-async fn stop_proxy(State(state): State<ApiState>) -> Response {
+async fn stop_proxy(State(state): State<ClientApiState>) -> Response {
     state.client.stop_proxy().await;
     ok(serde_json::json!({ "stopped": true }))
 }
 
-async fn proxy_status(State(state): State<ApiState>) -> Response {
+async fn proxy_status(State(state): State<ClientApiState>) -> Response {
     let port = state.client.proxy_port();
     ok(serde_json::json!({ "running": port > 0, "port": port }))
 }
@@ -699,11 +754,155 @@ struct ParseUrlReq {
 }
 
 async fn parse_connect_url(
-    State(_state): State<ApiState>,
+    State(_state): State<ClientApiState>,
     Json(req): Json<ParseUrlReq>,
 ) -> Response {
     match crate::parse_connect_url(&req.url) {
         Ok(input) => ok(input),
         Err(e) => err(StatusCode::BAD_REQUEST, codes::BAD_REQUEST, e),
     }
+}
+
+// ==================== delegated admin consoles ====================
+
+#[derive(Serialize)]
+struct ConsoleEntry {
+    node_id: String,
+    name: String,
+    /// "issuer" = the credential's own issuer console (eadmin); "upstream" = a
+    /// transit-management offer discovered through it (full scope)
+    kind: &'static str,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    scope: String,
+}
+
+/// List reachable admin consoles: the issuer of every eadmin credential (admin_console) plus
+/// the manageable upstreams discovered through it — drives the SPA's admin dropdown.
+async fn list_consoles(State(state): State<ClientApiState>) -> Response {
+    let mut out: Vec<ConsoleEntry> = Vec::new();
+    for n in state.client.list_nodes().await {
+        if n.admin_console {
+            out.push(ConsoleEntry {
+                node_id: n.node_id.clone(),
+                name: n.node_name.clone(),
+                kind: "issuer",
+                scope: String::new(),
+            });
+        }
+        for m in &n.manageable {
+            out.push(ConsoleEntry {
+                node_id: n.node_id.clone(),
+                name: m.node_name.clone(),
+                kind: "upstream",
+                scope: m.scope.clone(),
+            });
+        }
+    }
+    ok(out)
+}
+
+#[derive(Deserialize)]
+struct OpenConsoleReq {
+    node_id: String,
+    #[serde(default)]
+    upstream: Option<String>,
+}
+
+/// Open (or reuse) a loopback HTTP forwarder into a delegated admin console and return its
+/// URL carrying the current bootstrap ticket (same flow as the desktop console window).
+async fn open_console(
+    State(state): State<ClientApiState>,
+    Json(req): Json<OpenConsoleReq>,
+) -> Response {
+    use agile_net_core::relay::e2e;
+    let Some(opener) = state.client.opener(&req.node_id) else {
+        return err(StatusCode::NOT_FOUND, codes::NOT_FOUND, "节点未连接");
+    };
+    let (ticket, target, key) = match req.upstream.as_deref() {
+        // Issuer console: bridged to the issuer's loopback API via the reserved admin target
+        None => {
+            let Some((ticket, _port)) = state.client.delegated_console_ticket(&req.node_id)
+            else {
+                return err(
+                    StatusCode::NOT_FOUND,
+                    codes::NOT_FOUND,
+                    "该凭据未授予管理权限（或配置尚未拉取完成）",
+                );
+            };
+            (
+                ticket,
+                e2e::DELEGATION_ADMIN_TARGET.to_string(),
+                format!("{}|deleg-admin", req.node_id),
+            )
+        }
+        // Transit management: the upstream's control endpoint dialed through the issuer's
+        // fan-out session (reserved `upstream:<node_name>` target)
+        Some(up) => {
+            let Some((ticket, _host, _port, _scope)) =
+                state.client.delegated_upstream_ticket(&req.node_id, up)
+            else {
+                return err(
+                    StatusCode::NOT_FOUND,
+                    codes::NOT_FOUND,
+                    "上游未被发现或未授予穿透管理",
+                );
+            };
+            (
+                ticket,
+                format!("{}{}", e2e::DELEGATION_UPSTREAM_PREFIX, up),
+                format!("{}|deleg|{up}", req.node_id),
+            )
+        }
+    };
+    match ensure_console_forwarder(&state.consoles, &key, opener, target).await {
+        Ok(port) => {
+            if let Some(audit) = &state.audit {
+                audit(
+                    "web.console_open",
+                    serde_json::json!({"node_id": req.node_id, "upstream": req.upstream}),
+                );
+            }
+            ok(serde_json::json!({ "url": format!("http://127.0.0.1:{port}/#boot={ticket}") }))
+        }
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, codes::INTERNAL, e),
+    }
+}
+
+/// Bind a loopback forwarder piping every accepted connection into one console channel
+/// (registry-keyed; re-opening the same console reuses its port).
+async fn ensure_console_forwarder(
+    reg: &ConsoleRegistry,
+    key: &str,
+    opener: Arc<dyn ChannelOpener>,
+    target: String,
+) -> std::result::Result<u16, String> {
+    let mut map = reg.lock().await;
+    if let Some(p) = map.get(key) {
+        return Ok(*p);
+    }
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .map_err(|e| e.to_string())?;
+    let port = listener.local_addr().map_err(|e| e.to_string())?.port();
+    tokio::spawn(async move {
+        loop {
+            let Ok((stream, _)) = listener.accept().await else {
+                break;
+            };
+            let opener = opener.clone();
+            let target = target.clone();
+            tokio::spawn(async move {
+                match opener.open("", &target, 0).await {
+                    Ok(ch) => {
+                        let _ = agile_net_core::relay::bridge::bridge(stream, ch).await;
+                    }
+                    Err(e) => {
+                        tracing::debug!(error = %e, "console channel open failed");
+                    }
+                }
+            });
+        }
+    });
+    map.insert(key.to_string(), port);
+    Ok(port)
 }

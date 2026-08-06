@@ -2,23 +2,19 @@
 //!
 //! Security notes:
 //! - HS256 secret generated at first node startup and persisted in node_config (never hardcoded)
-//! - access_token: admin 15min / client 1h
-//! - refresh_token: admin 7d / client 30d; jti hash stored in DB, supports revocation and rotation
-//! - tunnel_token: client only, for data-plane auth; rotated on login/refresh
+//! - access_token: 15min; refresh_token: 7d (admin only — delegated consumers authenticate
+//!   the data plane with their token directly, no control-plane session)
+//! - refresh_token jti hash stored in DB, supports revocation and rotation
 
-use crate::db::{Database, generate_secret_hex, generate_tunnel_token, sha256_hex};
+use crate::db::{Database, generate_secret_hex, sha256_hex};
 use agile_net_core::error::{Error, Result};
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use serde::{Deserialize, Serialize};
 
 /// admin access token TTL (seconds)
 pub const ADMIN_ACCESS_TTL: i64 = 15 * 60;
-/// client access token TTL (seconds)
-pub const CLIENT_ACCESS_TTL: i64 = 60 * 60;
 /// admin refresh token TTL (seconds)
 pub const ADMIN_REFRESH_TTL: i64 = 7 * 24 * 3600;
-/// client refresh token TTL (seconds)
-pub const CLIENT_REFRESH_TTL: i64 = 30 * 24 * 3600;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Claims {
@@ -43,8 +39,6 @@ fn default_scope() -> String {
 pub struct IssuedTokens {
     pub access_token: String,
     pub refresh_token: String,
-    /// client role only
-    pub tunnel_token: Option<String>,
     pub expires_in: i64,
 }
 
@@ -68,7 +62,7 @@ impl JwtService {
         Ok(Self { secret, db })
     }
 
-    /// Issue access + refresh (client also rotates tunnel_token); scope defaults to full.
+    /// Issue access + refresh; scope defaults to full.
     pub fn issue(&self, subject: &str, username: &str, role: &str) -> Result<IssuedTokens> {
         self.issue_with_scope(subject, username, role, "full")
     }
@@ -81,10 +75,7 @@ impl JwtService {
         role: &str,
         scope: &str,
     ) -> Result<IssuedTokens> {
-        let (access_ttl, refresh_ttl) = match role {
-            "admin" => (ADMIN_ACCESS_TTL, ADMIN_REFRESH_TTL),
-            _ => (CLIENT_ACCESS_TTL, CLIENT_REFRESH_TTL),
-        };
+        let (access_ttl, refresh_ttl) = (ADMIN_ACCESS_TTL, ADMIN_REFRESH_TTL);
 
         let access_token = self.sign(subject, username, role, "access", access_ttl, scope)?;
         let (refresh_token, jti) =
@@ -96,20 +87,9 @@ impl JwtService {
         self.db
             .store_refresh_token(&sha256_hex(jti.as_bytes()), subject, role, &expires_at)?;
 
-        // client role: rotate tunnel_token
-        let tunnel_token = if role == "client" {
-            let t = generate_tunnel_token();
-            self.db
-                .set_account_tunnel_token(subject, Some(&sha256_hex(t.as_bytes())))?;
-            Some(t)
-        } else {
-            None
-        };
-
         Ok(IssuedTokens {
             access_token,
             refresh_token,
-            tunnel_token,
             expires_in: access_ttl,
         })
     }

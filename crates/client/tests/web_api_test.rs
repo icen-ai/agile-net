@@ -172,18 +172,16 @@ async fn export_requires_confirm() {
     let store = CredentialStore::open_temp().unwrap();
     store
         .save(
-            "node@127.0.0.1:59090",
+            "u1@delegated:127.0.0.1:54430",
             &Credential {
-                addr: "127.0.0.1:59090".into(),
-                username: "u1".into(),
-                password: "sk-test".into(),
+                addr: "127.0.0.1:54430".into(),
+                label: "u1".into(),
+                token: "psk_test".into(),
                 name: None,
                 insecure: false,
                 pinned_fingerprint: None,
-                delegated: false,
                 entries: Vec::new(),
                 entry_fps: Vec::new(),
-                ehint: None,
                 en: None,
                 emode: None,
                 eadmin: false,
@@ -216,7 +214,7 @@ async fn export_requires_confirm() {
     // No second confirmation → 409 + 40001
     let r = http
         .get(format!(
-            "{base}/api/v1/credentials/export?key=node@127.0.0.1:59090"
+            "{base}/api/v1/credentials/export?key=u1@delegated:127.0.0.1:54430"
         ))
         .bearer_auth(&token)
         .send()
@@ -229,7 +227,7 @@ async fn export_requires_confirm() {
     // Confirmed export → connect URL + audit
     let r = http
         .get(format!(
-            "{base}/api/v1/credentials/export?confirm=true&key=node@127.0.0.1:59090"
+            "{base}/api/v1/credentials/export?confirm=true&key=u1@delegated:127.0.0.1:54430"
         ))
         .bearer_auth(&token)
         .send()
@@ -242,7 +240,7 @@ async fn export_requires_confirm() {
         url.starts_with("anet://connect?"),
         "导出应为接入链接: {url}"
     );
-    assert!(url.contains("account=u1"));
+    assert!(url.contains("account=d%3Au1") || url.contains("account=d:u1"));
     assert!(
         auth.audits
             .lock()
@@ -291,16 +289,18 @@ async fn paused_rules_and_parse_url() {
     let j: serde_json::Value = r.json().await.unwrap();
     assert_eq!(j["data"][0].as_str(), Some("host:example.com"));
 
-    // Parse a connect URL
+    // Parse a delegated connect URL
     let r = http
         .post(format!("{base}/api/v1/parse-connect-url"))
         .bearer_auth(&token)
-        .json(&serde_json::json!({"url": "agilenet://connect?server=example.com&port=59090&account=u&password=sk-x&fp=ab12"}))
+        .json(&serde_json::json!({"url": "anet://connect?server=example.com&port=54430&account=d:u&password=psk_x&fp=ab12"}))
         .send()
         .await
         .unwrap();
     let j: serde_json::Value = r.json().await.unwrap();
-    assert_eq!(j["data"]["addr"].as_str(), Some("example.com:59090"));
+    assert_eq!(j["data"]["addr"].as_str(), Some("example.com:54430"));
+    assert_eq!(j["data"]["label"].as_str(), Some("u"));
+    assert_eq!(j["data"]["token"].as_str(), Some("psk_x"));
     assert_eq!(j["data"]["pinned_fingerprint"].as_str(), Some("ab12"));
 
     server.stop().await;

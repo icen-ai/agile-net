@@ -675,7 +675,7 @@ async function refreshAdminEntry() {
     // Manageable-console list shows each endpoint's OWN console name (it identifies the management
     // target) — deliberately NOT the user alias; aliases only title my own fan-in connections
     if (n.admin_console && n.status === 'Connected') {
-      remotes.push({ kind: 'node', id: n.node_id, label: n.node_name + (n.username ? ' · ' + n.username : ''), sub: n.addr });
+      remotes.push({ kind: 'node', id: n.node_id, label: n.node_name, sub: n.addr });
     }
     for (const m of (n.manageable || [])) {
       if (n.status === 'Connected') {
@@ -745,7 +745,7 @@ function initAdminMode() {
 /* ================= Console channel (manage this endpoint; embedded in main window) ================= */
 async function openNodeConsole(nodeId) {
   const n = (window._nodes || []).find(x => x.node_id === nodeId);
-  const label = n ? n.node_name + (n.username ? ' · ' + n.username : '') : nodeId;
+  const label = n ? n.node_name : nodeId;
   await enterAdmin(nodeId, null, label);
 }
 
@@ -753,12 +753,12 @@ async function openNodeConsole(nodeId) {
 async function importUrl(url, btn) {
   url = (url || '').trim();
   if (!url) { toast(T('err-need-url'), 'err'); return; }
-  // Shared parser gate (anet:// + legacy agilenet://); the Rust parser does the real conversion
+  // Shared parser gate (anet://); the Rust parser does the real conversion
   const p = AgLink.parse(url);
   if (p.error || p.role !== 'connect') { toast(T('err-bad-url'), 'err'); return; }
   try {
     const input = await invoke('parse_connect_url', { url });
-    if (input.admin) toast(AgI18n.t('views.url-admin-note'), 'info');
+    if (input.eadmin) toast(AgI18n.t('views.url-admin-note'), 'info');
     await connectWith(input, btn);
   } catch (e) { toast(friendlyError(e), 'err'); }
 }
@@ -906,13 +906,13 @@ function renderCredList(creds, statusMap) {
   const savedKeys = new Set(creds.map(([k]) => k));
   const unsaved = (window._nodes || []).filter(n => !savedKeys.has(n.node_id));
   const live = (st) => st === 'Connected' || st === 'Connecting' || st === 'Reconnecting';
-  const match = (name, username, addr, st) => !f ||
-    name.toLowerCase().includes(f) || (username || '').toLowerCase().includes(f) ||
+  const match = (name, label, addr, st) => !f ||
+    name.toLowerCase().includes(f) || (label || '').toLowerCase().includes(f) ||
     addr.toLowerCase().includes(f) || (st ? statusText(st) : AgI18n.t('common.disconnected')).includes(f);
   const shownCreds = creds.filter(([key, c]) =>
-    match(key.includes('@') ? key.slice(0, key.indexOf('@')) : key, c.username, c.addr, statusMap[key])
-    || (c.name && match(c.name, c.username, c.addr, statusMap[key])));
-  const shownUnsaved = unsaved.filter(n => match(n.node_name, n.username, n.addr, n.status));
+    match(key.includes('@') ? key.slice(0, key.indexOf('@')) : key, c.label, c.addr, statusMap[key])
+    || (c.name && match(c.name, c.label, c.addr, statusMap[key])));
+  const shownUnsaved = unsaved.filter(n => match(n.node_name, n.label, n.addr, n.status));
   // web.md §3.2: signature guard — identical inputs skip the full DOM rebuild (10s poll stability)
   const sig = JSON.stringify([creds, statusMap, f, window._nodes || []]);
   if (list.dataset.sig === sig) return;
@@ -929,23 +929,22 @@ function renderCredList(creds, statusMap) {
       ? '<button class="ghost small" data-act="disconnect" data-key="' + esc(key) + '">' + AgI18n.t('views.disconnect') + '</button>'
       : '<button class="small" data-act="reconnect" data-key="' + esc(key) + '">' + AgI18n.t(st ? 'views.reconnect' : 'views.connect') + '</button>';
     const epName = (c.name && c.name.trim()) || (key.includes('@') ? key.slice(0, key.indexOf('@')) : key);
-    // federation P2: delegated credentials badged; the live failover entry shown when connected
-    const delegBadge = c.delegated ? ' <span class="badge b-info">' + AgI18n.t('views.delegated-badge') + '</span>' : '';
-    // federation P3 tier badge: 专线 (whole machine) vs 分流 (rule delivery) on E2E credentials
-    // (routing word = entrust en_xxx or legacy ehint); split silently degrades to catch-all when
-    // the config pull failed — surface that honestly
-    const splitFallback = !!(c.delegated && (c.en || c.ehint) && c.emode === 'split' && st === 'Connected'
+    // E2E tier badge: 专线 (whole machine) vs 分流 (rule delivery); the entrust word (en_xxx)
+    // marks the E2E tier. split silently degrades to catch-all when the config pull failed —
+    // surface that honestly
+    const splitFallback = !!(c.en && c.emode === 'split' && st === 'Connected'
       && n && (n.rules || []).some(r => r.value === '0.0.0.0/0'));
-    const tierBadge = (c.delegated && (c.en || c.ehint))
+    const tierBadge = c.en
       ? ' <span class="badge ' + (splitFallback ? 'b-warn' : (c.emode === 'split' ? 'b-info' : 'b-off')) + '"' +
         (splitFallback ? ' title="' + AgI18n.t('views.tier-split-fallback-hint') + '"' : '') + '>' +
         AgI18n.t(splitFallback ? 'views.tier-split-fallback' : (c.emode === 'split' ? 'views.tier-split' : 'views.tier-dedicated')) + '</span>'
       : '';
-    const addrLine = (c.delegated && n && n.current_entry && st === 'Connected')
+    // failover: the live entry shown when connected
+    const addrLine = (n && n.current_entry && st === 'Connected')
       ? esc(n.current_entry) + ' · <span class="dim">' + AgI18n.t('views.delegated-set', { n: (c.entries || []).length || 1 }) + '</span>'
       : esc(c.addr);
     return '<div class="node-card' + (live(st) ? '' : ' down') + '"><div class="info">' +
-      '<div class="name"><span class="cred-name" data-rename="' + esc(key) + '" title="' + AgI18n.t('fanin.rename') + '">' + esc(epName) + '</span> <span class="dim">· ' + esc(c.username) + '</span> ' + badge + delegBadge + tierBadge + '</div>' +
+      '<div class="name"><span class="cred-name" data-rename="' + esc(key) + '" title="' + AgI18n.t('fanin.rename') + '">' + esc(epName) + '</span> ' + badge + tierBadge + '</div>' +
       '<div class="addr mono">' + addrLine + (c.insecure ? ' · <span class="badge b-warn">insecure</span>' : '') + '</div>' +
       '</div><div class="card-actions">' +
       '<button class="ghost small icon-btn" title="' + AgI18n.t('fanin.rename') + '" data-act="rename" data-key="' + esc(key) + '">' + AgIcon('pencil', 13) + '</button>' +
@@ -958,7 +957,7 @@ function renderCredList(creds, statusMap) {
       '</div></div>';
   }).join('') + shownUnsaved.map(n =>
     '<div class="node-card' + (live(n.status) ? '' : ' down') + '"><div class="info">' +
-    '<div class="name">' + esc(n.node_name) + (n.username ? ' <span class="dim">· ' + esc(n.username) + '</span>' : '') + ' ' + statusBadgeHtml(n.status) + ' <span class="badge b-gray">' + AgI18n.t('views.unsaved') + '</span></div>' +
+    '<div class="name">' + esc(n.node_name) + ' ' + statusBadgeHtml(n.status) + ' <span class="badge b-gray">' + AgI18n.t('views.unsaved') + '</span></div>' +
     '<div class="addr mono">' + esc(n.addr) + '</div>' +
     '</div><div class="card-actions">' +
     (n.admin_console && n.status === 'Connected' && !HTTP_MODE
@@ -970,11 +969,11 @@ async function reconnectSaved(key, btn) {
   const c = (window._creds || {})[key];
   if (!c) return;
   await connectWith({
-    addr: c.addr, username: c.username, password: c.password,
-    insecure: c.insecure, pinned_cert_path: null, pinned_fingerprint: c.pinned_fingerprint || null,
+    addr: c.addr, label: c.label, token: c.token,
+    insecure: c.insecure, pinned_fingerprint: c.pinned_fingerprint || null,
     manage_hosts: false, save_credential: true,
-    // federation P2/P3: keep the delegated fields on reconnect (failover set, E2E hint, entrust, tier)
-    delegated: !!c.delegated, entries: c.entries || [], entry_fps: c.entry_fps || [], ehint: c.ehint || null, en: c.en || null, emode: c.emode || null, eadmin: !!c.eadmin,
+    // keep the failover set and E2E fields on reconnect
+    entries: c.entries || [], entry_fps: c.entry_fps || [], en: c.en || null, emode: c.emode || null, eadmin: !!c.eadmin,
   }, btn || null);
 }
 async function exportCred(key) {
@@ -1133,7 +1132,7 @@ function foOpenModal(c) {
 function foCloseModal() { $('fo-modal').style.display = 'none'; FO_EDIT_ID = null; }
 
 function initUpstreams() {
-  agTabsBind($('fo-tabs'));
+  agTabsBind($('fo-tabs'), (key) => { if (key === 'issue') refreshDelegation(); });
   $('btn-fo-refresh').onclick = refreshUpstreams;
   $('btn-fo-add').onclick = () => foOpenModal(null);
   $('fo-cancel').onclick = foCloseModal;
@@ -1199,6 +1198,227 @@ function initUpstreams() {
       } catch (err) { toast(friendlyError(err), 'err'); }
     }
   });
+  initDelegation();
+}
+
+/* ================= Unified issuance (签发 tab): delegated tokens via the embedded node admin REST =================
+   Four-dimension linkage dialog (entry × trust × route × concurrency), rules enforced in dtSync:
+   - entry=direct locks trust=plain and hides the disaster set (direct TLS is already end-to-end);
+   - trust=plain forces route=dedicated (the split vocabulary rides the E2E config channel);
+   - trust=admin shows the scope select (ro/rules/full);
+   - E2E trust narrows the group picker to e2e_required groups (every selected group must be E2E);
+   - route=dedicated auto-selects every eligible group and collapses the picker. */
+let DT_ITEMS = [];
+let DT_GROUPS = []; // embedded node groups (with e2e_required flags)
+let DT_STATE = { entry: 'direct', trust: 'plain', route: 'dedicated', conc: 'single' };
+
+function dtBadges(t) {
+  const b = [];
+  b.push('<span class="badge ' + (t.entry_mode === 'direct' ? 'b-off' : 'b-info') + '">' + AgI18n.t(t.entry_mode === 'direct' ? 'dt.badgeDirect' : 'dt.badgeRelay') + '</span>');
+  b.push('<span class="badge b-gray">' + (t.concurrency === 'multi' ? AgI18n.t('dt.badgeMulti', { n: t.max_sessions || 8 }) : AgI18n.t('dt.badgeSingle')) + '</span>');
+  b.push('<span class="badge ' + (t.mode === 'split' ? 'b-info' : 'b-off') + '">' + AgI18n.t(t.mode === 'split' ? 'views.tier-split' : 'views.tier-dedicated') + '</span>');
+  if ((t.hint_map || []).some(h => (h.hint || '').startsWith('en_'))) b.push('<span class="badge b-warn">E2E</span>');
+  if (t.admin_scope) b.push('<span class="badge b-warn">' + AgI18n.t('dt.badgeAdmin', { scope: t.admin_scope }) + '</span>');
+  if (t.lifecycle && t.lifecycle !== 'active') b.push('<span class="badge b-off">' + AgI18n.t('dt.life-' + t.lifecycle) + '</span>');
+  return b.join(' ');
+}
+
+async function refreshDelegation() {
+  if (HTTP_MODE) return; // fan-out is a desktop-local capability
+  const list = $('dt-list');
+  if (!list) return;
+  let items;
+  try {
+    items = await invoke('list_delegated_tokens');
+  } catch (e) {
+    // typically "server role not running" — an actionable empty state, not an error toast
+    const msg = friendlyError(e);
+    if (list.dataset.sig !== msg) { list.dataset.sig = msg; list.innerHTML = '<div class="empty">' + esc(msg) + '</div>'; }
+    return;
+  }
+  DT_ITEMS = items;
+  const sig = JSON.stringify(items);
+  if (list.dataset.sig === sig) return; // signature guard: no repaint when unchanged
+  list.dataset.sig = sig;
+  if (!items.length) { list.innerHTML = '<div class="empty">' + AgI18n.t('dt.empty') + '</div>'; return; }
+  list.innerHTML = items.map(t => {
+    const groups = (t.groups || []).map(g => esc(g.name)).join(' · ');
+    const regs = (t.regs || []).map(r =>
+      esc(r.connector_name) + (r.is_primary ? ' <span class="badge b-info">' + AgI18n.t('dt.primary') + '</span>' : '') + ' <span class="dim">' + esc(r.state || 'offline') + '</span>').join(' · ');
+    return '<div class="node-card"><div class="info">' +
+      '<div class="name">' + esc(t.label) + ' ' + dtBadges(t) + '</div>' +
+      '<div class="addr mono">' + esc(t.token_prefix || '') + ' · ' + groups +
+      (regs ? ' · ' + AgI18n.t('dt.regs') + ' ' + regs : '') +
+      ' · <span class="dim">' + esc((t.created_at || '').replace('T', ' ').replace(/\..*$/, '')) + '</span></div>' +
+      '</div><div class="card-actions">' +
+      '<button class="danger small icon-btn" title="' + AgI18n.t('dt.revokeTitle') + '" data-dt-revoke="' + esc(t.id) + '">' + AgIcon('trash-2', 13) + '</button>' +
+      '</div></div>';
+  }).join('');
+}
+
+function dtEligibleGroups() {
+  return DT_STATE.trust === 'plain' ? DT_GROUPS : DT_GROUPS.filter(g => g.e2e_required);
+}
+
+/* Apply the four-dimension linkage to the dialog controls (single source of truth = DT_STATE) */
+function dtSync() {
+  const s = DT_STATE;
+  const trustBtns = [...$('dt-trust').querySelectorAll('.group-tab')];
+  const routeBtns = [...$('dt-route').querySelectorAll('.group-tab')];
+  // direct entry locks trust to plain
+  trustBtns.forEach(b => { b.disabled = (s.entry === 'direct' && b.dataset.v !== 'plain'); });
+  if (s.entry === 'direct') s.trust = 'plain';
+  // plain trust cannot do split (vocabulary delivery requires the E2E config channel)
+  routeBtns.forEach(b => { b.disabled = (s.trust === 'plain' && b.dataset.v === 'split'); });
+  if (s.trust === 'plain') s.route = 'dedicated';
+  $('dt-entry').querySelectorAll('.group-tab').forEach(b => b.classList.toggle('active', b.dataset.v === s.entry));
+  trustBtns.forEach(b => b.classList.toggle('active', b.dataset.v === s.trust));
+  routeBtns.forEach(b => b.classList.toggle('active', b.dataset.v === s.route));
+  $('dt-conc').querySelectorAll('.group-tab').forEach(b => b.classList.toggle('active', b.dataset.v === s.conc));
+  $('dt-regs-row').style.display = s.entry === 'relay' ? '' : 'none';
+  $('dt-scope-row').style.display = s.trust === 'admin' ? '' : 'none';
+  const entryHint = s.entry === 'direct' ? AgI18n.t('dt.entryDirectHint') : AgI18n.t('dt.entryRelayHint');
+  if ($('dt-entry-hint').textContent !== entryHint) $('dt-entry-hint').textContent = entryHint;
+  // groups: dedicated collapses the picker with an all-selected summary; split shows the picker
+  const eligible = dtEligibleGroups();
+  const list = $('dt-groups-list'), summary = $('dt-groups-summary');
+  if (s.route === 'dedicated') {
+    list.style.display = 'none';
+    summary.style.display = '';
+    summary.textContent = AgI18n.t('dt.groupsAll', { n: eligible.length });
+  } else {
+    summary.style.display = 'none';
+    list.style.display = '';
+    list.innerHTML = eligible.length
+      ? eligible.map(g => '<label class="chk"><input type="checkbox" class="dt-grp" value="' + esc(g.id) + '"> <span>' + esc(g.name) + '</span>' + (g.e2e_required ? ' <span class="badge b-warn">E2E</span>' : '') + '</label>').join('')
+      : '<div class="hint">' + AgI18n.t('dt.noGroups') + '</div>';
+  }
+  $('dt-groups-hint').textContent = AgI18n.t(s.trust === 'plain' ? 'dt.groupsHintPlain' : 'dt.groupsHintE2e');
+}
+
+async function dtOpenModal() {
+  DT_STATE = { entry: 'direct', trust: 'plain', route: 'dedicated', conc: 'single' };
+  $('dt-label').value = '';
+  $('dt-err').textContent = '';
+  $('dt-scope').value = 'ro';
+  agSelectRefresh($('dt-scope'));
+  try { DT_GROUPS = await invoke('list_embedded_groups'); } catch (e) { DT_GROUPS = []; }
+  let conns = [];
+  try { conns = await invoke('list_server_connectors'); } catch (e) {}
+  $('dt-regs-list').innerHTML = conns.length
+    ? conns.map(c =>
+        '<div class="row" style="gap:12px;margin:2px 0">' +
+        '<label class="chk"><input type="checkbox" class="dt-reg" value="' + esc(c.id) + '"> <span>' + esc(c.name || c.upstream_addr) + '</span> <span class="dim mono">' + esc(c.upstream_addr) + '</span></label>' +
+        '<label class="chk"><input type="radio" name="dt-primary" value="' + esc(c.id) + '"> <span class="hint inline">' + AgI18n.t('dt.primary') + '</span></label>' +
+        '</div>').join('')
+    : '<div class="hint">' + AgI18n.t('dt.noRegs') + '</div>';
+  dtSync();
+  $('dt-modal').style.display = 'flex';
+  $('dt-label').focus();
+}
+function dtCloseModal() { $('dt-modal').style.display = 'none'; }
+
+async function dtSubmit() {
+  const s = DT_STATE;
+  const err = $('dt-err');
+  const label = $('dt-label').value.trim();
+  if (!label) { err.textContent = AgI18n.t('dt.labelRequired'); return; }
+  const eligible = dtEligibleGroups();
+  const groupIds = s.route === 'dedicated'
+    ? eligible.map(g => g.id)
+    : [...document.querySelectorAll('.dt-grp:checked')].map(c => c.value);
+  if (!groupIds.length) { err.textContent = AgI18n.t('dt.groupsRequired'); return; }
+  const regs = [];
+  if (s.entry === 'relay') {
+    const checked = [...document.querySelectorAll('.dt-reg:checked')].map(c => c.value);
+    const primary = (document.querySelector('input[name="dt-primary"]:checked') || {}).value;
+    if (!checked.length) { err.textContent = AgI18n.t('dt.regsRequired'); return; }
+    if (!primary || !checked.includes(primary)) { err.textContent = AgI18n.t('dt.primaryRequired'); return; }
+    for (const id of checked) regs.push({ connector_id: id, is_primary: id === primary });
+  }
+  err.textContent = '';
+  const body = {
+    label, group_ids: groupIds, regs,
+    mode: s.route,
+    admin_scope: s.trust === 'admin' ? $('dt-scope').value : '',
+    entry_mode: s.entry,
+    concurrency: s.conc,
+  };
+  const btn = $('dt-ok');
+  btn.disabled = true;
+  try {
+    const t = await invoke('issue_delegated_token', { request: body });
+    dtCloseModal();
+    refreshDelegation();
+    dtShowIssued(t);
+  } catch (e) {
+    err.textContent = friendlyError(e);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+/* One-time plaintext share card (link / token tabs copy; the server never echoes it again) */
+function dtShowIssued(t) {
+  anetModal({
+    title: AgI18n.t('dt.issuedTitle'),
+    sub: t.label || '',
+    okLabel: AgI18n.t('common.close'),
+    bodyHtml:
+      '<div class="hint" style="color:var(--warn);margin-top:0">' + AgI18n.t('dt.onceHint') + '</div>' +
+      '<label>' + AgI18n.t('dt.shareUrl') + '</label>' +
+      '<div class="row" style="gap:6px"><input class="mono grow" id="dt-share" readonly>' +
+      '<button class="ghost small icon-btn" id="dt-share-copy" title="' + AgI18n.t('common.copy') + '">' + AgIcon('copy', 13) + '</button></div>' +
+      '<label>' + AgI18n.t('dt.tokenOnly') + '</label>' +
+      '<div class="row" style="gap:6px"><input class="mono grow" id="dt-token" readonly>' +
+      '<button class="ghost small icon-btn" id="dt-token-copy" title="' + AgI18n.t('common.copy') + '">' + AgIcon('copy', 13) + '</button></div>',
+    onOk: async () => anetCloseModal(),
+  });
+  $('dt-share').value = t.share_url || '';
+  $('dt-token').value = t.token || '';
+  $('dt-share-copy').onclick = async () => { await navigator.clipboard.writeText($('dt-share').value); toast(AgI18n.t('common.copied'), 'ok'); };
+  $('dt-token-copy').onclick = async () => { await navigator.clipboard.writeText($('dt-token').value); toast(AgI18n.t('common.copied'), 'ok'); };
+  $('dt-share').onclick = (e) => e.target.select();
+  $('dt-token').onclick = (e) => e.target.select();
+}
+
+function initDelegation() {
+  $('btn-dt-refresh').onclick = refreshDelegation;
+  $('btn-dt-add').onclick = dtOpenModal;
+  $('dt-cancel').onclick = dtCloseModal;
+  $('dt-modal').onclick = (e) => { if (e.target === $('dt-modal')) dtCloseModal(); };
+  // segmented selectors (entry / trust / route / concurrency) — dtSync re-applies the linkage
+  [['dt-entry', 'entry'], ['dt-trust', 'trust'], ['dt-route', 'route'], ['dt-conc', 'conc']].forEach(([id, key]) => {
+    $(id).querySelectorAll('.group-tab').forEach(b => {
+      b.onclick = () => { if (b.disabled) return; DT_STATE[key] = b.dataset.v; dtSync(); };
+    });
+  });
+  // checking a disaster-set entry auto-marks it primary when none is chosen yet
+  $('dt-regs-list').addEventListener('change', (e) => {
+    const cb = e.target.closest('input.dt-reg');
+    if (cb && cb.checked && !$('dt-regs-list').querySelector('input[name="dt-primary"]:checked')) {
+      const r = $('dt-regs-list').querySelector('input[name="dt-primary"][value="' + CSS.escape(cb.value) + '"]');
+      if (r) r.checked = true;
+    }
+  });
+  $('dt-ok').onclick = dtSubmit;
+  // revoke with two-step confirm (same pattern as fan-in delete)
+  $('dt-list').addEventListener('click', async (e) => {
+    const btn = e.target.closest('[data-dt-revoke]');
+    if (!btn) return;
+    if (btn.dataset.confirm === '1') {
+      try {
+        await invoke('revoke_delegated_token', { id: btn.dataset.dtRevoke });
+        toast(AgI18n.t('dt.revoked'), 'ok');
+        refreshDelegation();
+      } catch (err) { toast(friendlyError(err), 'err'); }
+      return;
+    }
+    btn.dataset.confirm = '1';
+    const old = btn.innerHTML;
+    btn.innerHTML = '<span style="font-size:11px">' + AgI18n.t('common.confirm') + '</span>';
+    setTimeout(() => { if (btn.isConnected) { btn.dataset.confirm = ''; btn.innerHTML = old; } }, 2500);
+  });
 }
 
 /* Dashboard fan-out card: listening status badge + connected count + API/Relay address summary (10s polling + call after changes) */
@@ -1248,7 +1468,7 @@ async function exportCredAnet(key) {
     title: AgI18n.t('anet.exportTitle'),
     okLabel: AgI18n.t('anet.export'),
     bodyHtml:
-      '<label>' + AgI18n.t('anet.note') + '</label><input id="ax-note" style="width:100%" value="' + esc(c.username || '') + '">' +
+      '<label>' + AgI18n.t('anet.note') + '</label><input id="ax-note" style="width:100%" value="' + esc(c.label || '') + '">' +
       '<label class="chk" style="margin-top:10px"><input type="checkbox" id="ax-pin-on" ' + (cryptoOk ? 'checked' : 'disabled') + '> <span>' + AgI18n.t('anet.pinLabel') + '</span></label>' +
       '<div id="ax-pin-row"><input id="ax-pin" class="mono" style="width:140px" maxlength="4" inputmode="numeric" placeholder="' + AgI18n.t('anet.pinPh') + '">' +
       '<div class="hint">' + AgI18n.t('anet.pinHint') + '</div></div>' +
@@ -1260,7 +1480,7 @@ async function exportCredAnet(key) {
       if (pinOn && !/^\d{4}$/.test(pin)) { toast(AgI18n.t('anet.pinNeed4'), 'err'); return; }
       try {
         const text = await AgAnet.build({ role: 'connect', issuer, note }, { ...parsed, link: url }, pin);
-        const name = AgAnet.suggestName(issuer, note || c.username);
+        const name = AgAnet.suggestName(issuer, note || c.label);
         // Web remote panel (no Tauri IPC): blob download fallback; desktop: native save dialog
         const saved = HTTP_MODE
           ? anetSaveBlob(name, text)
@@ -1398,10 +1618,10 @@ function openUniversalImport() {
       };
     },
     applyConnect: async ({ link }) => {
-      // Same path as the connect-view import (shared parse gate + delegated/admin notes + connect)
+      // Same path as the connect-view import (shared parse gate + admin-capability note + connect)
       try {
         const input = await invoke('parse_connect_url', { url: link });
-        if (input.admin) toast(AgI18n.t('views.url-admin-note'), 'info');
+        if (input.eadmin) toast(AgI18n.t('views.url-admin-note'), 'info');
         return (await connectWith(input, null)) ? true : AgI18n.t('common.failed');
       } catch (e) { return friendlyError(e); }
     },
@@ -1431,6 +1651,6 @@ if (window.AgI18n) AgI18n.onChange(() => {
   refreshCreds();
   refreshCombos(true);
   refreshCustomRules(true);
-  if (!HTTP_MODE) refreshUpstreams();
+  if (!HTTP_MODE) { refreshUpstreams(); refreshDelegation(); }
   renderDashFanout();
 });

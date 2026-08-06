@@ -94,8 +94,7 @@ pub fn derive_key(token_plaintext: &str) -> [u8; 32] {
 }
 
 /// Key id carried in the E2E envelope: first 12 hex chars of the token SHA-256 hash
-/// (48-bit space; issuer-side lookups accept any unique prefix ≥ 8 chars, so envelopes
-/// sealed by pre-v4 clients with 8-char kids still resolve).
+/// (48-bit space; issuer-side lookups are exact matches on these 12 chars).
 pub fn kid_of(token_hash: &str) -> &str {
     token_hash.get(..12).unwrap_or(token_hash)
 }

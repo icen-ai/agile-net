@@ -796,7 +796,7 @@ mod tests {
     fn effective_sort_presets_after_users() {
         // Presets (sort 1) always sort behind user rules (sort 0) regardless of storage order,
         // so the engine first-match resolves the user's narrower rule before the wide preset.
-        let mut bypass = vec![
+        let mut bypass = [
             BypassRule {
                 id: "preset-lan10".into(),
                 pattern: "10.*".into(),
@@ -820,7 +820,7 @@ mod tests {
         assert_eq!(bypass[0].id, "bypass-user");
         assert_eq!(bypass[1].id, "preset-lan10");
         // Stable within a key: presets keep their predefined order
-        let mut p = vec![
+        let mut p = [
             BypassRule { id: "preset-lan10".into(), pattern: "10.*".into(), via_subscription: false, enabled: true, managed: false, sort: 1, created_at: 0 },
             BypassRule { id: "preset-lan172".into(), pattern: "172.*".into(), via_subscription: false, enabled: true, managed: false, sort: 1, created_at: 0 },
         ];

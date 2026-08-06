@@ -12,16 +12,13 @@ pub(crate) async fn connect_node(state: State<'_, AppState>, input: ConnectInput
     }
     let params = ConnectParams {
         addr: input.addr.clone(),
-        username: input.username.clone(),
-        password: input.password.clone(),
+        label: input.label.clone(),
+        token: input.token.clone(),
         insecure: input.insecure,
-        pinned_cert_path: input.pinned_cert_path.clone(),
         pinned_fingerprint: input.pinned_fingerprint.clone(),
         manage_hosts: input.manage_hosts,
-        delegated: input.delegated,
         entries: input.entries.clone(),
         entry_fps: input.entry_fps.clone(),
-        ehint: input.ehint.clone(),
         en: input.en.clone(),
         emode: input.emode.clone(),
         eadmin: input.eadmin,
@@ -35,15 +32,13 @@ pub(crate) async fn connect_node(state: State<'_, AppState>, input: ConnectInput
                     &node_state.node_id,
                     &Credential {
                         addr: input.addr,
-                        username: input.username,
-                        password: input.password,
+                        label: input.label,
+                        token: input.token,
                         name: None,
                         insecure: input.insecure,
                         pinned_fingerprint: input.pinned_fingerprint,
-                        delegated: input.delegated,
                         entries: input.entries,
                         entry_fps: input.entry_fps,
-                        ehint: input.ehint,
                         en: input.en,
                         emode: input.emode,
                         eadmin: input.eadmin,
@@ -75,7 +70,7 @@ pub(crate) async fn delete_credential(state: State<'_, AppState>, key: String) -
     Ok(())
 }
 
-/// Export a saved credential as an agilenet://connect URL (contains plaintext password; share with care)
+/// Export a saved credential as an anet://connect delegated URL (contains the token plaintext; share with care)
 #[tauri::command]
 pub(crate) async fn export_credential(state: State<'_, AppState>, key: String) -> Result<String, String> {
     let store = state.creds.as_ref().as_ref().ok_or("凭据存储不可用")?;
@@ -163,7 +158,7 @@ pub(crate) async fn rename_credential(
     Ok(())
 }
 
-/// Parse an agilenet://connect?... URL (implemented in agile-net-client, shared with Web REST)
+/// Parse an anet://connect?... delegated URL (implemented in agile-net-client, shared with Web REST)
 #[tauri::command]
 pub(crate) fn parse_connect_url(url: String) -> Result<ConnectInput, String> {
     agile_net_client::parse_connect_url(&url)

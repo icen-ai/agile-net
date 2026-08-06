@@ -13,7 +13,7 @@ git tag v0.2.0 && git push origin v0.2.0
 
 ## 产物矩阵
 
-### anet-svc（服务器二进制，serve/tui/client/cli 子命令）
+### anet-svc（服务器二进制，start/stop/init/client/tui/doctor 子命令）
 
 | 文件 | 平台 |
 | --- | --- |

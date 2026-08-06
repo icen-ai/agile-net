@@ -2,72 +2,68 @@
 
 ## 职责
 
-用户端引擎与守护进程。连接一个或多个 Node，拉取路由配置，建立数据面隧道，启动本地代理，按规则路由流量。
+用户端引擎（lib crate）。**委托-only**：无账号、无 API 往返——持签发端统一签发的委托
+链接（`anet://connect?...`）直连 relay 数据面，令牌即唯一身份（纯数据面密钥，兼作
+E2E 密钥材料）。建立数据面隧道，启动本地代理，按词表路由流量。
 
 ## 形态
 
 | 形态 | 说明 |
 |------|------|
-| `agile-net-client`（daemon） | 读取 `agile-net-client.toml`，无界面常驻运行 |
-| `apps/desktop`（Tauri 2） | Windows / Android GUI，IPC 复用同一引擎 |
+| `anet-svc client`（daemon） | 读取 `agile-net-client.toml`（`nodes = ["anet://..."]` 链接式），无界面常驻运行 |
+| `anet-svc` `[client]` 段 | 进程内嵌客户端角色，与节点角色共存 |
+| `apps/desktop`（Tauri 2） | Windows / macOS / Android GUI，IPC 复用同一引擎 |
 | `agile-net-client`（lib crate） | 供 GUI/测试嵌入的 Rust API |
 
 ## 引擎结构（crates/client）
 
+`lib.rs` 只做模块声明与再导出，实现按域拆分：`client` / `credential` / `config_cache` /
+`connect_url` / `custom_rules` / `hosts` / `api`（管理面 Web API）/ `daemon`。
+
 ```
 AgileNetClient (Arc<ClientInner>)
 ├── nodes: DashMap<node_id, NodeHandle>
-│   └── NodeHandle { state, tunnel: Arc<ClientTunnel>, tasks[3], manage_hosts }
-│       ├── task1: ClientTunnel::run()      — 数据面自动重连
-│       ├── task2: heartbeat 60s            — 真实流量增量 + force_disconnect
-│       └── task3: config watcher           — 长轮询热更新 + token 刷新
+│   └── NodeHandle { state, opener, tasks }
+│       ├── 主入口同步首连（fail fast）
+│       └── 监督循环：容灾切换（断开按 entry 序换入、逐入口指纹钉值、
+│           指数回退 full jitter、流量跨隧道累计）
 ├── shared_router: ArcSwap<ProxyRouter>     — 多节点合并路由（RCU）
-├── openers: DashMap<node_id, ChannelOpener>— 与 ProxyInbound 共用注册表
+├── openers: DashMap<node_id, ChannelOpener>— DelegatedOpener（E2E 包装对消费方透明）
 ├── ProxyInbound (127.0.0.1:port)           — SOCKS5/HTTP（可选认证）
 └── HostsManager                            — BEGIN/END AGILE-NET 标记块
 ```
 
-## 连接流程
+## 连接流程（`AgileNetClient::connect()` 唯一入口）
 
 ```
-connect(params)
-├── 1. POST /api/v1/auth/login → access + refresh + tunnel_token
-├── 2. GET /api/v1/client/config → version/node_name/rules/tunnel{server,port}
-├── 3. ClientTunnel::connect(tunnel.server:port, tunnel_token)
-│      TLS 信任策略：pinned_cert_path > insecure > 系统根
-├── 4. openers.insert(node_id, tunnel)；合并规则进 shared_router
-├── 5. 后台三任务（重连 / 心跳 / 长轮询）
+connect(ConnectParams)
+├── 1. 解析 anet://connect 链接 → Credential{addr,label,token,name?,insecure,
+│      pinned_fingerprint?,entries,entry_fps,en?,emode?,eadmin}
+├── 2. ClientTunnel 直连主入口（TLS 信任策略：pinned_fingerprint > insecure）
+│      AuthFrame { kind: "client", token: psk_... }（委托令牌，无登录/无配置拉取）
+├── 3. DelegatedOpener：en 存在时全 Open E2E 包装（entrust 路由词寻址）
+│      委托节点注册全量路由 0.0.0.0/0 + 通配域名（dedicated 专线默认）
+├── 4. emode=split：经 E2E 配置通道（__anet_delegation_config__）拉取词表
+│      改选择性路由，失败回退专线行为
+├── 5. eadmin=1：经同一配置通道取管理引导票据
+│      （delegated_console_ticket / delegated_upstream_ticket）
 └── 6. resolve 规则 → HostsManager.apply（manage_hosts=true 时）
 ```
 
-## Tauri Commands（apps/desktop/src/lib.rs）
-
-| Command | 说明 |
-|---------|------|
-| `connect_node(input)` | 连接节点（可选保存凭据） |
-| `disconnect_node(node_id)` | 断开并清除凭据 |
-| `list_nodes()` | 节点列表（实时状态） |
-| `list_credentials()` | 已保存凭据 |
-| `start_proxy(port)` / `stop_proxy()` / `proxy_status()` | 本地代理控制 |
-| `parse_connect_url(url)` | 解析 `anet://connect?...` 接入链接（兼容旧 `agilenet://`） |
-
 ## 凭据存储
 
-`~/.anet/credentials.json`（Unix 0600）。内容为 addr/username/password/insecure，
-由管理员下发的 sk- 强密码——本机文件权限是防线，与系统 keychain 同级风险的简化方案。
+`~/.anet/credentials.json`（Unix 0600）。`Credential` 字段：`addr / label / token /
+name? / insecure / pinned_fingerprint? / entries / entry_fps / en? / emode? / eadmin`。
+桌面平台令牌优先存 OS keyring（Windows 凭据管理器 / macOS 钥匙串），文件只留元数据；
+keyring 不可用回退 0600 文件。
 
-## 心跳与流量统计
-
-- 间隔 60s；`bytes_tx/rx` 为**自上次上报以来的增量**（来源：ProxyInbound 全局计数）
-- 服务端按小时聚合到 `traffic_log`（stats API / 控制台图表数据源）
-- 响应 `force_disconnect: true`（账号被禁用/删除）时客户端主动断开该节点
+`NodeState.label` 为节点显示名（用户自命名优先，缺省取链接 `d:` 标签）。
 
 ## 离线缓存与断网降级
 
-- 每次成功拉取配置后写入 `~/.anet/cache/<节点>.json`（0600）：规则、版本、隧道端点、tunnel_token、refresh_token
-- 节点网络不可达时自动降级：**沿用缓存规则组网**（状态 Reconnecting），隧道自动重连，
-  后台每 30s(+抖动) 重试登录；恢复后无缝升级为完整连接并刷新缓存
-- token 刷新时同步轮换缓存与隧道的 tunnel_token（修复刷新后重连失同步）
+- 分流词表离线缓存：节点不可达时沿用缓存词表组网（状态 Reconnecting），监督循环按
+  容灾集合换入口重连；恢复后重拉词表刷新
+- 专线档无词表依赖，断线即按容灾集合故障切换
 
 ## hosts 管理
 

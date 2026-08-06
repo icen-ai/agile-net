@@ -1,13 +1,16 @@
 # 数据库设计
 
-SQLite 嵌入式数据库，单文件 `agile-net.db`，随 Node 进程启动时自动建表和迁移。
+SQLite 嵌入式数据库，单文件 `agile-net.db`，随 Node 进程启动时自动建表。
+**基线 v1**：预发布迁移链（v1~v15）已塌缩为单一基线，直接建最终形态（无 account /
+traffic_log 表）；版本表机制保留供正式发布后升级（只在 MIGRATIONS 末尾追加，严禁改基线）。
 
 ## 设计原则
 
 1. **简洁** — 只存必要数据，运行时状态（在线/连接数）全在内存
 2. **外键约束** — SQLite 外键默认关闭，启动时执行 `PRAGMA foreign_keys = ON`
 3. **迁移** — 版本号递增，`_migration` 表记录已执行的迁移
-4. **时间** — 全部存 UTC ISO 8601 文本，SQLite 原生 `datetime()` 函数可直接操作
+4. **时间** — 全部存 UTC ISO 8601 文本，SQLite 原生 `datetime()` 函数可直接操作；
+   令牌生命周期时间一律 `db::normalize_expiry` 规范化 UTC Z 秒级
 5. **ID** — UUIDv4 文本格式，应用层生成
 
 ## 表关系
@@ -16,22 +19,20 @@ SQLite 嵌入式数据库，单文件 `agile-net.db`，随 Node 进程启动时�
 ┌─────────┐     ┌─────────┐     ┌──────────────┐     ┌─────────┐
 │  admin  │     │  rule   │────<│ group_rule   │>────│  group  │
 └─────────┘     └─────────┘     └──────────────┘     └────┬────┘
-                                                          │
-                                                     ┌────┴────┐
-                                                     │ account │
-                                                     └────┬────┘
-                                                          │
-                                                     ┌────┴────────┐
-                                                     │ audit_log   │
-                                                     └─────────────┘
+                                                          │（组集 CSV 引用，无 FK）
+              ┌───────────────────┬──────────────────────┼──────────────┐
+              ▼                   ▼                      ▼              ▼
+       ┌─────────────┐     ┌────────────┐      ┌─────────────────┐
+       │ relay_token │     │ connector  │      │ delegated_token │────┐
+       └─────────────┘     └─────┬──────┘      └─────────────────┘    │
+                                 ▲                                    ▼
+                                 └──────────────┌─────────────────────┐
+                                                │ delegated_token_reg │
+                                                └─────────────────────┘
 
-┌──────────────┐     ┌─────────────┐     ┌────────────────┐
-│ relay_token  │     │ node_config │     │ _migration     │
-└──────────────┘     └─────────────┘     └────────────────┘
-
-                     ┌──────────────┐
-                     │ traffic_log  │
-                     └──────────────┘
+┌─────────────┐  ┌──────────────┐  ┌───────────────┐  ┌────────────┐  ┌──────────────┐
+│ node_config │  │  audit_log   │  │ refresh_token │  │ admin_ticket│  │node_traffic_log│
+└─────────────┘  └──────────────┘  └───────────────┘  └────────────┘  └──────────────┘
 ```
 
 ## DDL
@@ -56,8 +57,6 @@ CREATE TABLE admin (
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
-
-CREATE UNIQUE INDEX idx_admin_username ON admin(username);
 ```
 
 ### rule — 路由规则
@@ -67,7 +66,7 @@ CREATE TABLE rule (
     id         TEXT    PRIMARY KEY,          -- UUIDv4
     type       TEXT    NOT NULL CHECK(type IN ('ip-cidr', 'host')),
     value      TEXT    NOT NULL,             -- CIDR 或域名
-    resolve    INTEGER NOT NULL DEFAULT 0,   -- 0=false, 1=true
+    resolve    INTEGER NOT NULL DEFAULT 0,
     remark     TEXT    NOT NULL DEFAULT '',
     created_at TEXT    NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT    NOT NULL DEFAULT (datetime('now')),
@@ -82,15 +81,19 @@ CREATE INDEX idx_rule_type ON rule(type);
 
 ```sql
 CREATE TABLE "group" (
-    id         TEXT PRIMARY KEY,            -- UUIDv4
-    name       TEXT NOT NULL UNIQUE,
-    remark     TEXT NOT NULL DEFAULT '',
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    id           TEXT PRIMARY KEY,            -- UUIDv4
+    name         TEXT NOT NULL UNIQUE,
+    remark       TEXT NOT NULL DEFAULT '',
+    e2e_required INTEGER NOT NULL DEFAULT 0,  -- E2E 强制组（仅可挂委托令牌）
+    adopted_node TEXT NOT NULL DEFAULT '',    -- 采纳血缘：来源端点 node_id（空 = 本地手工组）
+    adopted_name TEXT NOT NULL DEFAULT '',    -- 采纳血缘：源组名
+    created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
-
-CREATE UNIQUE INDEX idx_group_name ON "group"(name);
 ```
+
+`e2e_required` 组仅可挂委托令牌（扇入令牌/扇出连接写入口统一拦截，fail-closed）；
+采纳组（adopted_node 非空）为只读活镜像，漂移写跟随源规则/E2E 标记。
 
 ### group_rule — 权限组与规则多对多关联
 
@@ -104,38 +107,105 @@ CREATE TABLE group_rule (
 CREATE INDEX idx_group_rule_rule ON group_rule(rule_id);
 ```
 
-### account — 客户端账号
-
-```sql
-CREATE TABLE account (
-    id                TEXT PRIMARY KEY,          -- UUIDv4
-    username          TEXT NOT NULL UNIQUE,
-    password          TEXT NOT NULL,             -- argon2id hash
-    group_id          TEXT NOT NULL REFERENCES "group"(id),
-    enabled           INTEGER NOT NULL DEFAULT 1,   -- 0=disabled, 1=enabled
-    remark            TEXT NOT NULL DEFAULT '',
-    tunnel_token_hash TEXT,                      -- sha256(tunnel_token)，数据面认证，登录/刷新时轮换
-    last_seen_at      TEXT,                      -- 最近认证/心跳时间
-    created_at        TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
-CREATE UNIQUE INDEX idx_account_username ON account(username);
-CREATE INDEX idx_account_group ON account(group_id);
-CREATE INDEX idx_account_enabled ON account(enabled);
-```
-
-### relay_token — 节点间认证 Token
+### relay_token — 扇入令牌
 
 ```sql
 CREATE TABLE relay_token (
+    id              TEXT PRIMARY KEY,            -- UUIDv4
+    token_hash      TEXT NOT NULL UNIQUE,        -- sha256(token)，不存明文
+    token_prefix    TEXT NOT NULL,               -- 展示用前缀 "psk_xxxx****"
+    remark          TEXT NOT NULL DEFAULT '',
+    last_used_at    TEXT,
+    expose_control  INTEGER NOT NULL DEFAULT 0,  -- 允许持令牌对端中继管理本节点
+    control_scope   TEXT NOT NULL DEFAULT 'full',-- 管理授权档位 ro / rules / full
+    group_id        TEXT,                        -- 逗号分隔组集（多组 ACL 并集；无 FK）
+    rate_limit_kbps INTEGER,                     -- 会话带宽配额（读写合并令牌桶）
+    expires_at      TEXT,                        -- 生命周期：NULL = 永不过期
+    max_uses        INTEGER,                     -- 生命周期：NULL = 不限用量
+    used_count      INTEGER NOT NULL DEFAULT 0,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+```
+
+过期/用尽按未知令牌拒（fail-closed），命中即累 used_count。
+
+### delegated_token — 委托令牌（统一签发）
+
+```sql
+CREATE TABLE delegated_token (
     id           TEXT PRIMARY KEY,            -- UUIDv4
     token_hash   TEXT NOT NULL UNIQUE,        -- sha256(token)，不存明文
-    token_prefix TEXT NOT NULL,               -- 展示用前缀 "psk_xxxx****"
-    remark       TEXT NOT NULL DEFAULT '',
-    last_used_at TEXT,
+    token_prefix TEXT NOT NULL,
+    label        TEXT NOT NULL DEFAULT '',    -- 备注（导入方可见，链接 account=d:<label>）
+    groups       TEXT NOT NULL DEFAULT '[]',  -- JSON 组 ID 数组
+    hint_map     TEXT NOT NULL DEFAULT '[]',  -- JSON [{hint, groups}]（entrust 词；透明档为空）
+    e2e_key_enc  TEXT NOT NULL DEFAULT '',    -- E2E 主密钥 AES-256-GCM（可逆例外②）
+    mode         TEXT NOT NULL DEFAULT 'dedicated',  -- dedicated 专线 / split 分流
+    admin_scope  TEXT NOT NULL DEFAULT '',    -- '' / ro / rules / full（管理档）
+    entry_mode   TEXT NOT NULL DEFAULT 'relay' CHECK(entry_mode IN ('direct','relay')),
+    concurrency  TEXT NOT NULL DEFAULT 'single' CHECK(concurrency IN ('single','multi')),
+    max_sessions INTEGER NOT NULL DEFAULT 8,  -- 签发时 node_config.delegation_max_sessions 快照
+    expires_at   TEXT,
+    max_uses     INTEGER,
+    used_count   INTEGER NOT NULL DEFAULT 0,
     created_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- relay 入口的容灾集合注册：逐上游 connector 一行（is_primary=1 恰一行）；
+-- 每次扇出（重）连自动重注册，随会话清空/吊销即断。direct 入口无 reg 行。
+CREATE TABLE delegated_token_reg (
+    token_id     TEXT NOT NULL REFERENCES delegated_token(id) ON DELETE CASCADE,
+    connector_id TEXT NOT NULL REFERENCES connector(id) ON DELETE CASCADE,
+    is_primary   INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (token_id, connector_id)
+);
+```
+
+四维度：入口 `entry_mode`（direct 直连签发者本机 listener 自注册 / relay 经容灾集合
+会合点）× 信任档（明文 / E2E / E2E+管理档）× 路由 `mode` × 并发 `concurrency`
+（single 踢旧 / multi 并存 ≤ max_sessions）。
+
+### connector — 扇出连接（一等资源）
+
+```sql
+CREATE TABLE connector (
+    id                 TEXT PRIMARY KEY,
+    name               TEXT NOT NULL UNIQUE,
+    upstream_addr      TEXT NOT NULL,
+    token_enc          TEXT NOT NULL,          -- AES-256-GCM（可逆例外①）
+    sni_hostname       TEXT NOT NULL DEFAULT '',
+    insecure           INTEGER NOT NULL DEFAULT 0,
+    advertise          TEXT NOT NULL DEFAULT '',
+    group_id           TEXT,                   -- 逗号分隔组集（同 relay_token 语义；无 FK）
+    enabled            INTEGER NOT NULL DEFAULT 1,
+    remark             TEXT NOT NULL DEFAULT '',
+    ca_cert_path       TEXT NOT NULL DEFAULT '',
+    pinned_cert_path   TEXT NOT NULL DEFAULT '',
+    pinned_fingerprint TEXT NOT NULL DEFAULT '',
+    push_groups        TEXT NOT NULL DEFAULT '',-- 策略上送组（逗号分隔组名）
+    created_at         TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at         TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX idx_connector_group ON connector(group_id);
+```
+
+### node_config — 节点配置（KV 存储）
+
+```sql
+CREATE TABLE node_config (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL DEFAULT ''
+);
+
+-- 预设记录
+-- key: 'node_name',               value: '办公网跳板'
+-- key: 'jwt_secret',              value: 'random_generated'
+-- key: 'config_version',          value: '1'
+-- key: 'delegation_max_sessions', value: '8'          -- 统一签发并发上限快照源
+-- key: 'connector_token_key',     value: 'random_generated'  -- 可逆存储机器密钥
+-- key: 'public_host' / 'public_api_url',             -- 公网身份与反代端点
+-- ...
 ```
 
 ### refresh_token — 刷新令牌吊销表
@@ -143,7 +213,7 @@ CREATE TABLE relay_token (
 ```sql
 CREATE TABLE refresh_token (
     jti_hash   TEXT PRIMARY KEY,            -- sha256(jti)
-    subject    TEXT NOT NULL,               -- admin/account id
+    subject    TEXT NOT NULL,               -- admin id
     role       TEXT NOT NULL,
     expires_at TEXT NOT NULL,
     revoked    INTEGER NOT NULL DEFAULT 0,
@@ -151,25 +221,28 @@ CREATE TABLE refresh_token (
 );
 ```
 
-refresh 时轮换（旧 jti 立即吊销）；禁用账号/重置密码/登出时批量吊销。
+refresh 时轮换（旧 jti 立即吊销）；改密/删管理员/登出时批量吊销。
 
-### node_config — 节点配置（KV 存储）
+### admin_ticket — 管理引导票据
 
 ```sql
-CREATE TABLE node_config (
-    key   TEXT PRIMARY KEY,
-    value TEXT NOT NULL
+CREATE TABLE admin_ticket (
+    id          TEXT PRIMARY KEY,
+    ticket_hash TEXT NOT NULL UNIQUE,       -- sha256(ticket)，明文仅签发时返回一次
+    kind        TEXT NOT NULL CHECK(kind IN ('relay')),
+    subject     TEXT NOT NULL,
+    scope       TEXT NOT NULL DEFAULT 'full' CHECK(scope IN ('ro','rules','full')),
+    uses        INTEGER NOT NULL DEFAULT 0,
+    max_uses    INTEGER NOT NULL DEFAULT 1,
+    expires_at  TEXT NOT NULL,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
--- 预设记录
--- key: 'node_name',        value: '办公网跳板'
--- key: 'jwt_secret',       value: 'random_generated'
--- key: 'config_version',   value: '1'
--- key: 'listener.enabled', value: 'true'
--- key: 'listener.port',    value: '443'
--- key: 'connector.enabled',value: 'false'
--- ...
+CREATE INDEX idx_admin_ticket_exp ON admin_ticket(expires_at);
 ```
+
+一次性/限时凭据，经 relay 暴露控制面或委托管理通道换取 scoped admin 会话
+（TTL 1 小时、max_uses 100，按握手/配置拉取即铸即用）。
 
 ### audit_log — 审计日志
 
@@ -177,9 +250,10 @@ CREATE TABLE node_config (
 CREATE TABLE audit_log (
     id         TEXT PRIMARY KEY,            -- UUIDv4
     admin_id   TEXT,                         -- 可为 NULL（系统操作）
-    action     TEXT NOT NULL,               -- 操作类型
-    target     TEXT,                         -- 操作对象 ID
-    detail     TEXT,                         -- JSON 详情
+    operator   TEXT NOT NULL DEFAULT '',
+    action     TEXT NOT NULL,
+    target     TEXT,
+    detail     TEXT,
     ip         TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -194,77 +268,21 @@ CREATE INDEX idx_audit_time ON audit_log(created_at);
 |--------|------|
 | `admin.login` | 管理员登录 |
 | `admin.logout` | 管理员登出 |
-| `account.create` | 创建账号 |
-| `account.update` | 更新账号 |
-| `account.delete` | 删除账号 |
-| `account.reset_password` | 重置密码 |
-| `account.disable` | 禁用账号 |
-| `account.enable` | 启用账号 |
-| `group.create` | 创建权限组 |
-| `group.update` | 更新权限组 |
-| `group.delete` | 删除权限组 |
+| `group.create` / `group.update` / `group.delete` | 权限组管理 |
+| `group.e2e_required` | E2E 强制组标记变更 |
 | `group.update_rules` | 更新权限组规则 |
-| `rule.create` | 创建规则 |
-| `rule.update` | 更新规则 |
-| `rule.delete` | 删除规则 |
-| `rule.batch_import` | 批量导入规则 |
-| `relay_token.create` | 创建 relay token |
-| `relay_token.delete` | 删除 relay token |
+| `rule.create` / `rule.update` / `rule.delete` / `rule.batch_import` | 规则管理 |
+| `relay_token.create` / `relay_token.delete` / `relay_token.set_group` | 扇入令牌管理 |
+| `connector.*` | 扇出连接管理 |
 | `node.update_settings` | 更新节点设置 |
-| `federation.adopt` | 一键采纳上送组（federation P1） |
-| `delegation.issue` | 签发委托令牌（federation P2，不记明文） |
+| `federation.adopt` | 一键采纳上送组 |
+| `delegation.issue` | 签发委托令牌（不记明文） |
 | `delegation.revoke` | 吊销委托令牌（签发端/中继端均落） |
 | `delegation.register` | 扇出会话注册委托令牌（中继端，issuer + label） |
 
-### delegated_token — 委托令牌（v10，federation P2/P3）
+严禁记录任何密码/Token 明文与密文。
 
-```sql
-CREATE TABLE delegated_token (
-    id           TEXT PRIMARY KEY,            -- UUIDv4
-    token_hash   TEXT NOT NULL UNIQUE,        -- sha256(token)，不存明文
-    token_prefix TEXT NOT NULL,               -- 展示用前缀 "psk_xxxx"
-    label        TEXT NOT NULL DEFAULT '',    -- 备注（导入方可见，链接 account=d:<label>）
-    groups       TEXT NOT NULL DEFAULT '[]',  -- JSON 组 ID 数组（注册时 resolve 为组名）
-    hint_map     TEXT NOT NULL DEFAULT '[]',  -- JSON [{hint, groups}]（E2E 粗路由词表）
-    e2e_key_enc  TEXT NOT NULL DEFAULT '',    -- E2E 主密钥 AES-256-GCM（可逆例外②）
-    created_at   TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
-CREATE TABLE delegated_token_reg (
-    token_id     TEXT NOT NULL REFERENCES delegated_token(id) ON DELETE CASCADE,
-    connector_id TEXT NOT NULL REFERENCES connector(id) ON DELETE CASCADE,
-    is_primary   INTEGER NOT NULL DEFAULT 0,  -- 主入口标记（每令牌恰一行 = 1）
-    PRIMARY KEY (token_id, connector_id)
-);
-
--- v10 同时：ALTER TABLE "group" ADD COLUMN e2e_required INTEGER NOT NULL DEFAULT 0;
--- e2e_required 组仅可挂委托令牌（账号/扇入令牌/扇出连接四写入口统一拦截）
-```
-
-注册走扇出会话控制帧（协议 v3 Ctrl）：生命周期随会话（吊销即断），中继侧零落库；
-容灾集合逐上游一行，connector 重连自动重注册。
-
-### traffic_log — 流量统计（按小时聚合）
-
-```sql
-CREATE TABLE traffic_log (
-    id         TEXT PRIMARY KEY,
-    account_id TEXT REFERENCES account(id) ON DELETE SET NULL,
-    hour       TEXT NOT NULL,               -- '2025-07-30T14:00:00Z' 按小时对齐
-    bytes_tx   INTEGER NOT NULL DEFAULT 0,
-    bytes_rx   INTEGER NOT NULL DEFAULT 0,
-    connections INTEGER NOT NULL DEFAULT 0,
-
-    UNIQUE(account_id, hour)
-);
-
-CREATE INDEX idx_traffic_hour ON traffic_log(hour);
-CREATE INDEX idx_traffic_account ON traffic_log(account_id);
-```
-
-流量在内存中实时累加，每分钟 flush 到此表（按小时聚合 upsert）。
-
-### node_traffic_log — 节点级三维流量序列（v6）
+### node_traffic_log — 节点级三维流量序列
 
 ```sql
 CREATE TABLE node_traffic_log (
@@ -282,60 +300,17 @@ CREATE TABLE node_traffic_log (
 CREATE INDEX idx_node_traffic_hour ON node_traffic_log(hour);
 ```
 
-按账号流量仍在 `traffic_log`（客户端心跳上报），本表为节点数据面视角：
-后台采样任务每分钟把实时计数（扇入对端会话 / 扇出 connector 会话 / 中继途径对 TransitMeter）
-差分入库，status API 的 `traffic_24h` 按 dim 跨标识汇总输出；留存 30 天（日级清理任务）。
-
-## 迁移策略
-
-```rust
-const MIGRATIONS: &[(u32, &str, &str)] = &[
-    (1, "initial_schema", include_str!("../migrations/001_initial.sql")),
-    (2, "add_traffic_log", include_str!("../migrations/002_traffic.sql")),
-    // ...
-];
-
-pub fn run_migrations(conn: &Connection) -> Result<()> {
-    conn.execute_batch("PRAGMA foreign_keys = ON;")?;
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS _migration (
-            version INTEGER PRIMARY KEY,
-            name TEXT NOT NULL,
-            applied_at TEXT NOT NULL DEFAULT (datetime('now'))
-        );"
-    )?;
-
-    let applied: HashSet<u32> = conn
-        .prepare("SELECT version FROM _migration")?
-        .query_map([], |row| row.get(0))?
-        .collect::<Result<_, _>>()?;
-
-    for (version, name, sql) in MIGRATIONS {
-        if !applied.contains(version) {
-            conn.execute_batch(sql)?;
-            conn.execute(
-                "INSERT INTO _migration (version, name) VALUES (?, ?)",
-                params![version, name],
-            )?;
-        }
-    }
-    Ok(())
-}
-```
+节点数据面视角：后台采样任务每分钟把实时计数（扇入对端会话 / 扇出 connector 会话 /
+中继途径对 TransitMeter）差分入库，status API 的 `traffic_24h` 按 dim 跨标识汇总输出；
+留存 30 天（日级清理任务）。
 
 ## 数据库连接管理
 
 ```rust
-// Node 启动时
-let conn = Connection::open("agile-net.db")?;
+// r2d2_sqlite 连接池（file 池 8 / memory 池 1，WAL）
 conn.execute_batch("PRAGMA journal_mode = WAL;")?;      // 读写并发
 conn.execute_batch("PRAGMA foreign_keys = ON;")?;
-conn.execute_batch("PRAGMA busy_timeout = 5000;")?;      // 等锁 5s
-run_migrations(&conn)?;
-
-// 使用 r2d2-sqlite 连接池（多线程读，单写）
-let manager = SqliteConnectionManager::file("agile-net.db");
-let pool = Pool::builder().max_size(8).build(manager)?;
+conn.execute_batch("PRAGMA busy_timeout = 5000;")?;     // 等锁 5s
 ```
 
 ## 数据量预估
@@ -345,11 +320,11 @@ let pool = Pool::builder().max_size(8).build(manager)?;
 | admin | 1-3 | 极少 |
 | rule | 10-100 | 手动管理 |
 | group | 3-20 | 按团队/角色 |
-| account | 10-200 | 按人 |
 | group_rule | 30-500 | 多对多 |
-| relay_token | 1-10 | 下游节点数 |
+| relay_token | 1-10 | 扇入对端数 |
+| delegated_token | 1-50 | 消费者签发数 |
+| connector | 1-10 | 扇出对端数 |
 | audit_log | 持续增长 | 90 天清理 |
-| traffic_log | 持续增长 | 24h * account_count / 小时 |
 | node_traffic_log | 持续增长 | 24h * (对端+connector+途径对) / 小时，30 天清理 |
 | node_config | 10-30 | KV |
 

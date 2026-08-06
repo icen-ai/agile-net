@@ -11,7 +11,7 @@ use crate::service::acl::PeerAclRegistry;
 use crate::service::delegation::{DelegationEngine, build_register_msg};
 use crate::service::{ClientRoutes, load_pem_certs, resolve_upstream};
 use agile_net_core::proto::frame::{Frame, FrameType};
-use agile_net_core::proto::message::{CtrlMessage, PROTOCOL_VERSION_DELEGATION, PushedGroupMsg};
+use agile_net_core::proto::message::{CtrlMessage, PushedGroupMsg};
 use agile_net_core::relay::transit::TransitMeter;
 use agile_net_core::relay::{ConnectionState, MuxSession, PeerEvent, RelayConnector, RelayListener};
 use agile_net_core::tunnel::tls::TlsConfigBuilder;
@@ -46,7 +46,7 @@ pub struct ConnectorManager {
     /// Transit metering (None = assembled connectors are not metered)
     transit: Option<Arc<TransitMeter>>,
     /// Federation P2: delegated-token registration state, (token_id, connector_id) ->
-    /// "pending" / "registered" / "failed: <reason>" / "offline" / "unsupported" (upstream < v3)
+    /// "pending" / "registered" / "failed: <reason>" / "offline"
     delegation_states: Arc<DashMap<(String, String), String>>,
     /// Federation P2/P3: data-plane enforcement engine (group ACL / E2E unwrap / fail-close),
     /// shared by every connector this node runs
@@ -107,6 +107,8 @@ impl ConnectorManager {
         // federation P2/P3: warm the delegation caches before any Open can arrive
         self.delegation.refresh_keys(&self.db);
         self.delegation.refresh_groups(&self.db);
+        // unified issuance: direct-entry tokens self-register into the listener's registry
+        self.reconcile_local_direct();
         let views = match self.db.list_connectors() {
             Ok(v) => v,
             Err(e) => {
@@ -412,12 +414,9 @@ impl ConnectorManager {
                         .unwrap_or_default();
 
                     let connected = c.is_connected();
-                    let supported =
-                        connected && c.upstream_version() >= PROTOCOL_VERSION_DELEGATION;
-                    if !supported {
-                        let label = if connected { "unsupported" } else { "offline" };
+                    if !connected {
                         for rec in &tokens {
-                            states.insert((rec.id.clone(), connector_id.clone()), label.into());
+                            states.insert((rec.id.clone(), connector_id.clone()), "offline".into());
                         }
                         last_mux = None;
                         live.clear();
@@ -450,8 +449,6 @@ impl ConnectorManager {
                     }
 
                     // register tokens not yet sent on this session
-                    let entrust_capable =
-                        c.upstream_version() >= agile_net_core::proto::message::PROTOCOL_VERSION_ENTRUST;
                     for rec in tokens {
                         if live.contains_key(&rec.id) {
                             continue;
@@ -468,15 +465,6 @@ impl ConnectorManager {
                             continue;
                         }
                         let msg = build_register_msg(&db, &rec);
-                        // an older relay keeps no entrust registry — strip the opaque en_ words
-                        // so the rest of the hint map still registers (legacy advertise-derived
-                        // hints); an entrust-only map degrades to a relay-side rejection with a
-                        // clear reason instead of poisoning the whole frame
-                        let msg = if entrust_capable {
-                            msg
-                        } else {
-                            strip_entrust_hints(msg)
-                        };
                         let hash = rec.token_hash.clone();
                         let Ok(payload) = serde_json::to_vec(&msg) else {
                             continue;
@@ -510,6 +498,8 @@ impl ConnectorManager {
     pub fn refresh_push_groups(&self) {
         // federation P2/P3: group/rule edits also invalidate the delegation enforcement cache
         self.delegation.refresh_groups(&self.db);
+        // ... and the transparent-tier ACL snapshots of locally registered direct tokens
+        self.reconcile_local_direct();
         for h in self.handles.iter() {
             if let Ok(Some(rec)) = self.db.get_connector(h.key()) {
                 let groups = self.pushed_groups_of(&rec);
@@ -523,6 +513,20 @@ impl ConnectorManager {
     /// Federation P2/P3: rebuild the delegation E2E key cache (call after issue/revoke).
     pub fn refresh_delegation_keys(&self) {
         self.delegation.refresh_keys(&self.db);
+        // unified issuance: issue/revoke lands here — reconcile the local direct registrations
+        self.reconcile_local_direct();
+    }
+
+    /// Reconcile the listener's persistent local direct-entry registrations (startup +
+    /// issue/revoke path; no-op without a listener).
+    fn reconcile_local_direct(&self) {
+        if let Some(l) = &self.listener {
+            crate::service::delegation::sync_local_direct(
+                &l.local_delegated_registry(),
+                &self.node_id,
+                &self.db,
+            );
+        }
     }
 
     /// The shared delegation engine (admin runtime wiring lives on it).
@@ -550,20 +554,27 @@ impl ConnectorManager {
         None
     }
 
-    /// Federation P2: revoke a delegated token — delete locally and send the revocation frame to
-    /// every online upstream of its disaster set (offline upstreams invalidate by disconnect).
+    /// Federation P2: revoke a delegated token — delete locally, then by entry mode: relay
+    /// tokens send the revocation frame to every online upstream of the disaster set (offline
+    /// upstreams invalidate by disconnect); direct tokens drop out of the listener's persistent
+    /// local registry.
     pub async fn revoke_delegated(&self, token_id: &str) -> Result<bool> {
         let Some(rec) = crate::service::delegation::revoke_token(&self.db, token_id)? else {
             return Ok(false);
         };
+        if rec.entry_mode == "direct" {
+            self.reconcile_local_direct();
+            return Ok(true);
+        }
         for reg in &rec.regs {
             if let Some(h) = self.handles.get(&reg.connector_id)
                 && h.connector.is_connected()
-                && h.connector.upstream_version() >= PROTOCOL_VERSION_DELEGATION
                 && let Some(mux) = h.connector.current_mux()
             {
                 let msg = CtrlMessage::TokenRevoke {
                     token_hash: rec.token_hash.clone(),
+                    concurrency: crate::service::delegation::concurrency_of(&rec.concurrency),
+                    max_sessions: rec.max_sessions.clamp(1, u32::MAX as i64) as u32,
                 };
                 if let Ok(payload) = serde_json::to_vec(&msg) {
                     let _ = mux
@@ -699,31 +710,6 @@ fn pushed_group_msgs(db: &Database, rec: &ConnectorRecord) -> Vec<PushedGroupMsg
             })
         })
         .collect()
-}
-
-/// Drop entrust hints (en_xxx opaque words) from a registration frame — older relays
-/// (< PROTOCOL_VERSION_ENTRUST) keep no entrust registry and would reject the whole frame
-/// on the unvalidatable word.
-fn strip_entrust_hints(msg: CtrlMessage) -> CtrlMessage {
-    let CtrlMessage::TokenRegister {
-        token_hash,
-        label,
-        groups,
-        hint_map,
-    } = msg
-    else {
-        return msg;
-    };
-    let hint_map = hint_map
-        .into_iter()
-        .filter(|h| !h.hint.starts_with(agile_net_core::relay::e2e::ENTRUST_PREFIX))
-        .collect();
-    CtrlMessage::TokenRegister {
-        token_hash,
-        label,
-        groups,
-        hint_map,
-    }
 }
 
 /// Effective advertise set of a connector record, mirroring `RelayConnector::effective_advertise`

@@ -6,6 +6,7 @@
 
 mod client;
 mod conlog;
+mod delegation;
 mod doctor;
 mod misc;
 mod net;
@@ -18,6 +19,7 @@ mod windows;
 
 pub(crate) use client::*;
 pub(crate) use conlog::*;
+pub(crate) use delegation::*;
 pub(crate) use doctor::*;
 pub(crate) use misc::*;
 pub(crate) use net::*;

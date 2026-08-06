@@ -22,7 +22,7 @@ pub enum GroupSub {
     Add(GroupAddArgs),
     /// 更新权限组名称/备注
     Update(GroupUpdateArgs),
-    /// 删除权限组（--force 解除账号引用）
+    /// 删除权限组（--force 解除引用）
     Delete(IdArgs),
     /// 全量设置绑定规则（传规则 ID 列表）
     SetRules(SetRulesArgs),
@@ -76,12 +76,11 @@ pub(super) async fn cmd_group(api: Option<String>, args: GroupArgs, json_out: bo
                             g["id"].as_str().unwrap_or("")[..8].to_string(),
                             g["name"].as_str().unwrap_or("-").to_string(),
                             g["rule_count"].as_i64().unwrap_or(0).to_string(),
-                            g["account_count"].as_i64().unwrap_or(0).to_string(),
                             g["remark"].as_str().unwrap_or("-").to_string(),
                         ]
                     })
                     .collect();
-                print_table(&["ID", "名称", "规则数", "账号数", "备注"], rows);
+                print_table(&["ID", "名称", "规则数", "备注"], rows);
                 println!("共 {} 条", d["total"].as_i64().unwrap_or(0));
             }
         }

@@ -5,7 +5,7 @@
 //! to the blocking thread pool; never run them synchronously inside an async handler.
 
 use crate::api::extractors::{AnyAuth, ClientIp};
-use crate::api::{ApiState, LoginBlockReason, codes, err, ok, offload};
+use crate::api::{ApiState, LoginBlockReason, codes, err, offload, ok};
 use crate::db::{hash_password, verify_password};
 use axum::{
     Json,
@@ -47,7 +47,7 @@ pub async fn login(
         );
     }
 
-    // 1. Try admin login
+    // Admin login (the only remaining credential kind)
     let username = req.username.clone();
     let admin = state
         .db_call(move |db| db.get_admin_by_username(&username))
@@ -95,64 +95,13 @@ pub async fn login(
         );
     }
 
-    // 2. Try client account login
-    let username = req.username.clone();
-    match state
-        .db_call(move |db| db.get_account_by_username(&username))
-        .await
-    {
-        Ok(Some((account, password_hash))) => {
-            if !account.enabled {
-                state.login_limiter.record_failure(ip);
-                return err(StatusCode::FORBIDDEN, codes::FORBIDDEN, "account disabled");
-            }
-            let password = req.password.clone();
-            let verified = offload(move || verify_password(&password, &password_hash))
-                .await
-                .unwrap_or(false);
-            if verified {
-                state.login_limiter.record_success(ip);
-                let jwt = state.jwt.clone();
-                let (sub, uname) = (account.id.clone(), account.username.clone());
-                let tokens = match offload(move || jwt.issue(&sub, &uname, "client")).await {
-                    Ok(t) => t,
-                    Err(e) => {
-                        return err(
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            codes::INTERNAL,
-                            e.to_string(),
-                        );
-                    }
-                };
-                let aid = account.id.clone();
-                let _ = state
-                    .db_call(move |db| db.touch_account_seen(&aid))
-                    .await;
-                return ok(json!({
-                    "access_token": tokens.access_token,
-                    "refresh_token": tokens.refresh_token,
-                    "tunnel_token": tokens.tunnel_token,
-                    "role": "client",
-                    "expires_in": tokens.expires_in,
-                }))
-                .into_response();
-            }
-            state.login_limiter.record_failure(ip);
-            err(
-                StatusCode::UNAUTHORIZED,
-                codes::INVALID_CREDENTIALS,
-                "invalid username or password",
-            )
-        }
-        _ => {
-            state.login_limiter.record_failure(ip);
-            err(
-                StatusCode::UNAUTHORIZED,
-                codes::INVALID_CREDENTIALS,
-                "invalid username or password",
-            )
-        }
-    }
+    // No admin with this username
+    state.login_limiter.record_failure(ip);
+    err(
+        StatusCode::UNAUTHORIZED,
+        codes::INVALID_CREDENTIALS,
+        "invalid username or password",
+    )
 }
 
 #[derive(Deserialize)]
@@ -165,7 +114,7 @@ pub async fn refresh(
     ClientIp(ip): ClientIp,
     Json(req): Json<RefreshRequest>,
 ) -> Response {
-    // refresh rotates with a DB write per call (revoke + issue + tunnel_token rotation); must be throttled
+    // refresh rotates with a DB write per call (revoke + issue); must be throttled
     if state.refresh_limiter.check(ip).is_err() {
         return err(
             StatusCode::TOO_MANY_REQUESTS,
@@ -179,7 +128,6 @@ pub async fn refresh(
         Ok((claims, tokens)) => ok(json!({
             "access_token": tokens.access_token,
             "refresh_token": tokens.refresh_token,
-            "tunnel_token": tokens.tunnel_token,
             "role": claims.role,
             "expires_in": tokens.expires_in,
         }))
@@ -208,7 +156,9 @@ pub async fn logout(
     }
     let (sub, uname) = (claims.sub.clone(), claims.username.clone());
     let _ = state
-        .db_call(move |db| db.record_audit_log(Some(&sub), &uname, "admin.logout", None, None, None))
+        .db_call(move |db| {
+            db.record_audit_log(Some(&sub), &uname, "admin.logout", None, None, None)
+        })
         .await;
     ok(json!(null)).into_response()
 }
@@ -293,9 +243,9 @@ pub struct BootstrapRequest {
 
 /// Redeem an admin bootstrap ticket for an admin session (zero-touch via the console channel).
 ///
-/// Ticket sources: admin-link holders via the console-ticket endpoint (kind=account), or the
-/// relay exposed-control-plane handshake (kind=relay, P2). Tickets are one-time (relay: limited
-/// uses within a period), short-lived, hash-only in DB; redemption is audited (identity + path).
+/// Ticket sources: the relay exposed-control-plane handshake (kind=relay, minted per handshake)
+/// or the delegation E2E config channel (kind=relay with a `deleg:` subject, minted per pull).
+/// Tickets are short-lived, use-capped, hash-only in DB; redemption is audited (identity + path).
 pub async fn admin_bootstrap(
     State(state): State<ApiState>,
     ClientIp(ip): ClientIp,
@@ -330,55 +280,6 @@ pub async fn admin_bootstrap(
     };
 
     match t.kind.as_str() {
-        "account" => {
-            let subject = t.subject.clone();
-            let account = match state.db_call(move |db| db.get_account(&subject)).await {
-                Ok(Some(a)) if a.enabled && a.admin_console => a,
-                _ => {
-                    return err(StatusCode::FORBIDDEN, codes::FORBIDDEN, "管理权限已被收回");
-                }
-            };
-            let jwt = state.jwt.clone();
-            let (sub, uname, scope) = (
-                account.id.clone(),
-                account.username.clone(),
-                t.scope.clone(),
-            );
-            let tokens =
-                match offload(move || jwt.issue_with_scope(&sub, &uname, "admin", &scope)).await {
-                    Ok(t) => t,
-                    Err(e) => {
-                        return err(
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            codes::INTERNAL,
-                            e.to_string(),
-                        );
-                    }
-                };
-            // Audit: node-name read and log write merged into one blocking task
-            let (uname, scope, ip_s) = (account.username.clone(), t.scope.clone(), ip.to_string());
-            let _ = state
-                .db_call(move |db| {
-                    let node_name = db.get_config("node_name").ok().flatten().unwrap_or_default();
-                    db.record_audit_log(
-                        None,
-                        &format!("link:{uname}"),
-                        "admin.console_access",
-                        Some(&node_name),
-                        Some(&format!("经管理链接换取管理会话（scope={scope}）")),
-                        Some(&ip_s),
-                    )
-                })
-                .await;
-            ok(json!({
-                "access_token": tokens.access_token,
-                "refresh_token": tokens.refresh_token,
-                "role": "admin",
-                "scope": t.scope,
-                "expires_in": tokens.expires_in,
-            }))
-            .into_response()
-        }
         "relay" => {
             // P2: relay token redeemed for an admin session. subject = "psk_<prefix>@<downstream node name>".
             let jwt = state.jwt.clone();
@@ -397,7 +298,11 @@ pub async fn admin_bootstrap(
             let (subject, scope, ip_s) = (t.subject.clone(), t.scope.clone(), ip.to_string());
             let _ = state
                 .db_call(move |db| {
-                    let node_name = db.get_config("node_name").ok().flatten().unwrap_or_default();
+                    let node_name = db
+                        .get_config("node_name")
+                        .ok()
+                        .flatten()
+                        .unwrap_or_default();
                     db.record_audit_log(
                         None,
                         &format!("relay:{subject}"),

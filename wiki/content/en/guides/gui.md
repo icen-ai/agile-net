@@ -25,7 +25,7 @@ as `gui.role_toggle` audit entries (`~/.anet/gui/gui-audit.jsonl`).
 ### Switch B: Server Role (off by default)
 
 Embeds a complete anet-svc node (the same `NodeServer` assembly root): relay listener,
-accounts / rules / tokens / audit, SQLite.
+unified issuance / rules / tokens / audit, SQLite.
 
 - **First enable requires setting an admin password** (stored as argon2id), after which the embedded node starts automatically
 - Default ports avoid local standalone nodes and the Docker demo chain (59290): API `127.0.0.1:59293`, Relay `0.0.0.0:54431`
@@ -50,15 +50,15 @@ Management entries on node cards (see "In-Band Management Plane" for details):
 
 | Entry | Prerequisite | Path |
 | --- | --- | --- |
-| Manage This Node | The account is granted admin privileges (admin connect link) | Local → client tunnel → node API |
+| Manage This Node | Holding a management-tier issued link (E2E + `eadmin`) | Local → client tunnel → node API |
 | Manageable Upstream | The upstream relay token exposes the control plane | Local → client tunnel → relay → upstream API |
 
 Both open the full management SPA in a separate window with ticket-bootstrap login — no manual password entry.
 
 ## Credentials and Privacy
 
-- Credentials are stored in `~/.anet/credentials.json` (Unix 0600); exported connect links contain plaintext passwords — share with care
-- Offline node-config cache `~/.anet/cache/`: when offline, the last known rules keep the network running; it upgrades seamlessly once connectivity returns
+- Credentials are stored in `~/.anet/credentials.json` (Unix 0600; on desktop platforms tokens prefer the OS keyring); exported connect links contain plaintext tokens — share with care
+- Offline split-vocabulary cache `~/.anet/cache/`: when offline, the last known vocabulary keeps the network running; it refreshes once connectivity returns
 - Closing the main window minimizes to the system tray; the tray menu can show the window, start/stop the proxy, and quit
 
 ## Mobile (Android)

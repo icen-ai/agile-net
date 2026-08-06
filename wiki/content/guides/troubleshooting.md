@@ -2,7 +2,7 @@
 
 本指南整理了 AgileNet 在部署与运行过程中常见的故障场景、诊断方法与解决步骤。
 
-本机环境类问题（端口占用、系统代理残留、TUN、订阅内核等）请先用 [自我诊断](#/guides/doctor) 一键巡检，多数项可当场自动修复；本页聚焦链路、证书、账号等跨端场景。
+本机环境类问题（端口占用、系统代理残留、TUN、订阅内核等）请先用 [自我诊断](#/guides/doctor) 一键巡检，多数项可当场自动修复；本页聚焦链路、证书、登录等跨端场景。
 
 ## 常用诊断方法与日志路径
 
@@ -14,7 +14,7 @@
 2. **anet-gui 审计日志**：
    - 角色切换与暴露操作审计落盘于 `~/.anet/gui/gui-audit.jsonl`（Windows 下为 `%USERPROFILE%\.anet\gui\gui-audit.jsonl`）。
 3. **节点数据库审计**：
-   - SQLite `audit_log` 表记录全量管理操作与登录事件，可通过 Web 后台、`anet-svc cli audit list` 或 `anet-svc tui` 查看。
+   - SQLite `audit_log` 表记录全量管理操作与登录事件，可通过 Web 后台、`anet audit list` 或 `anet tui` 查看。
 
 ---
 
@@ -33,8 +33,8 @@
   openssl x509 -in certs/relay-cert.pem -noout -fingerprint -sha256
   ```
 - **更新客户端配置**：
-  - `anet-gui`：重新导入最新的 `agilenet://connect?...` 接入链接。
-  - `anet-svc client`：修改 `client.toml` 中对应节点的 `pinned_fingerprint` 字段。
+  - `anet-gui`：重新导入最新的 `anet://connect?...` 接入链接。
+  - `anet-svc client`：替换 `client.toml` 中 `nodes` 里对应的接入链接（指纹钉值内嵌于链接 `fp`/`entryfp` 参数）。
 
 ---
 
@@ -73,13 +73,13 @@
 
 ---
 
-### 4. 账号/登录锁定 (HTTP 429)
+### 4. 登录锁定 (HTTP 429)
 
 **现象**：Web 后台或 CLI 提示 `42900 Too Many Requests`，无法登录。
 
 **原因**：
-- 触发了防爆破安全机制（默认 1 分钟内失败超过 5 次，账户/IP 被锁定 15 分钟）。
+- 触发了防爆破安全机制（默认 1 分钟内失败超过 5 次，该 IP 被锁定 15 分钟）。
 
 **解决**：
 - 等待 15 分钟解锁倒计时结束。
-- 或在紧急运维时通过 TUI 直连数据库进行修改（`anet-svc tui`）。
+- 忘记管理员密码：`anet admin reset-password admin --offline` 数据库直沉重置（本机操作，无需登录，会话一并吊销）。

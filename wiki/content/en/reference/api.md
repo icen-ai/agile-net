@@ -1,13 +1,15 @@
 # REST API
 
-Node management-plane and client interfaces. Base path `/api/v1`, JSON content, JWT Bearer authentication.
+Node management-plane interfaces. Base path `/api/v1`, JSON content, JWT Bearer authentication.
+anet-svc serves a unified Web on a single port: `/` admin SPA, `/client` client SPA, and
+`/api/v1/client/*` client-SPA management interfaces (sharing the same AdminAuth login).
 
 ## Conventions
 
 | Item | Value |
 | --- | --- |
 | Authentication | `Authorization: Bearer <jwt>` (except the public `/api/v1/auth/*` endpoints) |
-| Roles | `admin` (management plane) / `client` (client); AdminAuth enforces the three scope tiers (ro/rules/full) |
+| Roles | The management plane has a single `admin` identity; AdminAuth enforces the three scope tiers (ro/rules/full) |
 | Time | ISO 8601 (`2026-07-31T12:00:00Z`) |
 | ID | UUIDv4 |
 | Pagination | `page` (≥1), `page_size` (1~100); responses include `items/total/page/page_size` |
@@ -15,10 +17,10 @@ Node management-plane and client interfaces. Base path `/api/v1`, JSON content, 
 Unified response envelope:
 
 ```json
-// 成功
+// Success
 { "code": 0, "data": { } }
-// 失败
-{ "code": 40001, "message": "username already exists" }
+// Failure
+{ "code": 40001, "message": "name already exists" }
 ```
 
 For error-code ranges, see "Reference → Error Codes".
@@ -28,48 +30,50 @@ For error-code ranges, see "Reference → Error Codes".
 | Method | Path | Description |
 | --- | --- | --- |
 | POST | `/api/v1/auth/init` | Initialize the first administrator (only available when no admin exists) |
-| POST | `/api/v1/auth/login` | Log in (admin or client account; rate-limited + lockout) |
-| POST | `/api/v1/auth/refresh` | Refresh the token (rotates refresh + tunnel_token) |
+| POST | `/api/v1/auth/login` | Log in (administrator; rate-limited + lockout) |
+| POST | `/api/v1/auth/refresh` | Refresh the token (rotates refresh) |
 | POST | `/api/v1/auth/logout` | Log out (revokes refresh) |
 | GET | `/api/v1/auth/me` | Current identity (including scope) |
 | PUT | `/api/v1/auth/password` | Change the administrator password |
 | POST | `/api/v1/auth/admin-bootstrap` | Exchange a management bootstrap ticket for a scoped management session |
 
-## Client API (client role)
-
-| Method | Path | Description |
-| --- | --- | --- |
-| GET | `/api/v1/client/config` | Pull routing config; `?wait=true&version=N` long-polls (returns 304 on timeout). The response includes `admin_console` and `manageable` (management-grade accounts) |
-| POST | `/api/v1/client/heartbeat` | Heartbeat report (online status + traffic deltas; a `force_disconnect` response means go offline immediately) |
-| POST | `/api/v1/client/console-ticket` | Request a management bootstrap ticket (`admin_console` accounts; `{"upstream":"node name"}` fetches an upstream ticket) |
-
-## Management: Rules / Groups / Accounts
+## Management: Rules / Groups
 
 | Method | Path | Description |
 | --- | --- | --- |
 | GET/POST | `/api/v1/admin/rules` | List (type/search/pagination) / create |
 | PUT/DELETE | `/api/v1/admin/rules/{id}` | Update / delete |
 | POST | `/api/v1/admin/rules/batch` | Batch import (JSON/NDJSON) |
-| GET/POST | `/api/v1/admin/groups` | List / create |
-| GET/PUT/DELETE | `/api/v1/admin/groups/{id}` | Detail / update / delete (`force` required when in use) |
-| GET | `/api/v1/admin/groups/{id}/detail` | Group detail: the three identity kinds under it — accounts + fan-in tokens + fan-out endpoints |
+| GET/POST | `/api/v1/admin/groups` | List / create (`e2e_required` marks an E2E-enforced group) |
+| GET/PUT/DELETE | `/api/v1/admin/groups/{id}` | Detail / update / delete |
+| GET | `/api/v1/admin/groups/{id}/detail` | Group identity overview: fan-in tokens + fan-out endpoints |
 | PUT | `/api/v1/admin/groups/{id}/rules` | Bind rules for the whole group |
-| GET/POST | `/api/v1/admin/accounts` | List / create (`admin_console` grants management permission) |
-| PUT/DELETE | `/api/v1/admin/accounts/{id}` | Update (including enable/disable and granting/revoking management permission) / delete |
-| POST | `/api/v1/admin/accounts/{id}/reset-password` | Reset password (new password + connect_url returned only once) |
-| GET | `/api/v1/admin/accounts/{id}/qrcode` | Connect-URL QR code (SVG; available for 10 minutes after creation/reset) |
+
+## Management: Unified Issuance (delegation)
+
+The resource owner issues consumer access credentials directly (the token is the identity —
+no account layer). Four dimensions: entry `entry_mode` (direct = dial the issuer's own
+listener / relay = via the fan-out disaster set rendezvous) × trust tier (plaintext / E2E /
+E2E+management `admin_scope`) × routing `mode` (dedicated / split) × concurrency
+(`single` kicks the old session / `multi` up to max_sessions, snapshotted from the
+node_config `delegation_max_sessions` value at issuance, default 8).
+
+| Method | Path | Description |
+| --- | --- | --- |
+| GET | `/api/v1/admin/delegation/tokens` | List issued tokens (group names resolved, per-upstream registration state, entry_mode/concurrency/max_sessions, lifecycle badge) |
+| POST | `/api/v1/admin/delegation/tokens` | Issue (the plaintext and the `anet://connect` share link are returned only once) |
+| DELETE | `/api/v1/admin/delegation/tokens/{id}` | Revoke (revocation frames go to every online upstream; active sessions are kicked) |
 
 ## Management: Node / Tokens / Audit
 
 | Method | Path | Description |
 | --- | --- | --- |
-| GET | `/api/v1/admin/node/status` | Node status (roles/connections/account stats/manageable upstreams) |
-| GET | `/api/v1/admin/node/stats` | Traffic stats (`period`, `group_by`) |
+| GET | `/api/v1/admin/node/status` | Node status (roles/connections/manageable upstreams/24h traffic series) |
 | GET | `/api/v1/admin/node/logs` | In-memory log buffer |
 | GET | `/api/v1/admin/node/metrics` | System resource metrics |
 | PUT | `/api/v1/admin/node/settings` | Node settings (name/public address) |
-| POST | `/api/v1/admin/node/kick` | Kick a downstream node or a client session |
-| GET | `/api/v1/admin/node/events` | WebSocket real-time event stream |
+| POST | `/api/v1/admin/node/kick` | Kick a downstream node session |
+| GET | `/api/v1/admin/node/events` | WebSocket real-time event stream (`consumer.online/offline` etc.; first-message auth after upgrade) |
 | GET/POST | `/api/v1/admin/node/relay-tokens` | List / create tokens (`group_id` scoping group, `expose_control`+`control_scope`) |
 | PUT/DELETE | `/api/v1/admin/node/relay-tokens/{id}` | Update (expose switch/tier; `group_id` is tri-state: absent = unchanged, `null` = unscoped, string = attach to group) / revoke (kicks sessions) |
 | GET/POST | `/api/v1/admin/admins` | List / create administrators |
@@ -88,7 +92,7 @@ the database is the source of truth at runtime, and all operations below take ef
 | POST | `/api/v1/admin/connectors/{id}/enable` | Enable (assemble and connect) |
 | POST | `/api/v1/admin/connectors/{id}/disable` | Disable (disconnect; the record is kept) |
 
-A fan-out token is a connection credential issued by the endpoint: it is stored encrypted with AES-256-GCM (the only reversible exception in the entire database) and is never displayed again after creation.
+A fan-out token is a connection credential issued by the endpoint: it is stored encrypted with AES-256-GCM (one of the two reversible exceptions in the entire database) and is never displayed again after creation.
 
 ## Rate Limits and Constraints
 
@@ -98,7 +102,7 @@ A fan-out token is a connection credential issued by the endpoint: it is stored 
 
 ## Client Web Remote Plane API (anet-gui switch C)
 
-When `anet-gui` enables the "Web Remote Plane", a local HTTP service (default `127.0.0.1:59291`) exposes a REST API identical to the specification above.
+When `anet-gui` enables the "Web Remote Plane", a local HTTP service (default `127.0.0.1:59291`) exposes the client management REST API.
 
 - **Administrator initialization and login**: `/api/v1/auth/init` / `/api/v1/auth/login`
 - **Node and network control**: `GET/POST /api/v1/nodes` (list nodes and initiate connections)

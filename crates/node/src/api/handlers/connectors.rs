@@ -199,7 +199,8 @@ pub async fn create_connector(
     Json(req): Json<CreateConnectorRequest>,
 ) -> Response {
     let name = req.name.trim();
-    if let Err(msg) = validate_connector_input(name, &req.upstream_addr, &req.advertise, &req.remark)
+    if let Err(msg) =
+        validate_connector_input(name, &req.upstream_addr, &req.advertise, &req.remark)
     {
         return err(StatusCode::BAD_REQUEST, codes::VALIDATION_FAILED, msg);
     }
@@ -297,7 +298,12 @@ pub async fn create_connector(
                 }
             }
             // Hot assembly failure does not block creation (DB row exists; state shows disconnected, fix and retry via update)
-            if let Err(e) = state.runtime.connector_manager.upsert_from_db(&rec.id).await {
+            if let Err(e) = state
+                .runtime
+                .connector_manager
+                .upsert_from_db(&rec.id)
+                .await
+            {
                 tracing::error!(connector = %name, error = %e, "connector hot-start failed");
             }
             audit(
@@ -376,7 +382,8 @@ pub async fn update_connector(
         );
     }
     let name = req.name.trim();
-    if let Err(msg) = validate_connector_input(name, &req.upstream_addr, &req.advertise, &req.remark)
+    if let Err(msg) =
+        validate_connector_input(name, &req.upstream_addr, &req.advertise, &req.remark)
     {
         return err(StatusCode::BAD_REQUEST, codes::VALIDATION_FAILED, msg);
     }
@@ -511,7 +518,14 @@ pub async fn update_connector(
                 "kept"
             },
             match &push_groups {
-                Some(pg) => format!(", push_groups={}", if pg.is_empty() { "cleared".into() } else { pg.split(',').count().to_string() }),
+                Some(pg) => format!(
+                    ", push_groups={}",
+                    if pg.is_empty() {
+                        "cleared".into()
+                    } else {
+                        pg.split(',').count().to_string()
+                    }
+                ),
                 None => String::new(),
             }
         ),

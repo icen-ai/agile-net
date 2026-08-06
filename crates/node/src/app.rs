@@ -4,14 +4,12 @@
 //! - `start [config.toml] [-d|--daemon]`: start the node service (foreground by default; bare `anet-svc` equals start)
 //! - `stop` / `restart [config.toml]` / `status`: service management (PID file, no login required)
 //! - `node status|rename <name>`: node info (admin surface, login required)
-//! - `rule|group|account|token|connector|admin|audit`: resource management (login required, aligned with the Web admin UI)
+//! - `rule|group|token|connector|admin|audit`: resource management (login required, aligned with the Web admin UI)
 //! - `login|logout`: session management (~/.anet/session.json, 0600)
 //! - `tool <sub>`: built-in network diagnostic toolkit (tcping/curl/dns/scan/ping…, local, no login required)
 //! - `doctor`: self-diagnostics (ports/system proxy/kernel/network/config/rules checkup, auto-fix where possible, no login required)
 //! - `client [config.toml]`: client role (connect to fan-out endpoints + local proxy)
 //! - `tui [--db path]`: TUI console (direct database read-only fallback)
-//!
-//! Compatibility (hidden): `serve` = `start`; `cli ...` = legacy admin entry (same as the top-level command of the same name)
 
 use crate::cli as anet_cli;
 use crate::logs::{LogBuffer, LogBufferLayer};
@@ -30,7 +28,7 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 #[command(
     version,
     about = "AgileNet — init/start/stop/restart/status + 扇入扇出管理 + TUI",
-    long_about = "AgileNet 命令行（anet / anet-svc 同一实现，按 argv[0] 分人格）。\n\n命令分组：\n  服务    start / stop / restart / status / init\n  扇入    client（消费连接：作为客户端引入外部端点）\n  扇出    rule / group / account / token / connector（对外服务：扇入消费者的规则/权限/账号/令牌，主动连出的对端）\n  管理    node / login / logout / admin / audit / tui（端点自身管理与控制台）\n  诊断    tool / doctor（内置网络诊断与自我体检，本机操作，无需登录）\n\n所有管理操作经节点 API 并落审计；TUI 默认走 API，--offline 数据库只读兜底。\n双入口：anet = 管理命令（推荐），anet-svc = 服务器进程（裸跑等同 start）。\n\ntool     内置网络诊断工具集（tcping/curl/dns/scan/ping…），详见文档站「网络工具详解」"
+    long_about = "AgileNet 命令行（anet / anet-svc 同一实现，按 argv[0] 分人格）。\n\n命令分组：\n  服务    start / stop / restart / status / init\n  扇入    client（消费连接：作为客户端引入外部端点）\n  扇出    rule / group / token / connector（对外服务：扇入消费者的规则/权限/令牌，主动连出的对端）\n  管理    node / login / logout / admin / audit / tui（端点自身管理与控制台）\n  诊断    tool / doctor（内置网络诊断与自我体检，本机操作，无需登录）\n\n所有管理操作经节点 API 并落审计；TUI 默认走 API，--offline 数据库只读兜底。\n双入口：anet = 管理命令（推荐），anet-svc = 服务器进程（裸跑等同 start）。\n\ntool     内置网络诊断工具集（tcping/curl/dns/scan/ping…），详见文档站「网络工具详解」"
 )]
 struct App {
     #[command(subcommand)]
@@ -71,8 +69,6 @@ enum Cmd {
     Rule(anet_cli::RuleArgs),
     /// 权限组管理（扇出：规则的组合授权）
     Group(anet_cli::GroupArgs),
-    /// 客户端账号管理（扇出：扇入消费者凭据）
-    Account(anet_cli::AccountArgs),
     /// Relay 令牌管理（扇出：扇入中继凭据，可暴露控制面）
     Token(anet_cli::TokenArgs),
     /// 扇出对端管理（扇出：主动连出的对端，可挂权限组收敛）
@@ -85,17 +81,11 @@ enum Cmd {
     Tool(crate::tool::ToolArgs),
     /// 自我诊断（诊断：端口/系统代理/内核/网络/配置/规则体检，自动修复可修项，无需登录）
     Doctor,
-    /// 已废弃：`serve` 等同 `start`（保留兼容）
-    #[command(hide = true)]
-    Serve(StartArgs),
-    /// 已废弃：`cli ...` 旧式管理入口（保留兼容，等同顶层同名命令）
-    #[command(hide = true, trailing_var_arg = true, allow_hyphen_values = true)]
-    Cli(LegacyArgs),
 }
 
 #[derive(Args, Debug)]
 struct StartArgs {
-    /// 配置文件路径（位置参数；缺省：~/.anet/svc/agile-net.toml → ./agile-net.toml 兼容回退）
+    /// 配置文件路径（位置参数；缺省：~/.anet/svc/agile-net.toml → ./agile-net.toml 回退）
     #[arg()]
     config: Option<String>,
     /// 后台守护（分离进程后立即返回；PID 文件由子进程写入）
@@ -104,9 +94,8 @@ struct StartArgs {
 }
 
 impl StartArgs {
-    /// Resolve the config path: explicit `--config` wins; otherwise prefer the
-    /// brand default `~/.anet/svc/agile-net.toml`, falling back to `./agile-net.toml`
-    /// for compatibility with existing server deployments.
+    /// Resolve the config path: explicit positional arg wins; otherwise the brand default
+    /// `~/.anet/svc/agile-net.toml`, falling back to `./agile-net.toml` when present.
     fn resolve_config(&self) -> String {
         match &self.config {
             Some(p) => p.clone(),
@@ -151,17 +140,11 @@ enum NodeSub {
     },
 }
 
-#[derive(Args, Debug)]
-struct LegacyArgs {
-    args: Vec<String>,
-}
-
-/// Legacy no-subcommand invocation compatibility: `anet-svc config.toml` → `anet-svc start config.toml`.
-fn shim_legacy_config(args: &mut Vec<String>) {
+/// Bare positional config means start: `anet-svc config.toml` → `anet-svc start config.toml`.
+fn shim_default_start(args: &mut Vec<String>) {
     const KNOWN: &[&str] = &[
         "start", "stop", "restart", "status", "node", "client", "tui", "init", "login", "logout",
-        "rule", "group", "account", "token", "connector", "admin", "audit", "tool", "serve",
-        "cli", "help", "doctor",
+        "rule", "group", "token", "connector", "admin", "audit", "tool", "help", "doctor",
     ];
     if let Some(first) = args.get(1)
         && !first.starts_with('-')
@@ -172,11 +155,6 @@ fn shim_legacy_config(args: &mut Vec<String>) {
 }
 
 pub async fn run() -> Result<()> {
-    // One-shot data layout migration (~/.agile-net → ~/.anet/{svc,gui,root}).
-    // Idempotent: no-op if legacy dir absent or new dir already exists.
-    if let Err(e) = agile_net_core::util::migrate_legacy_layout() {
-        eprintln!("warn: legacy layout migration failed: {e}; continuing");
-    }
     let mut args: Vec<String> = std::env::args().collect();
     // Dual persona: entry point decided by the argv[0] file name (anet = admin commands, anet-svc = server).
     let prog = std::path::Path::new(args.first().map(|s| s.as_str()).unwrap_or("anet-svc"))
@@ -184,7 +162,7 @@ pub async fn run() -> Result<()> {
         .and_then(|s| s.to_str())
         .unwrap_or("anet-svc")
         .to_string();
-    shim_legacy_config(&mut args);
+    shim_default_start(&mut args);
     let app = {
         let matches = App::command()
             .bin_name(prog.clone())
@@ -212,7 +190,7 @@ pub async fn run() -> Result<()> {
                 .await
             }
         }
-        Some(Cmd::Start(a)) | Some(Cmd::Serve(a)) => {
+        Some(Cmd::Start(a)) => {
             run_server(a.resolve_config(), a.daemon).await
         }
         Some(Cmd::Stop) => svc::cmd_stop(),
@@ -264,10 +242,6 @@ pub async fn run() -> Result<()> {
             init_plain_logging();
             anet_cli::dispatch(anet_cli::Commands::Group(a), app.api, app.json).await
         }
-        Some(Cmd::Account(a)) => {
-            init_plain_logging();
-            anet_cli::dispatch(anet_cli::Commands::Account(a), app.api, app.json).await
-        }
         Some(Cmd::Token(a)) => {
             init_plain_logging();
             anet_cli::dispatch(anet_cli::Commands::Token(a), app.api, app.json).await
@@ -291,15 +265,6 @@ pub async fn run() -> Result<()> {
         Some(Cmd::Doctor) => {
             // Doctor is likewise a login-free local operation (dispatch prints and maps the exit code by error count).
             anet_cli::dispatch(anet_cli::Commands::Doctor, app.api, app.json).await
-        }
-        Some(Cmd::Cli(l)) => {
-            eprintln!("提示：`anet cli ...` 已废弃，请直接使用顶层同名命令（如 `anet rule list`）");
-            use clap::Parser as _;
-            let legacy_args: Vec<String> = std::iter::once("anet cli".to_string())
-                .chain(l.args)
-                .collect();
-            let cli = anet_cli::Cli::parse_from(legacy_args);
-            anet_cli::run_cli(cli).await
         }
     }
 }
@@ -348,6 +313,7 @@ async fn run_server(config_path: String, daemon: bool) -> Result<()> {
         let file_appender = tracing_appender::rolling::daily(dir, format!("{prefix}.log"));
         let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
         std::mem::forget(guard); // keep the writer alive for the process lifetime
+        tracing::info!(dir = %dir, "file logging enabled (daily rolling)");
         registry
             .with(
                 tracing_subscriber::fmt::layer()
@@ -355,7 +321,6 @@ async fn run_server(config_path: String, daemon: bool) -> Result<()> {
                     .with_ansi(false),
             )
             .init();
-        tracing::info!(dir = %dir, "file logging enabled (daily rolling)");
     } else {
         registry.init();
     }
@@ -368,6 +333,9 @@ async fn run_server(config_path: String, daemon: bool) -> Result<()> {
         config,
         crate::service::NodeServerOptions {
             log_buffer: Some(log_buffer),
+            client_role: crate::service::load_client_role_config(&config_path)
+                .ok()
+                .flatten(),
             ..Default::default()
         },
     )

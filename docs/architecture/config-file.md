@@ -46,6 +46,15 @@ addr = "127.0.0.1:1080"
 # username = "proxy-user"
 # password = "proxy-pass"
 
+# 进程内嵌客户端角色（可省略）：anet-svc 进程内直接起客户端引擎，
+# 消费委托链接，与节点角色共存
+# [client]
+# proxy_port = 57890
+# manage_hosts = true
+# nodes = [
+#   "anet://connect?server=b1.example.com&port=54430&account=d:alice-laptop&password=psk_...&fp=aa11",
+# ]
+
 # ACME 自动证书（可省略；Let's Encrypt，TLS-ALPN-01 免停机签发/续期）
 # [acme]
 # domain = "cdn.example.com"       # 须解析到本节点 Relay 端口
@@ -97,14 +106,14 @@ manage_hosts = true        # resolve 规则自动写系统 hosts
 # username = "user"
 # password = "pass"
 
-[[nodes]]
-addr = "https://cdn.example.com:59090"   # 节点 API 地址
-username = "zhangsan"
-password = "sk-xxxxxxxx"                 # 创建账号时下发，仅存本机
-insecure = false
-# pinned_cert_path = "certs/node-a.pem" # 证书固定（推荐）
+# 委托链接式节点清单：一条 anet://connect 链接一个节点（签发端统一签发产出，
+# 内含入口地址 + 委托令牌 + 证书指纹钉值三件套；容灾集合/E2E/分流/管理档均由链接参数承载）
+nodes = [
+  "anet://connect?server=b1.example.com&port=54430&account=d:alice-laptop&password=psk_...&fp=aa11",
+]
 ```
 
-凭据缓存（GUI/Tauri 客户端）存于 `~/.anet/credentials.json`（Unix 权限 0600）。
+凭据缓存（GUI/Tauri 客户端）存于 `~/.anet/credentials.json`（Unix 权限 0600；桌面平台密码
+优先存 OS keyring，文件只留元数据，keyring 不可用回退 0600 文件）。
 
-规则缓存：客户端把最近一次的配置保存在内存中并支持离线合并路由（断网重连期间沿用旧规则，长轮询恢复后自动更新）。
+规则缓存：客户端把最近一次的有效词表离线缓存（断网重连期间沿用旧规则，重连后自动刷新）。

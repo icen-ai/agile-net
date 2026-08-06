@@ -18,7 +18,7 @@ pub enum AuditSub {
 
 #[derive(Args, Debug)]
 pub struct AuditListArgs {
-    /// 按动作过滤（如 account.create）
+    /// 按动作过滤（如 token.create）
     #[arg(long)]
     pub action: Option<String>,
     #[arg(long, default_value = "1")]

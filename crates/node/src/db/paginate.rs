@@ -1,5 +1,5 @@
 //! Shared helper for paged list queries: unifies the verbatim-duplicated
-//! "where_clauses build + bind_refs + COUNT + LIMIT/OFFSET" skeleton in accounts/rules/logs.
+//! "where_clauses build + bind_refs + COUNT + LIMIT/OFFSET" skeleton in relay_tokens/rules/logs.
 //! Behavior identical to the original: bind order = where binds first, then (limit, offset);
 //! no WHERE when there are no filters; SQL semantics and results unchanged.
 

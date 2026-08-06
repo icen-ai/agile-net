@@ -331,11 +331,11 @@ pub async fn run(args: InitArgs) -> Result<()> {
 
     println!("────────────────────");
     println!("初始化完成：");
-    println!("  Web 管理:  http://{api}/  （账号见 ⑤）");
+    println!("  Web 管理:  http://{api}/  （管理员见 ⑤）");
     println!("  服务管理:  anet status · anet stop · anet restart");
-    println!("  资源管理:  anet login 后 rule/group/account/token/admin/audit");
+    println!("  资源管理:  anet login 后 rule/group/token/admin/audit");
     if listener_on {
-        println!("  Relay:     0.0.0.0:54430（客户端接入链接在 Web 管理端「账号」页签发）");
+        println!("  Relay:     0.0.0.0:54430（接入链接在 Web 管理端「扇出 · 签发委托」页签发）");
     }
     Ok(())
 }

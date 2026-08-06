@@ -431,13 +431,11 @@ function friendlyError(e) {
   // Command contract prefixes (specific pages already dispatch by prefix; the fallback path strips the prefix before showing)
   if (s.indexOf('NEED_DOWNLOAD:') === 0) s = s.slice('NEED_DOWNLOAD:'.length);
   if (s.indexOf('NEED_ELEVATION:') === 0) s = s.slice('NEED_ELEVATION:'.length);
-  if (/login failed|401|invalid username|invalid_credentials/i.test(s)) return AgI18n.t('core.err-login');
-  if (/tunnel_token|not a client/i.test(s)) return AgI18n.t('core.err-not-client');
+  if (/authentication failed|rejected.*token|invalid.*token|login failed|401|invalid_credentials/i.test(s)) return AgI18n.t('core.err-login');
   if (/certificate|tls|TLS|certificate verify/i.test(s)) return AgI18n.t('core.err-cert');
   if (/timed out|timeout|deadline/i.test(s)) return AgI18n.t('core.err-timeout');
   if (/ConnectionRefused|refused|10061/i.test(s)) return AgI18n.t('core.err-refused');
   if (/dns|resolve|lookup/i.test(s)) return AgI18n.t('core.err-dns');
-  if (/account disabled/i.test(s)) return AgI18n.t('core.err-disabled');
   return s.length > 120 ? s.slice(0, 120) + '…' : s;
 }
 

@@ -12,11 +12,9 @@ anet-svc 是服务器二进制（同一内核无 GUI），角色全靠配置。�
 | `anet-svc restart [config.toml]` | 重启 |
 | `anet-svc status` | 运行状态（进程/配置/API 可达性，无需登录） |
 | `anet-svc init` | 首装初始化向导（配置/管理员/系统服务/启动，见「命令行 anet」） |
-| `anet-svc client [config.toml]` | 客户端角色：连上游 + 本地代理（原 agile-net-client） |
+| `anet-svc client [config.toml]` | 客户端角色：消费委托链接 + 本地代理 |
 | `anet-svc tui [--offline]` | TUI 控制台（默认走 API；`--offline` 直连数据库只读兜底） |
 | `anet-svc --version` | 版本信息 |
-
-兼容：`anet-svc serve` 等同 `start`（已废弃，保留可用）。
 
 ## start 角色装配
 
@@ -24,9 +22,10 @@ anet-svc 是服务器二进制（同一内核无 GUI），角色全靠配置。�
 
 | 配置段 | 角色 | 默认 |
 | --- | --- | --- |
-| `[api]` | Web 管理面（REST + 控制台 SPA） | `0.0.0.0:59090` |
-| `[listener]` | 上游角色：接受下游 relay 连入 | 关 |
+| `[api]` | 统一 Web（`/` 管理端 SPA、`/client` 客户端 SPA、REST） | `0.0.0.0:59090` |
+| `[listener]` | 扇入角色：接受对端 relay 与消费者连入 | 关 |
 | `[[connectors]]` | 扇出角色：接入对端 relay（仅启动导入；运行时以 DB 为准，管理端「扇出」页 / `anet connector` 热操作） | 关 |
+| `[client]` | 进程内嵌客户端角色（anet:// 链接式 `nodes`） | 关 |
 | `[proxy]` | 节点本地代理（SOCKS5/HTTP） | 关 |
 | `[acme]` | 自动证书（Let's Encrypt TLS-ALPN-01） | 关 |
 | `[limits]` | 连接与登录限流参数 | 内置默认 |
@@ -39,17 +38,18 @@ anet-svc 是服务器二进制（同一内核无 GUI），角色全靠配置。�
 | --- | --- |
 | `AGILE_ADMIN_USERNAME` / `AGILE_ADMIN_PASSWORD` | 首次启动预置管理员（密码 ≥10 位） |
 | `AGILE_RELAY_TOKENS` | 逗号分隔预置 Relay Token；支持 `psk_xxx\|expose:rules` 暴露控制面语法 |
-| `AGILE_PUBLIC_HOST` | connect_url 与隧道端点对外地址 |
+| `AGILE_PUBLIC_HOST` | 接入链接与隧道端点对外地址 |
 | `DATABASE_PATH` | SQLite 路径覆盖 |
 | `API_LISTEN` / `API_TLS_CERT` / `API_TLS_KEY` | API 监听与 HTTPS 证书覆盖 |
 | `AGILE_LOG_DIR` | 按天滚动文件日志目录 |
 
 ## Web 管理后台（内嵌 SPA）
 
-`http://<节点>:59090`：概览（状态卡/24h 流量趋势/WebSocket 实时事件）、客户端账号
-（创建即得 `sk-` 密码 + 接入链接 + 二维码，管理版勾选）、权限组（详情含名下账号/扇入令牌/扇出对端）、
-路由规则（批量导入）、Relay 令牌（收敛组、暴露控制面勾选与档位）、扇出（connector CRUD +
-实时状态徽标 + 启停，token 加密落库不回显）、审计日志（动作过滤）、端点设置。
+`http://<节点>:59090`：概览（状态卡/24h 流量趋势/WebSocket 实时事件）、扇入/扇出页
+（「监听 | 连接 | 签发」三页签：listener 端点 / 令牌与 connector 管理 / 统一签发四维度
+对话框，令牌明文与 `anet://` 链接仅签发时展示一次）、权限组（E2E 标记、详情含扇入令牌/
+扇出对端）、路由规则（批量导入）、审计日志（动作过滤）、端点设置。
+客户端 SPA 在 `/client`（与管理端同一 AdminAuth 登录，管理端列表本机第一）。
 
 ## TUI
 
@@ -62,12 +62,12 @@ API 不可达或会话失效时自动降级只读并在状态栏明示；只读�
 
 ## client 角色
 
-`anet-svc client client.toml`：与 anet-gui 同一客户端引擎（多端点、规则合并、长轮询热更新、
-离线缓存降级、hosts 管理）。配置示例见「快速上手」。
+`anet-svc client client.toml`：与 anet-gui 同一客户端引擎（委托-only：anet:// 链接式
+`nodes`、监督循环容灾切换、分流词表离线缓存、hosts 管理）。配置示例见「快速上手」。
 
 ## 部署建议
 
 - 生产 API 启用 HTTPS（`[api] tls_cert_path/tls_key_path`）或前置反代
-- relay listener 证书自动生成自签并持久化；客户端经 connect_url 指纹固定，无需 insecure
+- relay listener 证书自动生成自签并持久化；客户端经接入链接 `fp` 指纹固定，无需 insecure
 - systemd 常驻：`anet init` 自动识别发行版注册（Ubuntu / Rocky / 麒麟 / 统信 UOS 等）；
   docker 编排见「Docker 链路与演示」

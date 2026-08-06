@@ -44,6 +44,12 @@ const AGI18N_JS: &str = include_str!("../../../../apps/desktop/ui/agi18n.js");
 const AGLANG_JS: &str = include_str!("../../../../apps/desktop/ui/aglang.js");
 /// Admin-end bilingual dictionary shard (embedded the same way as aglang.js; desktop dictionary shards live in apps/desktop/ui/lang/).
 const ADMIN_LANG_JS: &str = include_str!("../../../../apps/desktop/ui/lang/admin.js");
+/// Client-role SPA (crates/client/ui, embedded the same way as the admin SPA; shared assets
+/// are referenced from the existing /ui/* routes, not re-served).
+const CLIENT_HTML: &str = include_str!("../../../client/ui/index.html");
+const CLIENT_JS: &str = include_str!("../../../client/ui/app.js");
+const CLIENT_CSS: &str = include_str!("../../../client/ui/style.css");
+const CLIENT_LANG_JS: &str = include_str!("../../../client/ui/lang.js");
 
 /// Base security response headers (attached to all static responses).
 fn base_headers(resp: &mut Response) {
@@ -154,10 +160,51 @@ async fn admin_lang_js_handler() -> impl IntoResponse {
     resp
 }
 
+/// Client console page (same headers as the admin page; may be embedded in the desktop shell).
+pub async fn client_page_handler() -> impl IntoResponse {
+    let mut resp = Html(CLIENT_HTML).into_response();
+    base_headers(&mut resp);
+    let headers = resp.headers_mut();
+    headers.insert(
+        header::X_FRAME_OPTIONS,
+        HeaderValue::from_static("SAMEORIGIN"),
+    );
+    headers.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static(
+            "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:; img-src 'self' data:; frame-ancestors 'self' http://tauri.localhost https://tauri.localhost tauri://localhost",
+        ),
+    );
+    resp
+}
+
+async fn client_js_handler() -> impl IntoResponse {
+    let mut resp = ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8")], CLIENT_JS).into_response();
+    base_headers(&mut resp);
+    resp
+}
+
+async fn client_css_handler() -> impl IntoResponse {
+    let mut resp = ([(header::CONTENT_TYPE, "text/css; charset=utf-8")], CLIENT_CSS).into_response();
+    base_headers(&mut resp);
+    resp
+}
+
+async fn client_lang_js_handler() -> impl IntoResponse {
+    let mut resp = ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8")], CLIENT_LANG_JS).into_response();
+    base_headers(&mut resp);
+    resp
+}
+
 pub fn create_ui_router() -> Router {
     Router::new()
         .route("/", get(admin_page_handler))
         .route("/admin", get(admin_page_handler))
+        .route("/client", get(client_page_handler))
+        .route("/client/", get(client_page_handler))
+        .route("/client/app.js", get(client_js_handler))
+        .route("/client/style.css", get(client_css_handler))
+        .route("/client/lang.js", get(client_lang_js_handler))
         .route("/ui/app.js", get(admin_js_handler))
         .route("/ui/style.css", get(admin_css_handler))
         .route("/ui/tokens.css", get(tokens_css_handler))

@@ -7,7 +7,6 @@ personas automatically by argv[0]), suited for scripting and remote operations.
 - ID prefix resolution: the first few characters are enough (e.g. `anet rule delete 3f2a`)
 - `--json` for machine-readable output; tables by default
 - `--api <url>` overrides the endpoint address (defaults to the session value or `http://127.0.0.1:59090`)
-- Compatibility: the legacy `anet-svc cli ...` entry still works (deprecated; equivalent to the top-level command of the same name)
 
 ## First Install: Setup Wizard
 
@@ -64,17 +63,14 @@ anet group update office --name 新名称
 anet group delete office [--force]
 ```
 
-## Client Accounts
+## Unified Issuance (Consumer Access)
 
-```bash
-anet account add --username zhangsan --group office
-# 输出 sk- 密码与 connect_url（仅一次）
-anet account add --username ops --group office --admin   # 管理版接入链接（签发记审计）
-anet account list [--group office] [--enabled true]
-anet account update 8c1d --enabled false / --admin true
-anet account reset-password 8c1d
-anet account delete 8c1d
-```
+Consumer access has no account layer — the resource owner issues delegated tokens directly
+(the token is the identity). Issuance happens in the Web dashboard on the fan-in page's
+"Issue" tab, or via the API `POST /api/v1/admin/delegation/tokens` (four dimensions: entry
+direct/relay × trust plaintext/E2E/E2E+management × routing dedicated/split × concurrency
+single/multi), producing an `anet://connect?...` access link (the plaintext is shown only
+once at issuance).
 
 ## Relay Tokens
 

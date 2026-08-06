@@ -2,8 +2,7 @@
 
 use agile_net_node::auth::jwt::JwtService;
 use agile_net_node::db::{
-    Database, generate_password, generate_relay_token, generate_secret_hex, hash_password,
-    sha256_hex, verify_password,
+    Database, generate_relay_token, generate_secret_hex, hash_password, verify_password,
 };
 use std::sync::Arc;
 
@@ -47,19 +46,14 @@ fn password_hashing_security() {
     assert!(!verify_password("WrongP@ss", &hash).unwrap());
 }
 
-/// Strong password generation: sk- prefix, 51 chars, high entropy, unique per call
+/// Strong secret generation: relay token prefix/length, hex secret entropy
 #[test]
-fn strong_password_generation() {
-    let p1 = generate_password();
-    let p2 = generate_password();
-    assert!(p1.starts_with("sk-"));
-    assert_eq!(p1.len(), 51);
-    assert_ne!(p1, p2);
-    assert!(p1.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'));
-
-    let t = generate_relay_token();
-    assert!(t.starts_with("psk_"));
-    assert_eq!(t.len(), 52);
+fn strong_secret_generation() {
+    let t1 = generate_relay_token();
+    let t2 = generate_relay_token();
+    assert!(t1.starts_with("psk_"));
+    assert_eq!(t1.len(), 52);
+    assert_ne!(t1, t2);
 
     let s = generate_secret_hex();
     assert_eq!(s.len(), 64);
@@ -88,8 +82,6 @@ fn refresh_token_rotation_and_revocation() {
     let jwt = JwtService::load_or_create(db.clone()).unwrap();
 
     let issued = jwt.issue("uid-2", "admin", "admin").unwrap();
-    // only the client role gets a tunnel_token
-    assert!(issued.tunnel_token.is_none());
 
     // refresh succeeds and the old refresh token is invalidated
     let (_claims, rotated) = jwt.refresh(&issued.refresh_token).unwrap();
@@ -98,26 +90,4 @@ fn refresh_token_rotation_and_revocation() {
     // revoke all → refresh no longer possible
     jwt.revoke_all("uid-2").unwrap();
     assert!(jwt.refresh(&rotated.refresh_token).is_err());
-}
-
-/// client-role issue rotates the tunnel_token and stores its hash
-#[test]
-fn client_tunnel_token_issued() {
-    let db = Database::in_memory().unwrap();
-    let gid = db.create_group("g1", "").unwrap().id;
-    let account = db
-        .create_account("user1", &hash_password("x").unwrap(), &gid, "")
-        .unwrap();
-
-    let jwt = JwtService::load_or_create(db.clone()).unwrap();
-    let issued = jwt.issue(&account.id, "user1", "client").unwrap();
-    let tunnel_token = issued.tunnel_token.expect("client should get tunnel token");
-    assert!(tunnel_token.starts_with("tun_"));
-
-    // the data plane can recover the account by hash
-    let found = db
-        .find_account_by_tunnel_hash(&sha256_hex(tunnel_token.as_bytes()))
-        .unwrap();
-    assert!(found.is_some());
-    assert_eq!(found.unwrap().username, "user1");
 }

@@ -1,25 +1,27 @@
-//! Connect-link parsing for the client engine (fan-in account side).
+//! Delegated connect-link parsing for the client engine (fan-in side).
 //!
 //! The unified link primitives (`anet://` scheme, connect/fanout roles, parse + build) live in
 //! `agile_net_core::link` — THE single Rust base, shared by the node (link generation at
 //! issuance) and the client (import). This module only maps the core `ConnectLink` onto the
-//! client-side `ParsedConnect` shape (extra fields: pinned_cert_path / manage_hosts /
-//! save_credential / admin flag as a display string) and adapts saved credentials.
+//! client-side `ParsedConnect` shape (extra fields: manage_hosts / save_credential) and adapts
+//! saved credentials. The client consumes delegated credentials only — a connect link without
+//! the `d:<label>` account mark is rejected.
 
 use serde::{Deserialize, Serialize};
 
 use crate::credential::Credential;
 
-/// Parsed connect parameters (desktop IPC and Web REST share the same shape).
+/// Parsed delegated connect parameters (desktop IPC and Web REST share the same shape).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ParsedConnect {
+    /// Primary relay entry (host:port)
     pub addr: String,
-    pub username: String,
-    pub password: String,
+    /// Delegated token label (the `d:` mark stripped)
+    pub label: String,
+    /// Delegated token plaintext
+    pub token: String,
     #[serde(default)]
     pub insecure: bool,
-    #[serde(default)]
-    pub pinned_cert_path: Option<String>,
     #[serde(default)]
     pub pinned_fingerprint: Option<String>,
     #[serde(default)]
@@ -27,89 +29,68 @@ pub struct ParsedConnect {
     /// Whether to save the credential after a successful connect
     #[serde(default)]
     pub save_credential: bool,
-    /// Admin connect URL flag (admin=1: the holder can manage this node; strong warning on import)
-    #[serde(default)]
-    pub admin: Option<String>,
-    /// Federation P2: delegated credential mark (d: account prefix)
-    #[serde(default)]
-    pub delegated: bool,
     /// Disaster-set relay entries (failover order; empty = single entry)
     #[serde(default)]
     pub entries: Vec<String>,
     /// Per-entry relay cert fingerprints (parallel to `entries`; "" = TOFU)
     #[serde(default)]
     pub entry_fps: Vec<String>,
-    /// Federation P3: E2E routing hint
-    #[serde(default)]
-    pub ehint: Option<String>,
-    /// Federation P3 entrust word (en_xxx; preferred over ehint on protocol v4+ entries)
+    /// Entrust word (en_xxx opaque routing ID; every Open is E2E-sealed when set)
     #[serde(default)]
     pub en: Option<String>,
-    /// Federation P3 consumer mode (`split` = E2E rule delivery; None = dedicated 专线)
+    /// Consumer mode (`split` = E2E rule delivery; None = dedicated 专线)
     #[serde(default)]
     pub emode: Option<String>,
-    /// Federation P3 delegated admin capability hint (ticket pull via the E2E config channel)
+    /// Delegated admin capability hint (ticket pull via the E2E config channel)
     #[serde(default)]
     pub eadmin: bool,
 }
 
-/// Parse an `anet://connect?...` URL (legacy `agilenet://` accepted).
+/// Parse an `anet://connect?...` URL (delegated credentials only).
 pub fn parse_connect_url(url: &str) -> std::result::Result<ParsedConnect, String> {
     let link = agile_net_core::link::parse_connect_url(url)?;
-    let delegated = link.is_delegated();
+    let Some(label) = link.delegated_label().map(|s| s.to_string()) else {
+        return Err("仅支持委托凭据链接（缺少 d:<label> 标记）".to_string());
+    };
     Ok(ParsedConnect {
         addr: link.addr,
-        username: link.account,
-        password: link.password,
+        label,
+        token: link.password,
         insecure: link.insecure,
-        pinned_cert_path: None,
         pinned_fingerprint: link.pinned_fingerprint,
         manage_hosts: false,
         save_credential: true,
-        admin: link.admin.then(|| "1".to_string()),
-        delegated,
         entries: link.entries,
         entry_fps: link.entry_fps,
-        ehint: link.ehint,
         en: link.en,
         emode: link.emode,
         eadmin: link.eadmin,
     })
 }
 
-/// Generate an anet://connect URL from a saved credential (contains plaintext password; share with care).
+/// Generate an anet://connect delegated URL from a saved credential (contains the token plaintext; share with care).
 pub fn connect_url_of(c: &Credential) -> String {
-    // Delegated credentials (federation P2/P3) must keep the failover set and every E2E field
-    // on re-export — the plain builder would silently downgrade them to single-entry transparent.
-    if c.delegated {
-        let mut entries: Vec<(String, String)> = if c.entries.is_empty() {
-            vec![(c.addr.clone(), c.pinned_fingerprint.clone().unwrap_or_default())]
-        } else {
-            c.entries
-                .iter()
-                .enumerate()
-                .map(|(i, a)| (a.clone(), c.entry_fps.get(i).cloned().unwrap_or_default()))
-                .collect()
-        };
-        if !entries.iter().any(|(a, _)| *a == c.addr) {
-            entries.insert(0, (c.addr.clone(), c.pinned_fingerprint.clone().unwrap_or_default()));
-        }
-        return agile_net_core::link::build_delegate_url(
-            &c.addr,
-            c.username.trim_start_matches("d:"),
-            &c.password,
-            &entries,
-            c.ehint.as_deref(),
-            c.en.as_deref(),
-            c.emode.as_deref(),
-            c.eadmin,
-        );
+    // Keep the failover set and every E2E field on re-export.
+    let mut entries: Vec<(String, String)> = if c.entries.is_empty() {
+        vec![(c.addr.clone(), c.pinned_fingerprint.clone().unwrap_or_default())]
+    } else {
+        c.entries
+            .iter()
+            .enumerate()
+            .map(|(i, a)| (a.clone(), c.entry_fps.get(i).cloned().unwrap_or_default()))
+            .collect()
+    };
+    if !entries.iter().any(|(a, _)| *a == c.addr) {
+        entries.insert(0, (c.addr.clone(), c.pinned_fingerprint.clone().unwrap_or_default()));
     }
-    agile_net_core::link::build_connect_url(
+    agile_net_core::link::build_delegate_url(
         &c.addr,
-        &c.username,
-        &c.password,
-        c.pinned_fingerprint.as_deref(),
+        &c.label,
+        &c.token,
+        &entries,
+        c.en.as_deref(),
+        c.emode.as_deref(),
+        c.eadmin,
     )
 }
 
@@ -120,47 +101,50 @@ mod tests {
     #[test]
     fn parse_maps_core_link_shape() {
         let p = parse_connect_url(
-            "anet://connect?server=anet.example.com&port=59090&account=alice&password=sk-x&fp=ab12&admin=1",
+            "anet://connect?server=anet.example.com&port=54430&account=d:alice&password=psk_x&fp=ab12",
         )
         .expect("parse");
-        assert_eq!(p.addr, "anet.example.com:59090");
-        assert_eq!(p.username, "alice");
-        assert_eq!(p.password, "sk-x");
+        assert_eq!(p.addr, "anet.example.com:54430");
+        assert_eq!(p.label, "alice");
+        assert_eq!(p.token, "psk_x");
         assert_eq!(p.pinned_fingerprint.as_deref(), Some("ab12"));
-        assert_eq!(p.admin.as_deref(), Some("1"));
         assert!(p.save_credential);
     }
 
     #[test]
-    fn parse_legacy_scheme_still_works() {
-        let p = parse_connect_url("agilenet://connect?server=1.2.3.4&port=59090&account=a&password=b")
-            .expect("legacy parse");
-        assert_eq!(p.addr, "1.2.3.4:59090");
-        assert_eq!(p.admin, None);
+    fn parse_rejects_non_delegated_link() {
+        assert!(
+            parse_connect_url("anet://connect?server=h:1&account=alice&password=sk-x").is_err()
+        );
+        assert!(
+            parse_connect_url("agilenet://connect?server=h:1&account=d:alice&password=psk_x").is_err()
+        );
     }
 
     #[test]
     fn connect_url_of_roundtrips() {
         let c = Credential {
-            addr: "1.2.3.4:59090".into(),
-            username: "u".into(),
-            password: "p".into(),
+            addr: "1.2.3.4:54430".into(),
+            label: "alice".into(),
+            token: "psk_p".into(),
             name: None,
             insecure: false,
             pinned_fingerprint: Some("ab".into()),
-            delegated: false,
-            entries: Vec::new(),
-            entry_fps: Vec::new(),
-            ehint: None,
-            en: None,
-            emode: None,
-            eadmin: false,
+            entries: vec!["1.2.3.4:54430".into(), "5.6.7.8:54430".into()],
+            entry_fps: vec!["ab".into(), "".into()],
+            en: Some("en_a1b2c3d4e5f6".into()),
+            emode: Some("split".into()),
+            eadmin: true,
         };
         let url = connect_url_of(&c);
         assert!(url.starts_with("anet://connect?"));
         let p = parse_connect_url(&url).expect("roundtrip");
-        assert_eq!(p.username, "u");
-        assert_eq!(p.password, "p");
+        assert_eq!(p.label, "alice");
+        assert_eq!(p.token, "psk_p");
         assert_eq!(p.pinned_fingerprint.as_deref(), Some("ab"));
+        assert_eq!(p.entries, vec!["1.2.3.4:54430".to_string(), "5.6.7.8:54430".to_string()]);
+        assert_eq!(p.en.as_deref(), Some("en_a1b2c3d4e5f6"));
+        assert_eq!(p.emode.as_deref(), Some("split"));
+        assert!(p.eadmin);
     }
 }

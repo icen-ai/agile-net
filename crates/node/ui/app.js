@@ -139,11 +139,12 @@ const S = {
   access: localStorage.getItem('ag_access') || '',
   refresh: localStorage.getItem('ag_refresh') || '',
   view: 'dashboard',
-  page: { accounts: 1, groups: 1, rules: 1, audit: 1 },
-  size: { accounts: 10, groups: 10, rules: 10, audit: 15 },
-  filter: { accounts: '', accountsEnabled: '', accountsGroup: '', rules: '', rulesType: '', auditAction: '' },
+  page: { groups: 1, rules: 1, audit: 1 },
+  size: { groups: 10, rules: 10, audit: 15 },
+  filter: { rules: '', rulesType: '', auditAction: '' },
   faninTab: 'listen',   // fan-in page current tab: listen | peers | tokens
   faninQuery: '',       // fan-in page search term: shared by the peers/tokens tabs (kept across tab switches)
+  fanoutTab: 'conns',   // fan-out page current tab: watch | conns | issue
   groups: [],
   timers: [],
   ws: null,
@@ -249,7 +250,7 @@ function confirmAction(text, onYes) {
 }
 
 /* ================= Share card (federation P1) =================
-   Issuance dialogs (account / fan-in token): endpoint choice (public identity / LAN direct) +
+   Issuance dialogs (fan-in token / delegated token): endpoint choice (public identity / LAN direct) +
    tab switch (full link / key only) + copy. The link is rebuilt from the parsed fields via the
    shared AgLink parser on endpoint switch (the secret is shown only this once, no refetch). */
 function aglinkErrText(code) {
@@ -286,11 +287,10 @@ function shareCardBind(root, opts) {
       ? AgLink.buildFanout({ addr, token: parsed.token, sni: parsed.sni, fp: parsed.fp, insecure: parsed.insecure })
       : AgLink.buildConnect({
           addr, account: parsed.account, password: parsed.password, fp: parsed.fp,
-          insecure: parsed.insecure, admin: parsed.admin,
+          insecure: parsed.insecure,
           // federation P2: keep the disaster set of a delegated credential across rebuilds
           entries: (parsed.entries || []).map((a, i) => ({ addr: a, fp: (parsed.entryFps || [])[i] || '' })),
-          // federation P3: keep the E2E routing hint, the entrust word, the consumer tier and the admin hint
-          ehint: parsed.ehint || '',
+          // federation P3: keep the entrust word, the consumer mode and the admin flag
           en: parsed.en || '',
           emode: parsed.emode || '',
           eadmin: !!parsed.eadmin,
@@ -547,7 +547,7 @@ function switchView(v) {
   S.view = v;
   S.timers.forEach(clearInterval); S.timers = [];
   document.querySelectorAll('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.view === v));
-  const fn = ({dashboard: renderDashboard, accounts: renderAccounts, groups: renderGroups,
+  const fn = ({dashboard: renderDashboard, groups: renderGroups,
     rules: renderRules, fanin: renderFanIn, connectors: renderConnectors, audit: renderAudit, settings: renderSettings})[v] || renderDashboard;
   fn();
 }
@@ -587,14 +587,10 @@ function shortId(id) { return esc(String(id||'').substring(0,8)); }
    delegation is bound on document, so polling innerHTML rewrites do not break bindings. Click actions use data-act, change actions use data-act-chg. */
 const ACT_CLICK = {
   'copy': b => copyText(b.dataset.copy),
-  'show-qr': b => showQr(b.dataset.id),
-  'acc-reset': b => resetAccountPwd(b.dataset.id, b.dataset.name),
-  'acc-toggle': b => toggleAccount(b.dataset.id, b.dataset.enabled === 'true'),
-  'acc-del': b => delAccount(b.dataset.id, b.dataset.name),
   'grp-detail': b => openGroupDetail(b.dataset.id),
   'grp-bind': b => openBindRules(b.dataset.id, b.dataset.name),
   'grp-edit': b => openEditGroup(b.dataset.id, b.dataset.name, b.dataset.remark || '', b.dataset.e2e === '1'),
-  'grp-del': b => delGroup(b.dataset.id, b.dataset.name, Number(b.dataset.count || 0)),
+  'grp-del': b => delGroup(b.dataset.id, b.dataset.name),
   'rule-edit': b => openEditRule(b.dataset.id, b.dataset.type, b.dataset.value, b.dataset.resolve === 'true', b.dataset.remark || ''),
   'rule-del': b => delRule(b.dataset.id, b.dataset.value, Number(b.dataset.count || 0)),
   'tok-edit': b => openEditToken(b.dataset.id, b.dataset.group || '', b.dataset.expose === 'true', b.dataset.scope, b.dataset.expires || '', b.dataset.maxuses || '', b.dataset.rate || ''),
@@ -603,6 +599,10 @@ const ACT_CLICK = {
   'conn-toggle': b => toggleConnector(b.dataset.id, b.dataset.enabled === 'true'),
   'conn-del': b => delConnector(b.dataset.id, b.dataset.name),
   'deleg-revoke': b => revokeDelegation(b.dataset.id, b.dataset.name),
+  'deleg-expand': b => {
+    const row = document.querySelector('[data-delegrow="' + CSS.escape(b.dataset.id) + '"]');
+    if (row) row.hidden = !row.hidden;
+  },
   'grp-copy': b => copyAdopted(b.dataset.id, b.dataset.name),
   'fed-adopt-now': b => { adoptPushed(b.dataset.node, b.dataset.group).then(() => { closeModal(); }); },
   'pool-toggle': b => {
@@ -622,7 +622,7 @@ document.addEventListener('click', (e) => {
     if (p.disabled) return;
     const key = p.dataset.pager;
     S.page[key] += Number(p.dataset.delta);
-    ({ accounts: renderAccounts, groups: renderGroups, rules: renderRules, audit: renderAudit }[key] || (() => {}))();
+    ({ groups: renderGroups, rules: renderRules, audit: renderAudit }[key] || (() => {}))();
     return;
   }
   const b = e.target.closest('[data-act]');
@@ -666,7 +666,7 @@ async function renderDashboard() {
       if (tbt && st.node_name) tbt.textContent = st.node_name;
       const tt = $('dash-title'), tname = T('dashboard.title', { name: st.node_name || T('term.endpoint') });
       if (tt && tt.textContent !== tname) tt.textContent = tname;
-      const L = st.roles.listener, CS = st.roles.connectors || [], P = st.proxy, A = st.accounts;
+      const L = st.roles.listener, CS = st.roles.connectors || [], P = st.proxy;
       const fanoutSub = CS.length
         ? CS.map(c => '<div class="mono">' + esc(c.upstream) + ' <span class="badge ' +
             (c.status === 'connected' ? 'b-ok' : (c.status === 'disconnected' ? 'b-off' : 'b-warn')) + '">' +
@@ -682,7 +682,6 @@ async function renderDashboard() {
           L.enabled ? esc(L.addr) + ' · ' + T('dashboard.relaySub', { peers: L.connected_connectors||0, clients: L.online_clients||0 }) : '-', 'fanin') +
         statCard(T('dashboard.cardFanout'), CS.length ? '<span class="badge b-ok">' + T('dashboard.connCount', { n: CS.length }) + '</span>' : '<span class="badge b-off">' + T('dashboard.noFanout') + '</span>', fanoutSub, 'connectors') +
         statCard(T('dashboard.cardProxy'), P.enabled ? '<span class="badge b-ok">' + T('adm.stOn') + '</span>' : '<span class="badge b-off">' + T('adm.stNotOn') + '</span>', proxySub, 'settings') +
-        statCard(T('dashboard.cardAccounts'), T('adm.countN', { n: A.total||0 }), T('dashboard.accSub', { on: A.online||0, off: A.disabled||0 }), 'accounts') +
         statCard(T('dashboard.cardSystem'), (st.system.memory_mb||0) + ' MB', T('dashboard.sysSub', { cpu: (st.system.cpu_usage||0).toFixed(1), mem: st.system.total_memory_mb||0 }));
       if (L.enabled && (L.peers||[]).length) {
         const names = L.peer_names || {};
@@ -691,22 +690,24 @@ async function renderDashboard() {
       $('dash-stats').innerHTML = cards;
       // Three traffic cards: fan-in (today + 24h trend) / fan-out (totals + per-item details) / relay path (totals + pairs)
       updateTfCards(st);
-    } catch(e) { toast(e.message, 'err'); }
-
-    try {
-      const t = await api('GET', '/api/v1/admin/node/stats?period=24h&group_by=time');
-      const pts = t.points || [];
+      // Trend chart: merged up/down of the three traffic_24h dimensions (fan-in + fan-out + transit), no separate stats endpoint
+      const t24 = st.traffic_24h || {};
+      const hours = new Set();
+      ['fanin', 'fanout', 'transit'].forEach(k => (Array.isArray(t24[k]) ? t24[k] : []).forEach(p => hours.add(String(p.hour || ''))));
+      const xs = [...hours].filter(Boolean).sort();
+      const dimSum = (f) => xs.map(h => ['fanin', 'fanout', 'transit']
+        .reduce((acc, k) => acc + (+(((Array.isArray(t24[k]) ? t24[k] : []).find(p => String(p.hour || '') === h) || {})[f]) || 0), 0));
       AgChart.line($('traffic-chart'), {
-        x: pts.map(p => p.time),
+        x: xs,
         series: [
-          { name: 'RX', values: pts.map(p => p.bytes_rx) },
-          { name: 'TX', values: pts.map(p => p.bytes_tx) },
+          { name: 'RX', values: dimSum('down') },
+          { name: 'TX', values: dimSum('up') },
         ],
         fmtY: fmtBytes,
         fmtX: h => String(h || '').slice(11, 16),
         empty: T('dashboard.chartEmpty'),
       });
-    } catch(e) {}
+    } catch(e) { toast(e.message, 'err'); }
   }
   function statCard(k, v, sub, view) {
     return '<div class="stat' + (view ? ' link' : '') + '"' + (view ? ' data-goto="' + view + '"' : '') +
@@ -810,130 +811,13 @@ function updateTfCards(st) {
   })));
 }
 
-/* ================= Client accounts ================= */
-async function renderAccounts() {
-  $('view').innerHTML = '<div class="page-title">' + ic('users', 20) + T('accounts.title') + '</div><div class="page-desc">' + T('accounts.desc') + '</div>' +
-    '<div class="toolbar">' +
-      '<input id="acc-q" placeholder="' + T('accounts.searchPh') + '" value="' + esc(S.filter.accounts) + '">' +
-      '<select id="acc-group">' +
-        '<option value="">' + T('accounts.allGroups') + '</option>' +
-        S.groups.map(g => '<option value="' + esc(g.id) + '" ' + (S.filter.accountsGroup===g.id?'selected':'') + '>' + esc(g.name) + '</option>').join('') +
-      '</select>' +
-      '<select id="acc-enabled">' +
-        '<option value="">' + T('accounts.allStatus') + '</option>' +
-        '<option value="true" ' + (S.filter.accountsEnabled==='true'?'selected':'') + '>' + T('adm.stOn') + '</option>' +
-        '<option value="false" ' + (S.filter.accountsEnabled==='false'?'selected':'') + '>' + T('adm.stOff') + '</option>' +
-      '</select>' +
-      '<div class="spacer"></div>' +
-      '<button id="acc-create">' + ic('plus', 15) + T('accounts.create') + '</button>' +
-    '</div>' +
-    '<div class="card table-wrap"><table><thead><tr><th>' + T('term.account') + '</th><th>' + T('term.group') + '</th><th>' + T('accounts.colOnline') + '</th><th>' + T('common.status') + '</th><th>' + T('accounts.colLastSeen') + '</th><th>' + T('common.remark') + '</th><th>' + T('common.action') + '</th></tr></thead><tbody id="acc-body"></tbody></table><div id="acc-pager"></div></div>';
-  agSelectEnhance($('view'));
-  $('acc-q').oninput = (e) => { S.filter.accounts = e.target.value; S.page.accounts = 1; renderAccounts(); };
-  $('acc-group').onchange = (e) => { S.filter.accountsGroup = e.target.value; S.page.accounts = 1; renderAccounts(); };
-  $('acc-enabled').onchange = (e) => { S.filter.accountsEnabled = e.target.value; S.page.accounts = 1; renderAccounts(); };
-  $('acc-create').onclick = openCreateAccount;
-  await loadAccounts();
-  S.timers.push(setInterval(loadAccounts, 20000));
-}
-async function loadAccounts() {
-  const body = $('acc-body'); if (!body) return;
-  let url = '/api/v1/admin/accounts?page=' + S.page.accounts + '&page_size=' + S.size.accounts;
-  if (S.filter.accounts) url += '&q=' + encodeURIComponent(S.filter.accounts);
-  if (S.filter.accountsGroup) url += '&group_id=' + encodeURIComponent(S.filter.accountsGroup);
-  if (S.filter.accountsEnabled) url += '&enabled=' + S.filter.accountsEnabled;
-  try {
-    const d = await api('GET', url);
-    body.innerHTML = (d.items||[]).map(a =>
-      '<tr><td><b>' + esc(a.username) + '</b>' + (a.admin_console ? ' <span class="badge b-info">' + T('accounts.badgeAdmin') + '</span>' : '') + lifecycleBadge(a) + '<div class="mono" style="color:var(--dim2)">' + shortId(a.id) + '</div></td>' +
-      '<td>' + esc(a.group_name || groupName(a.group_id)) + '</td>' +
-      '<td><span class="dot ' + (a.online?'on':'off') + '"></span>' + (a.online ? T('adm.online') : T('adm.offline')) + '</td>' +
-      '<td>' + (a.enabled ? '<span class="badge b-ok">' + T('adm.stOn') + '</span>' : '<span class="badge b-off">' + T('adm.stOff') + '</span>') + '</td>' +
-      '<td style="color:var(--dim)">' + esc(a.last_seen_at || T('common.never')) + '</td>' +
-      '<td style="color:var(--dim)">' + esc(a.remark || '-') + '</td>' +
-      '<td style="white-space:nowrap">' +
-        '<button class="ghost small" data-act="acc-reset" data-id="' + esc(a.id) + '" data-name="' + esc(a.username) + '">' + T('accounts.resetPwd') + '</button> ' +
-        '<button class="ghost small" data-act="acc-toggle" data-id="' + esc(a.id) + '" data-enabled="' + !a.enabled + '">' + (a.enabled ? T('common.disable') : T('common.enable')) + '</button> ' +
-        '<button class="danger small" data-act="acc-del" data-id="' + esc(a.id) + '" data-name="' + esc(a.username) + '">' + T('common.delete') + '</button>' +
-      '</td></tr>'
-    ).join('') || '<tr><td colspan="7" class="empty">' + T('accounts.empty') + '</td></tr>';
-    $('acc-pager').innerHTML = pager('accounts', d.total||0);
-  } catch(e) { toast(e.message, 'err'); }
-}
-function openCreateAccount() {
-  if (!S.groups.length) { toast(T('accounts.needGroup'), 'err'); return; }
-  openModal(T('accounts.createTitle'),
-    '<label>' + T('accounts.nameLabel') + '</label><input id="na-user" style="width:100%">' +
-    '<label>' + T('term.group') + '</label><select id="na-group" style="width:100%">' +
-      S.groups.map(g => '<option value="' + esc(g.id) + '">' + esc(g.name) + '</option>').join('') + '</select>' +
-    '<label>' + T('common.remark') + '</label><input id="na-remark" style="width:100%">' +
-    '<label style="margin-top:10px">' + T('adm.tunnelExpiryLabel') + ' ' + ahelp(T('adm.tunnelExpiryHelp')) + '</label>' +
-    '<input id="na-expiry" type="datetime-local" style="width:100%">' +
-    '<label class="chk" style="display:flex;align-items:center;gap:6px;margin-top:8px"><input type="checkbox" id="na-admin"> ' + T('accounts.adminGrant') + '</label>' +
-    '<div class="hint" id="na-admin-warn" style="color:var(--danger-text);display:none">' + ic('triangle-alert', 13) + ' ' + T('accounts.adminWarn') + '</div>',
-    [
-      {label: T('common.cancel'), kind:'ghost', fn: closeModal},
-      {label: T('common.create'), fn: async () => {
-        const username = $('na-user').value.trim(), group_id = $('na-group').value, remark = $('na-remark').value.trim();
-        const admin_console = $('na-admin').checked;
-        const tunnel_expires_at = ($('na-expiry').value || '').trim();
-        try {
-          const d = await api('POST', '/api/v1/admin/accounts', {username, group_id, remark, admin_console, tunnel_expires_at});
-          showAccountSecret(T('accounts.createdTitle'), d.username, d.password, d.connect_url, d.id, admin_console, d.endpoints);
-          loadAccounts();
-        } catch(e) { toast(e.message, 'err'); }
-      }},
-    ]);
-  $('na-admin').onchange = (e) => { $('na-admin-warn').style.display = e.target.checked ? 'block' : 'none'; };
-}
-function showAccountSecret(title, username, password, connectUrl, accountId, isAdminLink, endpoints) {
-  openModal(title,
-    (isAdminLink ? '<div class="hint" style="color:var(--danger-text);margin-bottom:8px">' + ic('triangle-alert', 13) + ' ' + T('accounts.adminLinkHint') + '</div>' : '') +
-    '<div class="kv"><span class="k">' + T('term.account') + '</span><span><b>' + esc(username) + '</b></span></div>' +
-    shareCardHtml(endpoints) +
-    '<div class="actions" style="justify-content:flex-start;margin-top:10px">' +
-    '<button class="ghost small" data-act="show-qr" data-id="' + esc(accountId) + '">' + ic('qr-code', 13) + T('accounts.showQr') + '</button></div>' +
-    '<div class="qr-box" id="qr-box"></div>' +
-    '<div class="hint" style="color:var(--warn)">' + ic('triangle-alert', 13) + ' ' + T('accounts.secretHint') + '</div>',
-    [{label: T('accounts.saved'), fn: closeModal}]);
-  shareCardBind($('modal-root'), { role: 'connect', secret: password, link: connectUrl, endpoints, note: username });
-}
-async function showQr(accountId) {
-  try {
-    const res = await fetch('/api/v1/admin/accounts/' + accountId + '/qrcode', { headers: { 'Authorization': 'Bearer ' + S.access } });
-    if (!res.ok) { toast(T('accounts.qrExpired'), 'err'); return; }
-    const svg = await res.text();
-    $('qr-box').innerHTML = svg;
-  } catch(e) { toast(e.message, 'err'); }
-}
-async function resetAccountPwd(id, username) {
-  confirmAction(T('accounts.resetConfirm', { name: username }), async () => {
-    try {
-      const d = await api('POST', '/api/v1/admin/accounts/' + id + '/reset-password');
-      showAccountSecret(T('accounts.resetTitle'), username, d.password, d.connect_url, id, false, d.endpoints);
-    } catch(e) { toast(e.message, 'err'); }
-  });
-}
-async function toggleAccount(id, enabled) {
-  try {
-    await api('PUT', '/api/v1/admin/accounts/' + id, { enabled });
-    toast(enabled ? T('common.enabled') : T('accounts.disabledToast'), 'ok');
-    loadAccounts();
-  } catch(e) { toast(e.message, 'err'); }
-}
-async function delAccount(id, username) {
-  confirmAction(T('accounts.delConfirm', { name: username }), async () => {
-    try { await api('DELETE', '/api/v1/admin/accounts/' + id); toast(T('adm.deleted'), 'ok'); loadAccounts(); }
-    catch(e) { toast(e.message, 'err'); }
-  });
-}
 
 /* ================= Groups ================= */
 async function renderGroups() {
   $('view').innerHTML = '<div class="page-title">' + ic('shield', 20) + T('term.group') + '</div><div class="page-desc">' + T('groups.desc') + '</div>' +
     '<div class="toolbar"><input id="grp-q" placeholder="' + T('groups.searchPh') + '" value="' + esc(S.filter.groups||'') + '">' +
     '<div class="spacer"></div><button class="ghost" id="grp-adopt">' + ic('download', 15) + T('groups.adopt') + '</button><button id="grp-create">' + ic('plus', 15) + T('groups.create') + '</button></div>' +
-    '<div class="card table-wrap"><table><thead><tr><th>' + T('common.name') + '</th><th>' + T('groups.colRules') + '</th><th>' + T('groups.colAccounts') + '</th><th>' + T('common.remark') + '</th><th>' + T('common.action') + '</th></tr></thead><tbody id="grp-body"></tbody></table><div id="grp-pager"></div></div>';
+    '<div class="card table-wrap"><table><thead><tr><th>' + T('common.name') + '</th><th>' + T('groups.colRules') + '</th><th>' + T('common.remark') + '</th><th>' + T('common.action') + '</th></tr></thead><tbody id="grp-body"></tbody></table><div id="grp-pager"></div></div>';
   $('grp-q').oninput = (e) => { S.filter.groups = e.target.value; S.page.groups = 1; renderGroups(); };
   $('grp-adopt').onclick = openAdoptCenter;
   $('grp-create').onclick = openCreateGroup;
@@ -954,17 +838,16 @@ async function loadGroups() {
       const ops = adopted
         ? '<button class="ghost small" data-act="grp-detail" data-id="' + esc(g.id) + '">' + T('groups.detail') + '</button> ' +
           '<button class="ghost small" data-act="grp-copy" data-id="' + esc(g.id) + '" data-name="' + esc(g.name) + '">' + T('groups.copy') + '</button> ' +
-          '<button class="danger small" data-act="grp-del" data-id="' + esc(g.id) + '" data-name="' + esc(g.name) + '" data-count="' + g.account_count + '">' + T('common.delete') + '</button>'
+          '<button class="danger small" data-act="grp-del" data-id="' + esc(g.id) + '" data-name="' + esc(g.name) + '">' + T('common.delete') + '</button>'
         : '<button class="ghost small" data-act="grp-detail" data-id="' + esc(g.id) + '">' + T('groups.detail') + '</button> ' +
           '<button class="ghost small" data-act="grp-bind" data-id="' + esc(g.id) + '" data-name="' + esc(g.name) + '">' + T('groups.bind') + '</button> ' +
           '<button class="ghost small" data-act="grp-edit" data-id="' + esc(g.id) + '" data-name="' + esc(g.name) + '" data-remark="' + esc(g.remark||'') + '" data-e2e="' + (g.e2e_required ? '1' : '') + '">' + T('common.edit') + '</button> ' +
-          '<button class="danger small" data-act="grp-del" data-id="' + esc(g.id) + '" data-name="' + esc(g.name) + '" data-count="' + g.account_count + '">' + T('common.delete') + '</button>';
+          '<button class="danger small" data-act="grp-del" data-id="' + esc(g.id) + '" data-name="' + esc(g.name) + '">' + T('common.delete') + '</button>';
       return '<tr><td>' + nameCell + '</td>' +
         '<td><span class="badge b-info">' + g.rule_count + '</span></td>' +
-        '<td><span class="badge b-info">' + g.account_count + '</span></td>' +
         '<td style="color:var(--dim)">' + esc(g.remark || '-') + '</td>' +
         '<td style="white-space:nowrap">' + ops + '</td></tr>';
-    }).join('') || '<tr><td colspan="5" class="empty">' + T('groups.empty') + '</td></tr>';
+    }).join('') || '<tr><td colspan="4" class="empty">' + T('groups.empty') + '</td></tr>';
     $('grp-pager').innerHTML = pager('groups', d.total||0);
     S.groups = d.items || S.groups;
   } catch(e) { toast(e.message, 'err'); }
@@ -1008,8 +891,6 @@ async function openGroupDetail(id) {
     openModal(T('groups.detailTitle', { name: g.name }),
       '<h3 style="margin:10px 0 6px">' + T('groups.relRules', { n: (g.rules||[]).length }) + '</h3>' +
       ((g.rules||[]).map(r => '<div class="kv"><span class="mono">' + esc(r.value) + '</span><span class="badge b-info">' + esc(r.type) + '</span></div>').join('') || '<div class="empty">' + T('common.none') + '</div>') +
-      '<h3 style="margin:14px 0 6px">' + T('groups.relAccounts', { n: (d.accounts||[]).length }) + '</h3>' +
-      ((d.accounts||[]).map(a => '<div class="kv"><span>' + esc(a.username) + '</span><span>' + (a.enabled?'<span class="badge b-ok">' + T('adm.stOn') + '</span>':'<span class="badge b-off">' + T('adm.stOff') + '</span>') + '</span></div>').join('') || '<div class="empty">' + T('common.none') + '</div>') +
       '<h3 style="margin:14px 0 6px">' + T('groups.relTokens', { n: (d.relay_tokens||[]).length }) + '</h3>' +
       ((d.relay_tokens||[]).map(t => '<div class="kv"><span class="mono">' + esc(t.token_prefix) + '</span><span style="color:var(--dim)">' + esc(t.remark || '-') + '</span></div>').join('') || '<div class="empty">' + T('common.none') + '</div>') +
       '<h3 style="margin:14px 0 6px">' + T('groups.relConns', { n: (d.connectors||[]).length }) + '</h3>' +
@@ -1042,23 +923,11 @@ async function openBindRules(id, name) {
       ]);
   } catch(e) { toast(e.message, 'err'); }
 }
-async function delGroup(id, name, accountCount) {
-  const forceNote = accountCount > 0 ? T('groups.forceNote', { n: accountCount }) : '';
-  openModal(T('groups.delTitle'),
-    '<p style="color:var(--dim)">' + T('groups.delConfirm', { name: '<b>' + esc(name) + '</b>' }) + esc(forceNote) + '</p>',
-    [
-      {label: T('common.cancel'), kind:'ghost', fn: closeModal},
-      ...(accountCount > 0 ? [{label: T('adm.forceDelete'), kind:'danger', fn: async () => {
-        closeModal();
-        try { await api('DELETE', '/api/v1/admin/groups/' + id + '?force=true'); toast(T('adm.forceDeleted'), 'ok'); loadGroupsCache(); loadGroups(); }
-        catch(e) { toast(e.message, 'err'); }
-      }}] : []),
-      {label: T('common.delete'), kind:'danger', fn: async () => {
-        closeModal();
-        try { await api('DELETE', '/api/v1/admin/groups/' + id); toast(T('adm.deleted'), 'ok'); loadGroupsCache(); loadGroups(); }
-        catch(e) { toast(e.message, 'err'); }
-      }},
-    ]);
+async function delGroup(id, name) {
+  confirmAction(T('groups.delConfirm', { name }), async () => {
+    try { await api('DELETE', '/api/v1/admin/groups/' + id); toast(T('adm.deleted'), 'ok'); loadGroupsCache(); loadGroups(); }
+    catch(e) { toast(e.message, 'err'); }
+  });
 }
 
 /* ================= Routing rules ================= */
@@ -1204,9 +1073,9 @@ async function renderFanIn() {
   $('view').innerHTML = '<div class="page-title">' + ic('orbit', 20) + T('term.fanin') + '</div><div class="page-desc">' + T('fanin.admDesc') + '</div>' +
     '<div class="agtabs" id="fanin-tabs">' +
       '<div class="agtabs-pill">' +
-        '<button class="agtab' + (tab === 'listen' ? ' active' : '') + '" data-agtab="listen">' + T('fanin.tabListen') + '</button>' +
-        '<button class="agtab' + (tab === 'peers' ? ' active' : '') + '" data-agtab="peers">' + T('fanin.tabPeers') + '</button>' +
-        '<button class="agtab' + (tab === 'tokens' ? ' active' : '') + '" data-agtab="tokens">' + T('fanin.tabTokens') + '</button>' +
+        '<button class="agtab' + (tab === 'listen' ? ' active' : '') + '" data-agtab="listen">' + T('adm.tabListen') + '</button>' +
+        '<button class="agtab' + (tab === 'peers' ? ' active' : '') + '" data-agtab="peers">' + T('adm.tabConns') + '</button>' +
+        '<button class="agtab' + (tab === 'tokens' ? ' active' : '') + '" data-agtab="tokens">' + T('adm.tabIssue') + '</button>' +
       '</div>' +
       '<div class="agtabs-tools"><input id="fanin-q" style="width:230px" placeholder="' + T('fanin.admSearchPh') + '" value="' + esc(S.faninQuery) + '"' + (tab === 'listen' ? ' hidden' : '') + '></div>' +
     '</div>' +
@@ -1232,9 +1101,11 @@ async function renderFanIn() {
 /* Listener card + peers table share roles.listener: single fetch, single-signature change detection (no DOM rewrite when unchanged) */
 async function loadFaninStatus() {
   const box = $('fanin-listener'); if (!box) return;
-  let L;
-  try { L = (await api('GET', '/api/v1/admin/node/status')).roles.listener; }
+  let st;
+  try { st = await api('GET', '/api/v1/admin/node/status'); }
   catch(e) { toast(e.message, 'err'); return; }
+  const fp = st.cert_fingerprint || '';
+  let L = st.roles.listener;
   L = L || { enabled: false };
   // Authorizable pool (federation P1): refreshed with its own signature, ahead of the listener
   // early-return — pushed groups change without the peer list changing (idle reconnect re-pushes)
@@ -1249,7 +1120,7 @@ async function loadFaninStatus() {
       poolChanged = true;
     }
   } catch(e) { /* pool failure never blocks the peer list */ }
-  const sig = JSON.stringify(L);
+  const sig = JSON.stringify({ L, fp });
   if (sig === box.dataset.sig && !poolChanged) return;
   box.dataset.sig = sig;
   if (!L.enabled) {
@@ -1259,7 +1130,9 @@ async function loadFaninStatus() {
       '<div class="kv"><span class="k">' + T('fanin.addr') + '</span><span class="mono">' + esc(L.addr || '-') + '</span></div>' +
       '<div class="kv"><span class="k">TLS</span><span>' + (L.tls ? '<span class="badge b-ok">' + T('common.enabled') + '</span>' : '<span class="badge b-off">' + T('adm.stNotOn') + '</span>') + '</span></div>' +
       '<div class="kv"><span class="k">' + T('fanin.endpoints') + '</span><span>' + T('fanin.connectedCount', { n: L.connected_connectors || 0 }) + '</span></div>' +
-      '<div class="kv"><span class="k">' + T('fanin.onlineClients') + '</span><span>' + T('adm.countN', { n: L.online_clients || 0 }) + '</span></div>';
+      '<div class="kv"><span class="k">' + T('fanin.onlineClients') + '</span><span>' + T('adm.countN', { n: L.online_clients || 0 }) + '</span></div>' +
+      (fp ? '<div class="kv"><span class="k">' + T('set.certFp') + '</span><span class="mono" style="font-size:11px;word-break:break-all">' + esc(fp) +
+        ' <button class="ghost small" data-act="copy" data-copy="' + esc(fp) + '">' + ic('copy', 13) + T('common.copy') + '</button></span></div>' : '');
   }
   const traffic = L.enabled ? (L.peer_traffic || []) : [];
   const peers = L.enabled ? (L.peers || []) : [];
@@ -1443,7 +1316,7 @@ function openCreateToken() {
             '<div class="kv"><span class="k">' + T('common.remark') + '</span><span>' + esc(d.remark || '-') + '</span></div>' +
             shareCardHtml(d.endpoints) +
             '<div class="hint" style="color:var(--warn)">' + ic('triangle-alert', 13) + ' ' + T('fanin.createdHint') + '</div>',
-            [{label: T('accounts.saved'), fn: () => { closeModal(); loadTokens(); }}]);
+            [{label: T('share.saved'), fn: () => { closeModal(); loadTokens(); }}]);
           shareCardBind($('modal-root'), { role: 'fanout', secret: d.token, link: d.share_url, endpoints: d.endpoints, note: d.remark || d.token_prefix });
         } catch(e) { toast(e.message, 'err'); }
       }},
@@ -1488,34 +1361,35 @@ function openEditToken(id, groupId, exposeControl, controlScope, expiresAt, maxU
     ]);
 }
 
-/* ================= Fan-out (upstream connectors) + Delegation (federation P2) ================= */
+/* ================= Fan-out (upstream connectors) + unified issuance (delegated tokens) ================= */
 function connStatusBadge(st) {
   return '<span class="badge ' + (st === 'connected' ? 'b-ok' : (st === 'disconnected' ? 'b-off' : 'b-warn')) + '">' +
     esc(connStatusText(st)) + '</span>';
 }
 async function renderConnectors() {
+  const tab = S.fanoutTab;
   $('view').innerHTML = '<div class="page-title">' + ic('git-fork', 20) + T('term.fanout') + '</div><div class="page-desc">' + T('fanout.admDesc') + '</div>' +
-    '<div class="agtabs" style="margin:14px 0 12px"><div class="agtabs-pill">' +
-      '<button class="agtab active" data-ftab="conns">' + T('deleg.tabConns') + '</button>' +
-      '<button class="agtab" data-ftab="deleg">' + T('deleg.tab') + '</button>' +
-    '</div></div>' +
-    '<div id="ftab-conns">' +
-      '<div class="toolbar"><div class="spacer"></div><button class="ghost" id="conn-import">' + ic('upload', 15) + T('anet.importBtn') + '</button><button id="conn-create">' + ic('plus', 15) + T('fanout.create') + '</button></div>' +
+    '<div class="agtabs" id="fanout-tabs">' +
+      '<div class="agtabs-pill">' +
+        '<button class="agtab' + (tab === 'watch' ? ' active' : '') + '" data-agtab="watch">' + T('adm.tabListen') + '</button>' +
+        '<button class="agtab' + (tab === 'conns' ? ' active' : '') + '" data-agtab="conns">' + T('adm.tabConns') + '</button>' +
+        '<button class="agtab' + (tab === 'issue' ? ' active' : '') + '" data-agtab="issue">' + T('adm.tabIssue') + '</button>' +
+      '</div>' +
+    '</div>' +
+    // watch: consumer activity overview — per issued token, every disaster-set entry with its live state
+    '<div data-agpanel="watch" hidden><div class="card"><h3>' + T('deleg.watchTitle') + ahelp(T('deleg.watchHelp')) + '</h3>' +
+      '<div class="table-wrap"><table><thead><tr><th>' + T('deleg.colLabel') + '</th><th>' + T('deleg.colEntry') + '</th><th>' + T('deleg.colSet') + '</th><th>' + T('deleg.colConcurrency') + '</th><th>' + T('deleg.colActivity') + '</th><th>' + T('common.createdAt') + '</th></tr></thead><tbody id="watch-body"></tbody></table></div></div></div>' +
+    '<div data-agpanel="conns" hidden>' +
+      '<div class="toolbar"><div class="spacer"></div><button class="ghost" id="conn-adopt">' + ic('download', 15) + T('groups.adopt') + '</button><button class="ghost" id="conn-import">' + ic('upload', 15) + T('anet.importBtn') + '</button><button id="conn-create">' + ic('plus', 15) + T('fanout.create') + '</button></div>' +
       '<input type="file" id="conn-import-file" accept=".anet,application/json" style="display:none">' +
       '<div class="card table-wrap"><table><thead><tr><th>' + T('common.name') + '</th><th>' + T('fanout.colUpstream') + '</th><th>' + T('term.group') + '</th><th>' + T('common.status') + '</th><th>' + T('adm.stOn') + '</th><th>' + T('common.remark') + '</th><th>' + T('common.action') + '</th></tr></thead><tbody id="conn-body"></tbody></table></div>' +
     '</div>' +
-    '<div id="ftab-deleg" style="display:none">' +
+    '<div data-agpanel="issue" hidden>' +
       '<div class="toolbar"><div class="hint" style="max-width:560px">' + T('deleg.desc') + '</div><div class="spacer"></div><button id="deleg-issue">' + ic('plus', 15) + T('deleg.issue') + '</button></div>' +
-      '<div class="card table-wrap"><table><thead><tr><th>' + T('deleg.colLabel') + '</th><th>' + T('deleg.colGroups') + '</th><th>' + T('deleg.colSet') + '</th><th>' + T('common.createdAt') + '</th><th>' + T('common.action') + '</th></tr></thead><tbody id="deleg-body"></tbody></table></div>' +
+      '<div class="card table-wrap"><table><thead><tr><th>' + T('deleg.colLabel') + '</th><th>' + T('deleg.colGroups') + '</th><th>' + T('common.createdAt') + '</th><th>' + T('common.action') + '</th></tr></thead><tbody id="deleg-body"></tbody></table></div>' +
     '</div>';
-  // ag-tabs switching (explicit binding, no inline handlers)
-  $('view').querySelectorAll('[data-ftab]').forEach(b => {
-    b.onclick = () => {
-      $('view').querySelectorAll('[data-ftab]').forEach(x => x.classList.toggle('active', x === b));
-      $('ftab-conns').style.display = b.dataset.ftab === 'conns' ? '' : 'none';
-      $('ftab-deleg').style.display = b.dataset.ftab === 'deleg' ? '' : 'none';
-    };
-  });
+  agTabsBind($('fanout-tabs'), (k) => { S.fanoutTab = k; });
+  $('conn-adopt').onclick = openAdoptCenter;
   $('conn-create').onclick = () => openCreateConnector();
   // .anet import: native open dialog via the desktop bridge when embedded, file picker otherwise
   $('conn-import').onclick = () => {
@@ -1532,32 +1406,41 @@ async function renderConnectors() {
   await Promise.all([loadConnectors(), loadDelegation()]);
   S.timers.push(setInterval(() => { loadConnectors(); loadDelegation(); }, 5000));
 }
+/* Latest fan-out list caches: the watch tab joins both sources (delegation tokens × live connectors)
+   without its own fetch; every poll updates the caches and re-renders under signature detection. */
+let FANOUT_CONNS = [];
+let FANOUT_DELEG = [];
 async function loadConnectors() {
-  const body = $('conn-body'); if (!body) return;
   try {
     const d = await api('GET', '/api/v1/admin/connectors');
-    const items = d.items || [];
+    FANOUT_CONNS = d.items || [];
+  } catch(e) { toast(e.message, 'err'); return; }
+  const body = $('conn-body');
+  if (body) {
+    const items = FANOUT_CONNS;
     // Polling change detection: identical signature → no DOM rewrite (avoids flicker)
     const sig = JSON.stringify(items);
-    if (sig === body.dataset.sig) return;
-    body.dataset.sig = sig;
-    body.innerHTML = items.map(c => {
-      const adv = (c.advertise || '').split(',').filter(Boolean).join(' · ');
-      return '<tr><td><b>' + esc(c.name) + '</b><div class="mono" style="color:var(--dim2)">' + (c.token_prefix ? esc(c.token_prefix) : shortId(c.id)) + '</div></td>' +
-      '<td class="mono">' + esc(c.upstream_addr) + (adv ? '<div style="color:var(--dim2);font-size:12px">' + esc(adv) + '</div>' : '') + '</td>' +
-      '<td>' + (c.group_id ? esc(c.group_name || groupNamesOf(c.group_id)) : '<span style="color:var(--dim2)">' + T('adm.noRestrict') + '</span>') + '</td>' +
-      '<td>' + connStatusBadge(c.state) + '</td>' +
-      '<td>' + (c.enabled ? '<span class="badge b-ok">' + T('adm.stOn') + '</span>' : '<span class="badge b-off">' + T('adm.stOff') + '</span>') + '</td>' +
-      '<td style="color:var(--dim)">' + esc(c.remark || '-') + '</td>' +
-      '<td style="white-space:nowrap">' +
-        '<button class="ghost small" data-act="conn-edit" data-id="' + esc(c.id) + '">' + T('common.edit') + '</button> ' +
-        '<button class="ghost small" data-act="conn-toggle" data-id="' + esc(c.id) + '" data-enabled="' + !c.enabled + '">' + (c.enabled ? T('common.disable') : T('common.enable')) + '</button> ' +
-        '<button class="danger small" data-act="conn-del" data-id="' + esc(c.id) + '" data-name="' + esc(c.name) + '">' + T('common.delete') + '</button>' +
-      '</td></tr>';
-    }).join('') || '<tr><td colspan="7" class="empty">' + T('fanout.empty') + '</td></tr>';
-  } catch(e) { toast(e.message, 'err'); }
+    if (sig !== body.dataset.sig) {
+      body.dataset.sig = sig;
+      body.innerHTML = items.map(c => {
+        const adv = (c.advertise || '').split(',').filter(Boolean).join(' · ');
+        return '<tr><td><b>' + esc(c.name) + '</b><div class="mono" style="color:var(--dim2)">' + (c.token_prefix ? esc(c.token_prefix) : shortId(c.id)) + '</div></td>' +
+        '<td class="mono">' + esc(c.upstream_addr) + (adv ? '<div style="color:var(--dim2);font-size:12px">' + esc(adv) + '</div>' : '') + '</td>' +
+        '<td>' + (c.group_id ? esc(c.group_name || groupNamesOf(c.group_id)) : '<span style="color:var(--dim2)">' + T('adm.noRestrict') + '</span>') + '</td>' +
+        '<td>' + connStatusBadge(c.state) + '</td>' +
+        '<td>' + (c.enabled ? '<span class="badge b-ok">' + T('adm.stOn') + '</span>' : '<span class="badge b-off">' + T('adm.stOff') + '</span>') + '</td>' +
+        '<td style="color:var(--dim)">' + esc(c.remark || '-') + '</td>' +
+        '<td style="white-space:nowrap">' +
+          '<button class="ghost small" data-act="conn-edit" data-id="' + esc(c.id) + '">' + T('common.edit') + '</button> ' +
+          '<button class="ghost small" data-act="conn-toggle" data-id="' + esc(c.id) + '" data-enabled="' + !c.enabled + '">' + (c.enabled ? T('common.disable') : T('common.enable')) + '</button> ' +
+          '<button class="danger small" data-act="conn-del" data-id="' + esc(c.id) + '" data-name="' + esc(c.name) + '">' + T('common.delete') + '</button>' +
+        '</td></tr>';
+      }).join('') || '<tr><td colspan="7" class="empty">' + T('fanout.empty') + '</td></tr>';
+    }
+  }
+  renderWatch();
 }
-/* ---- Delegation (federation P2): issue / list / revoke delegated tokens ---- */
+/* ---- Unified issuance: issue / list / revoke delegated tokens (the token is the only identity) ---- */
 function delegStateBadge(st) {
   if (st && st.startsWith('failed')) {
     return '<span class="badge b-off" title="' + esc(st) + '">' + T('deleg.stFailed') + '</span>';
@@ -1596,41 +1479,79 @@ function lifecycleFieldsVal(idp) {
   const uses = parseInt(($(idp + '-maxuses') || {}).value, 10);
   return { expires_at: exp.trim(), max_uses: uses > 0 ? uses : null };
 }
+/* Delegated-token badge helpers (shared by the issued list and the fan-out watch tab):
+   entry (direct/relay) · concurrency (single/multi≤N) · mode (dedicated/split) · E2E · admin tier */
+function delegEntryBadge(t) {
+  return '<span class="badge b-info">' + (t.entry_mode === 'direct' ? T('deleg.badgeDirect') : T('deleg.badgeRelay')) + '</span>';
+}
+function delegConcBadge(t) {
+  return t.concurrency === 'multi'
+    ? '<span class="badge b-info">' + T('deleg.badgeMulti', { n: t.max_sessions || 0 }) + '</span>'
+    : '<span class="badge b-off">' + T('deleg.badgeSingle') + '</span>';
+}
+function delegTierBadges(t) {
+  const anyE2e = (t.groups || []).some(g => g.e2e_required);
+  return '<span class="badge ' + (t.mode === 'split' ? 'b-warn' : 'b-info') + '">' + (t.mode === 'split' ? T('deleg.modeSplit') : T('deleg.modeDedicated')) + '</span>' +
+    (anyE2e ? ' <span class="badge b-warn">E2E</span>' : '') +
+    (t.admin_scope ? ' <span class="badge b-warn">' + T('deleg.badgeAdmin') + '·' + esc(t.admin_scope) + '</span>' : '');
+}
+/* Disaster-set entry lines: one row per registered connector (primary badge + live registration state).
+   Relay tokens additionally join the connector's own connection state when `withConn` (watch tab). */
+function delegEntriesHtml(t, withConn) {
+  if (t.entry_mode === 'direct') return '<div style="padding:2px 0;color:var(--dim)">' + T('deleg.entryLocal') + '</div>';
+  return (t.regs || []).map(r => {
+    const c = withConn ? FANOUT_CONNS.find(x => x.id === r.connector_id) : null;
+    return '<div style="display:flex;align-items:center;gap:6px;padding:2px 0;flex-wrap:wrap">' +
+      (c ? connStatusBadge(c.state) : '') +
+      (r.is_primary ? '<span class="badge b-ok">' + T('deleg.primaryBadge') + '</span>' : '') +
+      '<span>' + esc(r.connector_name) + '</span>' +
+      '<span class="mono" style="color:var(--dim2);font-size:12px">' + esc(r.upstream_addr || '') + '</span>' +
+      delegStateBadge(r.state) + '</div>';
+  }).join('');
+}
 async function loadDelegation() {
-  const body = $('deleg-body'); if (!body) return;
   try {
     const d = await api('GET', '/api/v1/admin/delegation/tokens');
-    const items = d.items || [];
+    FANOUT_DELEG = d.items || [];
+  } catch(e) { toast(e.message, 'err'); return; }
+  const body = $('deleg-body');
+  if (body) {
     // polling change detection: identical signature → no DOM rewrite (avoids flicker)
-    const sig = JSON.stringify(items);
-    if (sig === body.dataset.sig) return;
-    body.dataset.sig = sig;
-    body.innerHTML = items.map(t => {
-      const groups = (t.groups || []).map(g =>
-        '<span class="badge b-info">' + esc(g.name) + '</span>' + (g.e2e_required ? ' <span class="badge b-warn">E2E</span>' : '')
-      ).join(' ');
-      // tier badge: only meaningful on E2E tokens (split = rule delivery, dedicated = 专线)
-      const anyE2e = (t.groups || []).some(g => g.e2e_required);
-      const tierBadge = anyE2e
-        ? ' <span class="badge ' + (t.mode === 'split' ? 'b-info' : 'b-off') + '">' + (t.mode === 'split' ? T('deleg.modeSplit') : T('deleg.modeDedicated')) + '</span>'
-        : '';
-      // admin-grant badge (ro/rules/full)
-      const adminBadge = t.admin_scope
-        ? ' <span class="badge b-warn">' + T('deleg.badgeAdmin') + '·' + esc(t.admin_scope) + '</span>'
-        : '';
-      const lifeBadge = lifecycleBadge(t);
-      const regs = (t.regs || []).map(r =>
-        '<div style="display:flex;align-items:center;gap:6px;padding:2px 0">' +
-          (r.is_primary ? '<span class="badge b-ok">' + T('deleg.primaryBadge') + '</span>' : '') +
-          '<span>' + esc(r.connector_name) + '</span>' + delegStateBadge(r.state) + '</div>'
-      ).join('');
-      return '<tr><td><b>' + esc(t.label || t.token_prefix) + '</b>' + tierBadge + adminBadge + lifeBadge + '<div class="mono" style="color:var(--dim2)">' + esc(t.token_prefix) + '</div></td>' +
-        '<td>' + (groups || '-') + '</td>' +
-        '<td>' + (regs || '-') + '</td>' +
-        '<td style="color:var(--dim);white-space:nowrap">' + esc((t.created_at || '').replace('T', ' ').replace(/\..*$/, '')) + '</td>' +
-        '<td><button class="danger small" data-act="deleg-revoke" data-id="' + esc(t.id) + '" data-name="' + esc(t.label || t.token_prefix) + '">' + T('adm.revoke') + '</button></td></tr>';
-    }).join('') || '<tr><td colspan="5" class="empty">' + T('deleg.empty') + '</td></tr>';
-  } catch(e) { toast(e.message, 'err'); }
+    const sig = JSON.stringify(FANOUT_DELEG);
+    if (sig !== body.dataset.sig) {
+      body.dataset.sig = sig;
+      body.innerHTML = FANOUT_DELEG.map(t => {
+        const groups = (t.groups || []).map(g =>
+          '<span class="badge b-info">' + esc(g.name) + '</span>' + (g.e2e_required ? ' <span class="badge b-warn">E2E</span>' : '')
+        ).join(' ');
+        return '<tr><td><b>' + esc(t.label || t.token_prefix) + '</b> ' + delegEntryBadge(t) + ' ' + delegConcBadge(t) + ' ' + delegTierBadges(t) + lifecycleBadge(t) +
+          '<div class="mono" style="color:var(--dim2)">' + esc(t.token_prefix) + '</div></td>' +
+          '<td>' + (groups || '-') + '</td>' +
+          '<td style="color:var(--dim);white-space:nowrap">' + esc((t.created_at || '').replace('T', ' ').replace(/\..*$/, '')) + '</td>' +
+          '<td style="white-space:nowrap"><button class="ghost small" data-act="deleg-expand" data-id="' + esc(t.id) + '">' + T('groups.detail') + '</button> ' +
+          '<button class="danger small" data-act="deleg-revoke" data-id="' + esc(t.id) + '" data-name="' + esc(t.label || t.token_prefix) + '">' + T('adm.revoke') + '</button></td></tr>' +
+          '<tr data-delegrow="' + esc(t.id) + '" hidden><td colspan="4" style="background:var(--bg2)">' +
+            '<div class="hint" style="margin:4px 0">' + T('deleg.colSet') + '</div>' + (delegEntriesHtml(t, false) || '-') + '</td></tr>';
+      }).join('') || '<tr><td colspan="4" class="empty">' + T('deleg.empty') + '</td></tr>';
+    }
+  }
+  renderWatch();
+}
+/* Fan-out watch tab (consumer activity overview): every issued token with each disaster-set entry's
+   live state (connector connection × registration) and its recent activity (data-plane opens + lifecycle). */
+function renderWatch() {
+  const body = $('watch-body'); if (!body) return;
+  const sig = JSON.stringify({ d: FANOUT_DELEG, c: FANOUT_CONNS.map(c => [c.id, c.state]) });
+  if (sig === body.dataset.sig) return;
+  body.dataset.sig = sig;
+  body.innerHTML = FANOUT_DELEG.map(t =>
+    '<tr><td><b>' + esc(t.label || t.token_prefix) + '</b> ' + delegTierBadges(t) + '<div class="mono" style="color:var(--dim2)">' + esc(t.token_prefix) + '</div></td>' +
+    '<td>' + delegEntryBadge(t) + '</td>' +
+    '<td>' + (delegEntriesHtml(t, true) || '-') + '</td>' +
+    '<td>' + delegConcBadge(t) + '</td>' +
+    '<td style="white-space:nowrap">' + T('deleg.opensN', { n: t.used_count || 0 }) + lifecycleBadge(t) + '</td>' +
+    '<td style="color:var(--dim);white-space:nowrap">' + esc((t.created_at || '').replace('T', ' ').replace(/\..*$/, '')) + '</td></tr>'
+  ).join('') || '<tr><td colspan="6" class="empty">' + T('deleg.empty') + '</td></tr>';
 }
 async function revokeDelegation(id, name) {
   confirmAction(T('deleg.revokeConfirm', { name }), async () => {
@@ -1641,83 +1562,131 @@ async function revokeDelegation(id, name) {
     } catch(e) { toast(e.message, 'err'); }
   });
 }
-/* Issue dialog: failover-set multi-select (online v3+ upstreams pre-checked; v2 upstreams
-   disabled with a reason) -> primary-entry radio (linked to the checked set) -> local group
-   multi-select (E2E groups badged) -> label. The share card shows once with the full link. */
+/* Unified issuance dialog — four linked dimensions:
+   入口 entry: direct (consumer dials this issuer's own listener; TLS is already end-to-end, so the trust
+     tier locks to plaintext and the disaster set hides) | relay (via the disaster set: connector
+     multi-select with exactly one primary entry).
+   信任 trust: plaintext | E2E (only e2e_required groups stay selectable) | E2E + admin tier (ro/rules/full).
+   路由 mode: dedicated (全量 — every eligible group is submitted; the picker folds into an advanced
+     disclosure) | split (词表 — picker expanded, at least one E2E group required).
+   并发 concurrency: single (a new session kicks the old) | multi (cap = node_config
+     delegation_max_sessions snapshot, default 8 — the server snapshots it, the dialog only displays).
+   The share card shows once with the full link after issuance. */
 async function openIssueDelegation() {
   let conns = [];
   try { conns = (await api('GET', '/api/v1/admin/connectors')).items || []; } catch(e) { toast(e.message, 'err'); return; }
   const usable = conns.filter(c => c.enabled);
-  if (!usable.length) { toast(T('deleg.noUpstreams'), 'err'); return; }
   if (!(S.groups || []).length) { toast(T('groups.empty'), 'err'); return; }
+  // Multi-tier cap display: the live value when the status payload carries it, the default 8 otherwise
+  let maxSessions = 8;
+  try {
+    const st = await api('GET', '/api/v1/admin/node/status');
+    if (st.delegation_max_sessions > 0) maxSessions = st.delegation_max_sessions;
+  } catch(e) { /* status failure never blocks issuance */ }
 
-  const targetRows = usable.map(c => {
-    const ver = c.upstream_version || 0;
-    const old = c.state === 'connected' && ver < 3;
-    const pre = c.state === 'connected' && ver >= 3;
-    const verNote = old ? ' <span class="hint">' + T('deleg.unsupported', { v: ver }) + '</span>' : '';
-    return '<label class="chk" style="display:flex;align-items:center;gap:8px;padding:5px 4px">' +
-      '<input type="checkbox" class="di-target" value="' + esc(c.id) + '"' + (pre ? ' checked' : '') + (old ? ' disabled' : '') + '>' +
+  const e2eIds = new Set((S.groups || []).filter(g => g.e2e_required).map(g => g.id));
+  const hasRelay = usable.length > 0;
+  const targetRows = usable.map(c =>
+    '<label class="chk" style="display:flex;align-items:center;gap:8px;padding:5px 4px">' +
+      '<input type="checkbox" class="di-target" value="' + esc(c.id) + '"' + (c.state === 'connected' ? ' checked' : '') + '>' +
       '<span><b>' + esc(c.name) + '</b> <span class="mono" style="color:var(--dim2)">' + esc(c.upstream_addr) + '</span></span>' +
-      connStatusBadge(c.state) + verNote + '</label>';
-  }).join('');
+      connStatusBadge(c.state) + '</label>'
+  ).join('');
+  // dedicated mode defaults to 全量: every group starts checked (the picker folds away under 专线)
   const groupRows = (S.groups || []).map(g =>
-    '<label><input type="checkbox" class="di-group" value="' + esc(g.id) + '">' +
+    '<label><input type="checkbox" class="di-group" value="' + esc(g.id) + '" checked>' +
     '<span>' + esc(g.name) + '</span>' + (g.e2e_required ? '<span class="badge b-warn">E2E</span>' : '<span class="badge b-info">' + (g.rule_count || 0) + '</span>') + '</label>'
   ).join('');
 
   openModal(T('deleg.issue'),
-    '<label>' + T('deleg.targets') + ' ' + ahelp(T('deleg.targetsHelp')) + '</label>' +
-    '<div class="rule-check" style="max-height:150px">' + targetRows + '</div>' +
-    '<label style="margin-top:10px">' + T('deleg.primary') + ' ' + ahelp(T('deleg.primaryHelp')) + '</label>' +
-    '<div id="di-primary" style="padding:2px 4px"></div>' +
-    '<label style="margin-top:10px">' + T('term.group') + ' ' + ahelp(T('deleg.groupsHelp')) + '</label>' +
-    '<div class="rule-check" style="max-height:130px">' + groupRows + '</div>' +
-    '<div id="di-mode-wrap" style="display:none">' +
-      '<label style="margin-top:10px">' + T('deleg.mode') + ' ' + ahelp(T('deleg.modeHelp')) + '</label>' +
-      '<div style="padding:2px 4px">' +
-        '<label class="chk" style="display:inline-flex;align-items:center;gap:5px;margin-right:14px"><input type="radio" name="di-mode" value="dedicated" checked> ' + T('deleg.modeDedicated') + '</label>' +
-        '<label class="chk" style="display:inline-flex;align-items:center;gap:5px"><input type="radio" name="di-mode" value="split"> ' + T('deleg.modeSplit') + '</label>' +
-      '</div></div>' +
-    '<div id="di-admin-wrap" style="display:none">' +
-      '<label class="chk" style="display:flex;align-items:center;gap:6px;margin-top:10px"><input type="checkbox" id="di-admin"> ' + T('deleg.admin') + ' ' + ahelp(T('deleg.adminHelp')) + '</label>' +
-      '<div id="di-admin-scope" style="display:none;padding:2px 4px">' +
-        '<label class="chk" style="display:inline-flex;align-items:center;gap:5px;margin-right:14px"><input type="radio" name="di-scope" value="ro"> ' + T('deleg.scopeRo') + '</label>' +
-        '<label class="chk" style="display:inline-flex;align-items:center;gap:5px;margin-right:14px"><input type="radio" name="di-scope" value="rules"> ' + T('deleg.scopeRules') + '</label>' +
-        '<label class="chk" style="display:inline-flex;align-items:center;gap:5px"><input type="radio" name="di-scope" value="full" checked> ' + T('deleg.scopeFull') + '</label>' +
-      '</div></div>' +
+    // 入口 entry
+    '<label>' + T('deleg.entry') + ' ' + ahelp(T('deleg.entryHelp')) + '</label>' +
+    '<div style="padding:2px 4px">' +
+      '<label class="chk" style="display:inline-flex;align-items:center;gap:5px;margin-right:14px"><input type="radio" name="di-entry" value="direct"' + (hasRelay ? '' : ' checked') + '> ' + T('deleg.entryDirect') + '</label>' +
+      '<label class="chk" style="display:inline-flex;align-items:center;gap:5px"><input type="radio" name="di-entry" value="relay"' + (hasRelay ? ' checked' : ' disabled') + '> ' + T('deleg.entryRelay') + '</label>' +
+    '</div>' +
+    '<div id="di-relay-wrap"' + (hasRelay ? '' : ' hidden') + '>' +
+      '<label style="margin-top:10px">' + T('deleg.targets') + ' ' + ahelp(T('deleg.targetsHelp')) + '</label>' +
+      '<div class="rule-check" style="max-height:150px">' + (targetRows || '<div class="empty">' + T('deleg.noUpstreams') + '</div>') + '</div>' +
+      '<label style="margin-top:10px">' + T('deleg.primary') + ' ' + ahelp(T('deleg.primaryHelp')) + '</label>' +
+      '<div id="di-primary" style="padding:2px 4px"></div>' +
+    '</div>' +
+    // 信任 trust
+    '<label style="margin-top:10px">' + T('deleg.trust') + ' ' + ahelp(T('deleg.trustHelp')) + '</label>' +
+    '<div style="padding:2px 4px">' +
+      '<label class="chk" style="display:inline-flex;align-items:center;gap:5px;margin-right:14px"><input type="radio" name="di-trust" value="plain" checked> ' + T('deleg.trustPlain') + '</label>' +
+      '<label class="chk" style="display:inline-flex;align-items:center;gap:5px;margin-right:14px"><input type="radio" name="di-trust" value="e2e"> ' + T('deleg.trustE2e') + '</label>' +
+      '<label class="chk" style="display:inline-flex;align-items:center;gap:5px"><input type="radio" name="di-trust" value="admin"> ' + T('deleg.trustAdmin') + '</label>' +
+    '</div>' +
+    '<div class="hint" id="di-trust-lock" style="display:none;color:var(--warn)">' + ic('info', 13) + ' ' + T('deleg.directPlainHint') + '</div>' +
+    '<div id="di-scope-wrap" style="display:none;padding:2px 4px">' +
+      '<label class="chk" style="display:inline-flex;align-items:center;gap:5px;margin-right:14px"><input type="radio" name="di-scope" value="ro"> ' + T('deleg.scopeRo') + '</label>' +
+      '<label class="chk" style="display:inline-flex;align-items:center;gap:5px;margin-right:14px"><input type="radio" name="di-scope" value="rules"> ' + T('deleg.scopeRules') + '</label>' +
+      '<label class="chk" style="display:inline-flex;align-items:center;gap:5px"><input type="radio" name="di-scope" value="full" checked> ' + T('deleg.scopeFull') + '</label>' +
+    '</div>' +
+    // 路由 mode
+    '<label style="margin-top:10px">' + T('deleg.mode') + ' ' + ahelp(T('deleg.modeHelp')) + '</label>' +
+    '<div style="padding:2px 4px">' +
+      '<label class="chk" style="display:inline-flex;align-items:center;gap:5px;margin-right:14px"><input type="radio" name="di-mode" value="dedicated" checked> ' + T('deleg.modeDedicated') + '</label>' +
+      '<label class="chk" style="display:inline-flex;align-items:center;gap:5px"><input type="radio" name="di-mode" value="split"> ' + T('deleg.modeSplit') + '</label>' +
+    '</div>' +
+    // 权限组 groups (dedicated folds the picker into an advanced disclosure; split expands it)
+    '<details id="di-groups-wrap" style="margin-top:10px"><summary style="cursor:pointer;color:var(--dim);font-size:12px">' + T('deleg.groupsAdv') + '</summary>' +
+      '<label style="margin-top:6px">' + T('term.group') + ' ' + ahelp(T('deleg.groupsHelp')) + '</label>' +
+      '<div class="rule-check" style="max-height:150px">' + groupRows + '</div>' +
+    '</details>' +
+    // 并发 concurrency
+    '<label style="margin-top:10px">' + T('deleg.concurrency') + '</label>' +
+    '<div style="padding:2px 4px">' +
+      '<label class="chk" style="display:inline-flex;align-items:center;gap:5px;margin-right:14px"><input type="radio" name="di-conc" value="single" checked> ' + T('deleg.concSingle') + '</label>' +
+      '<label class="chk" style="display:inline-flex;align-items:center;gap:5px"><input type="radio" name="di-conc" value="multi"> ' + T('deleg.concMulti') + ' ' + ahelp(T('deleg.concMultiHelp', { n: maxSessions })) + '</label>' +
+    '</div>' +
     '<label style="margin-top:10px">' + T('common.remark') + '</label><input id="di-label" style="width:100%" placeholder="' + T('deleg.labelPh') + '">' +
     lifecycleFieldsHtml('di', '', ''),
     [
       {label: T('common.cancel'), kind: 'ghost', fn: closeModal},
       {label: T('deleg.issue'), fn: async () => {
-        const targets = [...document.querySelectorAll('.di-target:checked')].map(c => c.value);
-        const groupIds = [...document.querySelectorAll('.di-group:checked')].map(c => c.value);
-        if (!targets.length) { toast(T('deleg.needTargets'), 'err'); return; }
-        if (!groupIds.length) { toast(T('deleg.needGroups'), 'err'); return; }
-        const primary = $('di-primary').dataset.value || targets[0];
+        const entry = (document.querySelector('input[name="di-entry"]:checked') || {}).value || 'direct';
+        const trust = entry === 'direct' ? 'plain' : ((document.querySelector('input[name="di-trust"]:checked') || {}).value || 'plain');
         const mode = (document.querySelector('input[name="di-mode"]:checked') || {}).value || 'dedicated';
-        const adminScope = ($('di-admin').checked && (document.querySelector('input[name="di-scope"]:checked') || {}).value) || '';
+        const concurrency = (document.querySelector('input[name="di-conc"]:checked') || {}).value || 'single';
+        const groupIds = [...document.querySelectorAll('.di-group:checked')].map(c => c.value);
+        if (!groupIds.length) { toast(T('deleg.needGroups'), 'err'); return; }
+        const e2eCount = groupIds.filter(id => e2eIds.has(id)).length;
+        if (trust !== 'plain' && e2eCount !== groupIds.length) { toast(T('deleg.e2eOnly'), 'err'); return; }
+        if (mode === 'split' && !e2eCount) { toast(T('deleg.splitNeedE2e'), 'err'); return; }
+        if (trust === 'admin' && !e2eCount) { toast(T('deleg.adminNeedE2e'), 'err'); return; }
+        let regs = [];
+        if (entry === 'relay') {
+          const targets = [...document.querySelectorAll('.di-target:checked')].map(c => c.value);
+          if (!targets.length) { toast(T('deleg.needTargets'), 'err'); return; }
+          const primary = $('di-primary').dataset.value || targets[0];
+          regs = targets.map(id => ({ connector_id: id, is_primary: id === primary }));
+        }
+        const adminScope = trust === 'admin' ? ((document.querySelector('input[name="di-scope"]:checked') || {}).value || 'full') : '';
         const life = lifecycleFieldsVal('di');
         try {
           const d = await api('POST', '/api/v1/admin/delegation/tokens', {
             label: $('di-label').value.trim(),
             group_ids: groupIds,
-            regs: targets.map(id => ({ connector_id: id, is_primary: id === primary })),
+            regs,
             mode,
             admin_scope: adminScope,
+            entry_mode: entry,
+            concurrency,
             expires_at: life.expires_at,
             max_uses: life.max_uses,
           });
           closeModal();
-          openModal(T('deleg.issuedTitle'), shareCardHtml([]), []);
+          openModal(T('deleg.issuedTitle'), shareCardHtml([]),
+            [{label: T('share.saved'), fn: () => { closeModal(); loadDelegation(); }}]);
           shareCardBind($('modal-root'), { role: 'connect', secret: d.token, link: d.share_url, endpoints: [], note: d.label });
           loadDelegation();
         } catch(e) { toast(e.message, 'err'); }
       }},
     ]);
 
-  // primary radio follows the checked set (first checked entry wins by default)
+  // primary radio follows the checked disaster set (first checked entry wins by default)
   const primaryBox = $('di-primary');
   function syncPrimary() {
     const checked = [...document.querySelectorAll('.di-target:checked')].map(c => c.value);
@@ -1736,18 +1705,44 @@ async function openIssueDelegation() {
   });
   syncPrimary();
 
-  // the access-mode and admin-grant choices only exist when an E2E group is checked (both ride the E2E channel)
-  const e2eIds = new Set((S.groups || []).filter(g => g.e2e_required).map(g => g.id));
-  function syncMode() {
-    const anyE2e = [...document.querySelectorAll('.di-group:checked')].some(c => e2eIds.has(c.value));
-    $('di-mode-wrap').style.display = anyE2e ? '' : 'none';
-    $('di-admin-wrap').style.display = anyE2e ? '' : 'none';
+  // trust linkage: the E2E tiers keep only e2e_required groups selectable (ineligible boxes uncheck+disable)
+  function syncGroupEligibility() {
+    const trust = (document.querySelector('input[name="di-trust"]:checked') || {}).value || 'plain';
+    document.querySelectorAll('.di-group').forEach(c => {
+      const e2e = e2eIds.has(c.value);
+      c.disabled = trust !== 'plain' && !e2e;
+      if (c.disabled) c.checked = false;
+    });
+    $('di-scope-wrap').style.display = trust === 'admin' ? '' : 'none';
   }
-  document.querySelectorAll('.di-group').forEach(c => c.addEventListener('change', syncMode));
-  $('di-admin').addEventListener('change', (e) => {
-    $('di-admin-scope').style.display = e.target.checked ? '' : 'none';
-  });
-  syncMode();
+  document.querySelectorAll('input[name="di-trust"]').forEach(r => r.addEventListener('change', syncGroupEligibility));
+
+  // entry linkage: relay shows the disaster set; direct hides it and locks the trust tier to plaintext
+  // (direct TLS is already end-to-end — stacking E2E or an admin channel adds nothing)
+  function syncEntry() {
+    const entry = (document.querySelector('input[name="di-entry"]:checked') || {}).value || 'direct';
+    const lock = entry === 'direct';
+    $('di-relay-wrap').hidden = lock;
+    document.querySelectorAll('input[name="di-trust"]').forEach(r => {
+      r.disabled = lock && r.value !== 'plain';
+      if (lock && r.value === 'plain') r.checked = true;
+    });
+    $('di-trust-lock').style.display = lock ? '' : 'none';
+    syncGroupEligibility();
+  }
+  document.querySelectorAll('input[name="di-entry"]').forEach(r => r.addEventListener('change', syncEntry));
+  syncEntry();
+
+  // mode linkage: dedicated re-checks every eligible group and folds the picker; split expands it
+  document.querySelectorAll('input[name="di-mode"]').forEach(r => r.addEventListener('change', () => {
+    const mode = (document.querySelector('input[name="di-mode"]:checked') || {}).value || 'dedicated';
+    if (mode === 'dedicated') {
+      document.querySelectorAll('.di-group:not(:disabled)').forEach(c => { c.checked = true; });
+      $('di-groups-wrap').open = false;
+    } else {
+      $('di-groups-wrap').open = true;
+    }
+  }));
 }
 function connectorFormHtml(c) {
   c = c || {};
@@ -1879,11 +1874,10 @@ async function renderAudit() {
         '<option value="">' + T('audit.allActions') + '</option>' +
         ['admin.login','admin.init','rule.create','rule.update','rule.delete','rule.batch_import',
          'group.create','group.update','group.delete','group.update_rules',
-         'account.create','account.update','account.delete','account.reset_password','account.enable','account.disable',
          'relay_token.create','relay_token.delete','relay_token.expose_control','relay_token.set_group',
          'connector.create','connector.update','connector.delete','connector.enable','connector.disable',
-         'federation.adopt',
-         'account.issue_admin_link','admin.console_access','admin.session_via_relay','node.update_settings'].map(a =>
+         'federation.adopt','delegation.issue','delegation.revoke',
+         'admin.console_access','admin.session_via_relay','node.update_settings'].map(a =>
           '<option value="' + a + '" ' + (S.filter.auditAction===a?'selected':'') + '>' + a + '</option>').join('') +
       '</select>' +
     '</div>' +
@@ -2076,7 +2070,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     if (d.type === 'ag-theme' && (d.theme === 'dark' || d.theme === 'light')) {
       try { localStorage.setItem('ag_theme', d.theme); applyTheme(); } catch(_) {}
     }
-    if (d.type === 'ag-nav' && {dashboard:1,accounts:1,groups:1,rules:1,fanin:1,connectors:1,audit:1,settings:1}[d.view]) {
+    if (d.type === 'ag-nav' && {dashboard:1,groups:1,rules:1,fanin:1,connectors:1,audit:1,settings:1}[d.view]) {
       switchView(d.view);
     }
     // Desktop bridge: native open-dialog result (ag-anet-open was requested by an import entry)

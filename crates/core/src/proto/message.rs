@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 pub enum AuthKind {
     /// Fan-out endpoint (PSK token auth)
     Node,
-    /// Client account (tunnel_token auth)
+    /// Delegated consumer client (unified-issuance delegated token auth)
     Client,
 }
 
@@ -16,9 +16,8 @@ pub enum AuthKind {
 ///
 /// The listener tags it with the session's node_id (source tag, namespace isolation) and
 /// offers it in the upstream authorizable pool; the upstream admin adopts it into a local
-/// group in one click. Old upstreams ignore this field (serde default, backwards compatible).
-/// `e2e_required` rides the push (federation P3): adoption inherits the flag, and the pool UI
-/// shows it — enforcement itself always happens on the issuer side.
+/// group in one click. `e2e_required` rides the push (federation P3): adoption inherits the
+/// flag, and the pool UI shows it — enforcement itself always happens on the issuer side.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PushedGroupMsg {
     pub name: String,
@@ -31,13 +30,12 @@ pub struct PushedGroupMsg {
     pub e2e_required: bool,
 }
 
-/// Auth frame payload: connector / client -> listener.
+/// Auth frame payload: connector / consumer client -> listener.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthRequest {
     pub node_id: String,
     pub token: String,
-    /// Auth principal type; defaults to node (backwards compatible)
-    #[serde(default = "default_kind")]
+    /// Auth principal type (fan-out node vs delegated consumer client)
     pub kind: AuthKind,
     /// CIDRs/domains the node advertises as servable (only for kind = Node)
     #[serde(default)]
@@ -45,17 +43,8 @@ pub struct AuthRequest {
     /// Policy groups pushed upstream for the authorizable pool (only for kind = Node; federation P1)
     #[serde(default)]
     pub groups: Vec<PushedGroupMsg>,
-    /// Protocol version, for future negotiation
-    #[serde(default = "default_version")]
+    /// Protocol version of the peer
     pub version: u32,
-}
-
-fn default_kind() -> AuthKind {
-    AuthKind::Node
-}
-
-fn default_version() -> u32 {
-    1
 }
 
 /// Handshake v2: admin endpoint the fan-in side sends in AuthOk to a fan-out
@@ -86,21 +75,13 @@ fn default_control_scope() -> String {
     "full".into()
 }
 
-/// Current protocol version (v4: entrust mode — opaque en_xxx routing words in token_register
-/// hint_map, federation P3 zero-disclosure delegation; v3: session control plane + E2E envelope).
+/// Current protocol version (v4: session control plane + E2E envelope + entrust mode — opaque
+/// en_xxx routing words in token_register hint_map, zero-disclosure delegation). v4 behavior is
+/// the only behavior: no version-gated feature branches exist anywhere.
 pub const PROTOCOL_VERSION: u32 = 4;
 
 /// Minimum protocol version supporting per-channel window flow control.
 pub const PROTOCOL_VERSION_FLOW_CONTROL: u32 = 2;
-
-/// Minimum protocol version supporting the session control plane (Ctrl frames, federation P2/P3).
-/// A side whose peer is older must silently disable delegation features.
-pub const PROTOCOL_VERSION_DELEGATION: u32 = 3;
-
-/// Minimum protocol version whose relay keeps an entrust registry (en_xxx hints register without
-/// advertised-route validation). An issuer facing an older relay strips entrust hints from its
-/// registration frames (the legacy advertise-derived hints still register).
-pub const PROTOCOL_VERSION_ENTRUST: u32 = 4;
 
 /// Open frame payload: listener -> connector, asking to open a data channel to the target.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -108,8 +89,8 @@ pub struct OpenChannel {
     pub target_addr: String,
     pub target_port: u16,
     /// Delegated-session group tags (federation P2): stamped by the listener when forwarding a
-    /// delegated client's Open; the connector enforces the target against its local same-named
-    /// group rules. Old peers ignore this field (serde default, backwards compatible).
+    /// delegated consumer's Open; the connector enforces the target against its local same-named
+    /// group rules.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub groups: Vec<String>,
     /// E2E envelope (federation P3): when present, `target_addr` carries the coarse routing hint
@@ -132,10 +113,10 @@ impl OpenChannel {
 
 /// E2E envelope carried in an Open frame (federation P3).
 ///
-/// `kid` identifies the delegated token (first 8 hex chars of its SHA-256 hash) so the issuer
-/// can look up the unwrap key; `hint` is the coarse routing word the relay enforces/blindly
-/// forwards on; `blob` is the AES-256-GCM sealed JSON `{target_addr, target_port, groups,
-/// chan_salt}` under `e2e_key = HKDF-SHA256(ikm=token, salt="anet/e2e/v1")`.
+/// `kid` identifies the delegated token (first 12 hex chars of its SHA-256 hash, exact match
+/// only) so the issuer can look up the unwrap key; `hint` is the coarse routing word the relay
+/// enforces/blindly forwards on; `blob` is the AES-256-GCM sealed JSON `{target_addr,
+/// target_port, groups, chan_salt}` under `e2e_key = HKDF-SHA256(ikm=token, salt="anet/e2e/v1")`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct E2eOpen {
     pub kid: String,
@@ -153,7 +134,18 @@ pub struct HintEntry {
     pub groups: Vec<String>,
 }
 
-/// Session control-plane message (Ctrl frame payload, JSON; protocol v3, federation P2).
+/// Session concurrency policy of a delegated token (unified issuance): carried by the Ctrl
+/// token_register/revoke frames, enforced by the relay at consumer-session auth.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Concurrency {
+    /// One active session per token: a new session kicks every older one
+    Single,
+    /// Sessions coexist, capped at `max_sessions` per token
+    Multi,
+}
+
+/// Session control-plane message (Ctrl frame payload, JSON; protocol v4, federation P2).
 ///
 /// Flow: the fan-out endpoint (issuer) registers/revokes delegated tokens on its session; the
 /// listener (relay) answers with an ack. Lifetimes follow the session — a dropped session
@@ -163,7 +155,8 @@ pub struct HintEntry {
 pub enum CtrlMessage {
     /// Issuer -> relay: register a delegated token on this session.
     /// `groups` = issuer-local group names the token may use (empty = all pushed groups);
-    /// `hint_map` = coarse routing vocabulary for E2E traffic of this token.
+    /// `hint_map` = coarse routing vocabulary for E2E traffic of this token;
+    /// `concurrency`/`max_sessions` = consumer-session policy the relay enforces at auth.
     TokenRegister {
         token_hash: String,
         #[serde(default)]
@@ -172,9 +165,16 @@ pub enum CtrlMessage {
         groups: Vec<String>,
         #[serde(default)]
         hint_map: Vec<HintEntry>,
+        concurrency: Concurrency,
+        max_sessions: u32,
     },
     /// Issuer -> relay: revoke a delegated token (kick its sessions, drop the registration).
-    TokenRevoke { token_hash: String },
+    /// Carries the same policy snapshot as the registration (audit symmetry).
+    TokenRevoke {
+        token_hash: String,
+        concurrency: Concurrency,
+        max_sessions: u32,
+    },
     /// Relay -> issuer: registration/revocation outcome (`error` empty on success).
     TokenAck {
         token_hash: String,

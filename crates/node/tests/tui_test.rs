@@ -33,9 +33,9 @@ async fn tui_key_event_handling() {
     app.handle_key(KeyCode::Tab);
     assert_eq!(app.current_tab, Tab::Groups);
     app.handle_key(KeyCode::Tab);
-    assert_eq!(app.current_tab, Tab::Accounts);
-    app.handle_key(KeyCode::Tab);
     assert_eq!(app.current_tab, Tab::Tokens);
+    app.handle_key(KeyCode::Tab);
+    assert_eq!(app.current_tab, Tab::Delegated);
     app.handle_key(KeyCode::Tab);
     assert_eq!(app.current_tab, Tab::Connectors);
     app.handle_key(KeyCode::Tab);
@@ -60,7 +60,6 @@ async fn tui_create_token_readonly_rejected() {
     // switch to the Tokens tab
     app.handle_key(KeyCode::Tab); // Rules
     app.handle_key(KeyCode::Tab); // Groups
-    app.handle_key(KeyCode::Tab); // Accounts
     app.handle_key(KeyCode::Tab); // Tokens
     assert_eq!(app.current_tab, Tab::Tokens);
 
@@ -71,25 +70,38 @@ async fn tui_create_token_readonly_rejected() {
     assert!(app.status_msg.contains("只读"));
 }
 
-/// DB readonly mode: account enable/disable refused, state unchanged
+/// DB readonly mode: delegated-token delete refused, state unchanged
 #[tokio::test]
-async fn tui_toggle_account_readonly_rejected() {
+async fn tui_delete_delegated_readonly_rejected() {
     let db = Database::in_memory().unwrap();
-    let gid = db.create_group("g", "").unwrap().id;
-    let hash = agile_net_node::db::hash_password("TestPass123").unwrap();
-    db.create_account("user1", &hash, &gid, "").unwrap();
+    db.create_delegated_token(
+        "hash-d1",
+        "d_d1",
+        "label-1",
+        "[]",
+        "[]",
+        "",
+        "dedicated",
+        "",
+        "direct",
+        "multi",
+        8,
+        None,
+        None,
+    )
+    .unwrap();
 
     let mut app = db_app(db);
-    // switch to the Accounts tab
+    // switch to the Delegated tab
     app.handle_key(KeyCode::Tab);
     app.handle_key(KeyCode::Tab);
     app.handle_key(KeyCode::Tab);
-    assert_eq!(app.current_tab, Tab::Accounts);
-    assert_eq!(app.accounts.len(), 1);
-    assert!(app.accounts[0].enabled);
+    app.handle_key(KeyCode::Tab);
+    assert_eq!(app.current_tab, Tab::Delegated);
+    assert_eq!(app.delegated.len(), 1);
 
-    app.handle_key(KeyCode::Char('e'));
-    // readonly mode: state unchanged with a hint
-    assert!(app.accounts[0].enabled);
+    app.handle_key(KeyCode::Char('d'));
+    // readonly mode: no delete confirmation, status bar hints API mode is needed
+    assert!(!app.pending_delete);
     assert!(app.status_msg.contains("只读"));
 }
