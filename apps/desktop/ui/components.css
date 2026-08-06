@@ -261,26 +261,30 @@ html[data-theme="dark"] .badge-beta { color: rgba(255,255,255,.95); }
 /* ================= agimp universal import wizard (agimport.js, self-contained modal shared by both ends) =================
    Structure: AgImport.open(cfg) appends <div class="agimp-mask"><div class="agimp">…</div></div> to <body>.
    Input row: text input + flush icon buttons (paste / .anet file / QR image) + confirm icon — gray until the
-   preview parses valid, then accent-green with a breathing halo (.ready). All colors come from tokens. */
+   preview parses valid, then accent-green with a breathing halo (.ready). All colors come from tokens.
+   v2 aligned: head band / hard-edge input / preview box as data well; icon-button hover = proper inversion
+   (fixes dark-on-dark bleed from the generic button:hover background). */
 .agimp-mask { position: fixed; inset: 0; z-index: 90; display: flex; align-items: center; justify-content: center; background: var(--mask); animation: agimp-fade .16s ease; }
-.agimp { width: min(520px, calc(100vw - 32px)); max-height: calc(100vh - 64px); overflow-y: auto; background: var(--panel2); border: 1px solid var(--border); border-radius: 14px; box-shadow: var(--shadow-2); padding: 18px 18px 16px; animation: agimp-in .18s ease; }
+.agimp { width: min(520px, calc(100vw - 32px)); max-height: calc(100vh - 64px); overflow-y: auto; background: var(--panel2); border: 1px solid var(--border2); border-radius: var(--radius); box-shadow: var(--shadow-3), inset 0 1px 0 var(--card-hi); padding: 18px 18px 16px; animation: agimp-in .18s ease; }
 @keyframes agimp-fade { from { opacity: 0; } to { opacity: 1; } }
 @keyframes agimp-in { from { opacity: 0; transform: translateY(10px) scale(.98); } to { opacity: 1; transform: none; } }
-.agimp-head { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; color: var(--text-strong); }
-.agimp-title { font-size: 15px; font-weight: 650; }
-.agimp-x { margin-left: auto; display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border: none; border-radius: 8px; background: none; color: var(--dim2); cursor: pointer; }
+.agimp-head { display: flex; align-items: center; gap: 8px; margin: -18px -18px 12px; padding: 10px 18px; background: var(--bg2); border-bottom: 1px solid var(--border); border-radius: calc(var(--radius) - 1px) calc(var(--radius) - 1px) 0 0; box-shadow: inset 0 1px 0 var(--card-hi); color: var(--dim); }
+.agimp-title { font-size: 13px; font-weight: 600; letter-spacing: .04em; }
+.agimp-x { margin-left: auto; display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border: none; border-radius: 8px; background: none; color: var(--dim2); cursor: pointer; box-shadow: none; }
 .agimp-x:hover { color: var(--text-strong); background: var(--hover); }
 .agimp-input-row { display: flex; align-items: center; gap: 6px; }
-.agimp-input-row input { flex: 1; min-width: 0; height: 34px; padding: 0 10px; border: 1px solid var(--border2); border-radius: 9px; background: var(--panel); color: var(--text); font-size: 12.5px; outline: none; }
-.agimp-input-row input:focus { border-color: var(--accent); }
-.agimp-ic { flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 34px; border: 1px solid var(--border); border-radius: 9px; background: var(--panel); color: var(--dim); cursor: pointer; transition: color .15s, border-color .15s; }
-.agimp-ic:hover { color: var(--text-strong); border-color: var(--border2); }
+.agimp-input-row input { flex: 1; min-width: 0; height: 34px; padding: 0 10px; border: 1px solid transparent; border-bottom: 2px solid var(--input-border); border-radius: 6px 6px 4px 4px; background: var(--input-bg); color: var(--text); font-size: 12.5px; outline: none; }
+.agimp-input-row input:focus { background: var(--hover); border-color: transparent; border-bottom-color: var(--ring); }
+.agimp-ic { flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 34px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); color: var(--dim); cursor: pointer; transition: color .15s, border-color .15s, background .15s; }
+/* Hover = full inversion (dark fill + inverted icon); wins over the generic button:hover background */
+.agimp-ic:hover { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
 .agimp-ic.busy { opacity: .55; pointer-events: none; }
 .agimp-ok { color: var(--dim2); }
 .agimp-ok.ready { color: var(--ok-text); border-color: var(--ok); animation: agimp-breathe 1.5s ease-out infinite; }
+.agimp-ok.ready:hover { background: var(--ok); border-color: var(--ok); color: #fff; }
 @keyframes agimp-breathe { 0% { box-shadow: 0 0 0 0 var(--ok-bg); } 70% { box-shadow: 0 0 0 7px transparent; } 100% { box-shadow: 0 0 0 0 transparent; } }
 .agimp-preview { margin-top: 12px; }
-.agimp-kv { border: 1px solid var(--border); border-radius: 10px; background: var(--panel); padding: 10px 12px; }
+.agimp-kv { border: 1px solid var(--border); border-radius: 8px; background: var(--input-bg); box-shadow: var(--well-inset); padding: 10px 12px; }
 .agimp-row { display: flex; align-items: baseline; gap: 8px; padding: 2.5px 0; font-size: 12.5px; }
 .agimp-k { flex-shrink: 0; min-width: 52px; color: var(--dim2); font-size: 12px; }
 .agimp-v { min-width: 0; word-break: break-all; color: var(--text); }
@@ -288,11 +292,11 @@ html[data-theme="dark"] .badge-beta { color: rgba(255,255,255,.95); }
 .agimp-hint { margin-top: 8px; font-size: 12px; color: var(--dim2); }
 .agimp-err { margin-top: 8px; font-size: 12px; color: var(--danger-text); }
 .agimp-pin { margin-top: 10px; display: flex; align-items: center; gap: 8px; }
-.agimp-pin input { width: 120px; height: 32px; padding: 0 10px; border: 1px solid var(--border2); border-radius: 9px; background: var(--panel); color: var(--text); font-size: 12.5px; outline: none; }
+.agimp-pin input { width: 120px; height: 32px; padding: 0 10px; border: 1px solid transparent; border-bottom: 2px solid var(--input-border); border-radius: 6px 6px 4px 4px; background: var(--input-bg); color: var(--text); font-size: 12.5px; outline: none; }
+.agimp-pin input:focus, .agimp-field input:focus { background: var(--hover); border-color: transparent; border-bottom-color: var(--ring); }
 .agimp-field { margin-top: 10px; }
-.agimp-field label { display: block; font-size: 12px; color: var(--dim); margin-bottom: 4px; }
-.agimp-field input { width: 100%; height: 34px; padding: 0 10px; border: 1px solid var(--border2); border-radius: 9px; background: var(--panel); color: var(--text); font-size: 12.5px; outline: none; box-sizing: border-box; }
-.agimp-field input:focus { border-color: var(--accent); }
+.agimp-field label { display: block; font-size: 11px; font-weight: 600; letter-spacing: .03em; color: var(--dim); margin-bottom: 5px; }
+.agimp-field input { width: 100%; height: 34px; padding: 0 10px; border: 1px solid transparent; border-bottom: 2px solid var(--input-border); border-radius: 6px 6px 4px 4px; background: var(--input-bg); color: var(--text); font-size: 12.5px; outline: none; box-sizing: border-box; }
 .agimp-start { margin-top: 10px; display: flex; align-items: center; gap: 8px; padding: 9px 12px; border: 1px solid var(--warn); border-radius: 10px; background: var(--warn-bg); font-size: 12.5px; color: var(--text); }
 .agimp-foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
 @media (prefers-reduced-motion: reduce) { .agimp-ok.ready { animation: none; } .agimp, .agimp-mask { animation: none; } }
