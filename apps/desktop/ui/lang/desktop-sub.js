@@ -70,6 +70,7 @@ AgI18n.register({
   'sub.activated': { zh: '已激活 {name}', en: 'Activated {name}' },
   'sub.addFirst': { zh: '请先添加订阅', en: 'Add a subscription first' },
   'sub.roleOn': { zh: '订阅代理已开启（内核运行中）', en: 'Subscription proxy enabled (kernel running)' },
+  'sub.powerAutoOn': { zh: '已一并开启总代理（本地代理），订阅代理即刻生效', en: 'Local proxy auto-started — subscription proxy is now live' },
   'sub.roleOff': { zh: '订阅代理已关闭', en: 'Subscription proxy disabled' },
   'sub.modeRule': { zh: '规则', en: 'Rule' },
   'sub.modeGlobal': { zh: '全局', en: 'Global' },

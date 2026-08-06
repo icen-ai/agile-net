@@ -91,6 +91,9 @@ body { display: block; padding: 0; font-size: 13px; }
 .tp-btn.warn { color: var(--danger-text); }
 .tp-btn[disabled] { opacity: .5; pointer-events: none; }
 
+/* v2 button top-highlight exemption: tray's own flat/ghost buttons stay flat */
+.seg button, .tp-btn { box-shadow: none; }
+
 /* Fallback notice for missing TAURI (opened in a browser by mistake) */
 #tp-noenv { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; padding: 24px; text-align: center; font-size: 12px; color: var(--dim); background: var(--panel2); }
 </style>

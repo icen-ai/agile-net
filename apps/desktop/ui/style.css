@@ -409,3 +409,74 @@ html.no-blur .modal-mask { backdrop-filter: none; -webkit-backdrop-filter: none;
 /* ===== Browser mode (Web remote panel): hide window controls and local-only cards/switches ===== */
 body.http-mode .tb-controls { display: none; }
 body.http-mode .local-only { display: none !important; }
+
+/* ================= Content surface v2「仪器控制台」(approved design-preview; later-cascade overrides, base rules above kept as fallback) =================
+   Machined cards (border2 edge + --card-hi top highlight + doubled shadows) / head-band titles (silk-print, negative-margin band, no markup change) /
+   hard-edge inputs (--input-bg fill + 2px bottom edge, focus = black edge) / dashboard off-state dimming. New tokens live in tokens.css. */
+
+/* Physical key top-highlight on filled buttons; transparent variants stay flat */
+button { box-shadow: inset 0 1px 0 var(--btn-hi); }
+button.ghost { box-shadow: inset 0 1px 0 var(--card-hi); }
+button.danger, .tb-icon, .group-tab { box-shadow: none; }
+.tb-controls button, .more-menu button { box-shadow: none; }
+
+/* Hard-edge inputs (approved「表 2」): sunken gray fill + 2px bottom edge; focus = fill deepens + near-black bottom edge */
+input:not([type=checkbox]):not([type=radio]), textarea, select {
+  background: var(--input-bg); border: 1px solid transparent; border-bottom: 2px solid var(--input-border);
+  border-radius: 6px 6px 4px 4px; box-shadow: none;
+}
+input:not([type=checkbox]):not([type=radio]):focus, textarea:focus, select:focus {
+  background: var(--hover); border-color: transparent; border-bottom-color: var(--ring); box-shadow: none;
+}
+/* Pre-existing per-context textarea/select rules carry their own colors (higher specificity): align them too */
+.script-modal textarea, .fo-modal textarea, .lang-theme select {
+  background: var(--input-bg); border: 1px solid transparent; border-bottom: 2px solid var(--input-border); border-radius: 6px 6px 4px 4px; box-shadow: none;
+}
+.script-modal textarea:focus, .fo-modal textarea:focus { background: var(--hover); border-color: transparent; border-bottom-color: var(--ring); box-shadow: none; }
+
+/* Labels as panel silk-print */
+label, .modal label { font-size: 11px; font-weight: 600; letter-spacing: .03em; color: var(--dim); }
+
+/* Machined cards + head band (first-child h3 only; cards without a leading h3 keep the plain look) */
+.card { background: var(--panel2); border-color: var(--border2); box-shadow: inset 0 1px 0 var(--card-hi), var(--shadow-1); }
+.card:hover { box-shadow: inset 0 1px 0 var(--card-hi), var(--shadow-2); }
+.card > h3:first-child {
+  margin: -16px -18px 12px; padding: 9px 18px 10px;
+  background: var(--bg2); border-bottom: 1px solid var(--border);
+  border-radius: calc(var(--radius) - 1px) calc(var(--radius) - 1px) 0 0;
+  box-shadow: inset 0 1px 0 var(--card-hi);
+  font-size: 12px; letter-spacing: .04em; color: var(--dim);
+}
+.modal > h3:first-child {
+  margin: -20px -22px 14px; padding: 11px 22px;
+  background: var(--bg2); border-bottom: 1px solid var(--border);
+  border-radius: calc(var(--radius) - 1px) calc(var(--radius) - 1px) 0 0;
+  box-shadow: inset 0 1px 0 var(--card-hi);
+  font-size: 13px; letter-spacing: .04em; color: var(--dim);
+}
+/* Sub-modals carry a .sm-head (logo + title + hint) instead of a bare h3: same band treatment */
+.modal > .sm-head:first-child {
+  margin: -20px -22px 14px; padding: 10px 22px;
+  background: var(--bg2); border-bottom: 1px solid var(--border);
+  border-radius: calc(var(--radius) - 1px) calc(var(--radius) - 1px) 0 0;
+  box-shadow: inset 0 1px 0 var(--card-hi);
+}
+.modal > .sm-head:first-child h3 { font-size: 14px; letter-spacing: .04em; color: var(--dim); }
+
+/* Dashboard cards: same machining; .dc-head becomes the band (align-self:stretch cancels .dcard's align-items:flex-start, width:auto cancels .dcard > * width:100% — so the negative margins stretch the band exactly over the card padding) */
+.dcard { background: var(--panel2); border-color: var(--border2); box-shadow: inset 0 1px 0 var(--card-hi), var(--shadow-1); }
+.dcard[data-goto]:hover { box-shadow: inset 0 1px 0 var(--card-hi), var(--shadow-2); }
+.dcard > .dc-head {
+  align-self: stretch; width: auto; margin: -13px -15px 0; padding: 8px 14px 9px;
+  background: var(--bg2); border-bottom: 1px solid var(--border);
+  border-radius: calc(var(--radius) - 1px) calc(var(--radius) - 1px) 0 0;
+  box-shadow: inset 0 1px 0 var(--card-hi);
+  font-size: 12px; letter-spacing: .04em; color: var(--dim);
+}
+/* Off-state dimming (driven by syncDashOff in app-hero.js): unpowered cards desaturate; the head switch stays full-contrast as the turn-on entry */
+.dcard .dc-head, .dcard > * { transition: opacity .2s, background .2s, color .2s, border-color .2s; }
+.dcard.off { background: var(--panel); border-color: var(--border); box-shadow: none; }
+.dcard.off[data-goto]:hover { transform: none; box-shadow: none; border-color: var(--border); }
+.dcard.off .dc-head { background: transparent; box-shadow: none; border-bottom-color: var(--row-border); color: var(--dim2); }
+.dcard.off > *:not(.dc-head) { opacity: .45; }
+html[data-theme="dark"] .dcard.off > *:not(.dc-head) { opacity: .38; }

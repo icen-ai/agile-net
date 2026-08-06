@@ -22,6 +22,18 @@ function renderSideFoot() {
    active connections sub_connections active.length (hooked once into 10s main polling; 1s high-freq belongs to logs view);
    current mode reads proxy_power.on + window._rolesCache (initRoles caches get_role_settings, synced at each change point).
    anet proxy traffic has no counter: kernel stopped -> chart area empty state 「订阅内核未运行，暂无速率数据」, no faking. All signature-compared. */
+/* Dashboard card off-state (content-surface v2): cards whose head switch is off dim to keep the visual field quiet;
+   the head switch itself stays full-contrast (it is the turn-on entry). Wired in initHero (change delegation + first sync)
+   and re-synced in Hero.tick10s (programmatic .checked reverts don't fire change events). */
+function syncDashOff() {
+  const grid = $('dash-grid');
+  if (!grid) return;
+  grid.querySelectorAll('.dcard').forEach(card => {
+    const sw = card.querySelector('.dc-head input[type="checkbox"]');
+    if (sw) card.classList.toggle('off', !sw.checked);
+  });
+}
+
 const Hero = {
   power: null,          // { on, detail }: detail = '127.0.0.1:57890' / '已停止'
   down60: [], up60: [], // 60-point rate ring buffer (B/s)
@@ -45,6 +57,7 @@ const Hero = {
     this._powerSig = sig;
     const btn = $('btn-power');
     btn.classList.toggle('on', on);
+    $('hero-card').classList.toggle('off', !on); // master card off-state: data zones dim, power key stays lit
     btn.disabled = tunLocked || clientOff;
     btn.style.opacity = (tunLocked || clientOff) ? '.45' : '';
     setText('hero-power-state', on ? AgI18n.t('common.running') + ' ' + p.detail : (p ? p.detail : AgI18n.t('common.stopped')));
@@ -117,10 +130,15 @@ const Hero = {
     await this.pollPower();
     this.pollConns();
     Onboarding.refresh();
+    syncDashOff(); // re-sync card off-states (programmatic .checked reverts by toggle handlers don't fire change)
   },
 };
 function initHero() {
   $('btn-power').onclick = () => Hero.toggle();
+  /* Dashboard card off-state: instant sync on any head-switch toggle (optimistic; tick10s re-syncs after programmatic reverts) */
+  const grid = $('dash-grid');
+  if (grid) grid.addEventListener('change', () => syncDashOff());
+  syncDashOff();
   /* i18n: force re-render of this domain on language switch (signatures cleared so change detection won't block old-language text) */
   AgI18n.onChange(() => {
     Hero._powerSig = ''; NetProbe._sig = ''; Onboarding._sig = '';

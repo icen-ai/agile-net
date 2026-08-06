@@ -9,16 +9,34 @@
 <link rel="stylesheet" href="components.css">
 <link rel="stylesheet" href="style.css">
 <style>
-/* ===== Dashboard hero card (page-level layout: left rate chart / center summary column / right master switch; colors all via tokens, promote to shared layer if needed twice) ===== */
-.hero-stats { display: flex; flex-direction: column; gap: 10px; flex-shrink: 0; min-width: 132px; align-items: flex-end; text-align: right; }
-.hstat { display: flex; flex-direction: column; gap: 1px; align-items: flex-end; min-width: 0; }
-.hstat-l { display: inline-flex; align-items: center; gap: 4px; font-size: 10.5px; letter-spacing: .04em; color: var(--dim2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.hstat-v { font-size: 18px; font-weight: 600; line-height: 1.3; color: var(--text-strong); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
-.hstat-s { font-size: 10px; color: var(--dim2); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+/* ===== Dashboard hero: dark instrument master card (approved content-surface v2; fixed dark palette in both themes via --mast-* tokens) =====
+   Layout: left rate readout + chart / center stat wall (horizontal cells, hairline dividers) / right master power switch;
+   off state (proxy stopped) dims the data zones, the power key stays full-contrast; narrow-screen reflow at the bottom. */
+#hero-card { background: var(--mast-bg); border: 1px solid var(--mast-border); box-shadow: inset 0 1px 0 var(--mast-hi), var(--shadow-2); color: var(--mast-text); --chart-grid: rgba(255,255,255,.14); }
+#hero-card:hover { transform: none; border-color: var(--mast-border); box-shadow: inset 0 1px 0 var(--mast-hi), var(--shadow-2); }
+.hero-left, .hero-stats { transition: opacity .25s; }
+#hero-card.off .hero-left, #hero-card.off .hero-stats { opacity: .3; }
+.hero-stats { display: flex; gap: 0; flex-shrink: 0; align-items: stretch; }
+.hstat { display: flex; flex-direction: column; gap: 1px; min-width: 0; padding: 2px 20px; border-left: 1px solid var(--mast-div); }
+.hstat:first-child { border-left: none; padding-left: 0; }
+.hstat-l { display: inline-flex; align-items: center; gap: 4px; font-size: 10.5px; letter-spacing: .08em; color: var(--mast-dim2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hstat-v { font-family: ui-monospace, Consolas, monospace; font-size: 21px; font-weight: 600; line-height: 1.3; color: var(--mast-text); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+.hstat-s { font-size: 10px; color: var(--mast-faint); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+#hero-card .empty-t { color: var(--mast-dim); }
+#hero-power-state { color: var(--mast-text); }
+#hero-card .hint { color: var(--mast-dim); }
+/* Master power key: dark machined key at rest; running = inverted white key + white breathing ring */
+#hero-card .power-btn { background: var(--mast-btn-bg); border: 2px solid var(--mast-btn-border); color: var(--mast-btn-text); box-shadow: inset 0 1px 0 var(--mast-hi), 0 2px 6px rgba(0,0,0,.35); }
+#hero-card .power-btn:hover { background: var(--mast-btn-bg); filter: brightness(1.1); transform: scale(1.03); }
+#hero-card .power-btn.on { background: var(--mast-on-bg); border-color: rgba(255,255,255,.5); color: var(--mast-on-text); box-shadow: 0 0 0 6px var(--mast-on-ring), 0 0 26px var(--mast-on-glow), inset 0 1px 0 rgba(255,255,255,.8); animation: hero-power-breathe 2s ease-out infinite; }
+@keyframes hero-power-breathe {
+  0% { box-shadow: 0 0 0 6px var(--mast-on-ring), 0 0 26px var(--mast-on-glow), inset 0 1px 0 rgba(255,255,255,.8), 0 0 0 0 rgba(255,255,255,.25); }
+  70%, 100% { box-shadow: 0 0 0 6px var(--mast-on-ring), 0 0 26px var(--mast-on-glow), inset 0 1px 0 rgba(255,255,255,.8), 0 0 0 14px rgba(255,255,255,0); }
+}
 @media (max-width: 860px) {
-  /* Summary column wraps below the chart, evenly spread in one row (stays one row of three even ≤720px) */
-  #hero-card .hero-stats { order: 3; flex-basis: 100%; flex-direction: row; align-items: stretch; text-align: left; min-width: 0; gap: 14px; }
-  #hero-card .hstat { flex: 1; align-items: flex-start; }
+  /* Stat wall wraps below the chart, evenly spread in one row (stays one row of three even ≤720px) */
+  #hero-card .hero-stats { order: 3; flex-basis: 100%; min-width: 0; }
+  #hero-card .hstat { flex: 1; padding: 2px 12px; }
 }
 @media (max-width: 720px) {
   #hero-card .power-btn { width: 64px; height: 64px; }
@@ -112,11 +130,11 @@
            Rates and traffic come only from the subscription kernel data source (anet proxy traffic has no counters, no faking); number roll via .odo component (driven by odoSet);
            narrow-screen reflow in head style block (≤860px summary wraps into even row, ≤720px switch shrinks to 64px) -->
       <div class="card" id="hero-card" style="display:flex;align-items:center;gap:20px;flex-wrap:wrap">
-        <!-- Left: rate readout row (large down / small up on same line) + dual-series chart (min-width:0 prevents squeezing the summary column) -->
-        <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:6px">
+        <!-- Left: rate readout row (large down / small up on same line) + dual-series chart (min-width:0 prevents squeezing the stat wall) -->
+        <div class="hero-left" style="flex:1;min-width:0;display:flex;flex-direction:column;gap:6px">
           <div style="display:flex;align-items:baseline;gap:16px">
             <span style="font-size:24px;font-weight:600;color:var(--chart-down);font-variant-numeric:tabular-nums;white-space:nowrap">↓&nbsp;<span class="odo" id="hero-rate-down">-</span></span>
-            <span style="font-size:16px;color:var(--dim);font-variant-numeric:tabular-nums;white-space:nowrap">↑&nbsp;<span class="odo" id="hero-rate-up">-</span></span>
+            <span style="font-size:16px;color:var(--chart-up);font-variant-numeric:tabular-nums;white-space:nowrap">↑&nbsp;<span class="odo" id="hero-rate-up">-</span></span>
           </div>
           <div id="hero-chart" style="height:76px;min-width:0"></div>
           <div class="empty-state" id="hero-chart-empty" style="display:none;padding:18px 20px">
@@ -142,7 +160,7 @@
         <!-- Right: proxy master switch + status text (handy position for right-handed users) -->
         <div style="display:flex;flex-direction:column;align-items:center;gap:6px;flex-shrink:0">
           <button id="btn-power" class="power-btn" title="代理总开关" data-i18n-title="home.powerTitle"><i data-ic="power" data-sz="32"></i></button>
-          <div id="hero-power-state" style="font-size:12px;font-weight:600;color:var(--text-strong);text-align:center;max-width:120px">已停止</div>
+          <div id="hero-power-state" style="font-size:12px;font-weight:600;text-align:center;max-width:120px">已停止</div>
           <div class="hint" id="hero-power-hint" style="margin-top:0;display:none;text-align:center;font-size:10px;max-width:120px"></div>
         </div>
       </div>

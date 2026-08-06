@@ -15,13 +15,24 @@
   --danger-border: rgba(237,106,95,.45);
   --chip: #F1F1F1; --hover: #E2E2E2;
   --row-border: #E7E8EA;
-  --radius: 12px;
-  /* Shadow levels: 1 card / 2 popover·menu (card hover also raises to this) / 3 modal; dark theme deepens same levels + glass border glow compensation */
-  --shadow-1: 0 1px 2px rgba(0,0,0,.045), 0 2px 6px rgba(0,0,0,.045);
-  --shadow-2: 0 4px 12px rgba(0,0,0,.08), 0 12px 32px rgba(0,0,0,.12);
-  --shadow-3: 0 2px 8px rgba(0,0,0,.06), 0 12px 40px rgba(0,0,0,.14);
+  --radius: 10px;
+  /* Shadow levels: 1 card / 2 popover·menu (card hover also raises to this) / 3 modal; dark theme deepens same levels + glass border glow compensation.
+     v2 (content-surface redesign): opacity roughly doubled — cards read as mounted panels, not floating paper */
+  --shadow-1: 0 1px 2px rgba(16,24,40,.07), 0 2px 6px rgba(16,24,40,.06);
+  --shadow-2: 0 4px 12px rgba(16,24,40,.10), 0 12px 32px rgba(16,24,40,.14);
+  --shadow-3: 0 2px 8px rgba(16,24,40,.08), 0 12px 40px rgba(16,24,40,.16);
   /* Glassmorphism (requires backdrop-filter blur; glowing edge on overlays) */
   --glass-bg: rgba(252,252,252,.78); --glass-border: rgba(0,0,0,.08);
+  /* Content surface v2 (instrument-console redesign): machined card top highlight / hard-edge sunken inputs / physical key highlight / data-well inset */
+  --card-hi: rgba(255,255,255,.65);
+  --input-bg: #ECEDEF; --input-border: #C9CDD3;
+  --btn-hi: rgba(255,255,255,.14);
+  --well-inset: inset 0 1px 3px rgba(16,24,40,.07);
+  /* Dark instrument master card (fixed dark surface in BOTH themes: home dashboard hero; not theme-switched) */
+  --mast-bg: linear-gradient(180deg, #303236, #232528); --mast-border: #141517; --mast-hi: rgba(255,255,255,.08);
+  --mast-text: #E8E9EA; --mast-dim: #9A9DA3; --mast-dim2: #8A8D93; --mast-faint: #7A7D84; --mast-div: rgba(255,255,255,.12);
+  --mast-btn-bg: linear-gradient(180deg, #3B3D41, #2A2C2F); --mast-btn-border: rgba(255,255,255,.18); --mast-btn-text: #C9CBCE;
+  --mast-on-bg: linear-gradient(180deg, #FAFAFA, #E2E2E2); --mast-on-text: #232528; --mast-on-ring: rgba(255,255,255,.08); --mast-on-glow: rgba(255,255,255,.20);
   /* info semantics (log levels; theme has no blue, use low-saturation steel blue) */
   --info: #5484BC; --info-text: #3E6A9E; --info-bg: rgba(84,132,188,.14);
   /* Table: sticky header bg / row hover / faint zebra striping */
@@ -63,10 +74,15 @@ html[data-theme="dark"] {
   --danger-border: rgba(249,96,87,.40);
   --chip: #2F2D2D; --hover: #3A3838;
   --row-border: #3B3939;
-  --shadow-1: 0 1px 2px rgba(0,0,0,.28), 0 2px 6px rgba(0,0,0,.24);
-  --shadow-2: 0 4px 14px rgba(0,0,0,.36), 0 12px 36px rgba(0,0,0,.40);
-  --shadow-3: 0 2px 10px rgba(0,0,0,.40), 0 16px 48px rgba(0,0,0,.48);
+  --shadow-1: 0 1px 2px rgba(0,0,0,.32), 0 2px 6px rgba(0,0,0,.28);
+  --shadow-2: 0 4px 14px rgba(0,0,0,.40), 0 12px 36px rgba(0,0,0,.44);
+  --shadow-3: 0 2px 10px rgba(0,0,0,.44), 0 16px 48px rgba(0,0,0,.52);
   --glass-bg: rgba(56,54,54,.78); --glass-border: rgba(255,255,255,.10);
+  /* Content surface v2 (dark variants): inset highlight fainter, inputs as dark wells */
+  --card-hi: rgba(255,255,255,.05);
+  --input-bg: rgba(255,255,255,.07); --input-border: #504F4F;
+  --btn-hi: rgba(255,255,255,.10);
+  --well-inset: inset 0 1px 3px rgba(0,0,0,.30);
   --info: #7EA6D8; --info-text: #7EA6D8; --info-bg: rgba(126,166,216,.14);
   --tbl-head-bg: #383636; --tbl-row-hover: rgba(255,255,255,.04); --tbl-row-alt: rgba(255,255,255,.02);
   --log-debug: #9A9DA3; --log-info: #7EA6D8; --log-warn: #F8CE52; --log-error: #F96057;

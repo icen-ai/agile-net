@@ -562,6 +562,15 @@ pub(crate) async fn set_subscription_role(
             crate::float_notify(&app, format!("订阅内核启动失败：{e}"));
             return Err(e);
         }
+        // Subscription traffic only takes effect through the local proxy (master power): auto-start it when off,
+        // otherwise the kernel runs but nothing reaches it. Skipped while TUN runs (TUN carries traffic itself);
+        // on failure roll the kernel back so the toggle reports a whole failure (fan-in role disabled, etc.).
+        if state.client.proxy_port() == 0 && !state.roles.lock().await.tun_mode {
+            if let Err(e) = super::proxy::start_proxy_inner(&app, &state, 57890).await {
+                state.kernel.stop().await;
+                return Err(format!("订阅代理需配合总代理（本地代理）生效，自动开启失败：{e}"));
+            }
+        }
     } else {
         state.kernel.stop().await;
     }

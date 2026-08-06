@@ -46,10 +46,11 @@
 /* Source select visually hidden but kept in the DOM: scripts can read values/change options, change events still fire */
 select.agsel-src { position: absolute !important; width: 1px !important; height: 1px !important; padding: 0 !important; margin: -1px !important; border: 0 !important; opacity: 0 !important; pointer-events: none !important; }
 .agsel { display: inline-block; vertical-align: middle; }
-.agsel-btn { display: inline-flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; font: inherit; text-align: left; background: var(--panel2); border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: 8px 12px; cursor: pointer; transition: border-color .15s, box-shadow .15s; }
-.agsel-btn:hover { background: var(--panel2); border-color: var(--border2); }
+/* v2 hard-edge control (matches base inputs): sunken fill + 2px bottom edge, open state = black bottom edge */
+.agsel-btn { display: inline-flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; font: inherit; text-align: left; background: var(--input-bg); border: 1px solid transparent; border-bottom: 2px solid var(--input-border); color: var(--text); border-radius: 6px 6px 4px 4px; padding: 8px 12px 7px; cursor: pointer; transition: border-color .15s, box-shadow .15s, background .15s; }
+.agsel-btn:hover { background: var(--hover); }
 .agsel-btn:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
-.agsel.open .agsel-btn { border-color: var(--ring); box-shadow: 0 0 0 3px var(--ring-bg); }
+.agsel.open .agsel-btn { background: var(--hover); border-color: transparent; border-bottom-color: var(--ring); box-shadow: none; }
 .agsel-btn:disabled { opacity: .5; cursor: not-allowed; }
 .agsel-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .agsel-btn .ic { flex-shrink: 0; color: var(--dim2); transition: transform .2s ease; }
@@ -295,3 +296,10 @@ html[data-theme="dark"] .badge-beta { color: rgba(255,255,255,.95); }
 .agimp-start { margin-top: 10px; display: flex; align-items: center; gap: 8px; padding: 9px 12px; border: 1px solid var(--warn); border-radius: 10px; background: var(--warn-bg); font-size: 12.5px; color: var(--text); }
 .agimp-foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
 @media (prefers-reduced-motion: reduce) { .agimp-ok.ready { animation: none; } .agimp, .agimp-mask { animation: none; } }
+
+/* ================= well data well (content-surface v2; approved design-preview) =================
+   Inset zone for key technical data inside cards (mono address / fingerprint / port).
+   Structure: <div class="well"><span class="k">Label</span><span class="mono grow">value</span>[actions]</div> — flex row, .k silk-print label, .grow ellipsized. */
+.well { display: flex; align-items: center; gap: 10px; background: var(--input-bg); border: 1px solid var(--border); border-radius: 8px; box-shadow: var(--well-inset); padding: 7px 12px; font-size: 12.5px; }
+.well .k { color: var(--dim); font-size: 11px; font-weight: 600; letter-spacing: .04em; flex-shrink: 0; }
+.well .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

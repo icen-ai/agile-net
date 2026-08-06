@@ -35,9 +35,15 @@ AgileNet 有三套用户界面：节点 Web 管理后台、节点 TUI 终端、�
 | `--skel-bg` / `--skel-shine` | `rgba(0,0,0,.06)` / `rgba(255,255,255,.65)` | `rgba(255,255,255,.07)` / `rgba(255,255,255,.14)` | 骨架屏 `.skel` 底色 + 扫光色 |
 | `--beta-grad` | Beta 徽章/实验卡渐变（badge-beta / beta-card 描边） |
 | `--glass-hi` | `rgba(255,255,255,.5)` | `rgba(255,255,255,.06)` | Liquid Glass 静态顶部高光（`inset 0 1px 0`：nav-item.active / ctx-menu / modal） |
+| `--card-hi` | `rgba(255,255,255,.65)` | `rgba(255,255,255,.05)` | 机加工卡片顶部高光（v2：`.card`/`.dcard`/`.stat` 的 `inset 0 1px 0`） |
+| `--input-bg` / `--input-border` | `#ECEDEF` / `#C9CDD3` | `rgba(255,255,255,.07)` / `#504F4F` | 硬边控件（v2：input/textarea/select/agsel-btn）：下沉灰填充 + 2px 底缘；聚焦 = 填充加深 + 近黑底缘 |
+| `--btn-hi` | `rgba(255,255,255,.14)` | `rgba(255,255,255,.10)` | 实体按键顶高光（v2：填充型按钮 inset 高光；透明/ghost 变体豁免或降级） |
+| `--well-inset` | `inset 0 1px 3px rgba(16,24,40,.07)` | `inset 0 1px 3px rgba(0,0,0,.30)` | well 数据凹槽内阴影 |
+| `--mast-*` 组 | 固定深色（两主题同值）：`--mast-bg`/`--mast-border`/`--mast-hi`/`--mast-text`/`--mast-dim`/`--mast-dim2`/`--mast-faint`/`--mast-div`/`--mast-btn-*`/`--mast-on-*` | 同左 | 深色仪器主卡（首页 hero 总电闸面板，深浅主题均为固定深色） |
 
-- 圆角：卡片 12px（`--radius`），按钮/输入框 8px，徽标与胶囊 999px，上下文菜单 10px（菜单项 6px）
-- 阴影：三级层级 token —— `--shadow-1` 卡片（hover translateY(-1px) 微抬升并升至 `--shadow-2`）、`--shadow-2` 弹层/菜单/浮层、`--shadow-3` 模态；深色同层级加深，玻璃拟态浮层另以 `--glass-border` 发光补偿。`--shadow` 为管理端 crates/node/ui 存量引用的兼容别名（值 = `--shadow-3`），新代码勿用
+- 圆角：卡片 10px（`--radius`），按钮 8px，输入框 6px（硬边底缘 4px），徽标与胶囊 999px，上下文菜单 10px（菜单项 6px）
+- 阴影：三级层级 token —— `--shadow-1` 卡片（hover translateY(-1px) 微抬升并升至 `--shadow-2`）、`--shadow-2` 弹层/菜单/浮层、`--shadow-3` 模态；深色同层级加深，玻璃拟态浮层另以 `--glass-border` 发光补偿。`--shadow` 为管理端 crates/node/ui 存量引用的兼容别名（值 = `--shadow-3`），新代码勿用。v2 起三级不透明度约翻倍（卡片读作「装在机架上的面板」而非漂浮纸片）
+- **内容区质感 v2（两端一致，以后层级联覆盖落在各自 style.css 末尾）**：①机加工卡——卡面 `--panel2` + `--border2` 描边 + `--card-hi` 顶高光 + 加倍阴影；②铭牌头带——`.card > h3:first-child` / `.dc-head` / `.modal > h3:first-child` 负边距头带（`--bg2` 底 + 底线 + 12px 字距丝印，零标记改动）；③硬边控件——input/textarea/select/agsel-btn 下沉灰填充 + 2px 底缘，聚焦底缘近黑；④未开启降饱和——首页角色卡 `.dcard.off`（syncDashOff 驱动：头带开关关 → 整卡退灰去影、卡身压 45%，开关本身保持全亮作开启入口），hero 主卡停止态数据区压 30%；⑤深色仪器主卡——首页 hero 固定深色 `--mast-*` 面板（两主题同深色），状态墙横排分隔线 + 等宽大数字，总电闸运行态反相白键 + 白色呼吸环
 - 侧栏选中项为反相胶囊（`--accent-grad` 微渐变 + `--shadow-1`；浅主题深底浅字，深主题浅底深字），hover 用 `--hover`
 - 默认主题为浅色；深/浅切换持久化于 localStorage（`ag_theme`）
 
@@ -69,6 +75,7 @@ AgileNet 有三套用户界面：节点 Web 管理后台、节点 TUI 终端、�
 - 当前收录 **lat 延迟徽标**：`.lat` 等宽 12px 胶囊（min-width 54px tabular-nums）+ 修饰 `.lat-good`/`.lat-mid`/`.lat-bad`（`--lat-*` + `--lat-*-bg`）/`.lat-na`（超时灰）。
 - 当前收录 **ev-list 事件中心列表**：`.ev-row`（行高 34px）> `.ev-time`（dim2 等宽）+ 类型 `.pill` + `.ev-detail`（flex:1 省略号）。
 - 当前收录 **bnav 底部导航**：仅 ≤720px 显示（桌面 `display:none`），fixed 底栏毛玻璃（`--glass-bg` + blur 双写 + 顶部 1px `--glass-border`，`padding-bottom: env(safe-area-inset-bottom)`）；`.bnav-item` 图标 20px + 10px 文字，active = accent 色 + 顶部 2px 指示条；与 style.css 同断点媒体查询联动（隐藏侧栏 + `.content` 底部留白 64px），JS 无需干预。
+- 当前收录 **well 数据凹槽**：卡内关键技术数据的嵌入式凹槽（mono 地址/指纹/端口）。结构 `.well`（`--input-bg` 底 + `--border` 边 + `--well-inset` 内阴影，flex 行）> `.k`（11px 字距丝印标签）+ `.grow`（省略号主值）；内容区质感 v2 配套件。
 - **玻璃降级机制**：含 backdrop-filter 组件一律 `-webkit-` 前缀双写，并备 `html.no-blur` 规则——backdrop-filter:none + 背景改实色 `--panel2` 托底；覆盖点：ctx-menu / float-menu / bnav（components.css）、modal-mask（style.css，仅关 blur，`--mask` 本身实色半透明托底）；`html.no-blur` 同时停 `.skel` 扫光。
 - odo/skel/empty-state/power-btn/lat/ev-list/bnav 与既有 ctx-menu/float-menu/tbl/logv/pill/side-foot 色值全部走 token 自动适配深色，并内置 prefers-reduced-motion 降级（关闭动画与过渡）。
 

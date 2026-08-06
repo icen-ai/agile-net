@@ -593,6 +593,8 @@ function initSubscription() {
     const on = e.target.checked;
     const el = e.target;
     el.disabled = true;
+    // captured up front: backend auto-starts the local proxy when enabling with master power off; both the direct path and the NEED_DOWNLOAD retry acknowledge it
+    const wasPowerOff = !HTTP_MODE && !(Hero.power && Hero.power.on);
     try {
       if (on && !SUBS.length) {
         el.checked = false;
@@ -602,7 +604,10 @@ function initSubscription() {
       }
       await invoke('set_subscription_role', { enabled: on });
       toast(AgI18n.t(on ? 'sub.roleOn' : 'sub.roleOff'), 'ok');
+      // backend auto-starts the local proxy when enabling with the master power off (subscription traffic needs it) — reflect & acknowledge
+      if (on && wasPowerOff) toast(AgI18n.t('sub.powerAutoOn'), 'ok');
       refreshSubStatus();
+      if (on) { Hero.pollPower(); refreshProxy(); }
     } catch (err) {
       el.checked = !on;
       if (on && String(err).indexOf('NEED_DOWNLOAD:') === 0) {
@@ -611,7 +616,9 @@ function initSubscription() {
           try {
             await invoke('set_subscription_role', { enabled: true });
             toast(AgI18n.t('sub.roleOn'), 'ok');
+            if (wasPowerOff) toast(AgI18n.t('sub.powerAutoOn'), 'ok');
             refreshSubStatus();
+            Hero.pollPower(); refreshProxy();
           } catch (e2) { toast(friendlyError(e2), 'err'); }
         });
       } else {
