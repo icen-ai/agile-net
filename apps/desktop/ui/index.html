@@ -345,33 +345,15 @@
       <div class="page-desc" data-i18n="fanin.desc">下游连接的消费管理：以已保存扇入为主体，叠加实时状态</div>
       <div id="net-banner" class="net-banner" style="display:none"></div>
 
-      <!-- Quick connect (import bar) -->
+      <!-- Quick connect (import bar): 导入链接 + 手动连接（弹窗）+ .anet 文件 / 剪贴板 -->
       <div class="card" id="quick-card">
         <div class="row">
           <input id="connect-url" class="grow mono" placeholder="粘贴接入链接添加扇入 anet://connect?..." data-i18n-ph="fanin.connectPh">
-          <button id="btn-import" data-i18n="fanin.import">导入并连接</button>
+          <button id="btn-import" data-i18n="fanin.import">导入链接</button>
+          <button id="btn-manual" class="ghost" data-i18n="fanin.manualConnect">手动连接</button>
           <button id="btn-anet" class="ghost icon-btn" title="导入 .anet 凭据文件" data-i18n-title="fanin.importAnet"><i data-ic="file-key" data-sz="15"></i></button>
           <input type="file" id="anet-file-input" accept=".anet,application/json" style="display:none">
           <button id="btn-paste" class="ghost icon-btn" title="从剪贴板导入" data-i18n-title="common.pasteImport"><i data-ic="clipboard" data-sz="15"></i></button>
-        </div>
-      </div>
-
-      <!-- Manually add fan-in (collapsed) -->
-      <div class="card">
-        <h3 id="manual-toggle" style="cursor:pointer"><i data-ic="plus"></i><span data-i18n="fanin.manualAdd">手动添加扇入</span> <span class="hint" id="manual-arrow"><i data-ic="chevron-right" data-sz="13"></i></span></h3>
-        <div id="manual-form" style="display:none">
-          <div class="grid2">
-            <div><label data-i18n="fanin.addrLabel">扇入端点地址（host:port 或 https://…）</label><input id="m-addr" placeholder="cdn.example.com:59090"></div>
-            <div><label data-i18n="term.account">账号</label><input id="m-user" placeholder="zhangsan"></div>
-            <div><label data-i18n="common.password">密码</label><input id="m-pass" type="password" placeholder="sk-..."></div>
-            <div><label data-i18n="fanin.pinLabel">证书固定 PEM 路径（可选，生产推荐）</label><input id="m-pin" placeholder="certs/node.pem"></div>
-          </div>
-          <div class="row" style="margin-top:10px">
-            <label class="chk"><input type="checkbox" id="m-insecure"> <span data-i18n="fanin.insecure">跳过证书校验（仅开发）</span></label>
-            <label class="chk"><input type="checkbox" id="m-hosts"> <span data-i18n="fanin.manageHosts">管理系统 hosts</span></label>
-            <label class="chk"><input type="checkbox" id="m-save" checked> <span data-i18n="fanin.saveCred">保存凭据</span></label>
-            <button id="btn-connect" data-i18n="common.connect">连接</button>
-          </div>
         </div>
       </div>
 
@@ -579,14 +561,14 @@
           <div class="table-scroll">
             <table class="tbl tbl-dense">
               <thead><tr>
-                <th style="width:9%" data-i18n="logs.cl.colTime">时间</th>
                 <th data-i18n="logs.colTarget">目标</th>
-                <th style="width:14%" data-i18n="logs.colExit">出口</th>
+                <th style="width:13%" data-i18n="logs.colExit">出口</th>
                 <th style="width:10%" data-i18n="logs.cl.colHit">命中</th>
-                <th style="width:9%">↓</th>
-                <th style="width:9%">↑</th>
-                <th style="width:8%" data-i18n="logs.colDuration">耗时</th>
-                <th style="width:8%" data-i18n="logs.cl.colState">状态</th>
+                <th style="width:9%">↓/s</th>
+                <th style="width:9%">↑/s</th>
+                <th style="width:7%" data-i18n="logs.cl.colConns">连接</th>
+                <th style="width:10%" data-i18n="logs.cl.colLast">最近</th>
+                <th style="width:9%" data-i18n="logs.cl.colState">状态</th>
               </tr></thead>
               <tbody id="lg-conn-body"></tbody>
             </table>
@@ -903,6 +885,38 @@
     </div>
   </div>
 </aside>
+
+<!-- Manual fan-in connect (opened via the 手动连接 button next to 导入链接; field ids preserved = original bindings) -->
+<div class="modal-mask" id="manual-modal" style="display:none">
+  <div class="modal sub-modal">
+    <div class="sm-head">
+      <span class="sm-logo"><i data-ic="plus" data-sz="20"></i></span>
+      <div>
+        <h3 data-i18n="fanin.manualConnect">手动连接</h3>
+        <div class="hint" data-i18n="fanin.manualHint">逐项填写扇入端点信息；有 anet:// 链接请直接用「导入链接」</div>
+      </div>
+    </div>
+    <div class="sm-body">
+      <label data-i18n="fanin.addrLabel">扇入端点地址（host:port 或 https://…）</label>
+      <input id="m-addr" class="mono" placeholder="cdn.example.com:59090">
+      <div class="grid2">
+        <div><label data-i18n="term.account">账号</label><input id="m-user" placeholder="zhangsan"></div>
+        <div><label data-i18n="common.password">密码</label><input id="m-pass" type="password" placeholder="sk-..."></div>
+      </div>
+      <label data-i18n="fanin.pinLabel">证书固定 PEM 路径（可选，生产推荐）</label>
+      <input id="m-pin" class="mono" placeholder="certs/node.pem">
+      <div class="row" style="margin-top:10px">
+        <label class="chk"><input type="checkbox" id="m-insecure"> <span data-i18n="fanin.insecure">跳过证书校验（仅开发）</span></label>
+        <label class="chk"><input type="checkbox" id="m-hosts"> <span data-i18n="fanin.manageHosts">管理系统 hosts</span></label>
+        <label class="chk"><input type="checkbox" id="m-save" checked> <span data-i18n="fanin.saveCred">保存凭据</span></label>
+      </div>
+      <div class="row" style="margin-top:14px;justify-content:flex-end">
+        <button class="ghost" id="btn-manual-cancel" data-i18n="common.cancel">取消</button>
+        <button id="btn-connect" data-i18n="common.connect">连接</button>
+      </div>
+    </div>
+  </div>
+</div>
 
 <div class="modal-mask" id="login-modal" style="display:none">
   <div class="modal">

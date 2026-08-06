@@ -33,7 +33,7 @@ AgI18n.register({
   'common.paste': { zh: '从剪贴板粘贴', en: 'Paste from Clipboard' },
   // ---- home (view-connect) ----
   'home.desc': { zh: '运行概览：代理 / 扇入 / 扇出 / 订阅 / 远程与网络检测；开关在卡片右侧，点卡片进入对应页面', en: 'Overview: proxy, fan-in, fan-out, subscription, remote and network checks; switches sit on the right of each card, click a card to open its page' },
-  'home.chartEmpty': { zh: '订阅内核未运行，暂无速率数据', en: 'Subscription kernel is not running; no rate data' },
+  'home.chartEmpty': { zh: '代理未启动，暂无速率数据', en: 'Proxy is off; no rate data' },
   'home.todayUsed': { zh: '今日已用', en: 'Used Today' },
   'home.activeConns': { zh: '活跃连接', en: 'Connections' },
   'home.curMode': { zh: '当前模式', en: 'Mode' },
@@ -107,9 +107,10 @@ AgI18n.register({
   // ---- fan-in (view-nodes) ----
   'fanin.desc': { zh: '下游连接的消费管理：以已保存扇入为主体，叠加实时状态', en: 'Consumption management for downstream connections: saved fan-in endpoints with a live status overlay' },
   'fanin.connectPh': { zh: '粘贴接入链接添加扇入 anet://connect?...', en: 'Paste access link to add fan-in anet://connect?...' },
-  'fanin.import': { zh: '导入并连接', en: 'Import & Connect' },
+  'fanin.import': { zh: '导入链接', en: 'Import Link' },
   'fanin.importAnet': { zh: '导入 .anet 凭据文件', en: 'Import .anet Credential File' },
-  'fanin.manualAdd': { zh: '手动添加扇入', en: 'Add Fan-in Manually' },
+  'fanin.manualConnect': { zh: '手动连接', en: 'Manual Connect' },
+  'fanin.manualHint': { zh: '逐项填写扇入端点信息；有 anet:// 链接请直接用「导入链接」', en: 'Fill in the endpoint fields manually; if you have an anet:// link, use Import Link instead' },
   'fanin.addrLabel': { zh: '扇入端点地址（host:port 或 https://…）', en: 'Fan-in endpoint address (host:port or https://…)' },
   'fanin.pinLabel': { zh: '证书固定 PEM 路径（可选，生产推荐）', en: 'Pinned certificate PEM path (optional, recommended in production)' },
   'fanin.insecure': { zh: '跳过证书校验（仅开发）', en: 'Skip certificate verification (dev only)' },

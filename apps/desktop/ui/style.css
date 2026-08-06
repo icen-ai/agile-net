@@ -88,11 +88,13 @@ a { color: var(--link); text-decoration: underline; text-underline-offset: 2px; 
 .about-links { display: flex; justify-content: center; gap: 8px; }
 
 /* Sidebar collapsed (icons only): width = titlebar height (46px) so the rail is a clean square column;
-   icon center line pinned at 23px in BOTH states — same left padding as expanded (no centering),
-   so icons never travel during the collapse animation; titlebar's first icon sits on the same 23px line */
-body.collapsed .sidebar { width: 46px; padding: 14px 10px; }
+   icon center line pinned at 23px in BOTH states (fixed-width item box, no centering-on-shrink),
+   so icons never travel during the collapse animation; titlebar's first icon sits on the same 23px line.
+   Collapsed item box = 34×26 (radius 7) — identical to .tb-icon's hit/hover box, per the rail spec;
+   vertical margins keep each icon's Y identical between expanded (32px rows) and collapsed (26+3+3+gap2). */
+body.collapsed .sidebar { width: 46px; padding: 14px 6px; }
 body.collapsed .nav-label { opacity: 0; width: 0; }
-body.collapsed .nav-item { padding-right: 0; gap: 0; }
+body.collapsed .nav-item { width: 34px; height: 26px; padding: 0; margin: 3px 0; justify-content: center; border-radius: 7px; gap: 0; }
 body.collapsed .island { left: calc(50% + 23px); }
 .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
 .dot.on { background: var(--ok); }
@@ -432,6 +434,8 @@ input:not([type=checkbox]):not([type=radio]), textarea, select {
 input:not([type=checkbox]):not([type=radio]):focus, textarea:focus, select:focus {
   background: var(--hover); border-color: transparent; border-bottom-color: var(--ring); box-shadow: none;
 }
+/* the legacy 4-side focus ring predates the hard-edge language: the darkening bottom edge IS the focus indicator */
+input:not([type=checkbox]):not([type=radio]):focus-visible, textarea:focus-visible, select:focus-visible { outline: none; }
 /* Pre-existing per-context textarea/select rules carry their own colors (higher specificity): align them too */
 .script-modal textarea, .fo-modal textarea, .lang-theme select {
   background: var(--input-bg); border: 1px solid transparent; border-bottom: 2px solid var(--input-border); border-radius: 6px 6px 4px 4px; box-shadow: none;

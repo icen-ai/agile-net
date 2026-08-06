@@ -106,13 +106,6 @@ function initTitlebar() {
 }
 
 /* ================= Startup ================= */
-function toggleManual(open) {
-  const f = $('manual-form');
-  const show = open === true ? true : f.style.display === 'none';
-  f.style.display = show ? 'block' : 'none';
-  $('manual-arrow').innerHTML = AgIcon(show ? 'chevron-down' : 'chevron-right', 13);
-}
-
 window.addEventListener('DOMContentLoaded', async () => {
   Island.init();
   bindSearch();
@@ -240,14 +233,18 @@ window.addEventListener('DOMContentLoaded', async () => {
     });
   }
   $('link-paste').onclick = pasteFromClipboard;
-  $('link-manual').onclick = () => { switchView('nodes'); toggleManual(true); };
-  $('manual-toggle').onclick = () => toggleManual();
+  $('link-manual').onclick = () => { switchView('nodes'); $('manual-modal').style.display = 'flex'; };
+  // Manual connect modal (next to 导入链接): open / cancel / mask-close; connect closes the modal on submit
+  $('btn-manual').onclick = () => { $('manual-modal').style.display = 'flex'; };
+  $('btn-manual-cancel').onclick = () => { $('manual-modal').style.display = 'none'; };
+  $('manual-modal').onclick = (e) => { if (e.target === $('manual-modal')) $('manual-modal').style.display = 'none'; };
   $('connect-url').addEventListener('keydown', e => { if (e.key === 'Enter') $('btn-import').click(); });
   $('connect-url-hero').addEventListener('keydown', e => { if (e.key === 'Enter') $('btn-import-hero').click(); });
   $('connect-url-hero').focus();
   $('btn-connect').onclick = () => {
     const addr = $('m-addr').value.trim(), user = $('m-user').value.trim(), pass = $('m-pass').value;
     if (!addr || !user || !pass) { toast(AgI18n.t('app.err.fillAll'), 'err'); return; }
+    $('manual-modal').style.display = 'none';
     connectWith({
       addr, username: user, password: pass,
       insecure: $('m-insecure').checked,
