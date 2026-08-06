@@ -16,5 +16,5 @@ sni_hostname = "cdn.cloudflare.com"
 upstream_addr = "node-mid:54430"
 token = "psk_leaftoken_00000000000000000000000000000000000"
 sni_hostname = "cdn.cloudflare.com"
-advertise = ["10.140.0.0/16"]
+advertise = ["10.140.0.0/16", "10.150.0.0/16"]
 insecure = true

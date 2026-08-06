@@ -3,7 +3,7 @@
 # 拓扑（四层嵌套网络，四级节点链）：
 #   tester ──public──► node-root ──public──► node-mid ──mid──► node-leaf ──leaf──► node-deep ──deep──► target
 #
-# tester 只能到达 node-root/node-mid；target (10.140.0.100) 仅 node-deep 可达。
+# tester 只能到达 node-root/node-mid；target (10.140.0.100) / target2 (10.150.0.100) 仅 node-deep 可达。
 # 数据路径：client(tester) → root → mid → leaf → deep → target
 #
 # 用法：
@@ -20,11 +20,19 @@ services:
       deep-net:
         ipv4_address: 10.140.0.100
 
+  # ---------- 第二内网目标（T5 规则热更新用；路由静态存在，root 组规则运行时放行） ----------
+  target2:
+    image: nginx:alpine
+    container_name: anet-target2
+    networks:
+      deep2-net:
+        ipv4_address: 10.150.0.100
+
   # ---------- L1 根节点（公网） ----------
   node-root:
     image: anet:dev
     container_name: anet-node-root
-    command: ["anet-svc", "serve", "/etc/agile-net/node.toml"]
+    command: ["anet-svc", "start", "/etc/agile-net/node.toml"]
     environment:
       AGILE_ADMIN_PASSWORD: "ChainTest123!"
       # 语法：token|expose:scope —— 向 mid 暴露控制面（rules 档位），T7 管理面穿透用
@@ -45,7 +53,7 @@ services:
   node-mid:
     image: anet:dev
     container_name: anet-node-mid
-    command: ["anet-svc", "serve", "/etc/agile-net/node.toml"]
+    command: ["anet-svc", "start", "/etc/agile-net/node.toml"]
     environment:
       AGILE_ADMIN_PASSWORD: "ChainTest123!"
       AGILE_RELAY_TOKENS: "psk_leaftoken_00000000000000000000000000000000000"
@@ -65,7 +73,7 @@ services:
   node-leaf:
     image: anet:dev
     container_name: anet-node-leaf
-    command: ["anet-svc", "serve", "/etc/agile-net/node.toml"]
+    command: ["anet-svc", "start", "/etc/agile-net/node.toml"]
     environment:
       AGILE_RELAY_TOKENS: "psk_deeptoken_00000000000000000000000000000000000"
     volumes:
@@ -83,7 +91,7 @@ services:
   node-deep:
     image: anet:dev
     container_name: anet-node-deep
-    command: ["anet-svc", "serve", "/etc/agile-net/node.toml"]
+    command: ["anet-svc", "start", "/etc/agile-net/node.toml"]
     volumes:
       - ./configs/node-deep.toml:/etc/agile-net/node.toml:ro
     networks:
@@ -91,6 +99,8 @@ services:
         ipv4_address: 10.120.0.40
       deep-net:
         ipv4_address: 10.140.0.40
+      deep2-net:
+        ipv4_address: 10.150.0.40
     depends_on:
       node-leaf:
         condition: service_started
@@ -136,3 +146,8 @@ networks:
     ipam:
       config:
         - subnet: 10.140.0.0/16
+  deep2-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.150.0.0/16

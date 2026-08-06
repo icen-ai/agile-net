@@ -9,7 +9,8 @@
 #
 # 用法：
 #   docker compose -f .docker/docker-compose.chain.yaml up -d
-#   宿主机客户端: addr = "http://127.0.0.1:59290"（隧道端点自动下发为 127.0.0.1:54430）
+#   宿主机连入：在 root 管理面（http://127.0.0.1:59290）签发 direct 委托令牌，
+#   把 share_url（anet://connect?...，入口 127.0.0.1:54430）写进客户端 TOML 的 nodes 数组。
 name: anet-chain
 
 services:
@@ -27,7 +28,7 @@ services:
   node-root:
     image: anet:dev
     container_name: anet-chain-root
-    command: ["anet-svc", "serve", "/etc/agile-net/node.toml"]
+    command: ["anet-svc", "start", "/etc/agile-net/node.toml"]
     environment:
       AGILE_ADMIN_PASSWORD: "ChainTest123!"
       AGILE_RELAY_TOKENS: "psk_midtoken_000000000000000000000000000000000000"
@@ -50,7 +51,7 @@ services:
   node-mid:
     image: anet:dev
     container_name: anet-chain-mid
-    command: ["anet-svc", "serve", "/etc/agile-net/node.toml"]
+    command: ["anet-svc", "start", "/etc/agile-net/node.toml"]
     environment:
       AGILE_ADMIN_PASSWORD: "ChainTest123!"
       AGILE_RELAY_TOKENS: "psk_leaftoken_00000000000000000000000000000000000"
@@ -70,7 +71,7 @@ services:
   node-leaf:
     image: anet:dev
     container_name: anet-chain-leaf
-    command: ["anet-svc", "serve", "/etc/agile-net/node.toml"]
+    command: ["anet-svc", "start", "/etc/agile-net/node.toml"]
     environment:
       AGILE_RELAY_TOKENS: "psk_deeptoken_00000000000000000000000000000000000"
     volumes:
@@ -88,7 +89,7 @@ services:
   node-deep:
     image: anet:dev
     container_name: anet-chain-deep
-    command: ["anet-svc", "serve", "/etc/agile-net/node.toml"]
+    command: ["anet-svc", "start", "/etc/agile-net/node.toml"]
     volumes:
       - ./configs/node-deep.toml:/etc/agile-net/node.toml:ro
     networks:

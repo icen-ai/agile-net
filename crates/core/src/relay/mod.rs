@@ -20,7 +20,7 @@ pub use connector::{
 };
 pub use limit::TokenBucket;
 pub use listener::{
-    AuthIdentity, DelegatedIdentity, DelegatedRegistry, DelegatedStamp, DelegatedToken, PeerEvent,
+    AuthIdentity, DelegatedIdentity, DelegatedRegistry, DelegatedToken, PeerEvent,
     RelayListener, StaticTokenValidator, TokenValidator, build_acl_router, constant_time_eq,
     delegated_session_key,
 };

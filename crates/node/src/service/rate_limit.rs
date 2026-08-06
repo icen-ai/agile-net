@@ -67,11 +67,6 @@ mod tests {
         let consumer = AuthIdentity::Delegated(agile_net_core::relay::listener::DelegatedIdentity {
             node_id: "consumer-1".into(),
             acl: vec![],
-            stamp: agile_net_core::relay::listener::DelegatedStamp {
-                issuer: "issuer-1".into(),
-                groups: vec![],
-                hints: vec![],
-            },
         });
         assert_eq!(token_rate_limit_bps(&consumer, "any-hash", &db), None);
         // Node variant: maps to a relay_token row by token hash

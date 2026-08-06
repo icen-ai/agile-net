@@ -8,8 +8,12 @@
 tester ──public──► node-root(L1) ──public──► node-mid(L2) ──mid──► node-leaf(L3) ──leaf──► node-deep(L4) ──deep──► target(nginx)
 ```
 
+- 消费凭据 = **direct 委托令牌**（`POST /api/v1/admin/delegation/tokens`，entry_mode=direct /
+  dedicated 全量路由 / multi 并存），客户端 TOML 为链接式 `nodes = ["anet://connect?..."]`
+- 透明档多级转发（「盖章择跳」）：签发者 listener 按令牌 ACL 快照执法；组标是会合回传
+  专用元数据，直连签发者的下行 Open 清标裸奔——中间跳纯路由，无需同名组
 - `tester`（客户端）只能到达 L1/L2 所在 public-net
-- `target`（10.140.0.100）只有 L4 可达，构成最深的嵌套目标
+- `target`（10.140.0.100）/ `target2`（10.150.0.100）只有 L4 可达，构成最深的嵌套目标
 - 数据路径：client → root → mid → leaf → deep → target（4 跳转发）
 
 ### 运行
@@ -28,9 +32,12 @@ docker compose -f .docker/docker-compose.test.yaml up \
 |---|------|--------|
 | T1 | SOCKS5 经四级链访问最深目标 | 长链路转发正确性 |
 | T2 | HTTP CONNECT 经同一链路 | 双协议入站 |
-| T3 | 访问规则外目标 | 数据面 ACL 强制 |
+| T3 | 访问规则外目标 | 签发者 listener ACL 快照强制 |
 | T4 | 客户端同时接入 root 与 mid | 多节点合并路由、不同深度接入 |
-| T5 | root 新增规则后不重连直连 | 长轮询配置热更新 |
+| T5 | root 组新增规则后不重连访问 target2 | 会话 ACL 逐 Open 热解析（注册表 2s watcher 热刷） |
+| T6 | kick mid 后链路中断再自愈 | 扇出指数退避重连 |
+| T7 | mid 自动发现 root 控制端点 | 握手控制面暴露（manageable_upstreams，rules 档；票据链由 control_plane_test 覆盖） |
+| T8 | mid 经扇出隧道测 root | bandwidth 结构化返回（RTT/8MiB 上下行） |
 
 ### 节点配置
 
@@ -43,13 +50,14 @@ docker compose -f .docker/docker-compose.test.yaml up \
 同一四级链拓扑的常驻版本（无 tester 断言），供从**宿主机**真实访问最深层网络：
 
 - `node-root` 的 API(59090) 与 Relay(54430) 发布到宿主机（`127.0.0.1:59290` / `127.0.0.1:54430`），
-  且 `AGILE_PUBLIC_HOST=127.0.0.1` 保证客户端拉到的隧道端点在宿主机可解析
+  且 `AGILE_PUBLIC_HOST=127.0.0.1` 保证签发链接的入口地址在宿主机可解析
 - `target` 挂载 `tests/deep-index.html` 作为深层网络标识页
 
 ```bash
 docker compose -f .docker/docker-compose.chain.yaml up -d
-# 宿主机客户端连入（addr 指向发布的 API 端口，隧道端点自动下发 127.0.0.1:54430）
-# [[nodes]] addr = "http://127.0.0.1:59290" ...
+# 宿主机连入：在 root 管理面（http://127.0.0.1:59290）签发 direct 委托令牌，
+# 把 share_url（anet://connect?...）写进客户端 TOML：
+# nodes = ["anet://connect?server=127.0.0.1&port=54430&account=d:<label>&password=psk_...&fp=<指纹>"]
 ```
 
 经客户端本地代理即可访问 `http://10.140.0.100/`；演示时可在宿主机再架一层

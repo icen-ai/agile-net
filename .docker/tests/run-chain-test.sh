@@ -1,13 +1,20 @@
 #!/bin/sh
 # AgileNet 深度链路 E2E 测试脚本（在 tester 容器内执行）
+# 统一签发世界：消费凭据 = direct 委托令牌（entry_mode=direct 直连签发者 listener、
+# dedicated 全量路由、multi 多端并存）；扇入 relay 令牌与链式扇出（advertise 路由）不变。
+# 组标语义：签发者 listener 按令牌 ACL 快照执法；组标只在「下一跳=签发者会话」时保留，
+# 向普通下游转发一律干净 Open（下游无需任何同名组仪式）。
 # 断言矩阵：
 #   T1  客户端 → root → mid → leaf → deep → target (SOCKS5, 四级链)
 #   T2  同目标经 HTTP CONNECT 代理
 #   T3  ACL 拒绝：访问规则外目标必须失败
 #   T4  多节点接入：同一客户端同时接 root 与 mid，目标两种路径均可达
-#   T5  长轮询配置热更新：新增规则后客户端无需重连即生效
+#   T5  规则热更新：root 组新增 10.150.0.0/16，客户端【不重连】即放行新目标
+#       （签发者侧 watcher 热刷注册表 + listener 每次 Open 热重建 ACL 路由器）
 #   T6  断链自愈：kick mid → 链路中断 → 自动重连恢复
-#   T7  管理面穿透：握手 v2 控制端点发现 + 票据链换取 scoped 管理会话（rules 档位强制）
+#   T7  管理面发现：mid 经握手自动发现 root 控制端点（status.manageable_upstreams，rules 档）
+#       ——票据链换取 scoped 会话由 Rust 集成测试 control_plane_test 覆盖（REST 按设计不落票据）
+#   T8  bandwidth 链路吞吐（mid → root 上游，经扇出隧道）
 set -u
 
 ROOT_API="http://node-root:59090"
@@ -44,11 +51,13 @@ create_rule() {
     -d "{\"type\":\"ip-cidr\",\"value\":\"$3\"}" | jq -r '.data.id'
 }
 
-# $1=token $2=api $3=group_id $4=username → echoes password
-create_account() {
-  curl -sf -X POST "$2/api/v1/admin/accounts" \
+# $1=token $2=api $3=group_id $4=label → echoes delegated token plaintext (psk_, shown once)
+# Unified issuance: direct entry (consumer dials the issuer's own listener), dedicated
+# full-route, multi concurrency.
+issue_delegated() {
+  curl -sf -X POST "$2/api/v1/admin/delegation/tokens" \
     -H "Authorization: Bearer $1" -H 'Content-Type: application/json' \
-    -d "{\"username\":\"$4\",\"group_id\":\"$3\"}" | jq -r '.data.password'
+    -d "{\"label\":\"$4\",\"group_ids\":[\"$3\"],\"regs\":[],\"mode\":\"dedicated\",\"admin_scope\":\"\",\"entry_mode\":\"direct\",\"concurrency\":\"multi\"}" | jq -r '.data.token'
 }
 
 admin_login() {
@@ -65,8 +74,8 @@ log "API 全部就绪"
 log "等待 relay 链路收敛..."
 sleep 6
 
-# ---------- 在 root 上准备账号 ----------
-log "root: 创建组/规则/账号"
+# ---------- 在 root 上准备组/规则/委托令牌 ----------
+log "root: 创建组/规则/签发 direct 委托令牌"
 ADMIN_TOKEN=$(admin_login "$ROOT_API")
 [ -n "$ADMIN_TOKEN" ] && [ "$ADMIN_TOKEN" != "null" ] || { bad "root 管理员登录失败"; exit 1; }
 
@@ -75,30 +84,25 @@ RID=$(create_rule "$ADMIN_TOKEN" "$ROOT_API" "10.140.0.0/16")
 curl -sf -X PUT "$ROOT_API/api/v1/admin/groups/$GID/rules" \
   -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
   -d "{\"rule_ids\":[\"$RID\"]}" > /dev/null
-ACC_PASS=$(create_account "$ADMIN_TOKEN" "$ROOT_API" "$GID" "chainuser")
-[ -n "$ACC_PASS" ] && [ "$ACC_PASS" != "null" ] && ok "root 账号已创建（sk- 强密码）" || { bad "root 账号创建失败"; exit 1; }
+TOK=$(issue_delegated "$ADMIN_TOKEN" "$ROOT_API" "$GID" "chainuser")
+[ -n "$TOK" ] && [ "$TOK" != "null" ] && ok "root 委托令牌已签发（direct/dedicated/multi）" || { bad "root 委托令牌签发失败"; exit 1; }
 
-# ---------- 在 mid 上准备账号（T4 用） ----------
-log "mid: 创建组/规则/账号"
+# ---------- 在 mid 上准备组/规则/委托令牌（T4 用） ----------
+log "mid: 创建组/规则/签发 direct 委托令牌"
 MID_TOKEN=$(admin_login "$MID_API")
 GID2=$(create_group "$MID_TOKEN" "$MID_API" "chain组")
 RID2=$(create_rule "$MID_TOKEN" "$MID_API" "10.140.0.0/16")
 curl -sf -X PUT "$MID_API/api/v1/admin/groups/$GID2/rules" \
   -H "Authorization: Bearer $MID_TOKEN" -H 'Content-Type: application/json' \
   -d "{\"rule_ids\":[\"$RID2\"]}" > /dev/null
-ACC_PASS2=$(create_account "$MID_TOKEN" "$MID_API" "$GID2" "chainuser2")
-[ -n "$ACC_PASS2" ] && [ "$ACC_PASS2" != "null" ] && ok "mid 账号已创建" || bad "mid 账号创建失败"
+TOK2=$(issue_delegated "$MID_TOKEN" "$MID_API" "$GID2" "chainuser2")
+[ -n "$TOK2" ] && [ "$TOK2" != "null" ] && ok "mid 委托令牌已签发" || bad "mid 委托令牌签发失败"
 
 # ---------- 启动客户端（连接 root） ----------
 log "启动 anet-svc client（连接 root）..."
 cat > /tmp/client.toml <<EOF
 proxy_port = 57890
-
-[[nodes]]
-addr = "$ROOT_API"
-username = "chainuser"
-password = "$ACC_PASS"
-insecure = true
+nodes = ["anet://connect?server=node-root&port=54430&account=d:chainuser&password=$TOK&insecure=1"]
 EOF
 anet-svc client /tmp/client.toml > /tmp/client.log 2>&1 &
 CLIENT_PID=$!
@@ -168,18 +172,10 @@ fi
 log "T4: 客户端同时接入 root 与 mid（合并路由）"
 cat > /tmp/client.toml <<EOF
 proxy_port = 57891
-
-[[nodes]]
-addr = "$ROOT_API"
-username = "chainuser"
-password = "$ACC_PASS"
-insecure = true
-
-[[nodes]]
-addr = "$MID_API"
-username = "chainuser2"
-password = "$ACC_PASS2"
-insecure = true
+nodes = [
+  "anet://connect?server=node-root&port=54430&account=d:chainuser&password=$TOK&insecure=1",
+  "anet://connect?server=node-mid&port=54430&account=d:chainuser2&password=$TOK2&insecure=1",
+]
 EOF
 kill $CLIENT_PID 2>/dev/null || true
 sleep 1
@@ -193,91 +189,44 @@ else
   tail -20 /tmp/client2.log
 fi
 
-# ---------- T5: 配置热更新（长轮询） ----------
-log "T5: root 新增规则（10.120.0.0/16），客户端不重连即生效"
-RID3=$(create_rule "$ADMIN_TOKEN" "$ROOT_API" "10.120.0.0/16")
+# ---------- T5: 规则热更新（签发者侧 ACL 快照热刷，客户端不重连） ----------
+# target2 (10.150.0.100) 仅在 deep2-net 可达；10.150.0.0/16 的路由经链式 advertise 静态存在，
+# 但 root 组规则未覆盖 → 先被签发者 ACL 拒绝；新增规则后无需重连即放行。
+log "T5: root 组新增 10.150.0.0/16 规则，客户端不重连访问 target2"
+if curl -sf --max-time 8 --socks5-hostname 127.0.0.1:57891 http://10.150.0.100/ > /dev/null 2>&1; then
+  bad "T5a 前置异常：规则未加前 target2 竟可达"
+else
+  ok "T5a 规则未加前 target2 被 ACL 正确拒绝"
+fi
+RID3=$(create_rule "$ADMIN_TOKEN" "$ROOT_API" "10.150.0.0/16")
 curl -sf -X PUT "$ROOT_API/api/v1/admin/groups/$GID/rules" \
   -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
   -d "{\"rule_ids\":[\"$RID\",\"$RID3\"]}" > /dev/null
-sleep 8
-# 10.120.0.30 是 leaf（其 API 未对 tester 所在的 public-net 开放，链路内也不通）
-# 但路由命中即可证明热更新生效：经 SOCKS 访问 leaf-net 内目标（预期连接失败但非 ACL 拒绝）
-# 以 client 日志出现新配置版本为准
-if grep -q "config updated" /tmp/client2.log; then
-  ok "T5 长轮询热更新已推送（config updated）"
-else
-  # 容忍日志时序：再等等
-  sleep 8
-  if grep -q "config updated" /tmp/client2.log; then
-    ok "T5 长轮询热更新已推送（第二轮检查）"
-  else
-    bad "T5 未观察到配置热更新"
-    tail -20 /tmp/client2.log
+HOT=0
+i=0
+while [ $i -lt 8 ]; do
+  sleep 3
+  if curl -sf --max-time 8 --socks5-hostname 127.0.0.1:57891 http://10.150.0.100/ | grep -q "Welcome to nginx"; then
+    HOT=1
+    break
   fi
-fi
-
-# ---------- T7: 管理面穿透（握手 v2 控制端点发现 + 票据链换取 scoped 管理会话） ----------
-log "T7: 管理面穿透 — mid 发现 root 控制端点，客户端经隧道管理 root"
-# T7a. mid 上创建管理版账号（admin_console）
-GID3=$(create_group "$MID_TOKEN" "$MID_API" "ops组")
-ACC_PASS3=$(curl -sf -X POST "$MID_API/api/v1/admin/accounts" \
-  -H "Authorization: Bearer $MID_TOKEN" -H 'Content-Type: application/json' \
-  -d "{\"username\":\"chainadmin\",\"group_id\":\"$GID3\",\"admin_console\":true}" | jq -r '.data.password')
-[ -n "$ACC_PASS3" ] && [ "$ACC_PASS3" != "null" ] && ok "T7a 管理版账号已创建" || bad "T7a 管理版账号创建失败"
-
-# T7b. 管理版客户端配置自动发现可管理上游（握手 v2：root 向 mid 暴露控制面）
-CT=$(curl -sf -X POST "$MID_API/api/v1/auth/login" -H 'Content-Type: application/json' \
-  -d "{\"username\":\"chainadmin\",\"password\":\"$ACC_PASS3\"}" | jq -r '.data.access_token')
-MG=$(curl -sf "$MID_API/api/v1/client/config" -H "Authorization: Bearer $CT" | jq -r '[.data.manageable[]?|.node_name]|join(",")')
-case "$MG" in
-  *node-root*) ok "T7b 可管理上游自动发现（manageable=$MG）";;
-  *) bad "T7b 未发现可管理上游（manageable=$MG）";;
-esac
-
-# T7c. 取上游控制台票据（中继令牌换取，scoped）
-TICKET=$(curl -sf -X POST "$MID_API/api/v1/client/console-ticket" \
-  -H "Authorization: Bearer $CT" -H 'Content-Type: application/json' \
-  -d '{"upstream":"node-root"}' | jq -r '.data.ticket // empty')
-case "$TICKET" in
-  adt_*) ok "T7c 上游控制台票据已签发";;
-  *) bad "T7c 票据签发失败";;
-esac
-
-# T7d. 经数据面隧道（SOCKS5 → mid → root API）用票据换取 scoped 管理会话
-cat > /tmp/client.toml <<EOF
-proxy_port = 57892
-
-[[nodes]]
-addr = "$MID_API"
-username = "chainadmin"
-password = "$ACC_PASS3"
-insecure = true
-EOF
-kill $CLIENT_PID 2>/dev/null || true
-sleep 1
-anet-svc client /tmp/client.toml > /tmp/client3.log 2>&1 &
-CLIENT_PID=$!
-sleep 4
-BOOT=$(curl -sf --max-time 15 --socks5-hostname 127.0.0.1:57892 -X POST \
-  "http://node-root:59090/api/v1/auth/admin-bootstrap" \
-  -H 'Content-Type: application/json' -d "{\"ticket\":\"$TICKET\"}")
-MJWT=$(echo "$BOOT" | jq -r '.data.access_token // empty')
-MSCOPE=$(echo "$BOOT" | jq -r '.data.scope // empty')
-if [ -n "$MJWT" ] && [ "$MSCOPE" = "rules" ]; then
-  ok "T7d 隧道内票据换取 scoped 管理会话（scope=$MSCOPE）"
+  i=$((i+1))
+done
+if [ "$HOT" = "1" ]; then
+  ok "T5b 规则热更新生效（$(( (i+1)*3 ))s 内放行，客户端未重连）"
 else
-  bad "T7d 票据换取失败（$BOOT）"
-  tail -10 /tmp/client3.log
+  bad "T5b 24s 内新规则未生效"
+  tail -20 /tmp/client2.log
 fi
 
-# T7e/T7f. scope 三档强制：rules 可读、组写被拒（403）
-RC=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 --socks5-hostname 127.0.0.1:57892 \
-  -H "Authorization: Bearer $MJWT" "http://node-root:59090/api/v1/admin/node/status")
-[ "$RC" = "200" ] && ok "T7e rules 档位读取通过（200）" || bad "T7e 读取失败（$RC）"
-RC2=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 --socks5-hostname 127.0.0.1:57892 -X POST \
-  -H "Authorization: Bearer $MJWT" -H 'Content-Type: application/json' \
-  -d '{"name":"should-deny"}' "http://node-root:59090/api/v1/admin/groups")
-[ "$RC2" = "403" ] && ok "T7f rules 档位组写被拒（403）" || bad "T7f 组写未拒（$RC2）"
+# ---------- T7: 管理面发现（握手自动发现 root 控制端点） ----------
+log "T7: mid 自动发现 root 控制端点（manageable_upstreams）"
+MG=$(curl -sf "$MID_API/api/v1/admin/node/status" -H "Authorization: Bearer $MID_TOKEN" | \
+  jq -r '[.data.manageable_upstreams[]? | .node_name + ":" + .scope] | join(",")')
+case "$MG" in
+  *node-root:rules*) ok "T7 可管理上游自动发现（manageable=$MG）";;
+  *) bad "T7 未发现可管理上游（manageable=$MG）";;
+esac
 
 # ---------- T8: bandwidth 链路吞吐（mid → root 上游，经扇出隧道） ----------
 log "T8: bandwidth — mid 经扇出隧道测 root（RTT/上下行吞吐）"

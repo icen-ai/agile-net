@@ -1,8 +1,16 @@
-# AgileNet 测试镜像：anet-svc 单产物（serve / client / cli 子命令）
+# AgileNet 测试镜像：anet-svc 单产物（start / client / cli 子命令）
 # 构建：docker build -f .docker/Dockerfile -t anet:dev .
 
 FROM rust:1-bookworm AS builder
 WORKDIR /src
+
+# crates.io 国内稀疏镜像（构建环境网络受限）
+RUN printf '%s\n' \
+    '[source.crates-io]' \
+    'replace-with = "aliyun-sparse"' \
+    '[source.aliyun-sparse]' \
+    'registry = "sparse+https://mirrors.aliyun.com/crates.io-index/"' \
+    > /usr/local/cargo/config.toml
 
 # 先拷贝清单，利用依赖层缓存
 COPY Cargo.toml Cargo.lock ./
@@ -18,9 +26,10 @@ RUN mkdir -p crates/core/src crates/node/src crates/client/src \
     && echo 'fn main(){}' > crates/client/src/lib.rs \
     && cargo build --release -p agile-net-node || true
 
-# 真实源码构建（apps/desktop/ui/tokens.css 为管理端共享 token，经 include_str! 引用）
+# 真实源码构建（管理端/客户端 SPA 与共享前端资产经 include_str! 引用：tokens.css、
+# components.css、aglink.js 等共享层在 apps/desktop/ui/，客户端 SPA 在 crates/client/ui/）
 COPY crates ./crates
-COPY apps/desktop/ui/tokens.css ./apps/desktop/ui/tokens.css
+COPY apps/desktop/ui ./apps/desktop/ui
 RUN touch crates/core/src/lib.rs crates/node/src/lib.rs crates/client/src/lib.rs \
     && cargo build --release -p agile-net-node
 
@@ -33,4 +42,4 @@ COPY --from=builder /src/target/release/anet-svc /usr/local/bin/
 RUN mkdir -p /data/certs && chmod 700 /data
 
 ENV RUST_LOG=info
-CMD ["anet-svc", "serve"]
+CMD ["anet-svc", "start"]

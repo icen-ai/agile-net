@@ -76,22 +76,9 @@ pub enum AuthIdentity {
 pub struct DelegatedIdentity {
     /// Consumer's self-reported node id (AuthRequest.node_id) — part of the session key
     pub node_id: String,
-    /// ACL snapshot: the token's transparent rules plus its hint vocabulary
+    /// ACL snapshot: the token's transparent rules plus its hint vocabulary (seed for the
+    /// session's hot ACL state; every open re-resolves the registry entry)
     pub acl: Vec<String>,
-    /// Delegated-session stamp — forwarded Opens carry the token's group tags, E2E hints bound
-    /// the envelope vocabulary
-    pub stamp: DelegatedStamp,
-}
-
-/// Federation P2: stamp carried by a delegated consumer session (registered token).
-#[derive(Debug, Clone)]
-pub struct DelegatedStamp {
-    /// Issuing fan-out endpoint (node_id), for audit and routing provenance
-    pub issuer: String,
-    /// Issuer group names the token may use (intersected with the issuer's pushed groups)
-    pub groups: Vec<String>,
-    /// Coarse routing vocabulary for E2E envelopes of this token
-    pub hints: Vec<String>,
 }
 
 /// Federation P2: a delegated token registered by an online fan-out endpoint (session-scoped,
@@ -498,16 +485,9 @@ impl RelayListener {
                 }
             }
         }
-        let mut acl = entry.acl_rules.clone();
-        acl.extend(entry.hint_map.iter().map(|h| h.hint.clone()));
         Some(AuthIdentity::Delegated(DelegatedIdentity {
             node_id: auth.node_id.clone(),
-            acl,
-            stamp: DelegatedStamp {
-                issuer: entry.issuer.clone(),
-                groups: entry.groups.clone(),
-                hints: entry.hint_map.iter().map(|h| h.hint.clone()).collect(),
-            },
+            acl: delegated_acl_of(&entry),
         }))
     }
 
@@ -774,7 +754,6 @@ impl RelayListener {
                     peer_addr,
                     session_key,
                     identity.acl,
-                    identity.stamp,
                     token_hash,
                     flow_control,
                     limiter,
@@ -1227,14 +1206,16 @@ impl RelayListener {
         peer_addr: SocketAddr,
         session_key: String,
         acl: Vec<String>,
-        stamp: DelegatedStamp,
         token_hash: String,
         flow_control: bool,
         limiter: Option<Arc<TokenBucket>>,
     ) -> Result<()> {
         info!(peer = %peer_addr, session = %session_key, "delegated consumer authenticated successfully");
 
+        // Hot ACL state: the router is rebuilt in place whenever the token's registry snapshot
+        // changes (rule edits / revocation take effect on live sessions, no reconnect needed).
         let acl_router = build_acl_router(&acl);
+        let acl_state = Arc::new(arc_swap::ArcSwap::from_pointee((acl, acl_router)));
         let (open_tx, mut open_rx) = tokio::sync::mpsc::channel::<OpenRequest>(64);
         let (mux, reader_handle) =
             MuxSession::start(tls_stream, 1, SessionEvents::open(open_tx), flow_control, limiter);
@@ -1261,12 +1242,11 @@ impl RelayListener {
             };
             let this = self.clone();
             let mux = mux.clone();
-            let acl_router = acl_router.clone();
-            let stamp = stamp.clone();
+            let acl_state = acl_state.clone();
             let token_hash = token_hash.clone();
             tokio::spawn(async move {
                 let _permit = permit; // permit held by the task until the bridge ends
-                this.handle_delegated_open(mux, req, acl_router, stamp, token_hash).await;
+                this.handle_delegated_open(mux, req, acl_state, token_hash).await;
             });
         }
 
@@ -1287,15 +1267,34 @@ impl RelayListener {
         Ok(())
     }
 
-    /// Handle a consumer Open: ACL check -> delegated re-stamp (federation P2) -> routing, then bridge.
+    /// Handle a consumer Open: hot ACL refresh -> ACL check -> group stamp (kept only towards
+    /// the issuer hop, see route_open) -> routing, then bridge.
     async fn handle_delegated_open(
         self: &Arc<Self>,
         mux: Arc<MuxSession>,
         req: OpenRequest,
-        acl_router: Arc<ProxyRouter>,
-        stamp: DelegatedStamp,
+        acl_state: Arc<arc_swap::ArcSwap<(Vec<String>, Arc<ProxyRouter>)>>,
         token_hash: String,
     ) {
+        // Re-resolve the token registration per open: rule edits refresh the router in place,
+        // a vanished registration (revoked / issuer session gone) fails closed at once.
+        let Some(entry) = self.resolve_delegated_token(&token_hash) else {
+            warn!(session = %token_hash, "delegated token registration gone, denying open");
+            let _ = mux
+                .send_frame(Frame::empty(FrameType::OpenFail, req.channel_id))
+                .await;
+            return;
+        };
+        let issuer = entry.issuer.clone();
+        let groups = entry.groups.clone();
+        let hints: Vec<String> = entry.hint_map.iter().map(|h| h.hint.clone()).collect();
+        let fresh_acl = delegated_acl_of(&entry);
+        if acl_state.load().0 != fresh_acl {
+            let router = build_acl_router(&fresh_acl);
+            acl_state.store(Arc::new((fresh_acl, router)));
+        }
+        let acl_router = acl_state.load().1.clone();
+
         let open_req: OpenChannel = match serde_json::from_slice(&req.payload) {
             Ok(v) => v,
             Err(e) => {
@@ -1319,16 +1318,16 @@ impl RelayListener {
             return;
         }
 
-        // federation P2: re-stamp the Open before forwarding — the transparent tier carries the
-        // token's group tags for the issuer's per-group enforcement; E2E envelopes pass through
-        // blind (kid/hint consistency checked)
+        // federation P2: stamp the Open with the token's group tags for the issuer's per-group
+        // enforcement — route_open drops the stamp again unless the next hop is the issuer
+        // session itself. E2E envelopes pass through blind (kid/hint consistency checked)
         let mut open_req = open_req;
         match &open_req.e2e {
             Some(e2e) => {
                 // kid is an exact 12-hex match against the session's token hash
                 if e2e.kid != crate::relay::e2e::kid_of(&token_hash)
                     || e2e.hint != open_req.target_addr
-                    || !stamp.hints.contains(&open_req.target_addr)
+                    || !hints.contains(&open_req.target_addr)
                 {
                     warn!(target = %target, "delegated e2e open rejected (kid/hint mismatch)");
                     let _ = mux
@@ -1339,12 +1338,13 @@ impl RelayListener {
                 open_req.groups = Vec::new(); // group tags travel sealed inside the blob
             }
             None => {
-                open_req.groups = stamp.groups.clone();
+                open_req.groups = groups.clone();
             }
         }
 
         // consumer traffic is metered issuer-side; transit pairs skip duplicate metering (from = None)
-        self.route_open(mux, req, open_req, target, None).await;
+        self.route_open(mux, req, open_req, target, None, Some(&issuer))
+            .await;
     }
 
     /// Handle a fan-in peer Open: PeerAcl restriction -> downstream routing -> direct connect, then bridge.
@@ -1391,7 +1391,7 @@ impl RelayListener {
         }
 
         // transit metering: fan-in peer-initiated forwards booked with from=node_id
-        self.route_open(mux, req, open_req, target, Some(&node_id))
+        self.route_open(mux, req, open_req, target, Some(&node_id), None)
             .await;
     }
 
@@ -1403,9 +1403,10 @@ impl RelayListener {
         self: &Arc<Self>,
         mux: Arc<MuxSession>,
         req: OpenRequest,
-        open_req: OpenChannel,
+        mut open_req: OpenChannel,
         target: String,
         from: Option<&str>,
+        delegated_issuer: Option<&str>,
     ) {
         let channel = mux.accept_channel(req.channel_id);
         let meter_from = self.transit.clone().zip(from.map(str::to_string));
@@ -1417,6 +1418,16 @@ impl RelayListener {
             Some(peer) => peer,
             None => self.resolve_peer(&open_req.target_addr),
         };
+        // Unified issuance: a group stamp is issuer-local ACL metadata, kept only while the next
+        // hop is the token's issuer session (rendezvous forwarding back to the issuer). Once the
+        // trust boundary terminates here (direct issuer / any other hop), the onward Open is this
+        // node's own and travels clean — foreign group names would fail-close or forgery-kill at
+        // downstream delegation hooks.
+        if let Some(issuer) = delegated_issuer
+            && routed_peer.as_deref() != Some(issuer)
+        {
+            open_req.groups.clear();
+        }
         let bridged = if let Some(peer_id) = routed_peer {
             match self.open_channel_full(&peer_id, &open_req).await {
                 Ok(peer_channel) => {
@@ -1553,6 +1564,13 @@ pub fn delegated_session_key(token_hash: &str, node_id: &str) -> String {
 /// Key prefix covering every consumer session of one delegated token (any node_id).
 fn delegated_session_prefix(token_hash: &str) -> String {
     format!("delegated:{token_hash}:")
+}
+
+/// Effective ACL vocabulary of a delegated token: transparent rules plus the hint words.
+fn delegated_acl_of(entry: &DelegatedToken) -> Vec<String> {
+    let mut acl = entry.acl_rules.clone();
+    acl.extend(entry.hint_map.iter().map(|h| h.hint.clone()));
+    acl
 }
 
 /// Compile ACL rule strings into a ProxyRouter (a hit means allowed).
