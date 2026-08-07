@@ -16,6 +16,10 @@ pub const TOPO_APPROVE: &str = "topo_approve";
 
 /// Find-or-create the pending `device_certify` approval for a device; returns the approval id.
 pub fn ensure_device_certify_approval(db: &Database, device_fp: &str) -> Option<String> {
+    // Registry row first: the relay-entry gate hook is read-only, so an approval created via an
+    // appeal can otherwise reference a device row that does not exist yet — and approving it then
+    // failed with "missing or revoked" (the certify UPDATE matched nothing).
+    let _ = db.touch_device(device_fp, "", "", "");
     if let Ok(pending) = db.list_approvals(Some("pending"))
         && let Some(a) = pending
             .into_iter()

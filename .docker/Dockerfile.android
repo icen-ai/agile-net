@@ -3,20 +3,22 @@
 # 用法（仓库根，产物落 .build/apk-out/）：
 #   docker build -f .docker/Dockerfile.android --target export --output type=local,dest=.build/apk-out .
 # 通常不直接调用——scripts/build-local.sh --apk 已封装（本机可 symlink 时优先原生构建）。
+#
+# 基础镜像用本机已缓存的 rust:1-bookworm（docker.io 在本网络不可达；Debian 源可用，JDK 走 apt）
 
-FROM eclipse-temurin:17-jdk-jammy AS builder
+FROM rust:1-bookworm AS builder
 WORKDIR /src
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      curl unzip build-essential pkg-config ca-certificates \
+      curl unzip build-essential pkg-config ca-certificates openjdk-17-jdk-headless \
     && rm -rf /var/lib/apt/lists/*
 
-# Rust 工具链 + Android target（本地默认仅 aarch64，全量四 ABI 走 CI release.yml）
-ENV RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo
-ENV PATH=/usr/local/cargo/bin:$PATH
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable \
-    && rustup target add aarch64-linux-android
+# Rust Android target（本地默认仅 aarch64，全量四 ABI 走 CI release.yml）
+# RUSTUP_DIST_SERVER：static.rust-lang.org 在本网络 TLS 被断，走 USTC 镜像
+#（tauri android init 会自动补装其余 android target，同源覆盖）
+ENV RUSTUP_DIST_SERVER=https://mirrors.ustc.edu.cn/rust-static
+RUN rustup target add aarch64-linux-android
 
 # crates.io 国内稀疏镜像（构建环境网络受限）
 RUN printf '%s\n' \
@@ -47,9 +49,12 @@ COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 COPY apps/desktop ./apps/desktop
 
+# Gradle wrapper 默认源 services.gradle.org 在本网络不可达，改写为腾讯镜像（仅换 host 前缀）
 RUN cd apps/desktop \
     && cargo tauri android init \
-    && cargo tauri android build --apk --debug --target aarch64
+    && sed -i 's#services.gradle.org/distributions#mirrors.cloud.tencent.com/gradle#' \
+       gen/android/gradle/wrapper/gradle-wrapper.properties
+RUN cd apps/desktop && cargo tauri android build --apk --debug --target aarch64
 
 # 仅导出 apk（--output type=local 把本阶段根文件系统落到 dest）
 FROM scratch AS export

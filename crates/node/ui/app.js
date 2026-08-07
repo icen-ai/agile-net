@@ -2477,7 +2477,7 @@ async function openIssueDelegation() {
       { v: 'multi', label: T('deleg.concMulti') + ' ≤' + maxSessions },
     ], 'single') +
     // M3-T6 naming triplet: target name = the token's local label; my name prefills the link's myname word
-    nameTriplet('di', {}, { remark: false }),
+    nameTriplet('di', {}, { remark: false }) +
     lifecycleFieldsHtml('di', '', ''),
     [
       {label: T('common.cancel'), kind: 'ghost', fn: closeModal},

@@ -100,6 +100,9 @@ if [ "$WANT_APK" = 1 ]; then
 
     # 3) 脚手架 + 按模板 compileSdk 精确安装 platform/build-tools
     [ -d "$DESKTOP/gen/android" ] || (cd "$DESKTOP" && cargo tauri android init)
+    # Gradle wrapper 默认源 services.gradle.org 不可达时改写腾讯镜像（幂等）
+    sed -i 's#services.gradle.org/distributions#mirrors.cloud.tencent.com/gradle#' \
+      "$DESKTOP/gen/android/gradle/wrapper/gradle-wrapper.properties" 2>/dev/null || true
     COMPILE_SDK=$(grep -oE 'compileSdk *= *[0-9]+' "$DESKTOP/gen/android/app/build.gradle.kts" | grep -oE '[0-9]+' | head -1)
     COMPILE_SDK=${COMPILE_SDK:-36}
     if [ ! -d "$SDK/platforms/android-$COMPILE_SDK" ]; then
@@ -138,6 +141,7 @@ if [ "$WANT_APK" = 1 ]; then
     cp "$apk" "$dest"; sha "$(basename "$dest")"; found=1
     log "[apk] 完成 → $dest"
   done < <(find "$APK_SRC" -name '*.apk' 2>/dev/null)
+  rm -rf "$OUT/apk-out"  # docker 中转目录（同一份 apk 已归集上方）
   [ "$found" = 1 ] || { echo "未找到 apk 产物（构建失败？）" >&2; exit 1; }
 fi
 

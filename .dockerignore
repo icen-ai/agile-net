@@ -5,6 +5,9 @@ apps/desktop/target/
 .cindy-worktrees/
 .claude/
 
+# Tauri Android scaffold (host-generated, contains absolute paths; the image re-inits it)
+apps/desktop/gen/
+
 # VCS / IDE
 .git/
 .gitignore

@@ -228,3 +228,48 @@ pub fn create_ui_router() -> Router {
         .route("/ui/aglang.js", get(aglang_js_handler))
         .route("/ui/lang/admin.js", get(admin_lang_js_handler))
 }
+
+#[cfg(test)]
+mod tests {
+    //! UI regression guards (the embedded SPA ships verbatim; these catch structural breaks early).
+
+    /// openModal(title, bodyHtml, actions) arity: the actions argument must be an array (or absent,
+    /// defaulting to the close button). A stray comma in the body concatenation silently promotes the
+    /// body tail into `actions` → `(string).forEach is not a function` and a dead dialog button with
+    /// zero feedback (the 签发委托 incident: nameTriplet(...)`,` instead of `+`).
+    #[test]
+    fn open_modal_calls_have_valid_arity() {
+        let s = super::ADMIN_JS;
+        let mut rest = s;
+        while let Some(pos) = rest.find("openModal(") {
+            // skip the definition itself
+            if rest[..pos].ends_with("function ") {
+                rest = &rest[pos + 10..];
+                continue;
+            }
+            let mut depth = 0i32;
+            let mut top_commas = 0;
+            let mut end = pos + 10;
+            for (i, c) in rest[pos + 9..].char_indices() {
+                match c {
+                    '(' | '[' | '{' => depth += 1,
+                    ')' | ']' | '}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            end = pos + 9 + i + 1;
+                            break;
+                        }
+                    }
+                    ',' if depth == 1 => top_commas += 1,
+                    _ => {}
+                }
+            }
+            let args = top_commas + 1;
+            assert!(
+                args == 2 || args == 3,
+                "openModal call with {args} args at byte {pos} (only 2 or 3 allowed)"
+            );
+            rest = &rest[end..];
+        }
+    }
+}

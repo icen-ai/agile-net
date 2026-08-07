@@ -115,7 +115,16 @@ pub async fn decide_approval(
                                 if subject.is_empty() {
                                     return Ok(Err("subject (逻辑持有者) required".to_string()));
                                 }
-                                db.certify_device(&fp, &subject, &remark, "")?;
+                                if let Err(e) = db.certify_device(&fp, &subject, &remark, "") {
+                                    // Heal approvals filed before the registry row existed (relay-entry
+                                    // first sight): register the device, then certify once more.
+                                    if matches!(e, agile_net_core::error::Error::NotFound(_)) {
+                                        db.touch_device(&fp, "", "", "")?;
+                                        db.certify_device(&fp, &subject, &remark, "")?;
+                                    } else {
+                                        return Err(e);
+                                    }
+                                }
                             }
                             crate::service::approvals::DEVICE_REBIND => {
                                 let detail: serde_json::Value =

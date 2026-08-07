@@ -79,3 +79,8 @@ windows-sys = { version = "0.59", features = [
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
+
+# dev 构建剥离 DWARF：Android apk / 桌面 debug 包体积的大头是调试信息（.so 593MB → 数十 MB）；
+# 符号表保留，panic 仍带函数名。需要源码级单步调试时临时注释此行即可。
+[profile.dev]
+strip = "debuginfo"
