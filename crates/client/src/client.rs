@@ -28,6 +28,11 @@ pub enum NodeStatus {
     Connecting,
     Connected,
     Reconnecting,
+    /// Authenticated but gated: the device awaits issuer certification (node.md M3-T2/M4-T3)
+    PendingApproval,
+    /// Terminal rejection (device revoked / token revoked / session takeover): no auto-retry,
+    /// the reason + one-time notice sit in the notification center
+    Blocked,
 }
 
 /// Delegated connect parameters (the only connection mode).
@@ -106,6 +111,15 @@ pub struct NodeState {
     /// Failover: the entry currently dialed
     #[serde(default)]
     pub current_entry: String,
+    /// Device certification state announced by the issuer ("active" / "pending")
+    #[serde(default)]
+    pub device_state: String,
+    /// Terminal block reason (M2 reason_code) when status = Blocked
+    #[serde(default)]
+    pub block_reason: String,
+    /// One-time admin notice attached to the block (immutable)
+    #[serde(default)]
+    pub block_message: String,
 }
 
 /// Manageable node (issuer / upstream chain discovery via the delegated config channel).
@@ -311,6 +325,8 @@ struct ClientInner {
     deleg_admin: DashMap<String, DelegAdminState>,
     /// Connection log (docs/todo/conn-log.md; engine-owned, injected into the proxy inbound on start)
     conn_log: Arc<agile_net_core::proxy::conlog::ConnLog>,
+    /// Notification center (node.md M4-T1): session notices / rejections / approval states
+    notify: arc_swap::ArcSwapAny<Arc<crate::notify::NotificationCenter>>,
 }
 
 /// Delegated admin state: the issuer's current bootstrap ticket + port, plus the
@@ -455,8 +471,23 @@ impl AgileNetClient {
                 proxy_fallback: arc_swap::ArcSwapOption::from_pointee(None),
                 custom_rules: ArcSwap::from_pointee(CustomRules::default()),
                 conn_log: Arc::new(agile_net_core::proxy::conlog::ConnLog::new()),
+                notify: arc_swap::ArcSwapAny::new(crate::notify::NotificationCenter::in_memory()),
             }),
         }
+    }
+
+    /// Swap in the persistent notification center (~/.anet/notifications.json) — the desktop
+    /// GUI and the svc client role call this at startup; tests keep the in-memory default.
+    pub fn with_persistent_notifications(self) -> Self {
+        self.inner
+            .notify
+            .store(crate::notify::NotificationCenter::open_default());
+        self
+    }
+
+    /// Notification center handle (inbox list / unread count / live subscription).
+    pub fn notifications(&self) -> Arc<crate::notify::NotificationCenter> {
+        self.inner.notify.load_full()
     }
 
     pub fn proxy_router(&self) -> Arc<ProxyRouter> {
@@ -542,14 +573,31 @@ impl AgileNetClient {
             addr: params.addr.clone(),
             node_name: label.clone(),
             label: label.clone(),
-            status: NodeStatus::Connected,
+            // M3-T2: a pending device authenticates but is gated until certified (M4-T3 display)
+            status: if tunnel.device_state().as_deref() == Some("pending") {
+                NodeStatus::PendingApproval
+            } else {
+                NodeStatus::Connected
+            },
             rules: delegated_rules(),
             admin_console: false,
             manageable: Vec::new(),
             bytes_up: 0,
             bytes_down: 0,
             current_entry: entries[0].clone(),
+            device_state: tunnel.device_state().unwrap_or_default(),
+            block_reason: String::new(),
+            block_message: String::new(),
         };
+        if state.status == NodeStatus::PendingApproval {
+            self.inner.notify.load().push(
+                "approval",
+                format!("等待 {label} 的管理员认证"),
+                "设备已登记为待认证；认证通过前数据面保持暂停（可在签发端审批中心跟进）。".into(),
+                agile_net_core::proto::message::reason::PENDING_APPROVAL,
+                &node_id,
+            );
+        }
 
         let supervisor = spawn_delegated_supervisor(
             self.inner.clone(),
@@ -621,9 +669,13 @@ impl AgileNetClient {
         for mut r in self.inner.nodes.iter_mut() {
             // Correct the cached status from the live data-plane state:
             // on remote close / network loss the cached Connected is never rewritten (control-plane buttons toggle on it).
-            // The supervisor owns the status; a live tunnel wins.
+            // The supervisor owns the status; a live tunnel wins — but PendingApproval/Blocked
+            // survive (a gated/blocked device can hold a live session that opens nothing).
             let live = if r.opener.is_connected() {
-                NodeStatus::Connected
+                match r.state.status {
+                    NodeStatus::PendingApproval | NodeStatus::Blocked => r.state.status.clone(),
+                    _ => NodeStatus::Connected,
+                }
             } else {
                 r.state.status.clone()
             };
@@ -647,7 +699,10 @@ impl AgileNetClient {
             .get(node_id)
             .map(|r| {
                 if r.opener.is_connected() {
-                    NodeStatus::Connected
+                    match r.state.status {
+                        NodeStatus::PendingApproval | NodeStatus::Blocked => r.state.status.clone(),
+                        _ => NodeStatus::Connected,
+                    }
                 } else {
                     r.state.status.clone()
                 }
@@ -861,10 +916,20 @@ fn spawn_delegated_supervisor(
                 {
                     opener.current.store(None);
                 }
+                // M4: a session notice arriving with the close decides terminal vs transient
+                let notice = t.take_notice();
                 t.disconnect().await;
                 live = None;
                 idx = idx.saturating_add(1);
-                set_delegated_status(&inner, &node_id, NodeStatus::Reconnecting, None);
+                if let Some((rc, msg)) = notice {
+                    if is_terminal_reason(&rc) {
+                        block_node(&inner, &node_id, &rc, &msg);
+                        return; // terminal: no auto-retry — the inbox carries the full notice
+                    }
+                    set_delegated_status(&inner, &node_id, NodeStatus::Reconnecting, None);
+                } else {
+                    set_delegated_status(&inner, &node_id, NodeStatus::Reconnecting, None);
+                }
             }
 
             let entry = entries[idx % entries.len()].clone();
@@ -878,14 +943,32 @@ fn spawn_delegated_supervisor(
                     attempt = 0;
                     opener.current.store(Some(t.clone()));
                     opener.current_entry.store(Arc::new(entry.clone()));
-                    set_delegated_status(&inner, &node_id, NodeStatus::Connected, Some(&entry));
-                    info!(node = %node_id, entry = %entry, "delegated entry connected");
+                    // pending certification rides every reconnect (gate state may have changed)
+                    let ds = t.device_state().unwrap_or_default();
+                    let pending = ds == "pending";
+                    if let Some(mut n) = inner.nodes.get_mut(&node_id) {
+                        n.state.device_state = ds;
+                        n.state.status = if pending {
+                            NodeStatus::PendingApproval
+                        } else {
+                            NodeStatus::Connected
+                        };
+                        n.state.current_entry = entry.clone();
+                    }
+                    info!(node = %node_id, entry = %entry, pending, "delegated entry connected");
                     live = Some(t);
                     // split tier: refetch the rule vocabulary on the fresh session
                     maybe_spawn_config_fetch(&inner, &node_id, &params, &opener);
                 }
                 Err(e) => {
-                    debug!(node = %node_id, entry = %entry, error = %e, "delegated entry connect failed");
+                    // structured auth rejection: terminal reasons stop the loop (M4-T2)
+                    if let Some(rej) = &e.reject
+                        && is_terminal_reason(&rej.reason_code)
+                    {
+                        block_node(&inner, &node_id, &rej.reason_code, &rej.message);
+                        return;
+                    }
+                    debug!(node = %node_id, entry = %entry, error = %e.err, "delegated entry connect failed");
                     idx = idx.saturating_add(1);
                     attempt = attempt.saturating_add(1);
                     set_delegated_status(&inner, &node_id, NodeStatus::Reconnecting, None);
@@ -901,6 +984,41 @@ fn spawn_delegated_supervisor(
             }
         }
     })
+}
+
+/// Terminal session/auth reasons (M4): no auto-retry — the reason + one-time notice go to the
+/// inbox and the node rests in Blocked until the user acts (re-import, contact the admin).
+fn is_terminal_reason(rc: &str) -> bool {
+    use agile_net_core::proto::message::reason as r;
+    matches!(
+        rc,
+        r::REVOKED_BY_ADMIN
+            | r::DEVICE_REVOKED
+            | r::DEVICE_REPLACED
+            | r::TOKEN_EXPIRED
+            | r::KICKED
+            | r::SESSION_TAKEOVER
+            | r::BAD_CREDENTIALS
+            | r::DEVICE_PROOF_INVALID
+    )
+}
+
+/// Terminal block: push the notice into the inbox and park the node in Blocked (reason visible).
+fn block_node(inner: &ClientInner, node_id: &str, rc: &str, msg: &str) {
+    if let Some(mut n) = inner.nodes.get_mut(node_id) {
+        n.state.status = NodeStatus::Blocked;
+        n.state.block_reason = rc.to_string();
+        n.state.block_message = msg.to_string();
+    }
+    let label = node_id.split('@').next().unwrap_or(node_id).to_string();
+    inner.notify.load().push(
+        "session",
+        format!("{label}：{rc}"),
+        if msg.is_empty() { rc.to_string() } else { msg.to_string() },
+        rc,
+        node_id,
+    );
+    info!(node = %node_id, reason = %rc, "node blocked (terminal session notice)");
 }
 
 fn set_delegated_status(
@@ -1055,24 +1173,58 @@ async fn fetch_deleg_config(opener: &Arc<DelegatedOpener>) -> Result<DelegConfig
 }
 
 /// Dial one disaster-set entry (per-entry fingerprint pinning; TOFU for unpinned entries).
+/// Entry connect failure: the supervisor reads `reject` (structured AuthFail) to decide
+/// terminal-vs-transient retry behavior (node.md M4-T2/T3).
+struct EntryFail {
+    err: anyhow::Error,
+    reject: Option<agile_net_core::proto::message::FailReason>,
+}
+
+impl From<anyhow::Error> for EntryFail {
+    fn from(err: anyhow::Error) -> Self {
+        Self { err, reject: None }
+    }
+}
+
+impl From<agile_net_core::error::Error> for EntryFail {
+    fn from(err: agile_net_core::error::Error) -> Self {
+        Self {
+            err: anyhow::anyhow!(err.to_string()),
+            reject: None,
+        }
+    }
+}
+
+impl From<EntryFail> for anyhow::Error {
+    fn from(e: EntryFail) -> Self {
+        e.err
+    }
+}
+
 async fn connect_delegated_entry(
     params: &ConnectParams,
     entry: &str,
     fp: Option<&String>,
     account_id: &str,
-) -> Result<Arc<ClientTunnel>> {
-    let addr = resolve_host_port(entry).await?;
+) -> std::result::Result<Arc<ClientTunnel>, EntryFail> {
+    let addr = resolve_host_port(entry).await.map_err(EntryFail::from)?;
     let mut tls = TlsConfigBuilder::new();
     tls = match fp.filter(|s| !s.is_empty()) {
         Some(fp) => tls.pinned_fingerprint(fp.clone()),
         None if params.insecure => tls.allow_self_signed(true),
         None => tls,
     };
-    let tunnel = ClientTunnel::with_tls_builder(addr, account_id, params.token.clone(), tls)?
+    let tunnel = ClientTunnel::with_tls_builder(addr, account_id, params.token.clone(), tls)
+        .map_err(EntryFail::from)?
         .with_device(machine_device())
         .with_my_name(params.myname.clone().unwrap_or_default());
     let tunnel = Arc::new(tunnel);
-    tunnel.connect().await?;
+    if let Err(e) = tunnel.connect().await {
+        return Err(EntryFail {
+            reject: tunnel.take_reject(),
+            err: e.into(),
+        });
+    }
     Ok(tunnel)
 }
 

@@ -1086,14 +1086,19 @@ impl RelayListener {
                 self.clear_auth_failures(&peer_addr.ip());
                 let peer_version = auth_req.version;
                 // handshake v2: push the control-plane endpoint when the downstream token carries the expose flag (old downstreams ignore unknown fields)
+                // device_state (M3-T2): "pending" tells the consumer it is gated until certified
+                let device_state = match &self.device_gate {
+                    Some(g) if g(&device_meta.device_fp) == DeviceGate::Pending => "pending",
+                    _ => "active",
+                };
                 let auth_ok = match &identity {
                     AuthIdentity::Node {
                         control: Some(offer),
                         ..
                     } => {
-                        serde_json::json!({ "version": PROTOCOL_VERSION, "node_id": self.node_id, "control": offer })
+                        serde_json::json!({ "version": PROTOCOL_VERSION, "node_id": self.node_id, "device_state": device_state, "control": offer })
                     }
-                    _ => serde_json::json!({ "version": PROTOCOL_VERSION, "node_id": self.node_id }),
+                    _ => serde_json::json!({ "version": PROTOCOL_VERSION, "node_id": self.node_id, "device_state": device_state }),
                 };
                 Frame::new(
                     FrameType::AuthOk,

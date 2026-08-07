@@ -45,6 +45,9 @@ pub struct Credential {
     /// in the credential form — M4-T6 three-field naming)
     #[serde(default)]
     pub myname: Option<String>,
+    /// Topology-visibility clause accepted at import (domain|disclose|approve)
+    #[serde(default)]
+    pub visibility: Option<String>,
 }
 
 pub struct CredentialStore {
@@ -144,6 +147,7 @@ mod tests {
             emode: None,
             eadmin: false,
             myname: None,
+            visibility: None,
         }
     }
 

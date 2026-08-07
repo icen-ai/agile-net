@@ -98,6 +98,8 @@ function parse(url) {
       eadmin: truthy(p.eadmin),
       // self-declared display name suggestion ("我的名称", node.md M2)
       myname: p.myname || '',
+      // topology-visibility clause (M6): shown as a clause card at import (M4-T5)
+      visibility: p.visibility || '',
     };
   }
   const sv = resolveServer(p, 54430);

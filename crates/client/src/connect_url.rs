@@ -47,6 +47,9 @@ pub struct ParsedConnect {
     /// Self-declared display name suggestion from the link ("我的名称", node.md M2)
     #[serde(default)]
     pub myname: Option<String>,
+    /// Topology-visibility clause from the link (domain|disclose|approve; clause card at import)
+    #[serde(default)]
+    pub visibility: Option<String>,
 }
 
 /// Parse an `anet://connect?...` URL (delegated credentials only).
@@ -69,6 +72,7 @@ pub fn parse_connect_url(url: &str) -> std::result::Result<ParsedConnect, String
         emode: link.emode,
         eadmin: link.eadmin,
         myname: link.myname,
+        visibility: link.visibility,
     })
 }
 
@@ -143,6 +147,7 @@ mod tests {
             emode: Some("split".into()),
             eadmin: true,
             myname: Some("小明".into()),
+            visibility: None,
         };
         let url = connect_url_of(&c);
         assert!(url.starts_with("anet://connect?"));

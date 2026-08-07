@@ -22,6 +22,7 @@ mod connect_url;
 mod credential;
 mod custom_rules;
 mod hosts;
+mod notify;
 
 pub use client::{
     AgileNetClient, ClientRule, ConnectParams, ManageableNode, NodeState, NodeStatus,
@@ -31,5 +32,6 @@ pub use connect_url::{ParsedConnect, connect_url_of, parse_connect_url};
 pub use credential::{Credential, CredentialStore};
 pub use custom_rules::{CustomBypassRule, CustomRules};
 pub use hosts::HostsManager;
+pub use notify::{Notification, NotificationCenter};
 
 pub use agile_net_core::proxy::router::wildcard_match;

@@ -136,6 +136,9 @@ where
         // ---- Delegated admin consoles ----
         .route("/consoles", get(list_consoles))
         .route("/consoles/open", post(open_console))
+        // ---- Notifications (node.md M4: session notices / rejections / approvals) ----
+        .route("/notifications", get(list_notifications).delete(clear_notifications))
+        .route("/notifications/read-all", post(notifications_read_all))
         // ---- Util ----
         .route("/parse-connect-url", post(parse_connect_url))
         .with_state(state)
@@ -556,6 +559,8 @@ struct ConnectInput {
     /// Self-declared display name suggestion ("我的名称", link myname word)
     #[serde(default)]
     myname: Option<String>,
+    #[serde(default)]
+    visibility: Option<String>,
 }
 
 async fn connect_node(State(state): State<ClientApiState>, Json(input): Json<ConnectInput>) -> Response {
@@ -596,6 +601,7 @@ async fn connect_node(State(state): State<ClientApiState>, Json(input): Json<Con
                     emode: input.emode,
                     eadmin: input.eadmin,
                     myname: input.myname,
+                    visibility: input.visibility,
                 },
             )
             .await;
@@ -611,6 +617,26 @@ struct NodeIdReq {
 async fn disconnect_node(State(state): State<ClientApiState>, Json(req): Json<NodeIdReq>) -> Response {
     state.client.disconnect(&req.node_id).await;
     ok(serde_json::json!({ "disconnected": true }))
+}
+
+// ---- notifications (M4) ----
+
+async fn list_notifications(State(state): State<ClientApiState>) -> Response {
+    let center = state.client.notifications();
+    ok(serde_json::json!({
+        "items": center.list(),
+        "unread": center.unread_count(),
+    }))
+}
+
+async fn notifications_read_all(State(state): State<ClientApiState>) -> Response {
+    state.client.notifications().mark_all_read();
+    ok(serde_json::json!({ "unread": 0 }))
+}
+
+async fn clear_notifications(State(state): State<ClientApiState>) -> Response {
+    state.client.notifications().clear();
+    ok(serde_json::json!({ "cleared": true }))
 }
 
 async fn list_nodes(State(state): State<ClientApiState>) -> Response {

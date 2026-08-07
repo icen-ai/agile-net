@@ -480,7 +480,7 @@ impl NodeServer {
         // 6.5 Embedded client role (single-port unified web plane): one engine per server,
         // always mounted at /api/v1/client/* (AdminAuth) with the /client SPA. The optional
         // `[client]` config section pre-connects delegated nodes and auto-starts the local proxy.
-        let client_engine = agile_net_client::AgileNetClient::new();
+        let client_engine = agile_net_client::AgileNetClient::new().with_persistent_notifications();
         let client_creds = match agile_net_client::CredentialStore::open_default() {
             Ok(s) => Some(Arc::new(s)),
             Err(e) => {

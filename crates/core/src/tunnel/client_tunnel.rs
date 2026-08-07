@@ -47,6 +47,11 @@ pub struct ClientTunnel {
     /// Last session notice received before a forced close (reason_code, one-time message);
     /// consumed once by the client engine to build the user-facing notification (M4)
     notice: std::sync::Arc<std::sync::Mutex<Option<(String, String)>>>,
+    /// Last AuthFail reason (structured FailReason); the engine reads it to decide
+    /// terminal-vs-transient retry behavior (M4)
+    reject: std::sync::Arc<std::sync::Mutex<Option<crate::proto::message::FailReason>>>,
+    /// Device certification state announced by the listener in AuthOk ("active"/"pending")
+    device_state: arc_swap::ArcSwapOption<String>,
     session: Arc<Mutex<Option<Arc<MuxSession>>>>,
     state: Arc<AtomicU8>,
     shutdown_notify: Arc<Notify>,
@@ -71,6 +76,8 @@ impl ClientTunnel {
             device: std::sync::Arc::new(crate::device::DeviceIdentity::ephemeral()),
             my_name: String::new(),
             notice: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            reject: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            device_state: arc_swap::ArcSwapOption::from_pointee(None),
             session: Arc::new(Mutex::new(None)),
             state: Arc::new(AtomicU8::new(ConnectionState::Disconnected as u8)),
             shutdown_notify: Arc::new(Notify::new()),
@@ -98,6 +105,19 @@ impl ClientTunnel {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .take()
+    }
+
+    /// Take the last structured auth rejection (None when the last failure carried none).
+    pub fn take_reject(&self) -> Option<crate::proto::message::FailReason> {
+        self.reject
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+    }
+
+    /// Device certification state announced by the listener in AuthOk ("active"/"pending").
+    pub fn device_state(&self) -> Option<String> {
+        self.device_state.load_full().map(|s| (*s).clone())
     }
 
     /// Create in dev mode (no server cert verification, debug only).
@@ -214,10 +234,20 @@ impl ClientTunnel {
                     && let Ok(v) = serde_json::from_slice::<serde_json::Value>(&res_frame.payload)
                 {
                     server_version = v["version"].as_u64().unwrap_or(1) as u32;
+                    // M3-T2: certification state announced by the issuer ("pending" = gated)
+                    if let Some(ds) = v["device_state"].as_str().filter(|s| !s.is_empty()) {
+                        self.device_state.store(Some(std::sync::Arc::new(ds.to_string())));
+                    }
                 }
             }
             FrameType::AuthFail => {
-                return Err(Error::Auth(auth_fail_message(&res_frame.payload)));
+                let reason = crate::proto::message::FailReason::from_payload(&res_frame.payload);
+                let msg = reason
+                    .clone()
+                    .map(|f| f.render())
+                    .unwrap_or_else(|| "node rejected tunnel token".into());
+                *self.reject.lock().unwrap_or_else(|e| e.into_inner()) = reason;
+                return Err(Error::Auth(msg));
             }
             other => {
                 return Err(Error::Protocol(format!(
@@ -399,11 +429,4 @@ async fn futures_lite_wait(handle: &tokio::task::JoinHandle<()>) {
 /// Next heartbeat interval: 25s + 0-10s random jitter.
 fn next_ping_delay() -> Duration {
     Duration::from_secs(PING_BASE_SECS + rand::random::<u64>() % 10)
-}
-
-/// Render an AuthFail payload into an error message (structured FailReason when present).
-fn auth_fail_message(payload: &[u8]) -> String {
-    crate::proto::message::FailReason::from_payload(payload)
-        .map(|f| f.render())
-        .unwrap_or_else(|| "node rejected tunnel token".into())
 }

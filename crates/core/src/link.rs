@@ -58,6 +58,10 @@ pub struct ConnectLink {
     /// as it should appear on the issuer's side (decorative; certification rides device proof).
     #[serde(default)]
     pub myname: Option<String>,
+    /// Topology-visibility clause (node.md M6: domain|disclose|approve): shown as a clause card
+    /// at import (M4-T5); enforcement lands with M6
+    #[serde(default)]
+    pub visibility: Option<String>,
 }
 
 impl ConnectLink {
@@ -139,6 +143,7 @@ pub fn parse_connect_url(url: &str) -> std::result::Result<ConnectLink, String> 
     let mut emode: Option<String> = None;
     let mut eadmin = false;
     let mut myname: Option<String> = None;
+    let mut visibility: Option<String> = None;
     for pair in rest.split('&') {
         let mut kv = pair.splitn(2, '=');
         let (k, v) = (kv.next().unwrap_or(""), kv.next().unwrap_or(""));
@@ -162,6 +167,8 @@ pub fn parse_connect_url(url: &str) -> std::result::Result<ConnectLink, String> 
             "eadmin" => eadmin = truthy(&v),
             // self-declared display name suggestion ("我的名称")
             "myname" => myname = Some(v),
+            // topology-visibility clause (domain|disclose|approve)
+            "visibility" => visibility = Some(v),
             _ => {}
         }
     }
@@ -182,6 +189,7 @@ pub fn parse_connect_url(url: &str) -> std::result::Result<ConnectLink, String> 
         emode,
         eadmin,
         myname,
+        visibility,
     })
 }
 
