@@ -826,7 +826,8 @@ impl RelayConnector {
                         // device certification gate (relay-stamped fp; fail-closed). The config
                         // channel above is exempt: a pending device must still pull its state.
                         if let Some(rc) = Self::device_gate_reason(hooks, Some(&env.kid), &open_req.device_fp) {
-                            let p = serde_json::to_vec(&crate::proto::message::OpenFailed { reason: rc.into() }).unwrap_or_default();
+                            warn!(device = %open_req.device_fp, reason = rc, "e2e open gated (device certification)");
+                                                        let p = serde_json::to_vec(&crate::proto::message::OpenFailed { reason: rc.into() }).unwrap_or_default();
                             mux.send_frame(Frame::new(FrameType::OpenFail, req.channel_id, Bytes::from(p))).await?;
                             return Ok(());
                         }
@@ -924,8 +925,13 @@ impl RelayConnector {
                             .await?;
                         return Ok(());
                     }
-                    // device certification gate (relay-stamped fp)
-                    if let Some(rc) = Self::device_gate_reason(hooks, None, &open_req.device_fp) {
+                    // device certification gate (relay-stamped fp) applies only on the ISSUER
+                    // hop: the group stamp survives only toward the issuer (route_open drops it
+                    // elsewhere), so gating inside `!groups.is_empty()` keeps transit hops blind
+                    if !open_req.groups.is_empty()
+                        && let Some(rc) = Self::device_gate_reason(hooks, None, &open_req.device_fp)
+                    {
+                        warn!(device = %open_req.device_fp, reason = rc, "transparent open gated (device certification)");
                         let p = serde_json::to_vec(&crate::proto::message::OpenFailed { reason: rc.into() }).unwrap_or_default();
                         mux.send_frame(Frame::new(FrameType::OpenFail, req.channel_id, Bytes::from(p))).await?;
                         return Ok(());

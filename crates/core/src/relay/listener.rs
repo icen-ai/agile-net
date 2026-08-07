@@ -1812,6 +1812,7 @@ impl RelayListener {
                 } else {
                     reason::PENDING_APPROVAL
                 };
+                warn!(device = %device_fp, reason = rc, "delegated open gated (device certification)");
                 let payload = serde_json::to_vec(&OpenFailed { reason: rc.into() }).unwrap_or_default();
                 let _ = mux
                     .send_frame(Frame::new(FrameType::OpenFail, req.channel_id, Bytes::from(payload)))
