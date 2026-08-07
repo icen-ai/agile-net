@@ -196,3 +196,22 @@ let delay = backoff + random(0..3s);
 - Listener 证书：优先外部 PEM；缺省时生成自签证书并**持久化**到 `certs/`（重启不变，便于固定）。
 - Connector/Client 信任策略优先级：**证书固定 (pinning)** > 自定义 CA > 跳过验证（仅开发）> webpki 系统根。
 - 证书指纹（SHA-256 hex）在节点启动日志中输出，用于带外分发固定配置。
+
+## 传递认证与拓扑可见性（M6）
+
+**传递认证**（双向 opt-in）：connector `cert_relay=1`（扇出侧）+ 对端 `cert_relay_in=1`
+（扇入侧，node_config）同时开启才流动。起源节点用**设备密钥**（M2 起为节点稳定身份）
+签发 `CertRecord`（含设备指纹/公钥/持有者/备注/起源指纹/起源公钥/时间/吊销位/签名），
+经 Ctrl `cert_push` 传播：新会话全量同步 + 认证变更增量推送 + 中间跳盲转（不验签、不改写，
+血缘列 `origin_pubkey/cert_sig/cert_ts` 原样转发）。接收端自验起源签名（origin_fp 必须由
+origin_pubkey 派生），按本端「认证信任名单」（node_config `cert_trust_list`，起源指纹数组）
+决定：名单内 → 采纳为传递认证（`certified_by=起源`）；名单外 → 降级「参考认证」进审批中心
+一键采纳。本地认证恒优先（本机行不被覆盖），本地吊销独立，起源吊销随签名传播。
+
+**拓扑可见性三档**（delegated_token.visibility，签发可选、链接 `visibility` 词表达）：
+- `domain`（默认）：跨域只见域主体，不落回执；
+- `disclose`：上游注册即落 `grant_receipt`（artifact/持有者/血缘/时间），签发端拓扑可见；
+- `approve`：注册先压审批中心（`topo_approve`），不批不生效（sync 循环压 `awaiting-approval`）。
+
+消费端导入含 visibility 词的链接时弹条款卡确认（M4-T5）。回执确认：注册 ack 后
+`pending → confirmed`。被攻破中间跳伪造起源签名验签失败即弃。

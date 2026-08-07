@@ -378,6 +378,53 @@ pub async fn device_sessions(AdminAuth(_): AdminAuth, State(state): State<ApiSta
     ok(json!({ "items": items }))
 }
 
+/// GET /api/v1/admin/devices/{fp}/events — merged vertical timeline (approvals + audit hits
+/// mentioning this fingerprint), newest first (device profile events tab).
+pub async fn device_events(AdminAuth(_): AdminAuth, State(state): State<ApiState>, Path(fp): Path<String>) -> Response {
+    let items = state
+        .db_call({
+            let fp = fp.clone();
+            move |db| {
+                let mut out: Vec<serde_json::Value> = Vec::new();
+                for a in db.list_approvals(None)? {
+                    if a.object_ref == fp
+                        || a.requester == fp
+                        || a.detail.contains(&fp)
+                    {
+                        out.push(json!({
+                            "ts": a.decided_at.clone().unwrap_or(a.created_at.clone()),
+                            "kind": "approval",
+                            "title": format!("{} → {}", a.r#type, a.state),
+                            "detail": a.detail,
+                        }));
+                    }
+                }
+                // audit hits (certify/revoke/rebind/kick actions carry the fp as target/detail)
+                let short = &fp[..12.min(fp.len())];
+                for e in db.list_audit_logs(1, 300, None)?.0 {
+                    let hit = e.target.as_deref() == Some(fp.as_str())
+                        || e.detail.as_deref().map(|d| d.contains(&fp) || d.contains(short)).unwrap_or(false);
+                    if hit {
+                        out.push(json!({
+                            "ts": e.created_at,
+                            "kind": "audit",
+                            "title": format!("{} ({})", e.action, e.operator),
+                            "detail": e.detail.unwrap_or_default(),
+                        }));
+                    }
+                }
+                out.sort_by(|a, b| b["ts"].as_str().cmp(&a["ts"].as_str()));
+                out.truncate(100);
+                Ok(out)
+            }
+        })
+        .await;
+    match items {
+        Ok(items) => ok(json!({ "items": items })),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, codes::INTERNAL, e.to_string()),
+    }
+}
+
 /// GET /api/v1/admin/devices/policy — the pending-device data-plane policy.
 pub async fn get_policy(AdminAuth(_): AdminAuth, State(state): State<ApiState>) -> Response {
     let allow = match &state.runtime.device_gate {

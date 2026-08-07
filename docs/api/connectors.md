@@ -75,6 +75,7 @@ connector 为一等入库资源：TOML `[[connectors]]` 仅启动导入（name �
 | 字段 | 校验 |
 |------|------|
 | `name` | 必填，1-64 字符，全局唯一（冲突 40900） |
+| `my_name` | 可选，≤64 字符（M3-T6）：握手上送给对端的自声明名称，空 = 节点 ID |
 | `upstream_addr` | 必填，1-253 字符（host:port） |
 | `token` | 必填，1-256 字符；加密落库，响应不回显 |
 | `sni_hostname` / `ca_cert_path` / `pinned_cert_path` | 可选；证书固定优先级 pinned > ca > insecure |

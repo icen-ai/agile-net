@@ -214,7 +214,6 @@ AgI18n.register({
   'fanin.exposeOff': { zh: '已关闭控制面暴露', en: 'Control-plane exposure disabled' },
   'fanin.scopeUpdated': { zh: '授权档位已更新', en: 'Access scope updated' },
   'fanin.createTitle': { zh: '生成扇入令牌', en: 'Generate Fan-in Token' },
-  'fanin.remarkLabel': { zh: '备注（如：分公司跳板机）', en: 'Remark (e.g. branch jump host)' },
   'fanin.rateLabel': { zh: '带宽配额 KB/s（留空 = 不限速）', en: 'Bandwidth quota KB/s (blank = unlimited)' },
   'fanin.ratePh': { zh: '如 10240（= 10 MB/s）', en: 'e.g. 10240 (= 10 MB/s)' },
   'fanin.rateHint': { zh: '限制该令牌整条链路的读写总速率（数据面令牌桶节流，超限自然降速不断流）', en: 'Caps the combined read/write rate of the whole chain for this token (data-plane token bucket; excess traffic slows down, never drops)' },
@@ -523,4 +522,30 @@ AgI18n.register({
   // ---- theme (identical values as desktop-html.js) ----
   'settings.themeLight': { zh: '浅色', en: 'Light' },
   'settings.themeDark': { zh: '深色', en: 'Dark' },
+  // ---- session columns (device profile extras) ----
+  'sess.col.start': { zh: '开始', en: 'Started' },
+  'sess.col.close': { zh: '关闭原因', en: 'Close Reason' },
+  // ---- device profile extras (M5-T4) ----
+  'dev.trafficTitle': { zh: '流量', en: 'Traffic' },
+  'dev.heatTitle': { zh: '活跃热力', en: 'Activity Heatmap' },
+  'dev.heatHelp': { zh: '近 30 天 7×24 会话活跃分布——一眼区分朝九晚五的人与跑批机器', en: '30-day 7×24 session activity — spot a 9-to-5 user vs a batch runner at a glance' },
+  'dev.histTitle': { zh: '历史会话', en: 'Session History' },
+  'dev.eventsTitle': { zh: '事件', en: 'Events' },
+  // ---- topology view (M6-T4) ----
+  'menu.topo': { zh: '拓扑', en: 'Topology' },
+  'topo.title': { zh: '拓扑可见性', en: 'Topology Visibility' },
+  'topo.desc': { zh: '传递认证与披露回执——谁能看见谁', en: 'Transitive certification and disclosure receipts — who can see whom' },
+  'topo.certTitle': { zh: '传递认证', en: 'Transitive Certification' },
+  'topo.certHelp': { zh: '开启后接收对端推送的认证记录；信任名单内的起源直接采纳，名单外降级参考认证（审批中心一键采纳）', en: 'Receive peer cert records when on; trusted origins are adopted, others degrade to reference certs (one-click adopt in Approvals)' },
+  'topo.inSwitch': { zh: '接收传递认证（双向 opt-in）', en: 'Accept transitive certification (mutual opt-in)' },
+  'topo.ownFp': { zh: '本机指纹', en: 'Own Fingerprint' },
+  'topo.trustList': { zh: '认证信任名单（起源设备指纹，每行一个）', en: 'Certification trust list (origin device fps, one per line)' },
+  'topo.trustPh': { zh: '粘贴对端本机指纹…', en: 'Paste peer device fingerprints…' },
+  'topo.adoptedTitle': { zh: '传递认证来源', en: 'Adopted Sources' },
+  'topo.colHolder': { zh: '持有者', en: 'Holder' },
+  'topo.colOrigin': { zh: '起源', en: 'Origin' },
+  'topo.receiptsTitle': { zh: '披露回执', en: 'Disclosure Receipts' },
+  'topo.receiptsHelp': { zh: 'disclose/approve 档令牌在上游注册即落回执；domain 档不记录', en: 'disclose/approve tokens record a receipt on upstream registration; domain records nothing' },
+  'topo.colArtifact': { zh: '令牌', en: 'Token' },
+  'topo.colVis': { zh: '档位', en: 'Tier' },
 });

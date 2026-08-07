@@ -556,13 +556,60 @@ async function enterApp() {
   switchView(S.view || 'dashboard');
 }
 
+/* ================= Topology view (node.md M6-T4): transitive-cert switch + trust list +
+   adopted sources + visibility receipts ================= */
+async function renderTopo() {
+  $('view').innerHTML = '<div class="page-title">' + ic('earth', 20) + T('topo.title') + '</div><div class="page-desc">' + T('topo.desc') + '</div>' +
+    '<div class="card"><h3>' + T('topo.certTitle') + ahelp(T('topo.certHelp')) + '</h3>' +
+      '<label class="chk" style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="topo-in"> <span>' + T('topo.inSwitch') + '</span></label>' +
+      '<div class="kv" style="margin-top:8px"><span class="k">' + T('topo.ownFp') + '</span><span id="topo-ownfp"></span></div>' +
+      '<label style="display:block;margin-top:8px">' + T('topo.trustList') + '</label>' +
+      '<textarea id="topo-trust" rows="3" style="width:100%" placeholder="' + T('topo.trustPh') + '"></textarea>' +
+      '<div style="margin-top:8px"><button id="topo-save">' + T('common.save') + '</button></div></div>' +
+    '<div class="card"><h3>' + T('topo.adoptedTitle') + '</h3><div class="table-wrap"><table><thead><tr><th>' + T('dev.colDevice') + '</th><th>' + T('topo.colHolder') + '</th><th>' + T('topo.colOrigin') + '</th><th>' + T('common.status') + '</th></tr></thead><tbody id="topo-adopted"></tbody></table></div></div>' +
+    '<div class="card"><h3>' + T('topo.receiptsTitle') + ahelp(T('topo.receiptsHelp')) + '</h3><div class="table-wrap"><table><thead><tr><th>' + T('topo.colArtifact') + '</th><th>' + T('topo.colHolder') + '</th><th>' + T('topo.colVis') + '</th><th>' + T('common.status') + '</th><th>' + T('common.createdAt') + '</th></tr></thead><tbody id="topo-receipts"></tbody></table></div></div>';
+  $('topo-save').onclick = saveTopoSettings;
+  $('topo-in').onchange = () => {};
+  await loadTopo();
+}
+async function loadTopo() {
+  try {
+    const d = await api('GET', '/api/v1/admin/federation/cert');
+    const inEl = $('topo-in'); if (!inEl) return;
+    inEl.checked = !!d.enabled;
+    $('topo-ownfp').innerHTML = agcopy(d.own_fp || '', (d.own_fp || '').slice(0, 12) + '…');
+    $('topo-trust').value = (d.trust_list || []).join('\n');
+    $('topo-adopted').innerHTML = (d.adopted || []).map(a =>
+      '<tr><td><b data-agid="' + esc(a.device_fp) + '" data-act="dev-open" data-fp="' + esc(a.device_fp) + '" style="cursor:pointer">' + esc(a.remark || a.my_name || a.device_fp.slice(0, 12)) + '</b></td>' +
+      '<td>' + esc(a.subject || '-') + '</td><td class="mono" style="color:var(--dim2)">' + esc((a.origin_fp || '').slice(0, 12)) + '</td>' +
+      '<td>' + devStateBadge(a.state) + '</td></tr>'
+    ).join('') || '<tr><td colspan="4" class="empty">' + T('common.empty') + '</td></tr>';
+  } catch (e) { toast(e.message, 'err'); }
+  try {
+    const r = await api('GET', '/api/v1/admin/federation/receipts');
+    const body = $('topo-receipts'); if (!body) return;
+    body.innerHTML = (r.items || []).map(it =>
+      '<tr><td>' + esc(it.artifact) + '</td><td>' + esc(it.holder) + '</td>' +
+      '<td><span class="badge ' + (it.visibility === 'approve' ? 'b-warn' : 'b-info') + '">' + esc(it.visibility) + '</span></td>' +
+      '<td>' + esc(it.state) + '</td><td style="color:var(--dim2)">' + esc((it.created_at || '').replace('T', ' ').replace('Z', '')) + '</td></tr>'
+    ).join('') || '<tr><td colspan="5" class="empty">' + T('common.empty') + '</td></tr>';
+  } catch (e) { toast(e.message, 'err'); }
+}
+async function saveTopoSettings() {
+  const trust = $('topo-trust').value.split('\n').map(s => s.trim()).filter(Boolean);
+  try {
+    await api('PUT', '/api/v1/admin/federation/cert', { enabled: $('topo-in').checked, trust_list: trust });
+    toast(T('common.success'), 'ok');
+  } catch (e) { toast(e.message, 'err'); }
+}
+
 /* ================= View routing ================= */
 function switchView(v) {
   S.view = v;
   S.timers.forEach(clearInterval); S.timers = [];
   document.querySelectorAll('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.view === v));
   const fn = ({dashboard: renderDashboard, groups: renderGroups,
-    rules: renderRules, fanin: renderFanIn, connectors: renderConnectors, devices: renderDevices, approvals: renderApprovals, audit: renderAudit, settings: renderSettings})[v] || renderDashboard;
+    rules: renderRules, fanin: renderFanIn, connectors: renderConnectors, devices: renderDevices, approvals: renderApprovals, topo: renderTopo, audit: renderAudit, settings: renderSettings})[v] || renderDashboard;
   fn();
 }
 async function loadGroupsCache() {
@@ -864,9 +911,22 @@ async function renderDeviceDetail() {
   $('view').innerHTML = '<div class="page-title">' + ic('monitor-smartphone', 20) + T('dev.detailTitle') + '<div class="spacer"></div><button class="ghost small" id="dev-back">' + ic('chevron-right', 13) + ' ' + T('common.back') + '</button></div>' +
     '<div class="card" id="dev-hero"></div>' +
     '<div class="stat-grid" id="dev-kpis"></div>' +
-    '<div class="card"><h3>' + T('dev.sessTitle') + '</h3><div class="table-wrap"><table><thead><tr><th>IP</th><th>' + T('sess.col.ago') + '</th><th>' + T('sess.col.tr') + '</th><th>' + T('sess.col.chans') + '</th><th>' + T('sess.col.key') + '</th><th>' + T('common.action') + '</th></tr></thead><tbody id="dev-sess"></tbody></table></div></div>';
+    '<div class="card"><h3>' + T('dev.sessTitle') + '</h3><div class="table-wrap"><table><thead><tr><th>IP</th><th>' + T('sess.col.ago') + '</th><th>' + T('sess.col.tr') + '</th><th>' + T('sess.col.chans') + '</th><th>' + T('sess.col.key') + '</th><th>' + T('common.action') + '</th></tr></thead><tbody id="dev-sess"></tbody></table></div></div>' +
+    '<div class="card"><h3>' + T('dev.trafficTitle') + '</h3>' +
+      '<div class="sess-toolbar" style="border:none;padding:0 0 8px"><div class="op" id="dev-tr-range">' +
+        '<button class="ghost small" data-range="24h">24h</button><button class="ghost small" data-range="7d">7d</button><button class="ghost small" data-range="30d">30d</button></div></div>' +
+      '<div id="dev-traffic"></div></div>' +
+    '<div class="card"><h3>' + T('dev.heatTitle') + ahelp(T('dev.heatHelp')) + '</h3><div id="dev-heat"></div></div>' +
+    '<div class="card"><h3>' + T('dev.histTitle') + '</h3><div class="table-wrap"><table><thead><tr><th>' + T('sess.col.entry') + '</th><th>IP</th><th>' + T('sess.col.start') + '</th><th>' + T('sess.col.tr') + '</th><th>' + T('sess.col.close') + '</th></tr></thead><tbody id="dev-hist"></tbody></table></div></div>' +
+    '<div class="card"><h3>' + T('dev.eventsTitle') + '</h3><div class="agtimeline" id="dev-events"></div></div>';
   $('dev-back').onclick = () => { S.devFp = ''; S.timers.forEach(clearInterval); S.timers = []; renderDevices(); };
+  $('dev-tr-range').querySelectorAll('button').forEach(b => b.onclick = () => {
+    S.devRange = b.dataset.range;
+    $('dev-tr-range').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
+    loadDeviceTraffic();
+  });
   await loadDeviceDetail();
+  loadDeviceCharts();
   S.timers.push(setInterval(loadDeviceDetail, 8000));
 }
 async function loadDeviceDetail() {
@@ -913,6 +973,71 @@ function agkpi(value, label, delta) {
   return '<div class="agkpi"><div class="agkpi-v">' + value +
     (delta ? ' <span class="agkpi-d ' + esc(delta.dir || 'flat') + '">' + ic('trending-up', 11) + esc(delta.text) + '</span>' : '') +
     '</div><div class="agkpi-k">' + esc(label) + '</div></div>';
+}
+/* ---- device profile extras (M5-T4): traffic series / 7x24 heat / session history / events ---- */
+function loadDeviceCharts() {
+  S.devRange = S.devRange || '24h';
+  loadDeviceTraffic();
+  loadDeviceActivity();
+  loadDeviceHistory();
+  loadDeviceEvents();
+}
+async function loadDeviceTraffic() {
+  const el = $('dev-traffic'); if (!el || !S.devFp) return;
+  try {
+    const d = await api('GET', '/api/v1/admin/devices/' + encodeURIComponent(S.devFp) + '/traffic?range=' + (S.devRange || '24h'));
+    const rows = d.series || [];
+    AgChart.line(el, {
+      x: rows.map(r => r.ts),
+      series: [
+        { name: T('dev.kpiUp'), values: rows.map(r => r.up) },
+        { name: T('dev.kpiDown'), values: rows.map(r => r.down) },
+      ],
+      fmtX: ts => {
+        const dt = new Date(ts * 1000);
+        return (S.devRange === '24h')
+          ? String(dt.getHours()).padStart(2, '0') + ':' + String(dt.getMinutes()).padStart(2, '0')
+          : (dt.getMonth() + 1) + '/' + dt.getDate();
+      },
+      fmtY: v => fmtBytes(v),
+      empty: T('common.empty'),
+    });
+  } catch (e) { /* chart area stays empty on fetch failure */ }
+}
+async function loadDeviceActivity() {
+  const el = $('dev-heat'); if (!el || !S.devFp) return;
+  try {
+    const d = await api('GET', '/api/v1/admin/devices/' + encodeURIComponent(S.devFp) + '/activity');
+    // cells: [{weekday, hours:[{sessions, bytes}×24]}] → flat 7×24 byte totals
+    const vals = [];
+    (d.cells || []).forEach(day => (day.hours || []).forEach(h => vals.push(h.bytes || 0)));
+    AgChart.heat(el, { values: vals, fmtV: v => fmtBytes(v) });
+  } catch (e) { /* keep empty */ }
+}
+async function loadDeviceHistory() {
+  const body = $('dev-hist'); if (!body || !S.devFp) return;
+  try {
+    const d = await api('GET', '/api/v1/admin/devices/' + encodeURIComponent(S.devFp) + '/sessions');
+    body.innerHTML = (d.items || []).map(r =>
+      '<tr><td><span class="badge b-info">' + esc(r.entry || '-') + '</span></td>' +
+      '<td class="mono" style="color:var(--dim)">' + esc(r.ip || '-') + '</td>' +
+      '<td style="color:var(--dim)">' + esc((r.started_at || '').replace('T', ' ')) + '</td>' +
+      '<td class="mono" style="color:var(--dim)">↑ ' + fmtBytes(r.bytes_up) + ' ↓ ' + fmtBytes(r.bytes_down) + '</td>' +
+      '<td style="color:var(--dim)">' + (r.close_reason ? esc(reasonText(r.close_reason)) : '-') + '</td></tr>'
+    ).join('') || '<tr><td colspan="5" class="empty">' + T('common.empty') + '</td></tr>';
+  } catch (e) { /* keep empty */ }
+}
+async function loadDeviceEvents() {
+  const el = $('dev-events'); if (!el || !S.devFp) return;
+  try {
+    const d = await api('GET', '/api/v1/admin/devices/' + encodeURIComponent(S.devFp) + '/events');
+    el.innerHTML = (d.items || []).map(ev => {
+      const cls = ev.kind === 'approval' ? 'warn' : '';
+      return '<div class="agtl-item ' + cls + '"><div class="agtl-time">' + esc((ev.ts || '').replace('T', ' ').replace('Z', '')) + '</div>' +
+        '<div class="agtl-body"><b>' + esc(ev.title) + '</b>' +
+        (ev.detail ? ' <span style="color:var(--dim2)">' + esc(String(ev.detail).slice(0, 120)) + '</span>' : '') + '</div></div>';
+    }).join('') || '<div class="empty">' + T('common.empty') + '</div>';
+  } catch (e) { /* keep empty */ }
 }
 async function openCertify(fp) {
   const d = DEV_MAP[fp] || {};

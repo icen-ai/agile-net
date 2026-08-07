@@ -477,6 +477,10 @@ pub fn create_app(state: ApiState) -> Router {
             get(handlers::devices::device_sessions),
         )
         .route(
+            "/api/v1/admin/devices/{fp}/events",
+            get(handlers::devices::device_events),
+        )
+        .route(
             "/api/v1/admin/devices/{fp}/certify",
             post(handlers::devices::certify_device),
         )
