@@ -212,11 +212,11 @@ async fn cli_full_workflow_against_live_api() {
         .unwrap();
 
     // Verify data landed in DB
-    let (rules, total) = db.list_rules(1, 20, None, Some("10.99")).unwrap();
+    let (rules, total) = db.list_rules(1, 20, None, Some("10.99"), None).unwrap();
     assert_eq!(total, 1);
     assert_eq!(rules[0].value, "10.99.0.0/16");
     assert!(
-        db.list_groups(1, 100, None)
+        db.list_groups(1, 100, None, None)
             .unwrap()
             .0
             .iter()

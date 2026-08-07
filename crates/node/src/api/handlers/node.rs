@@ -25,7 +25,7 @@ pub async fn status(AdminAuth(_): AdminAuth, State(state): State<ApiState>) -> R
                 .ok()
                 .flatten()
                 .unwrap_or_else(|| "AgileNet Node".to_string());
-            let rule_count = db.list_rules(1, 1, None, None).map(|(_, t)| t).unwrap_or(0);
+            let rule_count = db.list_rules(1, 1, None, None, None).map(|(_, t)| t).unwrap_or(0);
             let traffic_24h = db
                 .node_traffic_24h()
                 .map(|v| serde_json::to_value(v).unwrap_or_else(|_| empty_traffic_24h()))
@@ -382,7 +382,7 @@ pub async fn metrics(AdminAuth(_): AdminAuth, State(state): State<ApiState>) -> 
     let mut out = String::new();
     let uptime = state.runtime.uptime_secs();
     let rule_count = state
-        .db_call(|db| db.list_rules(1, 1, None, None).map(|(_, t)| t))
+        .db_call(|db| db.list_rules(1, 1, None, None, None).map(|(_, t)| t))
         .await
         .unwrap_or(0);
 

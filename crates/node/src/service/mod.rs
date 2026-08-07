@@ -1006,7 +1006,7 @@ fn seed_relay_tokens_from_env(db: &Database) -> Result<()> {
 /// Build the local proxy router from all DB rules (hit -> auto-pick tunnel).
 fn build_router(db: &Database) -> ProxyRouter {
     let mut router = ProxyRouter::new();
-    if let Ok((rules, _)) = db.list_rules(1, 1000, None, None) {
+    if let Ok((rules, _)) = db.list_rules(1, 1000, None, None, None) {
         for r in rules {
             // node-local proxy: rule-hit traffic picks a downstream node automatically via PeerAutoOpener
             let outbound = Outbound::tunnel("");

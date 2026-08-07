@@ -48,7 +48,7 @@ pub async fn list_tokens(AdminAuth(_): AdminAuth, State(state): State<ApiState>)
         .map(|(t, c, s)| ((t, c), s))
         .collect();
     let groups_all = state
-        .db_call(|db| db.list_groups(1, 10000, None).map(|(g, _)| g))
+        .db_call(|db| db.list_groups(1, 10000, None, None).map(|(g, _)| g))
         .await
         .unwrap_or_default();
 
@@ -229,7 +229,7 @@ pub async fn issue_token(
     // (en_xxx, derived inside issue_token) — routing without rule disclosure; push_groups /
     // advertise are NOT required. The e2e check below only gates the split/admin tiers.
     let db_groups = state
-        .db_call(|db| db.list_groups(1, 10000, None).map(|(g, _)| g))
+        .db_call(|db| db.list_groups(1, 10000, None, None).map(|(g, _)| g))
         .await
         .unwrap_or_default();
     let has_e2e = req
@@ -370,7 +370,7 @@ pub async fn issue_token(
     let states: HashMap<(String, String), String> = HashMap::new();
     let share_url = build_share_url(&state, &rec, &connectors, &plaintext, req.my_name.trim()).await;
     let groups_all = state
-        .db_call(|db| db.list_groups(1, 10000, None).map(|(g, _)| g))
+        .db_call(|db| db.list_groups(1, 10000, None, None).map(|(g, _)| g))
         .await
         .unwrap_or_default();
     ok_created(token_json(

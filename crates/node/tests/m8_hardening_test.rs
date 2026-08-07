@@ -23,14 +23,14 @@ async fn audit_log_records() {
     )
     .unwrap();
 
-    let (logs, total) = db.list_audit_logs(1, 20, None).unwrap();
+    let (logs, total) = db.list_audit_logs(1, 20, None, None).unwrap();
     assert_eq!(total, 2);
     assert_eq!(logs[0].action, "rule.create");
     assert_eq!(logs[1].action, "admin.login");
     assert!(logs[0].detail.as_ref().unwrap().contains("10.0.0.0/8"));
 
     // filter by action
-    let (logs, total) = db.list_audit_logs(1, 20, Some("admin.login")).unwrap();
+    let (logs, total) = db.list_audit_logs(1, 20, Some("admin.login"), None).unwrap();
     assert_eq!(total, 1);
     assert_eq!(logs.len(), 1);
 }

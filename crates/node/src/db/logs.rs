@@ -40,6 +40,7 @@ impl Database {
         page: u32,
         page_size: u32,
         action: Option<&str>,
+        sort: Option<&str>,
     ) -> Result<(Vec<AuditLogRecord>, i64)> {
         let conn = self.conn();
         let mut where_clauses = Vec::new();
@@ -49,6 +50,7 @@ impl Database {
             where_clauses.push("action = ?");
             bind.push(Box::new(a.to_string()));
         }
+        let order = super::paginate::order_clause(sort, &[("time", "created_at")], "created_at DESC");
         let map_row = |r: &rusqlite::Row| -> rusqlite::Result<AuditLogRecord> {
             Ok(AuditLogRecord {
                 id: r.get(0)?,
@@ -67,7 +69,7 @@ impl Database {
             "audit_log",
             &where_clauses,
             &bind,
-            "created_at DESC",
+            &order,
             page,
             page_size,
             map_row,

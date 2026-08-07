@@ -49,7 +49,7 @@ impl PeerAclRegistry {
     pub fn rebuild(&self, db: &Database) {
         let mut gids: std::collections::HashSet<String> =
             self.acls.iter().map(|e| e.key().clone()).collect();
-        if let Ok((groups, _)) = db.list_groups(1, 1000, None) {
+        if let Ok((groups, _)) = db.list_groups(1, 1000, None, None) {
             gids.extend(groups.into_iter().map(|g| g.id));
         }
         for gid in gids {

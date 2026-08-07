@@ -269,6 +269,10 @@ async fn download_stream(
             .timeout(std::time::Duration::from_secs(60));
         if proxy {
             b = b.proxy(reqwest::Proxy::all("http://127.0.0.1:57890").expect("valid proxy url"));
+        } else {
+            // the direct arm must be truly direct: reqwest picks up HTTP(S)_PROXY env vars by default,
+            // which would silently re-route the "direct" candidate (and make tests machine-dependent)
+            b = b.no_proxy();
         }
         b.build().map_err(|e| e.to_string())
     };

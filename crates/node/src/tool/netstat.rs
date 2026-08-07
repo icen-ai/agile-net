@@ -293,8 +293,9 @@ mod tests {
 
         // the miss half is racy under full-suite parallel load (a released port can be re-bound
         // by another test immediately) — retry with fresh ports until a miss is observed
+        // (32 consecutive parallel rebinds is practically impossible; any single miss proves the path)
         let mut saw_miss = !portof(port).success;
-        for _ in 0..4 {
+        for _ in 0..32 {
             if saw_miss {
                 break;
             }

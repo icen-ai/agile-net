@@ -133,6 +133,67 @@ function agTabsBind(bar, onSwitch) {
   if (cur) apply(cur.dataset.agtab, false);
 }
 
+/* ================= agseg single-choice segmented group (shared agtabs texture, components.css) =================
+   For dialog dimension pickers (entry/trust/route/…): the same pill segment texture as tab bars,
+   one active per group. segHtml renders, segVal reads, segSet drives linkage (active + per-option
+   disabled), and one delegated document click handles every group (SEG_EVT is reassigned per dialog). */
+const SEG_EVT = {};
+function segHtml(name, options, current) {
+  return '<div class="agtabs" style="margin:2px 0 6px"><div class="agtabs-pill">' + options.map(o =>
+    '<button type="button" class="agtab' + (o.v === current ? ' active' : '') + '" data-seg="' + name + '" data-v="' + o.v + '"' +
+    (o.disabled ? ' disabled' : '') + '>' + esc(o.label) + '</button>').join('') + '</div></div>';
+}
+function segVal(name) {
+  const b = document.querySelector('[data-seg="' + name + '"].active');
+  return b ? b.dataset.v : '';
+}
+function segSet(name, v, disabledMap) {
+  document.querySelectorAll('[data-seg="' + name + '"]').forEach(b => {
+    b.classList.toggle('active', b.dataset.v === v);
+    if (disabledMap) b.disabled = !!disabledMap[b.dataset.v];
+  });
+}
+document.addEventListener('click', (e) => {
+  const b = e.target.closest('[data-seg]');
+  if (!b || b.disabled) return;
+  const name = b.dataset.seg;
+  const pill = b.closest('.agtabs-pill');
+  (pill || document).querySelectorAll('[data-seg="' + name + '"]').forEach(x => x.classList.toggle('active', x === b));
+  if (SEG_EVT[name]) SEG_EVT[name](b.dataset.v);
+});
+
+/* ================= AgTbl bridge (shared table framework, /ui/agtbl.js) =================
+   Header state (sort/filter) applies to the item array BEFORE the HTML build; tblSig folds that
+   state into a view's signature guard so a sort/filter change forces exactly one re-render. */
+function tblSig(key) { return JSON.stringify([AgTbl.sortState(key), AgTbl.filters(key)]); }
+function tblApply(key, items, sortGetters, filterGetters) {
+  let out = items;
+  if (filterGetters) {
+    for (const [idx, get] of Object.entries(filterGetters)) {
+      const v = AgTbl.filterGet(key, idx);
+      if (Array.isArray(v)) { if (v.length) out = out.filter(it => v.includes(get(it))); }
+      else if (v) { const q = v.toLowerCase(); out = out.filter(it => String(get(it) ?? '').toLowerCase().includes(q)); }
+    }
+  }
+  const st = AgTbl.sortState(key);
+  if (st && sortGetters && sortGetters[st.id]) {
+    const get = sortGetters[st.id];
+    out = out.slice().sort((a, b) => {
+      const va = get(a), vb = get(b);
+      const c = (typeof va === 'number' && typeof vb === 'number') ? va - vb
+        : String(va ?? '').toLowerCase().localeCompare(String(vb ?? '').toLowerCase());
+      return st.dir === 'asc' ? c : -c;
+    });
+  }
+  return out;
+}
+function tblAttach(tbodyId, opts) {
+  const body = $(tbodyId);
+  if (!body) return;
+  const table = body.closest('table');
+  if (table) AgTbl.attach(table, opts);
+}
+
 /* ================= Infrastructure =================
    $ / esc / ahelp come from shared base utils /ui/agutil.js (AGENTS.md §6); no local copies kept here */
 const S = {
@@ -579,20 +640,49 @@ async function loadTopo() {
     inEl.checked = !!d.enabled;
     $('topo-ownfp').innerHTML = agcopy(d.own_fp || '', (d.own_fp || '').slice(0, 12) + '…');
     $('topo-trust').value = (d.trust_list || []).join('\n');
-    $('topo-adopted').innerHTML = (d.adopted || []).map(a =>
+    const adopted = tblApply('adm-topo-adopted', d.adopted || [],
+      { device: a => a.remark || a.my_name || '', holder: a => a.subject || '' },
+      { 3: a => a.state || '' });
+    $('topo-adopted').innerHTML = adopted.map(a =>
       '<tr><td><b data-agid="' + esc(a.device_fp) + '" data-act="dev-open" data-fp="' + esc(a.device_fp) + '" style="cursor:pointer">' + esc(a.remark || a.my_name || a.device_fp.slice(0, 12)) + '</b></td>' +
       '<td>' + esc(a.subject || '-') + '</td><td class="mono" style="color:var(--dim2)">' + esc((a.origin_fp || '').slice(0, 12)) + '</td>' +
       '<td>' + devStateBadge(a.state) + '</td></tr>'
     ).join('') || '<tr><td colspan="4" class="empty">' + T('common.empty') + '</td></tr>';
+    tblAttach('topo-adopted', {
+      key: 'adm-topo-adopted',
+      sort: { 0: 'device', 1: 'holder' },
+      filter: {
+        3: { label: 'common.status', type: 'enum', options: [
+          { v: 'certified', label: 'dev.stCertified' },
+          { v: 'pending', label: 'dev.stPending' },
+          { v: 'revoked', label: 'dev.stRevoked' },
+        ] },
+      },
+      onSort: () => loadTopo(),
+      onFilter: () => loadTopo(),
+    });
   } catch (e) { toast(e.message, 'err'); }
   try {
     const r = await api('GET', '/api/v1/admin/federation/receipts');
     const body = $('topo-receipts'); if (!body) return;
-    body.innerHTML = (r.items || []).map(it =>
+    const items = tblApply('adm-topo-receipts', r.items || [],
+      { created: it => it.created_at || '' },
+      { 2: it => it.visibility || '' });
+    body.innerHTML = items.map(it =>
       '<tr><td>' + esc(it.artifact) + '</td><td>' + esc(it.holder) + '</td>' +
       '<td><span class="badge ' + (it.visibility === 'approve' ? 'b-warn' : 'b-info') + '">' + esc(it.visibility) + '</span></td>' +
       '<td>' + esc(it.state) + '</td><td style="color:var(--dim2)">' + esc((it.created_at || '').replace('T', ' ').replace('Z', '')) + '</td></tr>'
     ).join('') || '<tr><td colspan="5" class="empty">' + T('common.empty') + '</td></tr>';
+    tblAttach('topo-receipts', {
+      key: 'adm-topo-receipts',
+      sort: { 4: 'created' },
+      filter: {
+        2: { label: 'topo.colVis', type: 'enum', options: [
+          { v: 'disclose', label: 'disclose' }, { v: 'approve', label: 'approve' }] },
+      },
+      onSort: () => loadTopo(),
+      onFilter: () => loadTopo(),
+    });
   } catch (e) { toast(e.message, 'err'); }
 }
 async function saveTopoSettings() {
@@ -900,8 +990,18 @@ function renderDeviceRows() {
   else if (S.devState === 'offline') items = items.filter(d => !d.online);
   else if (S.devState) items = items.filter(d => d.state === S.devState);
   if (q) items = items.filter(d => ((d.my_name || '') + (d.subject || '') + (d.remark || '') + (d.device_fp || '')).toLowerCase().includes(q));
-  items.sort((a, b) => (b.online - a.online) || String(b.last_seen || '').localeCompare(String(a.last_seen || '')));
-  const sig = JSON.stringify([items, q, S.devState]);
+  // header sort (AgTbl): default stays online-first + last-seen; 状态/搜索走工具栏（不重复进表头）
+  const sorted = tblApply('adm-dev', items, {
+    name: d => d.my_name || d.subject || '',
+    sess: d => d.sessions || 0,
+    bytes: d => (d.bytes_up || 0) + (d.bytes_down || 0),
+    last: d => d.last_seen || '',
+  });
+  if (!AgTbl.sortState('adm-dev')) {
+    sorted.sort((a, b) => (b.online - a.online) || String(b.last_seen || '').localeCompare(String(a.last_seen || '')));
+  }
+  items = sorted;
+  const sig = JSON.stringify([items, q, S.devState, tblSig('adm-dev')]);
   if (sig === body.dataset.sig) return;
   body.dataset.sig = sig;
   body.innerHTML = items.map(d =>
@@ -916,6 +1016,11 @@ function renderDeviceRows() {
       (d.state === 'pending' ? '<button class="ghost small" data-act="dev-certify" data-fp="' + esc(d.device_fp) + '">' + T('dev.certify') + '</button> ' : '') +
       '<button class="ghost small" data-act="dev-open" data-fp="' + esc(d.device_fp) + '">' + T('groups.detail') + '</button></td></tr>'
   ).join('') || '<tr><td colspan="6" class="empty">' + T('dev.empty') + '</td></tr>';
+  tblAttach('dev-body', {
+    key: 'adm-dev',
+    sort: { 0: 'name', 2: 'sess', 3: 'bytes', 4: 'last' },
+    onSort: () => { body.dataset.sig = ''; renderDeviceRows(); },
+  });
 }
 async function renderDeviceDetail() {
   const fp = S.devFp;
@@ -947,7 +1052,7 @@ async function loadDeviceDetail() {
   try { d = await api('GET', '/api/v1/admin/devices/' + encodeURIComponent(S.devFp)); }
   catch (e) { toast(e.message, 'err'); S.devFp = ''; renderDevices(); return; }
   if (!hero.isConnected) return; // view switched while the fetch was in flight
-  const sig = JSON.stringify(d);
+  const sig = JSON.stringify([d, tblSig('adm-devsess')]);
   if (sig === hero.dataset.sig) return;
   hero.dataset.sig = sig;
   const online = (d.sessions || []).length;
@@ -971,13 +1076,23 @@ async function loadDeviceDetail() {
     agkpi(String(online), T('dev.kpiSessions')) +
     agkpi(online ? T('dev.online') : T('dev.offline'), T('dev.kpiOnline')) +
     agkpi(esc((d.last_seen || '-').replace('T', ' ').replace('Z', '')), T('dev.kpiLastSeen'));
-  $('dev-sess').innerHTML = (d.sessions || []).map(s =>
+  const devSess = tblApply('adm-devsess', d.sessions || [],
+    { ago: s => s.online_secs || 0, bytes: s => (s.bytes_up || 0) + (s.bytes_down || 0), chans: s => s.channels || 0 },
+    { 0: s => s.ip || '' });
+  $('dev-sess').innerHTML = devSess.map(s =>
     '<tr><td class="mono">' + esc(s.ip || '-') + '</td><td style="color:var(--dim)">' + fmtAgo(s.online_secs) + '</td>' +
     '<td class="mono" style="color:var(--dim)">↑ ' + fmtBytes(s.bytes_up) + ' ↓ ' + fmtBytes(s.bytes_down) + '</td>' +
     '<td style="color:var(--dim)">' + (s.channels || 0) + '</td>' +
     '<td>' + agcopy(s.session_key || '', String(s.session_key || '').slice(0, 6)) + '</td>' +
     '<td><button class="danger small" data-act="sess-kick" data-key="' + esc(s.session_key) + '" data-name="' + esc(d.my_name || '') + '">' + T('sess.kick') + '</button></td></tr>'
   ).join('') || '<tr><td colspan="6" class="empty">' + T('sess.empty') + '</td></tr>';
+  tblAttach('dev-sess', {
+    key: 'adm-devsess',
+    sort: { 1: 'ago', 2: 'bytes', 3: 'chans' },
+    filter: { 0: { label: 'IP' } },
+    onSort: () => loadDeviceDetail(),
+    onFilter: () => loadDeviceDetail(),
+  });
 }
 /* KPI card helper (.agkpi, M3-T7): value + label + optional delta slot ({dir: up|down|flat, text}) */
 function agkpi(value, label, delta) {
@@ -1029,13 +1144,27 @@ async function loadDeviceHistory() {
   const body = $('dev-hist'); if (!body || !S.devFp) return;
   try {
     const d = await api('GET', '/api/v1/admin/devices/' + encodeURIComponent(S.devFp) + '/sessions');
-    body.innerHTML = (d.items || []).map(r =>
+    const items = tblApply('adm-devhist', d.items || [],
+      { start: r => r.started_at || '', bytes: r => (r.bytes_up || 0) + (r.bytes_down || 0) },
+      { 0: r => r.entry || '', 1: r => r.ip || '' });
+    body.innerHTML = items.map(r =>
       '<tr><td><span class="badge b-info">' + esc(r.entry || '-') + '</span></td>' +
       '<td class="mono" style="color:var(--dim)">' + esc(r.ip || '-') + '</td>' +
       '<td style="color:var(--dim)">' + esc((r.started_at || '').replace('T', ' ')) + '</td>' +
       '<td class="mono" style="color:var(--dim)">↑ ' + fmtBytes(r.bytes_up) + ' ↓ ' + fmtBytes(r.bytes_down) + '</td>' +
       '<td style="color:var(--dim)">' + (r.close_reason ? esc(reasonText(r.close_reason)) : '-') + '</td></tr>'
     ).join('') || '<tr><td colspan="5" class="empty">' + T('common.empty') + '</td></tr>';
+    tblAttach('dev-hist', {
+      key: 'adm-devhist',
+      sort: { 2: 'start', 3: 'bytes' },
+      filter: {
+        0: { label: 'sess.col.entry', type: 'enum', options: [
+          { v: 'direct', label: 'deleg.badgeDirect' }, { v: 'relay', label: 'deleg.badgeRelay' }] },
+        1: { label: 'IP' },
+      },
+      onSort: () => loadDeviceHistory(),
+      onFilter: () => loadDeviceHistory(),
+    });
   } catch (e) { /* keep empty */ }
 }
 async function loadDeviceEvents() {
@@ -1412,6 +1541,8 @@ async function loadGroups() {
   const body = $('grp-body'); if (!body) return;
   let url = '/api/v1/admin/groups?page=' + S.page.groups + '&page_size=' + S.size.groups;
   if (S.filter.groups) url += '&q=' + encodeURIComponent(S.filter.groups);
+  const st = AgTbl.sortState('adm-groups');
+  if (st) url += '&sort=' + encodeURIComponent(st.id + ':' + st.dir);
   try {
     const d = await api('GET', url);
     body.innerHTML = (d.items||[]).map(g => {
@@ -1434,6 +1565,11 @@ async function loadGroups() {
         '<td style="white-space:nowrap">' + ops + '</td></tr>';
     }).join('') || '<tr><td colspan="4" class="empty">' + T('groups.empty') + '</td></tr>';
     $('grp-pager').innerHTML = pager('groups', d.total||0);
+    tblAttach('grp-body', {
+      key: 'adm-groups',
+      sort: { 0: 'name', 1: 'rules' }, // server-side (paged); 备注/操作不按业务排序
+      onSort: () => { S.page.groups = 1; loadGroups(); },
+    });
     S.groups = d.items || S.groups;
   } catch(e) { toast(e.message, 'err'); }
 }
@@ -1544,6 +1680,8 @@ async function loadRules() {
   let url = '/api/v1/admin/rules?page=' + S.page.rules + '&page_size=' + S.size.rules;
   if (S.filter.rules) url += '&q=' + encodeURIComponent(S.filter.rules);
   if (S.filter.rulesType) url += '&type=' + S.filter.rulesType;
+  const st = AgTbl.sortState('adm-rules');
+  if (st) url += '&sort=' + encodeURIComponent(st.id + ':' + st.dir);
   try {
     const d = await api('GET', url);
     body.innerHTML = (d.items||[]).map(r =>
@@ -1558,6 +1696,11 @@ async function loadRules() {
       '</td></tr>'
     ).join('') || '<tr><td colspan="6" class="empty">' + T('rules.empty') + '</td></tr>';
     $('rule-pager').innerHTML = pager('rules', d.total||0);
+    tblAttach('rule-body', {
+      key: 'adm-rules',
+      sort: { 0: 'type', 1: 'value', 3: 'groups' }, // server-side (paged); 解析/备注/操作不按业务排序
+      onSort: () => { S.page.rules = 1; loadRules(); },
+    });
   } catch(e) { toast(e.message, 'err'); }
 }
 function ruleFormHtml(t, v, resolve, remark) {
@@ -1829,13 +1972,19 @@ async function loadTokens() {
 function renderFaninTokens() {
   const body = $('tok-body'); if (!body) return;
   const q = S.faninQuery.trim().toLowerCase();
-  const items = q ? FANIN_TOKENS.filter(t =>
+  let items = q ? FANIN_TOKENS.filter(t =>
     (t.token_prefix || '').toLowerCase().includes(q) ||
     (t.remark || '').toLowerCase().includes(q) ||
     (t.groups || []).some(g => (g.name || '').toLowerCase().includes(q))
   ) : FANIN_TOKENS;
+  // header sort (AgTbl); 前缀/备注/组的搜索走工具栏搜索框（不重复进表头）
+  items = tblApply('adm-tok', items, {
+    rate: t => t.rate_limit_kbps || 0,
+    used: t => t.last_used_at || '',
+    created: t => t.created_at || '',
+  });
   // Signature guard: polling re-renders only on real change (keeps expanded session rows + dropdowns alive)
-  const sig = JSON.stringify([items, q, SESS, [...SESS_OPEN], DEV_MAP]);
+  const sig = JSON.stringify([items, q, SESS, [...SESS_OPEN], DEV_MAP, tblSig('adm-tok')]);
   if (sig === body.dataset.sig) return;
   body.dataset.sig = sig;
   body.innerHTML = items.map(t => {
@@ -1859,6 +2008,11 @@ function renderFaninTokens() {
     '<button class="danger small" data-act="tok-del" data-id="' + esc(t.id) + '">' + T('adm.revoke') + '</button></td></tr>' + sessTr;
   }).join('') || '<tr><td colspan="8" class="empty">' + (q ? T('fanin.noMatchTokens') : T('fanin.emptyTokens')) + '</td></tr>';
   agSelectEnhance(body);
+  tblAttach('tok-body', {
+    key: 'adm-tok',
+    sort: { 2: 'rate', 5: 'used', 6: 'created' },
+    onSort: () => { body.dataset.sig = ''; renderFaninTokens(); },
+  });
 }
 async function toggleExpose(id, on) {
   try {
@@ -2042,9 +2196,11 @@ async function loadConnectors() {
   } catch(e) { toast(e.message, 'err'); return; }
   const body = $('conn-body');
   if (body) {
-    const items = FANOUT_CONNS;
-    // Polling change detection: identical signature → no DOM rewrite (avoids flicker)
-    const sig = JSON.stringify(items);
+    // header sort + 状态漏斗 (AgTbl); polling change detection covers the header state too
+    const items = tblApply('adm-conn', FANOUT_CONNS,
+      { name: c => c.name || '', addr: c => c.upstream_addr || '' },
+      { 3: c => c.state || '' });
+    const sig = JSON.stringify([items, tblSig('adm-conn')]);
     if (sig !== body.dataset.sig) {
       body.dataset.sig = sig;
       body.innerHTML = items.map(c => {
@@ -2064,6 +2220,20 @@ async function loadConnectors() {
         '</td></tr>';
       }).join('') || '<tr><td colspan="7" class="empty">' + T('fanout.empty') + '</td></tr>';
     }
+    tblAttach('conn-body', {
+      key: 'adm-conn',
+      sort: { 0: 'name', 1: 'addr' },
+      filter: {
+        3: { label: 'common.status', type: 'enum', options: [
+          { v: 'connected', label: 'common.connected' },
+          { v: 'connecting', label: 'adm.connecting' },
+          { v: 'reconnecting', label: 'adm.reconnecting' },
+          { v: 'disconnected', label: 'adm.disconnected' },
+        ] },
+      },
+      onSort: () => { body.dataset.sig = ''; loadConnectors(); },
+      onFilter: () => { body.dataset.sig = ''; loadConnectors(); },
+    });
   }
   renderConnsSess();
   renderWatch();
@@ -2147,12 +2317,14 @@ async function loadDelegation() {
 }
 function renderDelegation() {
   const body = $('deleg-body'); if (!body) return;
-  // polling change detection: identical signature → no DOM rewrite (avoids flicker);
-  // the signature covers live sessions + expansion state so kicks/expands refresh in place
-  const sig = JSON.stringify({ d: FANOUT_DELEG, s: SESS, open: [...SESS_OPEN], dev: DEV_MAP });
+  // header sort + 标签漏斗 (AgTbl); the signature covers header state so a change re-renders exactly once
+  const sig = JSON.stringify({ d: FANOUT_DELEG, s: SESS, open: [...SESS_OPEN], dev: DEV_MAP, tbl: tblSig('adm-deleg') });
   if (sig === body.dataset.sig) return;
   body.dataset.sig = sig;
-  body.innerHTML = FANOUT_DELEG.map(t => {
+  const items = tblApply('adm-deleg', FANOUT_DELEG,
+    { label: t => t.label || t.token_prefix || '', created: t => t.created_at || '' },
+    { 0: t => (t.label || '') + ' ' + (t.token_prefix || '') });
+  body.innerHTML = items.map(t => {
     const groups = (t.groups || []).map(g => grpChip({ name: g.name, adopted: g.adopted_node, e2e: g.e2e_required })).join(' ');
     const key = 'deleg:' + t.id;
     // M3-T1: live consumer sessions of this token (grouped by token_hash) + online/cap badge
@@ -2169,15 +2341,26 @@ function renderDelegation() {
         '<div class="hint" style="margin:4px 0">' + T('deleg.colSet') + '</div>' + (delegEntriesHtml(t, false) || '-') +
         sessPanelInner({ name: t.label || t.token_prefix, sessions, cols: ['who', 'ip', 'entry', 'ago', 'tr', 'key', 'op'], kickallHash: t.token_hash }) + '</td></tr>';
   }).join('') || '<tr><td colspan="4" class="empty">' + T('deleg.empty') + '</td></tr>';
+  tblAttach('deleg-body', {
+    key: 'adm-deleg',
+    sort: { 0: 'label', 2: 'created' },
+    filter: { 0: { label: 'deleg.colLabel' } },
+    onSort: () => { body.dataset.sig = ''; renderDelegation(); },
+    onFilter: () => { body.dataset.sig = ''; renderDelegation(); },
+  });
 }
 /* Fan-out watch tab (consumer activity overview): every issued token with each disaster-set entry's
    live state (connector connection × registration) and its recent activity (data-plane opens + lifecycle). */
 function renderWatch() {
   const body = $('watch-body'); if (!body) return;
-  const sig = JSON.stringify({ d: FANOUT_DELEG, c: FANOUT_CONNS.map(c => [c.id, c.state]), s: SESS, open: [...SESS_OPEN], dev: DEV_MAP });
+  const sig = JSON.stringify({ d: FANOUT_DELEG, c: FANOUT_CONNS.map(c => [c.id, c.state]), s: SESS, open: [...SESS_OPEN], dev: DEV_MAP, tbl: tblSig('adm-watch') });
   if (sig === body.dataset.sig) return;
   body.dataset.sig = sig;
-  body.innerHTML = FANOUT_DELEG.map(t => {
+  // header sort + 入口/并发漏斗 (AgTbl)
+  const items = tblApply('adm-watch', FANOUT_DELEG,
+    { label: t => t.label || t.token_prefix || '', opens: t => t.used_count || 0, created: t => t.created_at || '' },
+    { 1: t => t.entry_mode || 'direct', 3: t => t.concurrency || 'single' });
+  body.innerHTML = items.map(t => {
     const key = 'watch:' + t.id;
     const sessions = SESS.filter(s => s.kind === 'consumer' && s.token_hash === t.token_hash);
     return '<tr><td><b>' + esc(t.label || t.token_prefix) + '</b> ' + delegTierBadges(t) + '<div class="mono" style="color:var(--dim2)">' + esc(t.token_prefix) + '</div></td>' +
@@ -2190,6 +2373,18 @@ function renderWatch() {
     '<tr ' + sessWrapAttrs(key) + '><td colspan="7" style="background:var(--bg2);padding:0">' +
       sessPanelInner({ name: t.label || t.token_prefix, sessions, cols: ['who', 'ip', 'entry', 'ago', 'tr', 'key', 'op'], kickallHash: t.token_hash }) + '</td></tr>';
   }).join('') || '<tr><td colspan="7" class="empty">' + T('deleg.empty') + '</td></tr>';
+  tblAttach('watch-body', {
+    key: 'adm-watch',
+    sort: { 0: 'label', 4: 'opens', 5: 'created' },
+    filter: {
+      1: { label: 'deleg.colEntry', type: 'enum', options: [
+        { v: 'direct', label: 'deleg.badgeDirect' }, { v: 'relay', label: 'deleg.badgeRelay' }] },
+      3: { label: 'deleg.colConcurrency', type: 'enum', options: [
+        { v: 'single', label: 'deleg.concSingle' }, { v: 'multi', label: 'deleg.concMulti' }] },
+    },
+    onSort: () => { body.dataset.sig = ''; renderWatch(); },
+    onFilter: () => { body.dataset.sig = ''; renderWatch(); },
+  });
 }
 async function revokeDelegation(id, name) {
   confirmAction(T('deleg.revokeConfirm', { name }), async () => {
@@ -2237,12 +2432,12 @@ async function openIssueDelegation() {
   ).join('');
 
   openModal(T('deleg.issue'),
-    // 入口 entry
+    // 入口 entry (segmented pills, same texture as the desktop dialog — agseg shared component)
     '<label>' + T('deleg.entry') + ' ' + ahelp(T('deleg.entryHelp')) + '</label>' +
-    '<div style="padding:2px 4px">' +
-      '<label class="chk" style="display:inline-flex;align-items:center;gap:5px;margin-right:14px"><input type="radio" name="di-entry" value="direct"' + (hasRelay ? '' : ' checked') + '> ' + T('deleg.entryDirect') + '</label>' +
-      '<label class="chk" style="display:inline-flex;align-items:center;gap:5px"><input type="radio" name="di-entry" value="relay"' + (hasRelay ? ' checked' : ' disabled') + '> ' + T('deleg.entryRelay') + '</label>' +
-    '</div>' +
+    segHtml('di-entry', [
+      { v: 'direct', label: T('deleg.entryDirect') },
+      { v: 'relay', label: T('deleg.entryRelay'), disabled: !hasRelay },
+    ], hasRelay ? 'relay' : 'direct') +
     '<div id="di-relay-wrap"' + (hasRelay ? '' : ' hidden') + '>' +
       '<label style="margin-top:10px">' + T('deleg.targets') + ' ' + ahelp(T('deleg.targetsHelp')) + '</label>' +
       '<div class="rule-check" style="max-height:150px">' + (targetRows || '<div class="empty">' + T('deleg.noUpstreams') + '</div>') + '</div>' +
@@ -2251,23 +2446,25 @@ async function openIssueDelegation() {
     '</div>' +
     // 信任 trust
     '<label style="margin-top:10px">' + T('deleg.trust') + ' ' + ahelp(T('deleg.trustHelp')) + '</label>' +
-    '<div style="padding:2px 4px">' +
-      '<label class="chk" style="display:inline-flex;align-items:center;gap:5px;margin-right:14px"><input type="radio" name="di-trust" value="plain" checked> ' + T('deleg.trustPlain') + '</label>' +
-      '<label class="chk" style="display:inline-flex;align-items:center;gap:5px;margin-right:14px"><input type="radio" name="di-trust" value="e2e"> ' + T('deleg.trustE2e') + '</label>' +
-      '<label class="chk" style="display:inline-flex;align-items:center;gap:5px"><input type="radio" name="di-trust" value="admin"> ' + T('deleg.trustAdmin') + '</label>' +
-    '</div>' +
+    segHtml('di-trust', [
+      { v: 'plain', label: T('deleg.trustPlain') },
+      { v: 'e2e', label: T('deleg.trustE2e') },
+      { v: 'admin', label: T('deleg.trustAdmin') },
+    ], 'plain') +
     '<div class="hint" id="di-trust-lock" style="display:none;color:var(--warn)">' + ic('info', 13) + ' ' + T('deleg.directPlainHint') + '</div>' +
-    '<div id="di-scope-wrap" style="display:none;padding:2px 4px">' +
-      '<label class="chk" style="display:inline-flex;align-items:center;gap:5px;margin-right:14px"><input type="radio" name="di-scope" value="ro"> ' + T('deleg.scopeRo') + '</label>' +
-      '<label class="chk" style="display:inline-flex;align-items:center;gap:5px;margin-right:14px"><input type="radio" name="di-scope" value="rules"> ' + T('deleg.scopeRules') + '</label>' +
-      '<label class="chk" style="display:inline-flex;align-items:center;gap:5px"><input type="radio" name="di-scope" value="full" checked> ' + T('deleg.scopeFull') + '</label>' +
+    '<div id="di-scope-wrap" style="display:none">' +
+      segHtml('di-scope', [
+        { v: 'ro', label: T('deleg.scopeRo') },
+        { v: 'rules', label: T('deleg.scopeRules') },
+        { v: 'full', label: T('deleg.scopeFull') },
+      ], 'full') +
     '</div>' +
     // 路由 mode
     '<label style="margin-top:10px">' + T('deleg.mode') + ' ' + ahelp(T('deleg.modeHelp')) + '</label>' +
-    '<div style="padding:2px 4px">' +
-      '<label class="chk" style="display:inline-flex;align-items:center;gap:5px;margin-right:14px"><input type="radio" name="di-mode" value="dedicated" checked> ' + T('deleg.modeDedicated') + '</label>' +
-      '<label class="chk" style="display:inline-flex;align-items:center;gap:5px"><input type="radio" name="di-mode" value="split"> ' + T('deleg.modeSplit') + '</label>' +
-    '</div>' +
+    segHtml('di-mode', [
+      { v: 'dedicated', label: T('deleg.modeDedicated') },
+      { v: 'split', label: T('deleg.modeSplit') },
+    ], 'dedicated') +
     // 权限组 groups (dedicated folds the picker into an advanced disclosure; split expands it)
     '<details id="di-groups-wrap" style="margin-top:10px"><summary style="cursor:pointer;color:var(--dim);font-size:12px">' + T('deleg.groupsAdv') + '</summary>' +
       '<label style="margin-top:6px">' + T('term.group') + ' ' + ahelp(T('deleg.groupsHelp')) + '</label>' +
@@ -2275,20 +2472,20 @@ async function openIssueDelegation() {
     '</details>' +
     // 并发 concurrency
     '<label style="margin-top:10px">' + T('deleg.concurrency') + '</label>' +
-    '<div style="padding:2px 4px">' +
-      '<label class="chk" style="display:inline-flex;align-items:center;gap:5px;margin-right:14px"><input type="radio" name="di-conc" value="single" checked> ' + T('deleg.concSingle') + '</label>' +
-      '<label class="chk" style="display:inline-flex;align-items:center;gap:5px"><input type="radio" name="di-conc" value="multi"> ' + T('deleg.concMulti') + ' ' + ahelp(T('deleg.concMultiHelp', { n: maxSessions })) + '</label>' +
-    '</div>' +
+    segHtml('di-conc', [
+      { v: 'single', label: T('deleg.concSingle') },
+      { v: 'multi', label: T('deleg.concMulti') + ' ≤' + maxSessions },
+    ], 'single') +
     // M3-T6 naming triplet: target name = the token's local label; my name prefills the link's myname word
     nameTriplet('di', {}, { remark: false }),
     lifecycleFieldsHtml('di', '', ''),
     [
       {label: T('common.cancel'), kind: 'ghost', fn: closeModal},
       {label: T('deleg.issue'), fn: async () => {
-        const entry = (document.querySelector('input[name="di-entry"]:checked') || {}).value || 'direct';
-        const trust = entry === 'direct' ? 'plain' : ((document.querySelector('input[name="di-trust"]:checked') || {}).value || 'plain');
-        const mode = (document.querySelector('input[name="di-mode"]:checked') || {}).value || 'dedicated';
-        const concurrency = (document.querySelector('input[name="di-conc"]:checked') || {}).value || 'single';
+        const entry = segVal('di-entry') || 'direct';
+        const trust = entry === 'direct' ? 'plain' : (segVal('di-trust') || 'plain');
+        const mode = segVal('di-mode') || 'dedicated';
+        const concurrency = segVal('di-conc') || 'single';
         const groupIds = [...document.querySelectorAll('.di-group:checked')].map(c => c.value);
         if (!groupIds.length) { toast(T('deleg.needGroups'), 'err'); return; }
         const e2eCount = groupIds.filter(id => e2eIds.has(id)).length;
@@ -2302,7 +2499,7 @@ async function openIssueDelegation() {
           const primary = $('di-primary').dataset.value || targets[0];
           regs = targets.map(id => ({ connector_id: id, is_primary: id === primary }));
         }
-        const adminScope = trust === 'admin' ? ((document.querySelector('input[name="di-scope"]:checked') || {}).value || 'full') : '';
+        const adminScope = trust === 'admin' ? (segVal('di-scope') || 'full') : '';
         const life = lifecycleFieldsVal('di');
         const names = nameTripletVal('di');
         try {
@@ -2349,7 +2546,7 @@ async function openIssueDelegation() {
 
   // trust linkage: the E2E tiers keep only e2e_required groups selectable (ineligible boxes uncheck+disable)
   function syncGroupEligibility() {
-    const trust = (document.querySelector('input[name="di-trust"]:checked') || {}).value || 'plain';
+    const trust = segVal('di-trust') || 'plain';
     document.querySelectorAll('.di-group').forEach(c => {
       const e2e = e2eIds.has(c.value);
       c.disabled = trust !== 'plain' && !e2e;
@@ -2357,34 +2554,32 @@ async function openIssueDelegation() {
     });
     $('di-scope-wrap').style.display = trust === 'admin' ? '' : 'none';
   }
-  document.querySelectorAll('input[name="di-trust"]').forEach(r => r.addEventListener('change', syncGroupEligibility));
+  SEG_EVT['di-trust'] = syncGroupEligibility;
 
   // entry linkage: relay shows the disaster set; direct hides it and locks the trust tier to plaintext
   // (direct TLS is already end-to-end — stacking E2E or an admin channel adds nothing)
   function syncEntry() {
-    const entry = (document.querySelector('input[name="di-entry"]:checked') || {}).value || 'direct';
+    const entry = segVal('di-entry') || 'direct';
     const lock = entry === 'direct';
     $('di-relay-wrap').hidden = lock;
-    document.querySelectorAll('input[name="di-trust"]').forEach(r => {
-      r.disabled = lock && r.value !== 'plain';
-      if (lock && r.value === 'plain') r.checked = true;
-    });
+    if (lock) segSet('di-trust', 'plain', { e2e: true, admin: true });
+    else segSet('di-trust', segVal('di-trust') || 'plain', { e2e: false, admin: false });
     $('di-trust-lock').style.display = lock ? '' : 'none';
     syncGroupEligibility();
   }
-  document.querySelectorAll('input[name="di-entry"]').forEach(r => r.addEventListener('change', syncEntry));
+  SEG_EVT['di-entry'] = syncEntry;
   syncEntry();
 
   // mode linkage: dedicated re-checks every eligible group and folds the picker; split expands it
-  document.querySelectorAll('input[name="di-mode"]').forEach(r => r.addEventListener('change', () => {
-    const mode = (document.querySelector('input[name="di-mode"]:checked') || {}).value || 'dedicated';
+  SEG_EVT['di-mode'] = () => {
+    const mode = segVal('di-mode') || 'dedicated';
     if (mode === 'dedicated') {
       document.querySelectorAll('.di-group:not(:disabled)').forEach(c => { c.checked = true; });
       $('di-groups-wrap').open = false;
     } else {
       $('di-groups-wrap').open = true;
     }
-  }));
+  };
 }
 function connectorFormHtml(c) {
   c = c || {};
@@ -2537,6 +2732,8 @@ async function loadAudit() {
   const body = $('audit-body'); if (!body) return;
   let url = '/api/v1/admin/audit-logs?page=' + S.page.audit + '&page_size=' + S.size.audit;
   if (S.filter.auditAction) url += '&action=' + S.filter.auditAction;
+  const st = AgTbl.sortState('adm-audit');
+  if (st) url += '&sort=' + encodeURIComponent(st.id + ':' + st.dir);
   try {
     const d = await api('GET', url);
     body.innerHTML = (d.items||[]).map(l =>
@@ -2548,6 +2745,11 @@ async function loadAudit() {
       '<td class="mono" style="color:var(--dim)">' + esc(l.ip || '-') + '</td></tr>'
     ).join('') || '<tr><td colspan="6" class="empty">' + T('audit.empty') + '</td></tr>';
     $('audit-pager').innerHTML = pager('audit', d.total||0);
+    tblAttach('audit-body', {
+      key: 'adm-audit',
+      sort: { 0: 'time' }, // server-side (paged); 其余列按业务无排序价值
+      onSort: () => { S.page.audit = 1; loadAudit(); },
+    });
   } catch(e) { toast(e.message, 'err'); }
 }
 
@@ -2595,10 +2797,16 @@ async function renderSettings() {
   } catch(e) { toast(e.message, 'err'); }
   try {
     const conf = await api('GET', '/api/v1/admin/admins');
-    $('admin-body').innerHTML = (conf.items||[]).map(a =>
+    const admins = tblApply('adm-admins', conf.items || [], { name: a => a.username || '', created: a => a.created_at || '' });
+    $('admin-body').innerHTML = admins.map(a =>
       '<tr><td><b>' + esc(a.username) + '</b></td><td style="color:var(--dim)">' + esc(a.created_at) + '</td>' +
       '<td><button class="danger small" data-act="admin-del" data-id="' + esc(a.id) + '" data-name="' + esc(a.username) + '">' + T('common.delete') + '</button></td></tr>'
     ).join('') || '<tr><td colspan="3" class="empty">' + T('common.none') + '</td></tr>';
+    tblAttach('admin-body', {
+      key: 'adm-admins',
+      sort: { 0: 'name', 1: 'created' },
+      onSort: () => renderSettings(),
+    });
   } catch(e) {}
   try {
     const d = await api('GET', '/api/v1/admin/node/logs?limit=100');

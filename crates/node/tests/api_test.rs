@@ -911,6 +911,6 @@ async fn audit_retention_cleanup() {
     // Freshly inserted row is not 90 days old; must not be cleaned
     let n = db.cleanup_audit_log(90).unwrap();
     assert_eq!(n, 0);
-    let (_, total) = db.list_audit_logs(1, 20, None).unwrap();
+    let (_, total) = db.list_audit_logs(1, 20, None, None).unwrap();
     assert_eq!(total, 1);
 }

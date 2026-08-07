@@ -229,7 +229,7 @@ impl Source {
                     .collect())
             }
             Source::Db(db) => Ok(db
-                .list_rules(1, 500, None, None)?
+                .list_rules(1, 500, None, None, None)?
                 .0
                 .into_iter()
                 .map(|r| RuleRow {
@@ -262,7 +262,7 @@ impl Source {
                     .collect())
             }
             Source::Db(db) => Ok(db
-                .list_groups(1, 500, None)?
+                .list_groups(1, 500, None, None)?
                 .0
                 .into_iter()
                 .map(|g| GroupRow {
@@ -407,7 +407,7 @@ impl Source {
                     .collect())
             }
             Source::Db(db) => Ok(db
-                .list_audit_logs(1, 200, None)?
+                .list_audit_logs(1, 200, None, None)?
                 .0
                 .into_iter()
                 .map(|l| AuditRow {

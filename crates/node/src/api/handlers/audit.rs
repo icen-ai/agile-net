@@ -17,6 +17,8 @@ pub struct ListQuery {
     #[serde(default = "crate::api::default_page_size")]
     pub page_size: u32,
     pub action: Option<String>,
+    /// "time:asc|desc" (whitelist-mapped in db::paginate::order_clause)
+    pub sort: Option<String>,
 }
 
 pub async fn list_audit_logs(
@@ -26,7 +28,7 @@ pub async fn list_audit_logs(
 ) -> Response {
     let (page, page_size) = crate::api::normalize_page(q.page, q.page_size);
     match state
-        .db_call(move |db| db.list_audit_logs(page, page_size, q.action.as_deref()))
+        .db_call(move |db| db.list_audit_logs(page, page_size, q.action.as_deref(), q.sort.as_deref()))
         .await
     {
         Ok((items, total)) => ok(json!({

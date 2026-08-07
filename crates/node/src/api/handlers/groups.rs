@@ -19,6 +19,8 @@ pub struct ListQuery {
     #[serde(default = "crate::api::default_page_size")]
     pub page_size: u32,
     pub q: Option<String>,
+    /// "name|rules|created:asc|desc" (whitelist-mapped in db::paginate::order_clause)
+    pub sort: Option<String>,
 }
 
 /// Federation P3: an e2e_required group may hang only on delegated tokens — every other
@@ -40,7 +42,7 @@ pub async fn list_groups(
 ) -> Response {
     let (page, page_size) = crate::api::normalize_page(q.page, q.page_size);
     match state
-        .db_call(move |db| db.list_groups(page, page_size, q.q.as_deref()))
+        .db_call(move |db| db.list_groups(page, page_size, q.q.as_deref(), q.sort.as_deref()))
         .await
     {
         Ok((items, total)) => ok(json!({

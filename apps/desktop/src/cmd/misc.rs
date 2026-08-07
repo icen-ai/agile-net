@@ -325,7 +325,7 @@ pub struct GroupOption {
 #[tauri::command]
 pub(crate) async fn list_embedded_groups() -> Result<Vec<GroupOption>, String> {
     let db = roles::open_embedded_db()?;
-    let (groups, _) = db.list_groups(1, 1000, None).map_err(map_err)?;
+    let (groups, _) = db.list_groups(1, 1000, None, None).map_err(map_err)?;
     Ok(groups
         .into_iter()
         .map(|g| GroupOption { id: g.id, name: g.name, e2e_required: g.e2e_required, adopted_node: g.adopted_node })

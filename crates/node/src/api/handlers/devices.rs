@@ -401,7 +401,7 @@ pub async fn device_events(AdminAuth(_): AdminAuth, State(state): State<ApiState
                 }
                 // audit hits (certify/revoke/rebind/kick actions carry the fp as target/detail)
                 let short = &fp[..12.min(fp.len())];
-                for e in db.list_audit_logs(1, 300, None)?.0 {
+                for e in db.list_audit_logs(1, 300, None, None)?.0 {
                     let hit = e.target.as_deref() == Some(fp.as_str())
                         || e.detail.as_deref().map(|d| d.contains(&fp) || d.contains(short)).unwrap_or(false);
                     if hit {

@@ -75,6 +75,7 @@ const AgTbl = (() => {
   // opts: { key, resize?: bool, sort?: {colIdx: sortId}, onSort?: (id, dir|null),
   //         filter?: {colIdx: {label}}, onFilter?: () }
   function attach(table, opts) {
+    table.classList.add('agtbl'); // chrome styles are opt-in via this class (components.css)
     registry.set(opts.key, { table, opts });
     applyChrome(table, opts);
     if (opts.sort) restoreSort(table, opts);
@@ -268,6 +269,8 @@ const AgTbl = (() => {
     setTimeout(() => document.addEventListener('mousedown', popAway), 0);
   }
 
+  function filters(key) { return Object.assign({}, filterState.get(key)); }
+
   /* Language switch: data-i18n rehydration rewrites header text nodes, dropping our glyphs —
      re-apply the chrome for every attached table (state lives outside the DOM, so nothing is lost) */
   if (window.AgI18n) {
@@ -277,5 +280,5 @@ const AgTbl = (() => {
     });
   }
 
-  return { sync, attach, sortState, filterGet, closePop };
+  return { sync, attach, sortState, filterGet, filters, closePop };
 })();

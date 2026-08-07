@@ -393,7 +393,7 @@ impl DelegationEngine {
     pub fn refresh_groups(&self, db: &Database) {
         let mut map = std::collections::HashMap::new();
         // list_groups is paged; local group counts are small, pull one generous page
-        let (groups, _) = db.list_groups(1, 10000, None).unwrap_or_default();
+        let (groups, _) = db.list_groups(1, 10000, None, None).unwrap_or_default();
         for g in groups {
             let rules: Vec<String> = db
                 .rules_of_group(&g.id)

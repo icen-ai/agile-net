@@ -20,6 +20,8 @@ pub struct ListQuery {
     #[serde(rename = "type")]
     pub rule_type: Option<String>,
     pub q: Option<String>,
+    /// "type|value|groups|created:asc|desc" (whitelist-mapped in db::paginate::order_clause)
+    pub sort: Option<String>,
 }
 
 pub async fn list_rules(
@@ -29,7 +31,7 @@ pub async fn list_rules(
 ) -> Response {
     let (page, page_size) = crate::api::normalize_page(q.page, q.page_size);
     match state
-        .db_call(move |db| db.list_rules(page, page_size, q.rule_type.as_deref(), q.q.as_deref()))
+        .db_call(move |db| db.list_rules(page, page_size, q.rule_type.as_deref(), q.q.as_deref(), q.sort.as_deref()))
         .await
     {
         Ok((items, total)) => ok(json!({
@@ -367,7 +369,7 @@ pub async fn batch_import(
                         "overwrite" => {
                             // Find the existing record and update remark/resolve
                             let (items, _) = db
-                                .list_rules(1, 100, Some(&r.rule_type), Some(&value))
+                                .list_rules(1, 100, Some(&r.rule_type), Some(&value), None)
                                 .unwrap_or_default();
                             if let Some(existing) = items.iter().find(|i| i.value == value) {
                                 if db

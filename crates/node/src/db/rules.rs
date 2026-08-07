@@ -14,6 +14,7 @@ impl Database {
         page_size: u32,
         type_filter: Option<&str>,
         q: Option<&str>,
+        sort: Option<&str>,
     ) -> Result<(Vec<RuleRecord>, i64)> {
         let conn = self.conn();
         let mut where_clauses = Vec::new();
@@ -27,6 +28,11 @@ impl Database {
             bind.push(Box::new(format!("%{q}%")));
             bind.push(Box::new(format!("%{q}%")));
         }
+        let order = super::paginate::order_clause(
+            sort,
+            &[("type", "r.type"), ("value", "r.value"), ("groups", "group_count"), ("created", "r.created_at")],
+            "r.created_at DESC",
+        );
         super::paginate::paged_query(
             &conn,
             "r.id, r.type, r.value, r.resolve, r.remark, r.created_at, r.updated_at,
@@ -34,7 +40,7 @@ impl Database {
             "rule r",
             &where_clauses,
             &bind,
-            "r.created_at DESC",
+            &order,
             page,
             page_size,
             |r| {
@@ -224,6 +230,7 @@ impl Database {
         page: u32,
         page_size: u32,
         q: Option<&str>,
+        sort: Option<&str>,
     ) -> Result<(Vec<GroupRecord>, i64)> {
         let conn = self.conn();
         let mut where_clauses = Vec::new();
@@ -233,15 +240,20 @@ impl Database {
             bind.push(Box::new(format!("%{q}%")));
             bind.push(Box::new(format!("%{q}%")));
         }
+        let order = super::paginate::order_clause(
+            sort,
+            &[("name", "g.name"), ("rules", "rule_count"), ("created", "g.created_at")],
+            "g.created_at DESC",
+        );
         super::paginate::paged_query(
             &conn,
             "g.id, g.name, g.remark, g.created_at, g.updated_at,
-             (SELECT COUNT(*) FROM group_rule gr WHERE gr.group_id = g.id),
+             (SELECT COUNT(*) FROM group_rule gr WHERE gr.group_id = g.id) AS rule_count,
              g.e2e_required, g.adopted_node, g.adopted_name",
             "\"group\" g",
             &where_clauses,
             &bind,
-            "g.created_at DESC",
+            &order,
             page,
             page_size,
             map_group_row,
@@ -419,7 +431,7 @@ impl Database {
 
     /// id -> display-ref map of all groups (naming sovereignty: name + adoption lineage).
     pub fn group_ref_map(&self) -> Result<std::collections::HashMap<String, super::models::GroupRef>> {
-        let (groups, _) = self.list_groups(1, 10000, None)?;
+        let (groups, _) = self.list_groups(1, 10000, None, None)?;
         Ok(groups
             .into_iter()
             .map(|g| {
