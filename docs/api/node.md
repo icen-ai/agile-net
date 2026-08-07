@@ -184,8 +184,10 @@
 
 ## POST `/api/v1/admin/federation/adopt`
 
-一键采纳：把池中的上送组物化为本地权限组（规则按 `(type, value)` 唯一性复用或新建，
-组名 = `组名@node_id`，重名追加 `·N` 后缀）。审计 `federation.adopt`。
+一键采纳：把池中的上送组物化为本地权限组（规则按 `(type, value)` 唯一性复用或新建）。
+**命名主权**：组名 = 纯源组名（不带 `@node` 后缀），来源走 `adopted_node` 血缘 + UI 徽章；
+本机组与采纳组可同名共存（唯一性分两层：本机 name 唯一 / 采纳组 (name, adopted_node) 唯一）。
+审计 `federation.adopt`。
 
 ### 请求
 
@@ -198,7 +200,7 @@
 ```json
 {
   "code": 0,
-  "data": { "id": "uuid", "name": "git@peer-c", "rule_count": 2, "reused": 0 }
+  "data": { "id": "uuid", "name": "git", "rule_count": 2, "reused": 0 }
 }
 ```
 
