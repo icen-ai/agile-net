@@ -81,7 +81,7 @@ impl DeviceGateCache {
         state
     }
 
-    /// The core-listener hook closure: (decision, one-time offline notice on Deny).
+    /// The core-listener hook closure: (decision, one-time offline notice on Deny/Pending).
     pub fn gate(self: &Arc<Self>) -> agile_net_core::relay::listener::DeviceGateHook {
         let cache = self.clone();
         Arc::new(move |fp: &str| {
@@ -95,7 +95,11 @@ impl DeviceGateCache {
                 }
                 // pending (or never seen): policy decides block vs allow-with-flag
                 _ if cache.is_allow_pending() => (DeviceGate::Allow, None),
-                _ => (DeviceGate::Pending, None),
+                // pending: a prior reject may have left a one-time admin note — surface it once
+                _ => {
+                    let notice = cache.db.take_device_notice(fp).ok().flatten();
+                    (DeviceGate::Pending, notice)
+                }
             }
         })
     }

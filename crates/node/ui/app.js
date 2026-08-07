@@ -766,6 +766,7 @@ const ACT_CLICK = {
   'appr-approve': b => openDecide(b.dataset.id, 'approve'),
   'appr-reject': b => openDecide(b.dataset.id, 'reject'),
   'appr-reject-revoke': b => openDecide(b.dataset.id, 'reject_revoke'),
+  'appr-reopen': b => reopenApproval(b.dataset.id),
 };
 const ACT_CHANGE = {
   'tok-expose': el => toggleExpose(el.dataset.id, el.checked),
@@ -1254,9 +1255,10 @@ async function renderApprovals() {
     '<div class="toolbar"><select id="appr-state">' +
       ['pending', 'all', 'approved', 'rejected'].map(v =>
         '<option value="' + v + '"' + (S.apprState === v ? ' selected' : '') + '>' + T('appr.f' + v.charAt(0).toUpperCase() + v.slice(1)) + '</option>').join('') +
-    '</select></div><div id="appr-list"></div>';
+    '</select><input id="appr-search" style="flex:1;min-width:200px" placeholder="' + esc(T('appr.searchPh')) + '" value="' + esc(S.apprSearch || '') + '"></div><div id="appr-list"></div>';
   agSelectEnhance($('view'));
   $('appr-state').onchange = (e) => { S.apprState = e.target.value; loadApprovals(); };
+  $('appr-search').oninput = (e) => { S.apprSearch = e.target.value; renderApprList(); };
   await loadApprovals();
   S.timers.push(setInterval(loadApprovals, 12000));
 }
@@ -1276,7 +1278,22 @@ async function loadApprovals() {
   try { items = (await api('GET', '/api/v1/admin/approvals' + qs)).items || []; }
   catch (e) { toast(e.message, 'err'); return; }
   APPR_ITEMS = items;
-  const sig = JSON.stringify(items);
+  renderApprList();
+}
+/* Keyword filter (holder / fingerprint / subject / appeal+notice bodies) over the fetched page;
+   the sig folds the keyword so typing re-renders exactly once per change. */
+function apprMatches(a, kw) {
+  const dt = a.detail || {};
+  const hay = [a.requester, a.object_ref, a.type, dt.subject, dt.my_name, dt.new_fp, dt.ip]
+    .concat((a.messages || []).map(m => m.body))
+    .filter(Boolean).join(' ').toLowerCase();
+  return hay.includes(kw);
+}
+function renderApprList() {
+  const box = $('appr-list'); if (!box) return;
+  const kw = (S.apprSearch || '').trim().toLowerCase();
+  const items = kw ? APPR_ITEMS.filter(a => apprMatches(a, kw)) : APPR_ITEMS;
+  const sig = JSON.stringify([items, kw]);
   if (sig === box.dataset.sig) return;
   box.dataset.sig = sig;
   box.innerHTML = items.map(a => {
@@ -1295,7 +1312,12 @@ async function loadApprovals() {
         '<button data-act="appr-approve" data-id="' + esc(a.id) + '">' + ic('check', 13) + T('appr.approve') + '</button> ' +
         '<button class="ghost" data-act="appr-reject" data-id="' + esc(a.id) + '">' + T('appr.reject') + '</button> ' +
         '<button class="danger" data-act="appr-reject-revoke" data-id="' + esc(a.id) + '">' + ic('ban', 13) + T('appr.rejectRevoke') + '</button></div>'
-      : '<div class="hint" style="margin-top:8px">' + T('appr.decidedBy', { by: a.decided_by || '-', at: (a.decided_at || '').replace('T', ' ').replace(/\..*$/, '') }) + '</div>';
+      : '<div class="hint" style="margin-top:8px">' + T('appr.decidedBy', { by: a.decided_by || '-', at: (a.decided_at || '').replace('T', ' ').replace(/\..*$/, '') }) + '</div>' +
+        // accidental-reject recovery: a rejected (non-revoked) item can return to pending
+        (a.state === 'rejected'
+          ? '<div class="actions" style="display:flex;gap:8px;justify-content:flex-end;margin-top:6px">' +
+            '<button class="ghost" data-act="appr-reopen" data-id="' + esc(a.id) + '">' + ic('rotate-ccw', 13) + T('appr.reopen') + '</button></div>'
+          : '');
     return '<div class="card">' +
       '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">' + apprTypeBadge(a.type) + apprStateBadge(a.state) +
         '<b>' + esc(a.requester || '-') + '</b>' +
@@ -1304,6 +1326,13 @@ async function loadApprovals() {
       (detailBits.length ? '<div class="hint" style="margin-top:6px">' + detailBits.join(' · ') + '</div>' : '') +
       msgs + acts + '</div>';
   }).join('') || '<div class="card"><div class="empty">' + T('appr.empty') + '</div></div>';
+}
+async function reopenApproval(id) {
+  try {
+    await api('POST', '/api/v1/admin/approvals/' + encodeURIComponent(id) + '/decide', { action: 'reopen' });
+    toast(T('appr.reopened'), 'ok');
+    loadApprovals(); refreshApprovalsBadge();
+  } catch (e) { toast(e.message, 'err'); }
 }
 function openDecide(id, action) {
   const close = { label: T('common.cancel'), kind: 'ghost', fn: closeModal };

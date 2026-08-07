@@ -377,6 +377,9 @@ pub(crate) async fn abandon_tun(app: &tauri::AppHandle, state: &State<'_, AppSta
         roles.tun_mode = false;
         let _ = roles.save();
     }
+    // the conlog TunRelay marking must follow too — otherwise every record begun after the abandon
+    // is still marked TunRelay and hidden by default (连接记录「看起来空了」的根因)
+    state.client.conn_log().set_tun_relay(false);
     roles::audit("gui.tun_abandon", serde_json::json!({"reason": reason}));
     *state.tun_notice.lock().await = Some(format!(
         "TUN 已放弃开启：{reason}（已回退普通模式，不影响其它功能）"

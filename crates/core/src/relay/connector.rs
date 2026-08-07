@@ -71,6 +71,10 @@ pub struct DelegationConfig {
     /// "active" / "pending" / "denied" -- overlaid by the serving connector from the device gate
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub device_state: String,
+    /// One-time admin notice for the calling device (reject/decision note; take-on-read at the
+    /// issuer, relayed here so relay-entry consumers actually receive it)
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub device_notice: String,
 }
 
 /// One named group of the token's vocabulary (split-tier delivery).
@@ -135,6 +139,12 @@ pub trait DelegationHooks: Send + Sync {
     /// (Pending -> pending_approval, Deny -> device_revoked; both fail closed). Default Allow.
     fn device_open_gate(&self, _kid: Option<&str>, _device_fp: &str) -> crate::relay::listener::DeviceGate {
         crate::relay::listener::DeviceGate::Allow
+    }
+
+    /// One-time admin notice for a gated device (reject/decision note; take-on-read).
+    /// Default None (no notice).
+    fn device_notice(&self, _kid: Option<&str>, _device_fp: &str) -> Option<String> {
+        None
     }
 
     /// Pending-session appeal forwarded by the relay (PendingNote uplink; fp + session key are
@@ -746,29 +756,31 @@ impl RelayConnector {
             .store(ConnectionState::Disconnected as u8, Ordering::Relaxed);
     }
 
-    /// On an Open frame: delegation enforcement (federation P2/P3) -> fan-out restriction ->
-    /// downstream routing (multi-hop) -> client tunnel routes (re-advertise) -> local direct connect.
-    #[allow(clippy::too_many_arguments)]
-    /// Map a device-gate decision to a wire reason code (None = allowed / not a delegated open).
+    /// Map a device-gate decision to a wire reason code + the one-time admin notice
+    /// (None = allowed / not a delegated open).
     fn device_gate_reason(
         hooks: &Arc<dyn DelegationHooks>,
         kid: Option<&str>,
         device_fp: &str,
-    ) -> Option<&'static str> {
+    ) -> Option<(&'static str, String)> {
         if device_fp.is_empty() {
             return None;
         }
-        match hooks.device_open_gate(kid, device_fp) {
-            crate::relay::listener::DeviceGate::Allow => None,
+        let rc = match hooks.device_open_gate(kid, device_fp) {
+            crate::relay::listener::DeviceGate::Allow => return None,
             crate::relay::listener::DeviceGate::Pending => {
-                Some(crate::proto::message::reason::PENDING_APPROVAL)
+                crate::proto::message::reason::PENDING_APPROVAL
             }
             crate::relay::listener::DeviceGate::Deny => {
-                Some(crate::proto::message::reason::DEVICE_REVOKED)
+                crate::proto::message::reason::DEVICE_REVOKED
             }
-        }
+        };
+        Some((rc, hooks.device_notice(kid, device_fp).unwrap_or_default()))
     }
 
+    /// On an Open frame: delegation enforcement (federation P2/P3) -> fan-out restriction ->
+    /// downstream routing (multi-hop) -> client tunnel routes (re-advertise) -> local direct connect.
+    #[allow(clippy::too_many_arguments)]
     async fn handle_open(
         mux: Arc<MuxSession>,
         req: OpenRequest,
@@ -811,6 +823,11 @@ impl RelayConnector {
                                 crate::relay::listener::DeviceGate::Deny => "denied",
                             }
                             .to_string();
+                            if cfg.device_state != "active"
+                                && let Some(n) = hooks.device_notice(Some(&env.kid), &open_req.device_fp)
+                            {
+                                cfg.device_notice = n;
+                            }
                             mux.send_frame(Frame::empty(FrameType::OpenOk, req.channel_id))
                                 .await?;
                             let channel = mux.accept_channel(req.channel_id);
@@ -825,9 +842,9 @@ impl RelayConnector {
                         }
                         // device certification gate (relay-stamped fp; fail-closed). The config
                         // channel above is exempt: a pending device must still pull its state.
-                        if let Some(rc) = Self::device_gate_reason(hooks, Some(&env.kid), &open_req.device_fp) {
+                        if let Some((rc, msg)) = Self::device_gate_reason(hooks, Some(&env.kid), &open_req.device_fp) {
                             warn!(device = %open_req.device_fp, reason = rc, "e2e open gated (device certification)");
-                                                        let p = serde_json::to_vec(&crate::proto::message::OpenFailed { reason: rc.into() }).unwrap_or_default();
+                                                        let p = serde_json::to_vec(&crate::proto::message::OpenFailed { reason: rc.into(), message: msg }).unwrap_or_default();
                             mux.send_frame(Frame::new(FrameType::OpenFail, req.channel_id, Bytes::from(p))).await?;
                             return Ok(());
                         }
@@ -929,10 +946,10 @@ impl RelayConnector {
                     // hop: the group stamp survives only toward the issuer (route_open drops it
                     // elsewhere), so gating inside `!groups.is_empty()` keeps transit hops blind
                     if !open_req.groups.is_empty()
-                        && let Some(rc) = Self::device_gate_reason(hooks, None, &open_req.device_fp)
+                        && let Some((rc, msg)) = Self::device_gate_reason(hooks, None, &open_req.device_fp)
                     {
                         warn!(device = %open_req.device_fp, reason = rc, "transparent open gated (device certification)");
-                        let p = serde_json::to_vec(&crate::proto::message::OpenFailed { reason: rc.into() }).unwrap_or_default();
+                        let p = serde_json::to_vec(&crate::proto::message::OpenFailed { reason: rc.into(), message: msg }).unwrap_or_default();
                         mux.send_frame(Frame::new(FrameType::OpenFail, req.channel_id, Bytes::from(p))).await?;
                         return Ok(());
                     }

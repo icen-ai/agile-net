@@ -1116,6 +1116,31 @@ async fn fetch_and_apply_deleg_config(
     let cfg = fetch_deleg_config(opener).await?;
     // named group matchers (§7.2.1): the seal path fills per-target identities with them
     opener.set_group_map(cfg.groups);
+    // one-time admin notice (reject/decision note, relayed via the config channel): inbox it before
+    // the state overlay — the note explains WHY the state changed and is take-on-read at the issuer
+    if !cfg.device_notice.is_empty() {
+        let label = inner
+            .nodes
+            .get(node_id)
+            .map(|h| h.state.label.clone())
+            .unwrap_or_else(|| node_id.to_string());
+        let title = if cfg.device_state == "denied" {
+            format!("{label} 的管理员拒绝了设备认证")
+        } else {
+            format!("{label} 的管理员附言")
+        };
+        inner.notify.load().push(
+            "approval",
+            title,
+            cfg.device_notice.clone(),
+            if cfg.device_state == "denied" {
+                agile_net_core::proto::message::reason::DEVICE_REVOKED
+            } else {
+                agile_net_core::proto::message::reason::PENDING_APPROVAL
+            },
+            node_id,
+        );
+    }
     // certification state overlay (M3-T2): a relay-entry pending device learns it here
     // (the config channel is the only issuer-reachable path for a gated consumer)
     if !cfg.device_state.is_empty()
@@ -1204,6 +1229,9 @@ struct DelegConfigWire {
     /// Certification state overlay (node.md M3-T2 relay-entry pending channel)
     #[serde(default)]
     device_state: String,
+    /// One-time admin notice attached to a non-active device state (reject note, take-on-read)
+    #[serde(default)]
+    device_notice: String,
 }
 
 /// Parsed config answer with rules mapped to client rules.
@@ -1215,6 +1243,8 @@ struct DelegConfig {
     upstreams: Vec<agile_net_core::relay::DelegationUpstream>,
     /// "active" / "pending" / "denied" (empty = feature off)
     device_state: String,
+    /// One-time admin notice for a non-active device state (empty = none)
+    device_notice: String,
 }
 
 /// One config-channel roundtrip: open the reserved target (the opener seals it like any E2E
@@ -1249,6 +1279,7 @@ async fn fetch_deleg_config(opener: &Arc<DelegatedOpener>) -> Result<DelegConfig
             admin: wire.admin,
             upstreams: wire.upstreams,
             device_state: wire.device_state,
+            device_notice: wire.device_notice,
         })
     };
     match tokio::time::timeout(std::time::Duration::from_secs(8), fut).await {

@@ -308,6 +308,18 @@ impl Database {
         Ok(notice)
     }
 
+    /// Attach a one-time notice WITHOUT a state change (plain reject of a pending device):
+    /// the next gated open / config pull delivers it (take-on-read), so the applicant learns WHY.
+    pub fn set_device_notice(&self, device_fp: &str, notice: &str) -> Result<()> {
+        let conn = self.conn();
+        conn.execute(
+            "UPDATE device_registry SET notice = ?2 WHERE device_fp = ?1",
+            params![device_fp, notice],
+        )
+        .map_err(db_err)?;
+        Ok(())
+    }
+
     /// Rebind (换机): move the holder identity (subject + remark) and cumulative traffic from
     /// the old device to the new one, then revoke the old (terminal). The new device must exist
     /// (already sighted) and not be revoked. All-or-nothing.
@@ -411,6 +423,22 @@ impl Database {
             .map_err(db_err)?;
         if n == 0 {
             return Err(Error::NotFound(format!("approval {id} missing or already decided")));
+        }
+        Ok(())
+    }
+
+    /// Reopen a rejected approval (accidental-reject recovery: back to pending, decision cleared).
+    /// Approved items and revoked devices stay pinned (revocation is terminal — use rebind instead).
+    pub fn reopen_approval(&self, id: &str) -> Result<()> {
+        let conn = self.conn();
+        let n = conn
+            .execute(
+                "UPDATE approval SET state = 'pending', decided_by = NULL, decided_at = NULL WHERE id = ?1 AND state = 'rejected'",
+                params![id],
+            )
+            .map_err(db_err)?;
+        if n == 0 {
+            return Err(Error::NotFound(format!("approval {id} not rejected or missing")));
         }
         Ok(())
     }

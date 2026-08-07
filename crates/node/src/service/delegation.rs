@@ -437,6 +437,12 @@ impl agile_net_core::relay::DelegationHooks for DelegationEngine {
         }
     }
 
+    /// One-time admin notice for a gated device (reject/decision note; take-on-read).
+    fn device_notice(&self, _kid: Option<&str>, device_fp: &str) -> Option<String> {
+        let rt = self.admin_runtime.load_full()?;
+        rt.db.take_device_notice(device_fp).ok().flatten()
+    }
+
     fn group_acl_allows(&self, groups: &[String], target: &str) -> Option<bool> {
         let cache = self.groups.load();
         let mut any_known = false;

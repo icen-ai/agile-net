@@ -367,6 +367,9 @@ pub fn cert_record_key(r: &CertRecord) -> String {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpenFailed {
     pub reason: String,
+    /// Optional one-time admin notice (certification rejection etc.; empty = none)
+    #[serde(default)]
+    pub message: String,
 }
 
 /// Control message enum for uniform handling.

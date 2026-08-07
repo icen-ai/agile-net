@@ -1805,7 +1805,7 @@ impl RelayListener {
         if self.local_delegated.contains_key(&token_hash)
             && let Some(gate) = &self.device_gate
         {
-            let (decision, _) = gate(&device_fp);
+            let (decision, notice) = gate(&device_fp);
             if decision != DeviceGate::Allow {
                 let rc = if decision == DeviceGate::Deny {
                     reason::DEVICE_REVOKED
@@ -1813,7 +1813,7 @@ impl RelayListener {
                     reason::PENDING_APPROVAL
                 };
                 warn!(device = %device_fp, reason = rc, "delegated open gated (device certification)");
-                let payload = serde_json::to_vec(&OpenFailed { reason: rc.into() }).unwrap_or_default();
+                let payload = serde_json::to_vec(&OpenFailed { reason: rc.into(), message: notice.unwrap_or_default() }).unwrap_or_default();
                 let _ = mux
                     .send_frame(Frame::new(FrameType::OpenFail, req.channel_id, Bytes::from(payload)))
                     .await;

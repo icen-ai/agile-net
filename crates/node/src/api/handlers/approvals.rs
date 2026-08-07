@@ -97,12 +97,45 @@ pub async fn decide_approval(
     let Ok(Some(item)) = item else {
         return err(StatusCode::NOT_FOUND, codes::NOT_FOUND, "approval not found");
     };
-    if item.state != "pending" {
+    if item.state != "pending" && req.action != "reopen" {
         return err(StatusCode::CONFLICT, codes::VALIDATION_FAILED, "already decided");
     }
 
     let fp = item.object_ref.clone();
     match req.action.as_str() {
+        // rejected → pending (accidental-reject recovery); approved items and revoked devices
+        // stay pinned (revocation is terminal — the consumer re-connects and goes through rebind)
+        "reopen" => {
+            if item.state != "rejected" {
+                return err(StatusCode::CONFLICT, codes::VALIDATION_FAILED, "仅被拒绝的审批可重新打开");
+            }
+            let kind = item.r#type.clone();
+            let res = state
+                .db_call({
+                    let fp = fp.clone();
+                    move |db| {
+                        if matches!(
+                            item.r#type.as_str(),
+                            crate::service::approvals::DEVICE_CERTIFY | crate::service::approvals::DEVICE_REBIND
+                        ) && let Ok(Some(d)) = db.get_device(&fp)
+                            && d.state == "revoked"
+                        {
+                            return Ok(Err("设备已吊销（终态）——请让消费者重新接入并走换绑".to_string()));
+                        }
+                        db.reopen_approval(&item.id)?;
+                        Ok(Ok(()))
+                    }
+                })
+                .await;
+            match res {
+                Ok(Ok(())) => {
+                    audit(&state, &claims, &ip, "approval.reopen", Some(&id), &kind).await;
+                    ok(json!({ "state": "pending" }))
+                }
+                Ok(Err(msg)) => err(StatusCode::BAD_REQUEST, codes::VALIDATION_FAILED, msg),
+                Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, codes::INTERNAL, e.to_string()),
+            }
+        }
         "approve" => {
             let side = state
                 .db_call({
@@ -183,7 +216,12 @@ pub async fn decide_approval(
                             db.add_approval_message(&id, "notice", &notice)?;
                         }
                         if revoke {
-                            db.revoke_device(&fp)?;
+                            // the one-time notice rides the device row (gate Deny / config pull deliver it)
+                            db.revoke_device_with_notice(&fp, &notice)?;
+                        } else if !notice.is_empty() {
+                            // plain reject: device stays pending; store the note so the next gated
+                            // open / config pull explains the rejection (relay-entry included)
+                            db.set_device_notice(&fp, &notice)?;
                         }
                         db.decide_approval(&id, false, &decided_by)?;
                         Ok(())
