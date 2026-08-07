@@ -36,7 +36,7 @@ const PAGE = 50;
 const LogsView = {
   tab: 'conn',
   kernelOff: false, // kernel-sourced tabs idle when the kernel is down (one final pull lands the empty state)
-  cl: { statSig: '', page: 0, prev: {}, expanded: null, items: [] }, // prev: key → {up,down,t} for per-poll rate deltas
+  cl: { statSig: '', page: 0, prev: {}, expanded: null, items: [], subExits: {} }, // prev: key → {up,down,t} for per-poll rate deltas; subExits: key → kernel chain (订阅出口细分)
   hitsAll: [], hitsPage: 0,
   evAll: [], evPage: 0,
   entries: [],      // live log cache (data source for full re-render on filter change)
@@ -108,6 +108,7 @@ const LogsView = {
       this.cl.prev[r.key] = { up: r.sess_up, down: r.sess_down, t: now };
     }
     this.cl.items = v.items;
+    this.cl.subExits = v.sub_exits || {};
     const body = $('lg-conn-body');
     if (!v.items.length) {
       body.innerHTML = '<tr><td colspan="8" class="empty">' + AgI18n.t('logs.cl.empty') + '</td></tr>';
@@ -351,11 +352,26 @@ function clCells(r) {
   const last = pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
   const tun = r.source === 'tun_relay' ? ' <span class="pill pill-dim">TUN</span>' : '';
   const kind = r.outbound.kind;
-  const outHtml = kind === 'direct'
-    ? '<span class="pill pill-dim">' + AgI18n.t('logs.out.direct') + '</span>'
-    : kind === 'forward'
-      ? '<span class="pill pill-warn">' + AgI18n.t('logs.out.forward') + '</span>'
-      : '<span class="pill pill-ok">' + esc(AgI18n.t('logs.out.tunnel', { node: r.outbound.node })) + '</span>';
+  let outHtml;
+  if (kind === 'direct') {
+    outHtml = '<span class="pill pill-dim">' + AgI18n.t('logs.out.direct') + '</span>';
+  } else if (kind === 'forward') {
+    // forward = handed to the subscription kernel; subExits annotates what the kernel then decided:
+    // DIRECT by its own rules (订阅放行) / REJECT (订阅拦截) / an actual node (订阅·节点, full chain on hover)
+    const chain = (LogsView.cl.subExits || {})[r.key] || '';
+    const last = chain ? chain.split(' → ').pop() : '';
+    if (last === 'DIRECT') {
+      outHtml = '<span class="pill pill-dim" title="' + esc(chain) + '">' + AgI18n.t('logs.out.forwardDirect') + '</span>';
+    } else if (last.indexOf('REJECT') === 0) {
+      outHtml = '<span class="pill pill-danger" title="' + esc(chain) + '">' + AgI18n.t('logs.out.forwardReject') + '</span>';
+    } else if (last) {
+      outHtml = '<span class="pill pill-warn" title="' + esc(chain) + '">' + esc(AgI18n.t('logs.out.forwardNode', { name: last })) + '</span>';
+    } else {
+      outHtml = '<span class="pill pill-warn">' + AgI18n.t('logs.out.forward') + '</span>';
+    }
+  } else {
+    outHtml = '<span class="pill pill-ok">' + esc(AgI18n.t('logs.out.tunnel', { node: r.outbound.node })) + '</span>';
+  }
   const stateHtml = live
     ? '<span class="pill pill-ok">' + AgI18n.t('logs.conn.live') + '</span>'
     : r.fails > 0

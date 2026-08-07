@@ -305,6 +305,8 @@ pub struct ConnectionInfo {
     pub id: String,
     /// Target host (metadata.host preferred, fallback destinationIP)
     pub host: String,
+    /// Target port (metadata.destinationPort; mihomo emits it as a string — both shapes accepted)
+    pub port: u16,
     /// Originating process (metadata.process; empty string if unknown)
     pub process: String,
     /// Outbound chain (last segment is the node name)
@@ -398,6 +400,11 @@ impl ConnTracker {
                 let info = ConnectionInfo {
                     id: id.to_string(),
                     host,
+                    port: md["destinationPort"]
+                        .as_str()
+                        .and_then(|s| s.parse().ok())
+                        .or_else(|| md["destinationPort"].as_u64().map(|n| n as u16))
+                        .unwrap_or(0),
                     process: md["process"].as_str().unwrap_or_default().to_string(),
                     chains: c["chains"]
                         .as_array()

@@ -8,7 +8,7 @@
 //! atomic tmp+rename, never per-connection writes. Clear removes memory + file.
 
 use crate::{roles, AppState};
-use agile_net_core::proxy::conlog::{ConnFilter, ConnLog, HostQueryOut, QueryOut};
+use agile_net_core::proxy::conlog::{ConnFilter, ConnLog, HostStat, QueryOut};
 use roles::RoleSettings;
 use serde::Serialize;
 use std::sync::Arc;
@@ -92,9 +92,47 @@ pub(crate) async fn conlog_hosts(
     to_ms: Option<i64>,
     offset: Option<usize>,
     limit: Option<usize>,
-) -> Result<HostQueryOut, String> {
+) -> Result<HostQueryView, String> {
     let f = to_filter(keyword, outbound, row_state, hit, source, sort, from_ms, to_ms, offset, limit);
-    Ok(log_of(&state).query_hosts(&f))
+    let out = log_of(&state).query_hosts(&f);
+    Ok(HostQueryView {
+        total: out.total,
+        items: out.items,
+        sub_exits: sub_exit_map(&state).await,
+    })
+}
+
+/// Aggregated page + subscription-kernel exit annotation: the anet inbound only sees the forward arm
+/// ("handed to the subscription kernel"); what the kernel then decided (DIRECT by its own rules vs an
+/// actual node vs REJECT) is merged in here so the 出口 column can tell 订阅放行 apart from 订阅·节点.
+#[derive(Serialize)]
+pub(crate) struct HostQueryView {
+    total: usize,
+    items: Vec<HostStat>,
+    /// "host:port" (lowercased host) → kernel chain joined with " → " (last segment = final exit)
+    sub_exits: std::collections::HashMap<String, String>,
+}
+
+/// Newest connection per target wins; empty map when the kernel is down (badges degrade to plain 订阅).
+async fn sub_exit_map(state: &State<'_, AppState>) -> std::collections::HashMap<String, String> {
+    let mut best: std::collections::HashMap<String, (u64, String)> = std::collections::HashMap::new();
+    if !state.kernel.running().await {
+        return std::collections::HashMap::new();
+    }
+    let (active, closed) = state.kernel.connections();
+    for c in active.into_iter().chain(closed.into_iter()) {
+        if c.host.is_empty() || c.port == 0 || c.chains.is_empty() {
+            continue;
+        }
+        let key = format!("{}:{}", c.host.to_lowercase(), c.port);
+        match best.get(&key) {
+            Some((start, _)) if *start >= c.start => {}
+            _ => {
+                best.insert(key, (c.start, c.chains.join(" → ")));
+            }
+        }
+    }
+    best.into_iter().map(|(k, (_, chain))| (k, chain)).collect()
 }
 
 /// Per-connection page (ring layer; used by the row detail expand and the agent's conlog_recent).
