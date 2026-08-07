@@ -105,12 +105,14 @@ function bind() {
     renderSub();
   });
 
-  // proxy-mode three-way segmented control (event delegation)
+  // proxy-mode three-way segmented control (event delegation; optimistic flip like fm-outmode, revert on failure)
   $('fm-mode').addEventListener('click', async (e) => {
     const b = e.target.closest('button[data-mode]');
     if (!b || b.classList.contains('dis')) return;
     const m = b.dataset.mode;
     if (m === mode) return;
+    mode = m;
+    renderMode();
     try {
       const r = await invoke('proxy_mode_set', { mode: m });
       mode = MODES.includes(r) ? r : m;

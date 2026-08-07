@@ -53,7 +53,7 @@ body { display: block; padding: 0; font-size: 13px; }
 
 /* Three-way mode segmented control */
 .seg { display: flex; gap: 2px; padding: 2px; background: var(--chip); border-radius: 8px; }
-.seg button { flex: 1; border: 0; background: transparent; padding: 4px 0; border-radius: 6px; font-size: 12px; color: var(--dim); cursor: pointer; transition: background .15s, color .15s; }
+.seg button { flex: 1; border: 0; background: transparent; padding: 4px 0; border-radius: 6px; font-size: 12px; color: var(--dim); cursor: pointer; /* no color transition: instant switch */ }
 .seg button:hover { color: var(--text); }
 .seg button.cur { background: var(--panel2); color: var(--text-strong); font-weight: 600; box-shadow: 0 1px 3px rgba(0,0,0,.10); }
 .seg.off { opacity: .45; pointer-events: none; }

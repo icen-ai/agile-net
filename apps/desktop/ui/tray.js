@@ -205,10 +205,11 @@ window.addEventListener('DOMContentLoaded', () => {
   document.addEventListener('visibilitychange', () => { document.hidden ? stopLoops() : startLoops(); });
   startLoops();
 
-  // outbound mode switching (event delegation)
+  // outbound mode switching (event delegation; optimistic flip, slowTick re-syncs from the truth)
   $('tp-mode').addEventListener('click', async (e) => {
     const b = e.target.closest('button[data-mode]');
     if (!b || S.tun || b.dataset.mode === S.mode) return;
+    renderMode(b.dataset.mode, S.tun);
     try { await invoke('set_sub_mode', { mode: b.dataset.mode }); } catch (err) {}
     slowTick();
   });

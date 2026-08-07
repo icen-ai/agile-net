@@ -333,6 +333,10 @@ function initSysproxy() {
   $('proxy-mode').addEventListener('click', async (e) => {
     const btn = e.target.closest('[data-proxy-mode]');
     if (!btn || btn.classList.contains('active')) return;
+    // Optimistic flip: the segmented control answers at click time (the backend round-trip can take
+    // seconds when it has to start the proxy first); a failure re-syncs from the truth
+    document.querySelectorAll('#proxy-mode .group-tab').forEach(b =>
+      b.classList.toggle('active', b === btn));
     try {
       if (btn.dataset.proxyMode === 'system') {
         // If the proxy is not running, start it on the current port first (backend set_system_proxy also brings it up as fallback)
@@ -349,7 +353,7 @@ function initSysproxy() {
       if (window._rolesCache) window._rolesCache.system_proxy = btn.dataset.proxyMode === 'system';
       refreshSysproxy();
       refreshProxy();
-    } catch (err) { toast(friendlyError(err), 'err'); }
+    } catch (err) { toast(friendlyError(err), 'err'); refreshSysproxy(); }
   });
   $('btn-sysproxy-reclaim').onclick = async () => {
     try { await invoke('reclaim_sysproxy'); toast(AgI18n.t('settings.sp-reclaimed'), 'ok'); refreshSysproxy(); }

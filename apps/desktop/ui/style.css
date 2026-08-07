@@ -242,7 +242,7 @@ input[type="checkbox"]:disabled { opacity: .5; cursor: not-allowed; }
 
 /* Proxy page: group tabs (segmented control) + node card grid */
 .group-tabs { display: inline-flex; gap: 4px; background: var(--chip); border-radius: 999px; padding: 3px; margin-bottom: 14px; }
-.group-tab { padding: 6px 16px; font-size: 13px; font-weight: 600; color: var(--dim); cursor: pointer; border-radius: 999px; background: none; user-select: none; transition: background .15s, color .15s; }
+.group-tab { padding: 6px 16px; font-size: 13px; font-weight: 600; color: var(--dim); cursor: pointer; border-radius: 999px; background: none; user-select: none; /* no color transition: segmented controls switch instantly (instrument-panel feel) */ }
 .group-tab:hover { background: none; color: var(--text-strong); }
 .group-tab.active { background: var(--accent); color: var(--accent-fg); }
 .group-tab:disabled { opacity: .45; cursor: not-allowed; }
