@@ -79,6 +79,11 @@ log "root: 创建组/规则/签发 direct 委托令牌"
 ADMIN_TOKEN=$(admin_login "$ROOT_API")
 [ -n "$ADMIN_TOKEN" ] && [ "$ADMIN_TOKEN" != "null" ] || { bad "root 管理员登录失败"; exit 1; }
 
+# M3-T2 设备认证门控：链测环境无认证仪式，放行 pending 设备（灰旗政策）
+curl -sf -X PUT "$ROOT_API/api/v1/admin/devices/policy" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"policy":"allow"}' > /dev/null || bad "root 设备策略设置失败"
+
 GID=$(create_group "$ADMIN_TOKEN" "$ROOT_API" "chain组")
 RID=$(create_rule "$ADMIN_TOKEN" "$ROOT_API" "10.140.0.0/16")
 curl -sf -X PUT "$ROOT_API/api/v1/admin/groups/$GID/rules" \
@@ -90,6 +95,9 @@ TOK=$(issue_delegated "$ADMIN_TOKEN" "$ROOT_API" "$GID" "chainuser")
 # ---------- 在 mid 上准备组/规则/委托令牌（T4 用） ----------
 log "mid: 创建组/规则/签发 direct 委托令牌"
 MID_TOKEN=$(admin_login "$MID_API")
+curl -sf -X PUT "$MID_API/api/v1/admin/devices/policy" \
+  -H "Authorization: Bearer $MID_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"policy":"allow"}' > /dev/null || bad "mid 设备策略设置失败"
 GID2=$(create_group "$MID_TOKEN" "$MID_API" "chain组")
 RID2=$(create_rule "$MID_TOKEN" "$MID_API" "10.140.0.0/16")
 curl -sf -X PUT "$MID_API/api/v1/admin/groups/$GID2/rules" \

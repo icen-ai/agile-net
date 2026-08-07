@@ -1009,6 +1009,8 @@ fn spawn_delegated_supervisor(
 
 /// Terminal session/auth reasons (M4): no auto-retry — the reason + one-time notice go to the
 /// inbox and the node rests in Blocked until the user acts (re-import, contact the admin).
+/// NOTE: `kicked` is intentionally NOT terminal — an admin kick is an attention signal (the
+/// notice is shown) and the client heals with normal backoff, like any transient drop.
 fn is_terminal_reason(rc: &str) -> bool {
     use agile_net_core::proto::message::reason as r;
     matches!(
@@ -1017,7 +1019,6 @@ fn is_terminal_reason(rc: &str) -> bool {
             | r::DEVICE_REVOKED
             | r::DEVICE_REPLACED
             | r::TOKEN_EXPIRED
-            | r::KICKED
             | r::SESSION_TAKEOVER
             | r::BAD_CREDENTIALS
             | r::DEVICE_PROOF_INVALID
