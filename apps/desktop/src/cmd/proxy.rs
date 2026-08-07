@@ -27,7 +27,7 @@ pub(crate) async fn start_proxy_inner(app: &tauri::AppHandle, state: &State<'_, 
         let server = expected_sysproxy(state);
         let _ = tokio::task::spawn_blocking(move || sysproxy::engage(&server)).await;
     }
-    crate::report_client_proxy(state).await;
+    crate::report_client_proxy(app, state).await;
     Ok(state.client.proxy_port())
 }
 
@@ -43,7 +43,7 @@ pub(crate) async fn stop_proxy_inner(app: &tauri::AppHandle, state: &State<'_, A
     if managed {
         let _ = tokio::task::spawn_blocking(sysproxy::disengage).await;
     }
-    crate::report_client_proxy(state).await;
+    crate::report_client_proxy(app, state).await;
     crate::refresh_tray_icon(app);
     Ok(())
 }
@@ -120,7 +120,7 @@ pub(crate) fn expected_sysproxy(state: &State<'_, AppState>) -> String {
 }
 
 #[tauri::command]
-pub(crate) async fn set_system_proxy(state: State<'_, AppState>, enabled: bool) -> Result<(), String> {
+pub(crate) async fn set_system_proxy(app: tauri::AppHandle, state: State<'_, AppState>, enabled: bool) -> Result<(), String> {
     if enabled {
         // Auto-start the local proxy if not running (default port 57890, same as the "Connect" page),
         // removing the "must start the local proxy manually first" ordering trap
@@ -144,7 +144,7 @@ pub(crate) async fn set_system_proxy(state: State<'_, AppState>, enabled: bool) 
         roles.system_proxy = enabled;
         roles.save()?;
     }
-    crate::report_client_proxy(&state).await;
+    crate::report_client_proxy(&app, &state).await;
     Ok(())
 }
 
@@ -231,7 +231,7 @@ pub(crate) async fn proxy_mode_set(
                 roles.system_proxy = mode == "system";
                 roles.save()?;
             }
-            crate::report_client_proxy(&state).await;
+            crate::report_client_proxy(&app, &state).await;
             crate::emit_settings(&app, &state).await;
             roles::audit("gui.proxy_mode", serde_json::json!({"mode": mode}));
             Ok(mode)
@@ -273,7 +273,7 @@ pub(crate) async fn sysproxy_toggle(app: tauri::AppHandle, state: State<'_, AppS
         roles.system_proxy = on;
         roles.save()?;
     }
-    crate::report_client_proxy(&state).await;
+    crate::report_client_proxy(&app, &state).await;
     roles::audit("gui.sysproxy_toggle", serde_json::json!({"on": on}));
     Ok(on)
 }

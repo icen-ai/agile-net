@@ -39,6 +39,17 @@ pub(crate) async fn nodes_watch(app: tauri::AppHandle) {
     }
 }
 
+/// Kernel lifecycle forwarder (start ready / stop / crash-restart / give-up) → `ag-kernel`:
+/// the subscription toggle/card and the TUN panel repaint instantly instead of at the next poll.
+pub(crate) async fn kernel_watch(app: tauri::AppHandle) {
+    use tauri::Emitter;
+    let notify = app.state::<AppState>().kernel.state_notify();
+    loop {
+        notify.notified().await;
+        let _ = app.emit("ag-kernel", ());
+    }
+}
+
 /// Connect to a node
 #[tauri::command]
 pub(crate) async fn connect_node(state: State<'_, AppState>, input: ConnectInput) -> Result<NodeState, String> {

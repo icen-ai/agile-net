@@ -229,9 +229,12 @@ window.addEventListener('DOMContentLoaded', async () => {
     // instead of waiting for the 10s poll (web.md §1.3; emit ag-roles from the Rust setters)
     TAURI.event.listen('ag-roles', (e) => {
       if (!e.payload) return;
+      const prevTun = window._rolesCache && window._rolesCache.tun_mode;
       window._rolesCache = e.payload;
       window._rolesSig = JSON.stringify(e.payload);
       if (window.Hero && Hero.renderMode) Hero.renderMode();
+      // TUN flip (toggle / give-up rollback): repaint the TUN panel instantly (carries the one-shot notice)
+      if (prevTun !== undefined && prevTun !== !!e.payload.tun_mode) refreshTun();
     });
     // Notification center push (M4-T1): a fresh inbox entry refreshes the badge/list at once
     // (the float-ball bubble is raised Rust-side by notify_watch; here: toast + node refresh —
@@ -245,6 +248,11 @@ window.addEventListener('DOMContentLoaded', async () => {
     // Engine node-state push: connect/reconnect/blocked/admin-capability flips repaint the fan-in
     // list and the title-bar admin entry instantly (the 10s AgPulse remains as the fallback)
     TAURI.event.listen('ag-nodes', () => { refreshNodes(); });
+    // Proxy on/off from any window (tray / float ball / remote panel): repaint the power button +
+    // proxy card instantly (every mutation path funnels through report_client_proxy → ag-proxy)
+    TAURI.event.listen('ag-proxy', () => { Hero.pollPower(); refreshProxy(); });
+    // Kernel lifecycle (start ready / stop / crash-restart / give-up): subscription card + toggle at once
+    TAURI.event.listen('ag-kernel', () => { refreshSubStatus(); });
   }
   $('link-paste').onclick = pasteFromClipboard;
   $('link-manual').onclick = () => { switchView('nodes'); $('manual-modal').style.display = 'flex'; };

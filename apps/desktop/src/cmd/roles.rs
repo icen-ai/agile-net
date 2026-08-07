@@ -401,7 +401,7 @@ pub(crate) async fn tun_side_effects(app: &tauri::AppHandle, state: &State<'_, A
             state.client.stop_proxy().await;
         }
         state.client.start_proxy(57890).await.map_err(map_err)?;
-        crate::report_client_proxy(state).await;
+        crate::report_client_proxy(app, state).await;
         crate::refresh_tray_icon(app);
     }
     crate::apply_proxy_fallback(state).await;

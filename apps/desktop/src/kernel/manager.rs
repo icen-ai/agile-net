@@ -210,6 +210,8 @@ struct KernelState {
 
 /// Kernel process management: start/stop/crash-backoff restart (gives up and audits after 5 restarts).
 /// The child process is owned exclusively by the supervisor task; stop goes through an mpsc signal (no lock held across await).
+/// `state_touch` wakes the GUI forwarder (ag-kernel) on every lifecycle transition so the
+/// subscription card/toggle repaint instantly instead of at the next poll.
 pub struct KernelManager {
     state: Arc<std::sync::Mutex<KernelState>>,
     restart_count: Arc<AtomicU32>,
@@ -217,6 +219,8 @@ pub struct KernelManager {
     traffic: Arc<TrafficStats>,
     /// /connections tracking (active map + closed ring + hit aggregation)
     tracker: Arc<ConnTracker>,
+    /// Lifecycle change feed (start ready / stop / crash-restart / give-up)
+    state_touch: Arc<tokio::sync::Notify>,
 }
 
 impl Default for KernelManager {
@@ -226,6 +230,7 @@ impl Default for KernelManager {
             restart_count: Arc::new(AtomicU32::new(0)),
             traffic: Arc::new(TrafficStats::default()),
             tracker: Arc::new(ConnTracker::default()),
+            state_touch: Arc::new(tokio::sync::Notify::new()),
         }
     }
 }
@@ -286,7 +291,13 @@ impl KernelManager {
         self.start_traffic();
         self.start_collectors();
         roles::audit("gui.kernel_start", serde_json::json!({}));
+        self.state_touch.notify_one();
         Ok(())
+    }
+
+    /// Lifecycle change feed (GUI forwards it as ag-kernel; latest-wins coalescing).
+    pub fn state_notify(&self) -> Arc<tokio::sync::Notify> {
+        self.state_touch.clone()
     }
 
     /// Attach the /traffic WS accumulation task (idempotent; terminated via signal and reset when the kernel stops).
@@ -405,6 +416,7 @@ impl KernelManager {
     fn supervise(&self, mut rx: tokio::sync::mpsc::Receiver<()>) {
         let state = self.state.clone();
         let restart_count = self.restart_count.clone();
+        let touch = self.state_touch.clone();
         tokio::spawn(async move {
             let mut restarts = 0u32;
             loop {
@@ -412,6 +424,7 @@ impl KernelManager {
                     Ok(c) => c,
                     Err(e) => {
                         state.lock().unwrap().last_error = e;
+                        touch.notify_one(); // spawn failure: running flips off below
                         break;
                     }
                 };
@@ -422,6 +435,7 @@ impl KernelManager {
                         if let Ok(status) = &exit {
                             state.lock().unwrap().last_error = format!("内核退出: {status}");
                         }
+                        touch.notify_one(); // crash/backoff/give-up all flip visible status
                         if restarts > 5 {
                             roles::audit(
                                 "gui.kernel_crash",
@@ -449,6 +463,7 @@ impl KernelManager {
                 }
             }
             state.lock().unwrap().stop_tx = None;
+            touch.notify_one(); // supervisor exit: running=false is now observable
         });
     }
 
@@ -463,6 +478,7 @@ impl KernelManager {
         self.traffic.reset();
         self.tracker.reset();
         roles::audit("gui.kernel_stop", serde_json::json!({}));
+        self.state_touch.notify_one();
     }
 
     /// Signal stop via the slot and wait for the task to self-clear it (up to 5s; pick selects the target slot from the aggregate state, no lock across await).

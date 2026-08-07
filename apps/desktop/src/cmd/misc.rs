@@ -778,7 +778,9 @@ pub(crate) async fn qr_pick_decode(app: tauri::AppHandle) -> Result<Option<Strin
 
 /// Write the real client proxy state into the embedded node state slot (call after start/stop/mode switch/role shutdown;
 /// the admin "local proxy" card reads it via node status; the mode comes from the GUI proxy settings).
-pub(crate) async fn report_client_proxy(state: &State<'_, AppState>) {
+/// Also broadcasts `ag-proxy` (every mutation path funnels through here): tray / float-ball / remote
+/// toggles repaint the main window's power button + proxy card instantly instead of at the next poll.
+pub(crate) async fn report_client_proxy(app: &tauri::AppHandle, state: &State<'_, AppState>) {
     let port = state.client.proxy_port();
     let system = state.roles.lock().await.system_proxy;
     state.client_proxy_slot.store(Arc::new(Some(
@@ -792,6 +794,8 @@ pub(crate) async fn report_client_proxy(state: &State<'_, AppState>) {
             },
         },
     )));
+    use tauri::Emitter;
+    let _ = app.emit("ag-proxy", port > 0);
 }
 
 // ==================== Uninstall ====================
