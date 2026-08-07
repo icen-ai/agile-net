@@ -27,8 +27,8 @@ pub type ManageableRegistry = Arc<dashmap::DashMap<String, ControlOffer>>;
 /// docs/todo/e2e.md §7.2.2: tickets are minted per handshake / per config pull and consumed
 /// immediately (the E2E config channel), so a 1-hour window is
 /// operationally invisible while shrinking the post-compromise admin-API exposure from 7 days.
-pub(crate) const RELAY_TICKET_TTL_SECS: i64 = 3600;
-pub(crate) const RELAY_TICKET_MAX_USES: i32 = 100;
+pub const RELAY_TICKET_TTL_SECS: i64 = 3600;
+pub const RELAY_TICKET_MAX_USES: i32 = 100;
 
 pub struct DbTokenValidator {
     db: Database,

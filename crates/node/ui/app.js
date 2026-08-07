@@ -2946,25 +2946,52 @@ window.addEventListener('DOMContentLoaded', async () => {
   });
   $('login-pass').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
   $('login-user').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
-  // Console channel ticket bootstrap: #boot=<ticket> → exchange for an admin session (one-time, invalidated on exchange)
+  // Console channel ticket bootstrap: #boot=<ticket> → exchange for an admin session.
+  // The credential login form cannot help a ticket console, so it never flashes: the boot state
+  // shows while the exchange runs. 429 (shared redemption rate limit over the tunnel) and network
+  // wobble retry with backoff; 401 (invalid/expired) is terminal — reopening the console from the
+  // client re-pulls the config channel and mints a fresh ticket.
   const boot = location.hash.match(/#boot=([A-Za-z0-9_-]+)/);
   if (boot) {
     history.replaceState(null, '', location.pathname);
-    try {
-      const res = await fetch('/api/v1/auth/admin-bootstrap', {
-        method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ ticket: boot[1] })
-      });
-      const j = await res.json();
-      if (j.code === 0) {
-        S.access = j.data.access_token; S.refresh = j.data.refresh_token || '';
-        localStorage.setItem('ag_access', S.access);
-        localStorage.setItem('ag_refresh', S.refresh);
-        toast(T('adm.bootOk'), 'ok');
-      } else {
-        toast(j.message || T('adm.bootInvalid'), 'err');
+    const ticket = boot[1];
+    const hadSession = !!S.access; // same forwarder origin keeps the previous session — no splash then
+    const showBoot = (msgKey, hintKey, canRetry) => {
+      $('login-view').style.display = 'none';
+      $('boot-view').style.display = 'flex';
+      $('boot-spin').style.display = canRetry ? 'none' : '';
+      $('boot-msg').textContent = T(msgKey);
+      $('boot-hint').style.display = hintKey ? '' : 'none';
+      if (hintKey) $('boot-hint').textContent = T(hintKey);
+      $('boot-retry').style.display = canRetry ? '' : 'none';
+    };
+    if (!hadSession) showBoot('adm.booting', null, false);
+    async function attempt(n) {
+      try {
+        const res = await fetch('/api/v1/auth/admin-bootstrap', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ticket }),
+        });
+        const j = await res.json().catch(() => ({}));
+        if (res.ok && j.code === 0 && j.data) {
+          S.access = j.data.access_token; S.refresh = j.data.refresh_token || '';
+          localStorage.setItem('ag_access', S.access);
+          localStorage.setItem('ag_refresh', S.refresh);
+          $('boot-view').style.display = 'none';
+          enterApp();
+          return;
+        }
+        if (res.status !== 401 && n < 3) { setTimeout(() => attempt(n + 1), 2000 * (n + 1)); return; }
+        if (hadSession) { enterApp(); toast(T('adm.bootFailed'), 'err'); return; }
+        showBoot(res.status === 401 ? 'adm.bootInvalid' : 'adm.bootFailed',
+          res.status === 401 ? 'adm.bootInvalidHint' : 'adm.bootFailedHint', true);
+      } catch (e) {
+        if (n < 3) { setTimeout(() => attempt(n + 1), 2000 * (n + 1)); return; }
+        if (hadSession) { enterApp(); toast(T('adm.bootFailed'), 'err'); return; }
+        showBoot('adm.bootFailed', 'adm.bootFailedHint', true);
       }
-    } catch(e) { toast(T('adm.bootFailed'), 'err'); }
-  }
-  if (S.access) { enterApp(); }
+    }
+    $('boot-retry').onclick = () => { showBoot('adm.booting', null, false); attempt(0); };
+    attempt(0);
+  } else if (S.access) { enterApp(); }
 });

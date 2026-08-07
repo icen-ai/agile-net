@@ -36,6 +36,19 @@
   </div>
 </div>
 
+<!-- Ticket-console bootstrap state (remote admin console over the tunnel): shown instead of the
+     login form while the one-time ticket exchange runs — the credential form cannot help there -->
+<div id="boot-view">
+  <div class="login-card">
+    <div class="logo"><i data-ic="zap" data-sz="22"></i></div>
+    <h1>AgileNet</h1>
+    <div class="boot-spin" id="boot-spin"></div>
+    <p id="boot-msg"></p>
+    <div class="hint" id="boot-hint" style="display:none"></div>
+    <button id="boot-retry" class="ghost" style="display:none" data-i18n="common.retry">重试</button>
+  </div>
+</div>
+
 <div id="app">
 <div class="shell">
   <aside class="sidebar">

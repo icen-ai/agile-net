@@ -78,12 +78,41 @@ pub(crate) async fn console_url(
                 slot.as_ref().map(|s| s.api_addr())
             }
             .ok_or("服务端角色未运行")?;
-            Ok(format!("http://{addr}/{embed}"))
+            // Local embedded console: auto-login with a freshly minted bootstrap ticket instead of
+            // the password form. The GUI process is the trust anchor (it already holds the DB), and
+            // the unguessable per-open ticket keeps this safe — a blind "loopback = trusted" rule
+            // would let ANY local page/script drive the admin API (port scan → full control).
+            // Direct browser access without the ticket still lands on the login form, unchanged.
+            match roles::open_embedded_db().and_then(|db| {
+                db.create_admin_ticket(
+                    "relay",
+                    "local:embedded@gui",
+                    "full",
+                    agile_net_node::relay_auth::RELAY_TICKET_MAX_USES,
+                    agile_net_node::relay_auth::RELAY_TICKET_TTL_SECS,
+                )
+                .map_err(|e| e.to_string())
+            }) {
+                Ok(ticket) => {
+                    roles::audit(
+                        "admin.console_access",
+                        serde_json::json!({"target": "embedded", "path": "本机内嵌节点", "identity": "local 票据（免登录）"}),
+                    );
+                    Ok(format!("http://{addr}/{embed}#boot={ticket}"))
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "embedded console ticket mint failed — falling back to the login form");
+                    Ok(format!("http://{addr}/{embed}"))
+                }
+            }
         }
         (Some(node_id), None) => {
             // Delegated admin console: every node is delegated now — the ticket is pulled over
             // the E2E config channel; the console bridges to the issuer's loopback API via the
-            // reserved admin target
+            // reserved admin target. Re-pull first so the ticket is freshly minted (the cached
+            // ticket's 1h TTL counts from the session's config pull and may be stale on a
+            // long-lived session); a failed refresh falls back to the cached ticket.
+            let _ = state.client.refresh_delegation_config(&node_id).await;
             let (ticket, _) = state
                 .client
                 .delegated_console_ticket(&node_id)
@@ -108,7 +137,10 @@ pub(crate) async fn console_url(
         }
         (Some(node_id), Some(upstream)) => {
             // Delegated transit management (full scope): the upstream's control
-            // endpoint is dialed through the issuer's fan-out session (reserved upstream: target)
+            // endpoint is dialed through the issuer's fan-out session (reserved upstream: target).
+            // Re-pull the config channel first so the offer tickets are freshly minted (1h TTL
+            // from the session's pull; falls back to the cached offer on refresh failure).
+            let _ = state.client.refresh_delegation_config(&node_id).await;
             let (ticket, _, _, scope) = state
                 .client
                 .delegated_upstream_ticket(&node_id, &upstream)

@@ -108,6 +108,9 @@ tr:hover td { background: var(--row-hover); }
 @keyframes slidein { from { transform: translateX(30px); opacity: 0; } to { transform: none; opacity: 1; } }
 
 #login-view { display: flex; height: 100vh; align-items: center; justify-content: center; animation: mask-in .25s ease both; }
+#boot-view { display: none; height: 100vh; align-items: center; justify-content: center; animation: mask-in .25s ease both; }
+.boot-spin { width: 22px; height: 22px; border-radius: 50%; border: 2px solid var(--border); border-top-color: var(--accent); animation: boot-rot .8s linear infinite; margin: 8px auto 4px; }
+@keyframes boot-rot { to { transform: rotate(360deg); } }
 .login-card { position: relative; background: var(--panel2); border: 1px solid var(--border); border-radius: 16px; padding: 34px; width: 360px; box-shadow: var(--shadow-3); animation: modal-in .35s cubic-bezier(.32,.72,0,1) both; }
 #login-theme-btn { position: absolute; top: 12px; right: 12px; width: auto; padding: 5px 7px; }
 .login-card .logo { width: 40px; height: 40px; border-radius: 11px; margin-bottom: 14px; }
@@ -151,7 +154,7 @@ input[type="checkbox"]:disabled { opacity: .5; cursor: not-allowed; }
 .tb-controls button.close:hover { background: var(--danger); color: #fff; }
 .tb-icon { display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 26px; margin-left: 6px; border-radius: 7px; background: transparent; color: var(--dim); padding: 0; align-self: center; }
 .tb-icon:hover { background: var(--hover); color: var(--text-strong); }
-body.tb-mode #login-view, body.tb-mode .shell { height: calc(100vh - 40px); }
+body.tb-mode #login-view, body.tb-mode .shell, body.tb-mode #boot-view { height: calc(100vh - 40px); }
 
 /* Collapsed sidebar (icons only; text fades out smoothly without squeezing) */
 .sidebar { overflow: hidden; transition: width .2s ease, padding .2s ease; }

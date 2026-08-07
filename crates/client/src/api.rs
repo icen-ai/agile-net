@@ -1015,6 +1015,9 @@ async fn open_console(
     let Some(opener) = state.client.opener(&req.node_id) else {
         return err(StatusCode::NOT_FOUND, codes::NOT_FOUND, "节点未连接");
     };
+    // Fresh ticket per open: the issuer mints one per config pull and the cached one carries a 1h
+    // TTL from session start (stale on long-lived sessions); best-effort, falls back to the cache
+    let _ = state.client.refresh_delegation_config(&req.node_id).await;
     let (ticket, target, key) = match req.upstream.as_deref() {
         // Issuer console: bridged to the issuer's loopback API via the reserved admin target
         None => {

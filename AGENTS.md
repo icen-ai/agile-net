@@ -66,7 +66,7 @@ listener，TLS 端到端锁明文，自注册进本地持久注册表）| `relay
    - JWT 密钥首启生成并持久化于 `node_config.jwt_secret`；refresh token jti 哈希落库，支持吊销轮换。
    - 数据面 token 比较必须常数时间（`constant_time_eq`）；认证失败按 IP 限流（20 次/分钟）并随机延迟惩罚。
    - 登录限流统一 `core::util::LoginRateLimiter`（默认 5 次/分钟/IP、连续失败 5 次锁 15 分钟，服务端管理 API 与客户端 Web 远程面共用同一实现）；管理员初始化引导另有 `bootstrap_limiter` 票据限流（10 次/分钟/IP）。
-   - 管理引导票据（relay/expose_control 握手与委托配置通道下发）：TTL 1 小时、max_uses 100（`relay_auth::RELAY_TICKET_*`；按握手/配置拉取即铸即用）。
+   - 管理引导票据（relay/expose_control 握手与委托配置通道下发）：TTL 1 小时、max_uses 100（`relay_auth::RELAY_TICKET_*`；按握手/配置拉取即铸即用）。**控制台开启路径**（GUI `console_url` / Web 远程面 `open_console`）先重拉配置通道换新票据再取（长会话防 TTL 过期）；**本机内嵌面板免登录**走同一票据机制——GUI 进程为信任锚点、按次铸票，严禁「loopback 即信任」（本地任意网页都能扫回环端口，盲信等于裸奔）。
    - 密码强度策略两端统一：`api::handlers::auth::validate_password_strength`（≥10 位 + 大小写 + 数字）为唯一实现，桌面端 `set_web_password` 直接复用。
    - 客户端凭据（crates/client）：桌面平台令牌存 OS keyring（Windows 凭据管理器 / macOS 钥匙串），文件只留元数据；keyring 不可用回退 0600 文件。**设备身份私钥例外**（node.md M2）：统一存 `~/.anet/device.key` 0600 文件（不污染用户 OS keyring），整机一份、客户端/服务端角色共用。
    - 敏感操作须 `record_audit_log`（含 detail 与来源 IP），严禁记录任何密码/Token 明文。

@@ -147,6 +147,9 @@ struct NodeHandle {
     manage_hosts: bool,
     /// Failover opener (the proxy inbound opens channels through it)
     opener: Arc<DelegatedOpener>,
+    /// Split tier (emode=split): config-channel answers swap the route vocabulary (used by the
+    /// on-demand config refresh to re-apply the right tier)
+    split: bool,
 }
 
 // ==================== Delegated connections ====================
@@ -618,6 +621,7 @@ impl AgileNetClient {
             tasks: vec![supervisor],
             manage_hosts: params.manage_hosts,
             opener: opener.clone(),
+            split: params.emode.as_deref() == Some("split"),
         };
         self.inner.nodes.insert(node_id.clone(), handle);
         self.inner
@@ -833,6 +837,23 @@ impl AgileNetClient {
             .deleg_admin
             .get(node_id)
             .map(|s| (s.ticket.clone(), s.port))
+    }
+
+    /// On-demand config-channel re-pull (console open path): the issuer mints a FRESH bootstrap
+    /// ticket per pull — the cached ticket carries a 1h TTL from the session's config pull, so a
+    /// long-lived session's ticket could be expired by the time the console opens. This re-pull
+    /// both refreshes the delegated-admin state and un-expires the console ticket; split-tier
+    /// rules and group matchers are re-applied idempotently by the same answer.
+    pub async fn refresh_delegation_config(&self, node_id: &str) -> Result<()> {
+        let (opener, split) = {
+            let h = self
+                .inner
+                .nodes
+                .get(node_id)
+                .ok_or_else(|| anyhow!("node not connected"))?;
+            (h.opener.clone(), h.split)
+        };
+        fetch_and_apply_deleg_config(&self.inner, node_id, &opener, split).await
     }
 
     /// Delegated transit management (full scope): a discovered upstream's current offer —
@@ -1093,87 +1114,95 @@ fn maybe_spawn_config_fetch(
     let node_id = node_id.to_string();
     let opener = opener.clone();
     tokio::spawn(async move {
-        let cfg = match fetch_deleg_config(&opener).await {
-            Ok(c) => c,
-            Err(e) => {
-                warn!(node = %node_id, error = %e, "delegated config fetch failed — keeping catch-all routes");
-                return;
-            }
-        };
-        // named group matchers (§7.2.1): the seal path fills per-target identities with them
-        opener.set_group_map(cfg.groups);
-        // certification state overlay (M3-T2): a relay-entry pending device learns it here
-        // (the config channel is the only issuer-reachable path for a gated consumer)
-        if !cfg.device_state.is_empty()
-            && let Some(mut h) = inner.nodes.get_mut(&node_id)
-        {
-            let was_pending = h.state.device_state == "pending";
-            h.state.device_state = cfg.device_state.clone();
-            let now_pending = cfg.device_state == "pending";
-            if now_pending {
-                h.state.status = NodeStatus::PendingApproval;
-            } else if h.state.status == NodeStatus::PendingApproval {
-                h.state.status = NodeStatus::Connected;
-            }
-            if now_pending && !was_pending {
-                let label = h.state.label.clone();
-                drop(h);
-                inner.notify.load().push(
-                    "approval",
-                    format!("等待 {label} 的管理员认证"),
-                    "设备已登记为待认证；认证通过前数据面保持暂停。".into(),
-                    agile_net_core::proto::message::reason::PENDING_APPROVAL,
-                    &node_id,
-                );
-            }
-        }
-        if split {
-            if cfg.rules.is_empty() {
-                warn!(node = %node_id, "split-tier config empty — keeping catch-all routes");
-            } else {
-                let n = cfg.rules.len();
-                if let Some(mut h) = inner.nodes.get_mut(&node_id) {
-                    h.state.rules = cfg.rules.clone();
-                }
-                inner.rebuild_merged_router();
-                info!(node = %node_id, count = n, "split-tier rules applied");
-            }
-        }
-        if let Some(admin) = cfg.admin {
-            let upstreams: Vec<DelegUpstreamState> = cfg
-                .upstreams
-                .iter()
-                .map(|u| DelegUpstreamState {
-                    node_name: u.node_name.clone(),
-                    ticket: u.ticket.clone(),
-                    api_host: u.api_host.clone(),
-                    api_port: u.api_port,
-                    scope: u.scope.clone(),
-                })
-                .collect();
-            inner.deleg_admin.insert(
-                node_id.clone(),
-                DelegAdminState {
-                    ticket: admin.ticket,
-                    port: admin.port,
-                    upstreams: upstreams.clone(),
-                },
-            );
-            if let Some(mut h) = inner.nodes.get_mut(&node_id) {
-                h.state.admin_console = true;
-                h.state.manageable = upstreams
-                    .iter()
-                    .map(|u| ManageableNode {
-                        node_name: u.node_name.clone(),
-                        api: format!("{}:{}", u.api_host, u.api_port),
-                        scope: u.scope.clone(),
-                        via: "deleg".into(),
-                    })
-                    .collect();
-            }
-            info!(node = %node_id, upstreams = upstreams.len(), "delegated admin capability pulled");
+        if let Err(e) = fetch_and_apply_deleg_config(&inner, &node_id, &opener, split).await {
+            warn!(node = %node_id, error = %e, "delegated config fetch failed — keeping catch-all routes");
         }
     });
+}
+
+/// Fetch the issuer's config answer and apply it (group matchers / device-state overlay / split
+/// rules / delegated-admin state). Shared by the connect-time spawn and the on-demand refresh.
+async fn fetch_and_apply_deleg_config(
+    inner: &Arc<ClientInner>,
+    node_id: &str,
+    opener: &Arc<DelegatedOpener>,
+    split: bool,
+) -> Result<()> {
+    let cfg = fetch_deleg_config(opener).await?;
+    // named group matchers (§7.2.1): the seal path fills per-target identities with them
+    opener.set_group_map(cfg.groups);
+    // certification state overlay (M3-T2): a relay-entry pending device learns it here
+    // (the config channel is the only issuer-reachable path for a gated consumer)
+    if !cfg.device_state.is_empty()
+        && let Some(mut h) = inner.nodes.get_mut(node_id)
+    {
+        let was_pending = h.state.device_state == "pending";
+        h.state.device_state = cfg.device_state.clone();
+        let now_pending = cfg.device_state == "pending";
+        if now_pending {
+            h.state.status = NodeStatus::PendingApproval;
+        } else if h.state.status == NodeStatus::PendingApproval {
+            h.state.status = NodeStatus::Connected;
+        }
+        if now_pending && !was_pending {
+            let label = h.state.label.clone();
+            drop(h);
+            inner.notify.load().push(
+                "approval",
+                format!("等待 {label} 的管理员认证"),
+                "设备已登记为待认证；认证通过前数据面保持暂停。".into(),
+                agile_net_core::proto::message::reason::PENDING_APPROVAL,
+                node_id,
+            );
+        }
+    }
+    if split {
+        if cfg.rules.is_empty() {
+            warn!(node = %node_id, "split-tier config empty — keeping catch-all routes");
+        } else {
+            let n = cfg.rules.len();
+            if let Some(mut h) = inner.nodes.get_mut(node_id) {
+                h.state.rules = cfg.rules.clone();
+            }
+            inner.rebuild_merged_router();
+            info!(node = %node_id, count = n, "split-tier rules applied");
+        }
+    }
+    if let Some(admin) = cfg.admin {
+        let upstreams: Vec<DelegUpstreamState> = cfg
+            .upstreams
+            .iter()
+            .map(|u| DelegUpstreamState {
+                node_name: u.node_name.clone(),
+                ticket: u.ticket.clone(),
+                api_host: u.api_host.clone(),
+                api_port: u.api_port,
+                scope: u.scope.clone(),
+            })
+            .collect();
+        inner.deleg_admin.insert(
+            node_id.to_string(),
+            DelegAdminState {
+                ticket: admin.ticket,
+                port: admin.port,
+                upstreams: upstreams.clone(),
+            },
+        );
+        if let Some(mut h) = inner.nodes.get_mut(node_id) {
+            h.state.admin_console = true;
+            h.state.manageable = upstreams
+                .iter()
+                .map(|u| ManageableNode {
+                    node_name: u.node_name.clone(),
+                    api: format!("{}:{}", u.api_host, u.api_port),
+                    scope: u.scope.clone(),
+                    via: "deleg".into(),
+                })
+                .collect();
+        }
+        info!(node = %node_id, upstreams = upstreams.len(), "delegated admin capability pulled");
+    }
+    Ok(())
 }
 
 /// Wire shape of the issuer's config answer (rules arrive as plain strings).

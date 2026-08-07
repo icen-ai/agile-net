@@ -79,7 +79,10 @@ AgI18n.register({
   'adm.modeLocal': { zh: '本地代理', en: 'Local Proxy' },
   'adm.bootOk': { zh: '已通过管理票据登录', en: 'Signed in via admin ticket' },
   'adm.bootInvalid': { zh: '管理票据无效或已过期', en: 'Admin ticket is invalid or expired' },
+  'adm.bootInvalidHint': { zh: '请关闭管理端重新打开——客户端会自动拉取一张新票据', en: 'Close and reopen this console — the client pulls a fresh ticket automatically' },
   'adm.bootFailed': { zh: '管理票据换取失败', en: 'Failed to redeem the admin ticket' },
+  'adm.bootFailedHint': { zh: '隧道抖动或兑换限流，可点击重试', en: 'Tunnel hiccup or redemption rate limit — retry is safe' },
+  'adm.booting': { zh: '正在通过管理票据安全登录…', en: 'Signing in with the admin ticket…' },
   // ---- login ----
   'login.subtitle': { zh: '企业级网络穿透与代理链路由 · 管理控制台', en: 'Enterprise-grade network tunneling and proxy-chain routing · Admin Console' },
   'login.userPh': { zh: '用户名', en: 'Username' },
