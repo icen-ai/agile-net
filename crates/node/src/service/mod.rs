@@ -278,6 +278,7 @@ impl NodeServer {
                 // session rate-limit wiring: relay_token.rate_limit_kbps -> core TokenBucket (B/s)
                 let db_rl = db.clone();
                 let l = RelayListener::with_validator(addr, validator, tls_acceptor)
+                    .with_node_id(config.name.clone())
                     .with_transit_meter(transit_meter.clone())
                     .with_delegated_registry(delegated_registry)
                     .with_local_delegated_registry(local_delegated_registry)
@@ -310,6 +311,29 @@ impl NodeServer {
                 "listener".to_string(),
                 listener.subscribe_events(),
             ));
+            // Device registry hook (node.md M2): every authenticated session carries a proven
+            // device identity — record first/last sightings event-driven (no polling)
+            {
+                let db_dev = db.clone();
+                let l_dev = listener.clone();
+                startup.tasks.push(tokio::spawn(async move {
+                    use agile_net_core::relay::listener::PeerEvent;
+                    let mut rx = l_dev.subscribe_events();
+                    while let Ok(evt) = rx.recv().await {
+                        let key = match &evt {
+                            PeerEvent::NodeConnected { node_id } => Some(node_id.as_str()),
+                            PeerEvent::ClientConnected { session_key } => Some(session_key.as_str()),
+                            _ => None,
+                        };
+                        let Some(key) = key else { continue };
+                        for m in l_dev.session_metas() {
+                            if m.session_key == key {
+                                let _ = db_dev.touch_device(&m.device_fp, &m.pubkey, &m.token_hash, &m.my_name);
+                            }
+                        }
+                    }
+                }));
+            }
             relay_listener = Some(listener);
         }
 
@@ -340,9 +364,18 @@ impl NodeServer {
                 }
             }
         }
+        // Device identity (node.md M2): this machine's ed25519 keypair (~/.anet/device.key,
+        // load-or-create), shared by the fan-out connectors (handshake proof) and the identity card
+        let device = Arc::new(
+            agile_net_core::device::DeviceIdentity::machine().unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "machine device identity unavailable, using ephemeral");
+                agile_net_core::device::DeviceIdentity::ephemeral()
+            }),
+        );
         let connector_manager = Arc::new(
             ConnectorManager::new(db.clone())
                 .with_node_id(config.name.clone())
+                .with_device(device.clone())
                 .with_listener(relay_listener.clone())
                 .with_client_routes(opts.client_routes.clone())
                 .with_acl_registry(acl_registry.clone())
@@ -420,6 +453,7 @@ impl NodeServer {
             manageable: manageable_registry.clone(),
             client_proxy_slot: opts.client_proxy_slot.clone(),
             transit_meter: transit_meter.clone(),
+            device,
         });
 
         // Route hot-reload watcher: rebuild the local proxy router and peer ACL group routers on config_version change.
@@ -734,7 +768,7 @@ impl NodeServer {
         // close live relay sessions too — aborting the accept loop alone leaves established
         // tunnels alive (each session task holds its own listener Arc)
         if let Some(l) = &self.runtime.listener {
-            l.shutdown_all();
+            l.shutdown_all().await;
         }
         for t in &self.tasks {
             t.abort();

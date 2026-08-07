@@ -112,6 +112,7 @@ async fn test_app() -> (Router, Database) {
         manageable: Default::default(),
         client_proxy_slot: Default::default(),
         transit_meter: agile_net_core::relay::transit::TransitMeter::new(),
+        device: std::sync::Arc::new(agile_net_core::device::DeviceIdentity::ephemeral()),
     });
     let state = ApiState::new(db.clone(), jwt, runtime, "127.0.0.1".into(), 59090, 54430);
     (create_app(state), db)
@@ -218,7 +219,8 @@ async fn connector_api_crud_and_audit_sanitized() {
         "创建响应不得回显 token"
     );
     assert_eq!(body["data"]["advertise"], "10.0.0.0/8,git.internal");
-    assert_eq!(body["data"]["group_name"], "peers");
+    assert_eq!(body["data"]["groups"][0]["name"], "peers");
+    assert_eq!(body["data"]["groups"][0]["adopted_node"], "");
     assert_eq!(body["data"]["token_prefix"], "psk_secr");
     assert!(matches!(
         body["data"]["state"].as_str().unwrap(),
@@ -378,7 +380,7 @@ async fn relay_token_group_mount_via_api() {
     .await;
     let items = body["data"]["items"].as_array().unwrap();
     assert_eq!(items[0]["group_id"], gid);
-    assert_eq!(items[0]["group_name"], "peers");
+    assert_eq!(items[0]["groups"][0]["name"], "peers");
 
     // PUT without group_id field → mount unchanged
     let (status, body) = req(

@@ -121,7 +121,6 @@ AgI18n.register({
   'groups.adoptHint': { zh: '按扇入端点分组；采纳后为只读镜像，随对端上送自动更新——要编辑请先复制', en: 'Grouped by fan-in endpoint; adopted groups are read-only mirrors that follow the pushed source — copy one to edit' },
   'groups.adoptEmpty': { zh: '暂无扇入端点上送权限组', en: 'No fan-in endpoint is pushing groups' },
   'groups.adoptPending': { zh: '待采纳', en: 'Pending' },
-  'groups.adoptedBadge': { zh: '跟随中', en: 'Mirroring' },
   'groups.adoptedTip': { zh: '上送自 {node} / {src}，只读并自动跟随', en: 'Pushed by {node} / {src}; read-only, auto-follows' },
   'groups.copy': { zh: '复制', en: 'Copy' },
   'groups.copyConfirm': { zh: '复制「{name}」为可编辑的本地组？原采纳组继续跟随上送', en: 'Copy "{name}" into an editable local group? The adopted original keeps mirroring' },

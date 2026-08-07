@@ -4,6 +4,7 @@
 //! wire protocol (proto) and config model (config).
 
 pub mod config;
+pub mod device;
 pub mod error;
 pub mod link;
 pub mod proto;

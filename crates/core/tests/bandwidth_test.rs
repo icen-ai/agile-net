@@ -74,14 +74,20 @@ async fn connect_raw_peer(relay_addr: SocketAddr, node_id: &str, token: &str) ->
     let tcp = TcpStream::connect(relay_addr).await.unwrap();
     let mut tls = tls_connector.connect(server_name, tcp).await.unwrap();
 
-    let auth_req = AuthRequest {
+    let mut auth_req = AuthRequest {
         node_id: node_id.to_string(),
         token: token.to_string(),
         kind: AuthKind::Node,
         advertise: Vec::new(),
             groups: Vec::new(),
         version: PROTOCOL_VERSION,
+        my_name: String::new(),
+        device_pubkey: String::new(),
+        device_sig: String::new(),
     };
+    // device proof is mandatory (handshake v4): sign the TLS-exporter challenge (throwaway identity)
+    let challenge = agile_net_core::device::session_challenge(tls.get_ref().1).unwrap();
+    auth_req.attach_device_proof(&challenge, &agile_net_core::device::DeviceIdentity::ephemeral());
     let payload = serde_json::to_vec(&auth_req).unwrap();
     Frame::new(FrameType::Auth, 0, Bytes::from(payload))
         .write_to(&mut tls)

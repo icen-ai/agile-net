@@ -52,6 +52,16 @@ pub struct GroupRecord {
     pub updated_at: String,
 }
 
+/// Group reference embedded in list views (naming sovereignty: the name stays clean, the
+/// adoption lineage rides `adopted_node` — empty = plain local group).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GroupRef {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub adopted_node: String,
+}
+
 /// Relay token record (for list display; no plaintext)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RelayTokenRecord {
@@ -67,9 +77,9 @@ pub struct RelayTokenRecord {
     /// ACL mount point: group ID (None = no restriction, allow all)
     #[serde(default)]
     pub group_id: Option<String>,
-    /// Group name (joined for display)
+    /// Resolved ACL group set (empty = unrestricted)
     #[serde(default)]
-    pub group_name: Option<String>,
+    pub groups: Vec<GroupRef>,
     /// Bandwidth quota (KB/s; None = unlimited)
     #[serde(default)]
     pub rate_limit_kbps: Option<i64>,
@@ -163,7 +173,7 @@ pub struct ConnectorRecord {
     pub updated_at: String,
 }
 
-/// Fan-out connector display view (with joined group name; never contains token plaintext/ciphertext).
+/// Fan-out connector display view (with resolved group set; never contains token plaintext/ciphertext).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConnectorView {
     pub id: String,
@@ -182,8 +192,9 @@ pub struct ConnectorView {
     pub advertise: String,
     #[serde(default)]
     pub group_id: Option<String>,
+    /// Resolved ACL group set (empty = unrestricted)
     #[serde(default)]
-    pub group_name: Option<String>,
+    pub groups: Vec<GroupRef>,
     /// Policy upload: comma-separated local group IDs pushed upstream at auth (empty = no upload; federation P1)
     #[serde(default)]
     pub push_groups: String,

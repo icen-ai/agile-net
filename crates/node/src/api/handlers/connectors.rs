@@ -156,6 +156,12 @@ async fn connector_json(state: &ApiState, id: &str) -> Option<serde_json::Value>
         .state_of(id)
         .unwrap_or("disconnected");
     value["state"] = json!(st);
+    // upstream self-declared node name (live session only; empty = offline/unannounced)
+    value["peer_node"] = json!(state
+        .runtime
+        .connector_manager
+        .peer_node_of(id)
+        .unwrap_or_default());
     Some(value)
 }
 
@@ -175,10 +181,17 @@ pub async fn list_connectors(AdminAuth(_): AdminAuth, State(state): State<ApiSta
                         .connector_manager
                         .upstream_version_of(&v.id)
                         .unwrap_or(0);
+                    // upstream self-declared node name (live session only; empty = offline/unannounced)
+                    let peer = state
+                        .runtime
+                        .connector_manager
+                        .peer_node_of(&v.id)
+                        .unwrap_or_default();
                     let mut value = serde_json::to_value(&v).unwrap_or_else(|_| json!({}));
                     value["state"] = json!(st);
                     // negotiated upstream protocol version (federation P2: delegation needs >= 3)
                     value["upstream_version"] = json!(ver);
+                    value["peer_node"] = json!(peer);
                     value
                 })
                 .collect();

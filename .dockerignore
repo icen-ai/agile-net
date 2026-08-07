@@ -1,0 +1,18 @@
+# Heavy build artifacts (never needed in image build context)
+target/
+apps/desktop/target/
+.build/
+.cindy-worktrees/
+.claude/
+
+# VCS / IDE
+.git/
+.gitignore
+.idea/
+*.iml
+
+# Local runtime state
+*.db
+*.db-shm
+*.db-wal
+certs/

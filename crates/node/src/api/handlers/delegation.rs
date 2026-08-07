@@ -428,6 +428,7 @@ async fn build_share_url(
         en,
         emode,
         !rec.admin_scope.is_empty(),
+        None,
     )
 }
 
@@ -448,6 +449,8 @@ fn token_json(
                 "id": g.id,
                 "name": g.name,
                 "e2e_required": g.e2e_required,
+                // adoption lineage (naming sovereignty): empty = plain local group
+                "adopted_node": g.adopted_node,
             })
         })
         .collect();

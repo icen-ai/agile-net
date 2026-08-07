@@ -39,6 +39,14 @@ pub struct ClientTunnel {
     tunnel_token: std::sync::Arc<std::sync::RwLock<String>>,
     tls_connector: TlsConnector,
     sni_hostname: String,
+    /// Device identity signed into every handshake (machine identity in production, ephemeral
+    /// in tests); the session key derives from it — the listener never trusts wire-claimed fps
+    device: std::sync::Arc<crate::device::DeviceIdentity>,
+    /// Self-declared display name uploaded in AuthRequest.my_name (decorative)
+    my_name: String,
+    /// Last session notice received before a forced close (reason_code, one-time message);
+    /// consumed once by the client engine to build the user-facing notification (M4)
+    notice: std::sync::Arc<std::sync::Mutex<Option<(String, String)>>>,
     session: Arc<Mutex<Option<Arc<MuxSession>>>>,
     state: Arc<AtomicU8>,
     shutdown_notify: Arc<Notify>,
@@ -60,11 +68,36 @@ impl ClientTunnel {
             tunnel_token: std::sync::Arc::new(std::sync::RwLock::new(tunnel_token.into())),
             tls_connector: TlsConnector::from(client_config),
             sni_hostname: tls_builder.sni_hostname,
+            device: std::sync::Arc::new(crate::device::DeviceIdentity::ephemeral()),
+            my_name: String::new(),
+            notice: std::sync::Arc::new(std::sync::Mutex::new(None)),
             session: Arc::new(Mutex::new(None)),
             state: Arc::new(AtomicU8::new(ConnectionState::Disconnected as u8)),
             shutdown_notify: Arc::new(Notify::new()),
             shutdown_flag: Arc::new(AtomicBool::new(false)),
         })
+    }
+
+    /// Inject the machine device identity (production path; default is a per-instance ephemeral
+    /// identity — tests and throwaway tunnels only, the fp changes every restart).
+    pub fn with_device(mut self, device: std::sync::Arc<crate::device::DeviceIdentity>) -> Self {
+        self.device = device;
+        self
+    }
+
+    /// Set the self-declared display name uploaded in AuthRequest.my_name.
+    pub fn with_my_name(mut self, my_name: impl Into<String>) -> Self {
+        self.my_name = my_name.into();
+        self
+    }
+
+    /// Take the last session notice (reason_code, one-time message) recorded before a forced
+    /// close; None when the session ended without a notice.
+    pub fn take_notice(&self) -> Option<(String, String)> {
+        self.notice
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
     }
 
     /// Create in dev mode (no server cert verification, debug only).
@@ -91,6 +124,21 @@ impl ClientTunnel {
 
     pub fn is_connected(&self) -> bool {
         self.state() == ConnectionState::Connected
+    }
+
+    /// Pending-session appeal (M4): upload one note on the session control plane (the issuer
+    /// caps these at `MAX_PENDING_NOTES` per session).
+    pub async fn send_pending_note(&self, body: &str) -> Result<()> {
+        let mux = self.session.lock().await.clone();
+        let Some(mux) = mux else {
+            return Err(Error::Protocol("not connected".into()));
+        };
+        let msg = crate::proto::message::CtrlMessage::PendingNote {
+            body: body.to_string(),
+        };
+        let payload = serde_json::to_vec(&msg).map_err(|e| Error::Protocol(e.to_string()))?;
+        mux.send_frame(Frame::new(FrameType::Ctrl, 0, Bytes::from(payload)))
+            .await
     }
 
     /// Data-plane traffic counters (up bytes, down bytes): up = to the node, down = from the node.
@@ -135,7 +183,7 @@ impl ClientTunnel {
             .map_err(|e| Error::Tls(e.to_string()))?;
         let mut tls_stream = self.tls_connector.connect(server_name, tcp_stream).await?;
 
-        let auth_req = AuthRequest {
+        let mut auth_req = AuthRequest {
             node_id: self.node_id.clone(),
             token: self
                 .tunnel_token
@@ -146,7 +194,13 @@ impl ClientTunnel {
             advertise: Vec::new(),
             groups: Vec::new(),
             version: PROTOCOL_VERSION,
+            my_name: self.my_name.clone(),
+            device_pubkey: String::new(),
+            device_sig: String::new(),
         };
+        // device identity proof: sign the TLS-exporter challenge (RFC 5705, zero extra RTT)
+        let challenge = crate::device::session_challenge(tls_stream.get_ref().1)?;
+        auth_req.attach_device_proof(&challenge, &self.device);
         let payload = serde_json::to_vec(&auth_req).map_err(|e| Error::Protocol(e.to_string()))?;
         Frame::new(FrameType::Auth, 0, Bytes::from(payload))
             .write_to(&mut tls_stream)
@@ -163,7 +217,7 @@ impl ClientTunnel {
                 }
             }
             FrameType::AuthFail => {
-                return Err(Error::Auth("node rejected tunnel token".into()));
+                return Err(Error::Auth(auth_fail_message(&res_frame.payload)));
             }
             other => {
                 return Err(Error::Protocol(format!(
@@ -174,14 +228,31 @@ impl ClientTunnel {
 
         // the client is the only side issuing Open on this session; use even channel_ids
         let flow_control = server_version >= PROTOCOL_VERSION_FLOW_CONTROL;
+        // ctrl subscription: SessionNotice frames (kick/revoke carrying a one-time message) are
+        // the client notification channel (consumed by the client engine, M4)
+        let (ctrl_tx, mut ctrl_rx) = tokio::sync::mpsc::channel::<Bytes>(16);
         // no session rate limit on the client side (if limited, the peer listener's injected bucket back-pressures at ingress)
         let (mux, reader_handle) = MuxSession::start(
             tls_stream,
             2,
-            crate::relay::mux::SessionEvents::default(),
+            crate::relay::mux::SessionEvents {
+                open_tx: None,
+                ctrl_tx: Some(ctrl_tx),
+            },
             flow_control,
             None,
         );
+        let notice_slot = self.notice.clone();
+        tokio::spawn(async move {
+            while let Some(payload) = ctrl_rx.recv().await {
+                if let Ok(crate::proto::message::CtrlMessage::SessionNotice { reason_code, message }) =
+                    serde_json::from_slice::<crate::proto::message::CtrlMessage>(&payload)
+                {
+                    debug!(reason = %reason_code, "session notice received");
+                    *notice_slot.lock().unwrap_or_else(|e| e.into_inner()) = Some((reason_code, message));
+                }
+            }
+        });
 
         // session maintenance task: heartbeat (with jitter) + idle timeout detection
         let shutdown_notify = self.shutdown_notify.clone();
@@ -328,4 +399,11 @@ async fn futures_lite_wait(handle: &tokio::task::JoinHandle<()>) {
 /// Next heartbeat interval: 25s + 0-10s random jitter.
 fn next_ping_delay() -> Duration {
     Duration::from_secs(PING_BASE_SECS + rand::random::<u64>() % 10)
+}
+
+/// Render an AuthFail payload into an error message (structured FailReason when present).
+fn auth_fail_message(payload: &[u8]) -> String {
+    crate::proto::message::FailReason::from_payload(payload)
+        .map(|f| f.render())
+        .unwrap_or_else(|| "node rejected tunnel token".into())
 }

@@ -45,6 +45,91 @@ pub struct AuthRequest {
     pub groups: Vec<PushedGroupMsg>,
     /// Protocol version of the peer
     pub version: u32,
+    /// Self-declared display name ("我的名称", uploaded to the peer; decorative — never part of
+    /// any auth/routing decision, the far side shows it next to its own certification remark)
+    #[serde(default)]
+    pub my_name: String,
+    /// Device identity proof (node.md M2, mandatory): raw ed25519 public key, base64.
+    /// `device_fp = sha256(pubkey)` is derived by the listener — never trusted from the wire.
+    #[serde(default)]
+    pub device_pubkey: String,
+    /// Signature (base64) over the per-session challenge derived from the TLS exporter secret
+    /// (RFC 5705, `device::DEVICE_PROOF_LABEL`): zero extra RTT, replay-bound to this session.
+    #[serde(default)]
+    pub device_sig: String,
+}
+
+impl AuthRequest {
+    /// Attach the device identity proof: sign the session challenge and fill both wire fields.
+    pub fn attach_device_proof(&mut self, challenge: &[u8], identity: &crate::device::DeviceIdentity) {
+        self.device_pubkey = crate::util::base64_encode(identity.pubkey());
+        self.device_sig = crate::util::base64_encode(&identity.sign(challenge));
+    }
+
+    /// Verify the attached proof against the per-session challenge; returns the derived
+    /// device_fp and the canonical base64 pubkey on success. Fails closed on missing/malformed
+    /// fields or a bad signature.
+    pub fn verify_device_proof(&self, challenge: &[u8]) -> Option<(String, String)> {
+        let pubkey = crate::util::base64_decode(&self.device_pubkey)?;
+        let sig = crate::util::base64_decode(&self.device_sig)?;
+        if pubkey.len() != 32 || !crate::device::DeviceIdentity::verify(&pubkey, challenge, &sig) {
+            return None;
+        }
+        Some((crate::device::fp_of(&pubkey), crate::util::base64_encode(&pubkey)))
+    }
+}
+
+/// Standard reason codes for session teardown / auth rejection (node.md M2; carried by
+/// AuthFail / Close / SessionNotice frames, rendered by clients with localized fallbacks).
+pub mod reason {
+    /// Token or device revoked by the administrator (optional one-time message attached)
+    pub const REVOKED_BY_ADMIN: &str = "revoked_by_admin";
+    /// Device replaced by a newer certified device (rebind flow)
+    pub const DEVICE_REPLACED: &str = "device_replaced";
+    /// This device was revoked (terminal state, never reusable)
+    pub const DEVICE_REVOKED: &str = "device_revoked";
+    /// Token expired or usage exhausted
+    pub const TOKEN_EXPIRED: &str = "token_expired";
+    /// Kicked by the administrator (or single-concurrency takeover)
+    pub const KICKED: &str = "kicked";
+    /// Single-concurrency token: a newer session took over (this session was the stale one)
+    pub const SESSION_TAKEOVER: &str = "session_takeover";
+    /// The issuer's fan-out session dropped (revoke-by-disconnect)
+    pub const ISSUER_OFFLINE: &str = "issuer_offline";
+    /// The relay/server is shutting down (clean teardown, reconnect immediately)
+    pub const SERVER_SHUTDOWN: &str = "server_shutdown";
+    /// Bad credentials (unknown/expired/exhausted token)
+    pub const BAD_CREDENTIALS: &str = "bad_credentials";
+    /// Device awaiting administrator certification (pending session, appeals allowed)
+    pub const PENDING_APPROVAL: &str = "pending_approval";
+    /// Device proof missing/invalid (mandatory since protocol v4 device identity)
+    pub const DEVICE_PROOF_INVALID: &str = "device_proof_invalid";
+}
+
+/// AuthFail / Close frame payload: structured rejection reason (empty payload = legacy-style
+/// plain failure; clients fall back to a generic message).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FailReason {
+    pub reason_code: String,
+    /// Optional one-time human message from the admin (final at send time, never editable)
+    #[serde(default)]
+    pub message: String,
+}
+
+impl FailReason {
+    /// Parse an AuthFail payload (None on empty/malformed payloads).
+    pub fn from_payload(payload: &[u8]) -> Option<Self> {
+        serde_json::from_slice(payload).ok()
+    }
+
+    /// Render into a one-line error/notification message.
+    pub fn render(&self) -> String {
+        if self.message.is_empty() {
+            format!("auth rejected: {}", self.reason_code)
+        } else {
+            format!("auth rejected: {} ({})", self.reason_code, self.message)
+        }
+    }
 }
 
 /// Handshake v2: admin endpoint the fan-in side sends in AuthOk to a fan-out
@@ -169,11 +254,16 @@ pub enum CtrlMessage {
         max_sessions: u32,
     },
     /// Issuer -> relay: revoke a delegated token (kick its sessions, drop the registration).
-    /// Carries the same policy snapshot as the registration (audit symmetry).
+    /// Carries the same policy snapshot as the registration (audit symmetry), plus an optional
+    /// structured reason + one-time message forwarded to the kicked consumer sessions.
     TokenRevoke {
         token_hash: String,
         concurrency: Concurrency,
         max_sessions: u32,
+        #[serde(default)]
+        reason_code: String,
+        #[serde(default)]
+        message: String,
     },
     /// Relay -> issuer: registration/revocation outcome (`error` empty on success).
     TokenAck {
@@ -182,7 +272,25 @@ pub enum CtrlMessage {
         #[serde(default)]
         error: String,
     },
+    /// Any side -> session peer: session-level notice sent right before teardown (revoke /
+    /// kick / reject). `message` is a one-time human note (final at send time). E2E-tier
+    /// consumers receive it inside their encrypted envelope when a channel context exists;
+    /// otherwise it rides this plain Ctrl frame (reason_code is always safe to show).
+    SessionNotice {
+        reason_code: String,
+        #[serde(default)]
+        message: String,
+    },
+    /// Consumer -> issuer (pending session only): appeal note attached to the approval item.
+    /// The server counts per session and rejects beyond `MAX_PENDING_NOTES` (≤3).
+    PendingNote { body: String },
+    // M6 reserved op names (do NOT implement before M6; schemas are defined there):
+    // "cert_push" (transitive certification record, origin-signed), "cert_revoke" (signed
+    // revocation propagation), "grant_receipt" (topology visibility receipt).
 }
+
+/// Pending-session appeal cap (server-side enforcement, per session).
+pub const MAX_PENDING_NOTES: u32 = 3;
 
 /// OpenFail frame payload.
 #[derive(Debug, Clone, Serialize, Deserialize)]

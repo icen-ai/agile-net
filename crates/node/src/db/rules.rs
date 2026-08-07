@@ -265,11 +265,13 @@ impl Database {
         })
     }
 
-    pub fn get_group_by_name(&self, name: &str) -> Result<Option<GroupRecord>> {
+    /// Look up a LOCAL group by name (adopted mirrors excluded — name uniqueness is per-tier:
+    /// local names are unique, adopted names are unique per source node).
+    pub fn get_local_group_by_name(&self, name: &str) -> Result<Option<GroupRecord>> {
         let conn = self.conn();
         let mut stmt = conn
             .prepare(
-                "SELECT g.id, g.name, g.remark, g.created_at, g.updated_at, 0, g.e2e_required, g.adopted_node, g.adopted_name FROM \"group\" g WHERE g.name = ?1",
+                "SELECT g.id, g.name, g.remark, g.created_at, g.updated_at, 0, g.e2e_required, g.adopted_node, g.adopted_name FROM \"group\" g WHERE g.name = ?1 AND g.adopted_node = ''",
             )
             .map_err(db_err)?;
         let mut rows = stmt.query(params![name]).map_err(db_err)?;
@@ -339,15 +341,36 @@ impl Database {
         Ok(())
     }
 
-    /// Stamp adoption lineage on a freshly adopted group (federation P1 acceptance).
-    pub fn set_group_adoption(&self, id: &str, node: &str, src_name: &str) -> Result<()> {
+    /// Create an adopted mirror group with lineage stamped at INSERT time (naming sovereignty):
+    /// the name is the pure source name — uniqueness for adopted groups is (name, adopted_node),
+    /// so a two-step create-then-stamp would wrongly hit the LOCAL unique index when a local
+    /// group already carries the same name.
+    pub fn create_adopted_group(
+        &self,
+        name: &str,
+        remark: &str,
+        node: &str,
+        src_name: &str,
+    ) -> Result<GroupRecord> {
         let conn = self.conn();
+        let id = uuid::Uuid::new_v4().to_string();
+        let now = now_rfc3339();
         conn.execute(
-            "UPDATE \"group\" SET adopted_node = ?1, adopted_name = ?2 WHERE id = ?3",
-            params![node, src_name, id],
+            "INSERT INTO \"group\" (id, name, remark, adopted_node, adopted_name, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?6)",
+            params![id, name, remark, node, src_name, now],
         )
         .map_err(db_err)?;
-        Ok(())
+        Ok(GroupRecord {
+            id,
+            name: name.to_string(),
+            remark: remark.to_string(),
+            e2e_required: false,
+            rule_count: 0,
+            adopted_node: node.to_string(),
+            adopted_name: src_name.to_string(),
+            created_at: now.clone(),
+            updated_at: now,
+        })
     }
 
     /// Every adopted (mirrored) group — the sync engine's working set.
@@ -394,10 +417,46 @@ impl Database {
         Ok(())
     }
 
-    /// id -> name map of all groups (display resolution for comma-separated group sets).
-    pub fn group_name_map(&self) -> Result<std::collections::HashMap<String, String>> {
+    /// id -> display-ref map of all groups (naming sovereignty: name + adoption lineage).
+    pub fn group_ref_map(&self) -> Result<std::collections::HashMap<String, super::models::GroupRef>> {
         let (groups, _) = self.list_groups(1, 10000, None)?;
-        Ok(groups.into_iter().map(|g| (g.id, g.name)).collect())
+        Ok(groups
+            .into_iter()
+            .map(|g| {
+                (
+                    g.id.clone(),
+                    super::models::GroupRef {
+                        id: g.id,
+                        name: g.name,
+                        adopted_node: g.adopted_node,
+                    },
+                )
+            })
+            .collect())
+    }
+
+    /// Resolve a stored group id set (None/single/comma-separated) to display refs
+    /// (dangling ids echo verbatim with no lineage).
+    pub fn group_refs_of(&self, group_id: Option<&str>) -> Vec<super::models::GroupRef> {
+        let Some(set) = group_id else { return Vec::new() };
+        let ids: Vec<&str> = set
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .collect();
+        if ids.is_empty() {
+            return Vec::new();
+        }
+        let map = self.group_ref_map().unwrap_or_default();
+        ids.into_iter()
+            .map(|id| {
+                map.get(id).cloned().unwrap_or_else(|| super::models::GroupRef {
+                    id: id.to_string(),
+                    name: id.to_string(),
+                    adopted_node: String::new(),
+                })
+            })
+            .collect()
     }
 
     /// Total references from principals without an E2E key (relay tokens + connectors).
@@ -467,4 +526,35 @@ fn map_group_row(r: &rusqlite::Row) -> rusqlite::Result<GroupRecord> {
         adopted_node: r.get(7)?,
         adopted_name: r.get(8)?,
     })
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn group_name_uniqueness_is_split_local_vs_adopted() {
+        let db = Database::in_memory().unwrap();
+
+        // local names unique
+        db.create_group("git", "").unwrap();
+        assert!(db.create_group("git", "").is_err(), "local name dup must fail");
+
+        // adopted mirrors may share the local name (source shown as a badge, not in the name)
+        let a = db.create_adopted_group("git", "", "peer-c", "git").unwrap();
+        assert_eq!(a.adopted_node, "peer-c");
+        // same name from a different source node also coexists
+        db.create_adopted_group("git", "", "peer-d", "git").unwrap();
+        // but the same (name, source node) pair is unique
+        assert!(
+            db.create_adopted_group("git", "", "peer-c", "git").is_err(),
+            "same name from the same node must fail"
+        );
+
+        // name lookups are local-only: the adopted mirrors stay invisible to conflict checks
+        let local = db.get_local_group_by_name("git").unwrap().unwrap();
+        assert_eq!(local.adopted_node, "");
+        assert!(db.find_adopted_group("peer-c", "git").unwrap().is_some());
+    }
 }

@@ -14,6 +14,31 @@ use crate::db::Database;
 
 // ==================== Row models (decouples rendering from data source) ====================
 
+/// Group-set display cell from an API list item: comma-joined names of the resolved refs ("-" = unrestricted).
+fn groups_display_json(v: &Value) -> String {
+    let names: Vec<&str> = v["groups"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|g| g["name"].as_str()).collect())
+        .unwrap_or_default();
+    if names.is_empty() {
+        "-".into()
+    } else {
+        names.join(",")
+    }
+}
+
+/// Group-set display cell from resolved DB refs ("-" = unrestricted).
+fn groups_display_refs(refs: &[crate::db::models::GroupRef]) -> String {
+    if refs.is_empty() {
+        "-".into()
+    } else {
+        refs.iter()
+            .map(|g| g.name.as_str())
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+}
+
 #[derive(Default, Clone)]
 pub struct RuleRow {
     pub id: String,
@@ -302,7 +327,7 @@ impl Source {
                         prefix: t["token_prefix"].as_str().unwrap_or("-").into(),
                         expose: t["expose_control"].as_bool().unwrap_or(false),
                         scope: t["control_scope"].as_str().unwrap_or("full").into(),
-                        group_name: t["group_name"].as_str().unwrap_or("-").into(),
+                        group_name: groups_display_json(t),
                         remark: t["remark"].as_str().unwrap_or("").into(),
                         last_used: t["last_used_at"].as_str().unwrap_or("未使用").into(),
                         created_at: t["created_at"].as_str().unwrap_or("-").into(),
@@ -317,7 +342,7 @@ impl Source {
                     prefix: t.token_prefix,
                     expose: t.expose_control,
                     scope: t.control_scope,
-                    group_name: t.group_name.unwrap_or_else(|| "-".into()),
+                    group_name: groups_display_refs(&t.groups),
                     remark: t.remark,
                     last_used: t.last_used_at.unwrap_or_else(|| "未使用".into()),
                     created_at: t.created_at,
@@ -340,7 +365,7 @@ impl Source {
                         id: c["id"].as_str().unwrap_or_default().into(),
                         name: c["name"].as_str().unwrap_or("-").into(),
                         upstream_addr: c["upstream_addr"].as_str().unwrap_or("-").into(),
-                        group_name: c["group_name"].as_str().unwrap_or("-").into(),
+                        group_name: groups_display_json(c),
                         enabled: c["enabled"].as_bool().unwrap_or(false),
                         state: c["state"].as_str().unwrap_or("disconnected").into(),
                         remark: c["remark"].as_str().unwrap_or("").into(),
@@ -354,7 +379,7 @@ impl Source {
                     id: c.id,
                     name: c.name,
                     upstream_addr: c.upstream_addr,
-                    group_name: c.group_name.unwrap_or_else(|| "-".into()),
+                    group_name: groups_display_refs(&c.groups),
                     enabled: c.enabled,
                     state: String::new(),
                     remark: c.remark,

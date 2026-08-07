@@ -233,6 +233,7 @@ pub async fn create_token(
                 &token,
                 &sni,
                 state.runtime.cert_fingerprint.as_deref(),
+                None,
             );
             let (_, relay_port) = state.public_tunnel_endpoint().await;
             let public = state.declared_relay_addr().await;
@@ -431,7 +432,9 @@ pub async fn update_token(
             }
         };
         if let (Some(listener), Some(hash)) = (&state.runtime.listener, token_hash)
-            && let Some(node_id) = listener.disconnect_by_token_hash(&hash)
+            && let Some(node_id) = listener
+                .disconnect_by_token_hash(&hash, agile_net_core::proto::message::reason::KICKED, "")
+                .await
         {
             tracing::info!(node = %node_id, "relay token group changed, peer kicked");
         }
@@ -618,7 +621,9 @@ pub async fn delete_token(
     {
         Ok(token_hash) => {
             if let (Some(listener), Some(hash)) = (&state.runtime.listener, token_hash)
-                && let Some(node_id) = listener.disconnect_by_token_hash(&hash)
+                && let Some(node_id) = listener
+                    .disconnect_by_token_hash(&hash, agile_net_core::proto::message::reason::REVOKED_BY_ADMIN, "")
+                    .await
             {
                 tracing::info!(node = %node_id, "relay token revoked, peer kicked");
             }

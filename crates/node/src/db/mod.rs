@@ -13,6 +13,7 @@ pub mod models;
 mod admin;
 mod connectors;
 mod delegation;
+mod devices;
 mod logs;
 mod migrations;
 mod paginate;

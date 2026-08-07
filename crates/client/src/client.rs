@@ -63,6 +63,10 @@ pub struct ConnectParams {
     /// Delegated admin capability hint (ticket pull via the E2E config channel)
     #[serde(default)]
     pub eadmin: bool,
+    /// Self-declared display name uploaded to the issuer ("我的名称"; decorative, the issuer's
+    /// certification remark is the authoritative identity)
+    #[serde(default)]
+    pub myname: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1062,14 +1066,29 @@ async fn connect_delegated_entry(
         None if params.insecure => tls.allow_self_signed(true),
         None => tls,
     };
-    let tunnel = Arc::new(ClientTunnel::with_tls_builder(
-        addr,
-        account_id,
-        params.token.clone(),
-        tls,
-    )?);
+    let tunnel = ClientTunnel::with_tls_builder(addr, account_id, params.token.clone(), tls)?
+        .with_device(machine_device())
+        .with_my_name(params.myname.clone().unwrap_or_default());
+    let tunnel = Arc::new(tunnel);
     tunnel.connect().await?;
     Ok(tunnel)
+}
+
+/// Machine device identity (`~/.anet/device.key`, load-or-create), one per process; falls back
+/// to an ephemeral identity when the data dir is unwritable (readonly home etc.).
+fn machine_device() -> Arc<agile_net_core::device::DeviceIdentity> {
+    static INSTANCE: std::sync::OnceLock<Arc<agile_net_core::device::DeviceIdentity>> =
+        std::sync::OnceLock::new();
+    INSTANCE
+        .get_or_init(|| {
+            Arc::new(
+                agile_net_core::device::DeviceIdentity::machine().unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "machine device identity unavailable, using ephemeral");
+                    agile_net_core::device::DeviceIdentity::ephemeral()
+                }),
+            )
+        })
+        .clone()
 }
 
 /// Resolve a `host:port` entry into a SocketAddr (IPv4 preferred; IPv6 literals bracketed).

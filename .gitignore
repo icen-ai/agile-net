@@ -30,3 +30,6 @@ dist/
 
 # Cindy worktrees (agent tooling, never commit)
 .cindy-worktrees/
+
+# Kimi Code project-local config (machine-specific MCP server paths)
+.kimi-code/

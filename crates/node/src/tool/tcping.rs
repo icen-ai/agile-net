@@ -281,11 +281,20 @@ mod tests {
 
     #[tokio::test]
     async fn probe_fails_on_closed_port() {
-        let port = closed_port().await;
-        let p = probe("127.0.0.1", port, Duration::from_secs(2)).await;
-        assert!(!p.connected);
-        assert!(p.latency_ms.is_none());
-        assert!(p.error.is_some());
+        // bind-then-release has a TOCTOU window: under full-suite parallel load another test can
+        // grab the just-released port — retry with a fresh candidate (bounded)
+        let mut last = None;
+        for _ in 0..4 {
+            let port = closed_port().await;
+            let p = probe("127.0.0.1", port, Duration::from_secs(2)).await;
+            if !p.connected {
+                assert!(p.latency_ms.is_none());
+                assert!(p.error.is_some());
+                return;
+            }
+            last = Some(port);
+        }
+        panic!("every released port got re-bound by parallel tests: {last:?}");
     }
 
     #[tokio::test]

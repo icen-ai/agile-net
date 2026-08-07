@@ -296,7 +296,10 @@ pub struct ServerConnectorView {
     pub effective_advertise: Vec<String>,
     /// Restricting group (None = unrestricted, allow everything)
     pub group_id: Option<String>,
-    pub group_name: Option<String>,
+    /// Resolved ACL group set (naming sovereignty: name + adoption lineage; empty = unrestricted)
+    pub groups: Vec<agile_net_node::db::models::GroupRef>,
+    /// Upstream's self-declared node name of the live session (empty = offline/unannounced)
+    pub peer_node: String,
     /// Policy upload (federation P1): comma-separated local group IDs pushed upstream at auth (empty = no upload)
     pub push_groups: String,
     pub enabled: bool,
@@ -312,6 +315,8 @@ pub struct GroupOption {
     pub name: String,
     /// E2E groups only attach to delegated tokens — shown disabled in ACL pickers
     pub e2e_required: bool,
+    /// Adoption lineage (empty = plain local group; the picker renders a source badge)
+    pub adopted_node: String,
 }
 
 /// Groups of the local embedded node (the "group" dropdown in the fan-out form; empty = unrestricted).
@@ -321,7 +326,7 @@ pub(crate) async fn list_embedded_groups() -> Result<Vec<GroupOption>, String> {
     let (groups, _) = db.list_groups(1, 1000, None).map_err(map_err)?;
     Ok(groups
         .into_iter()
-        .map(|g| GroupOption { id: g.id, name: g.name, e2e_required: g.e2e_required })
+        .map(|g| GroupOption { id: g.id, name: g.name, e2e_required: g.e2e_required, adopted_node: g.adopted_node })
         .collect())
 }
 
@@ -368,6 +373,10 @@ pub(crate) async fn list_server_connectors(
                 .as_ref()
                 .and_then(|s| s.connector_manager().state_of(&v.id))
                 .unwrap_or("disconnected");
+            let peer_node = slot
+                .as_ref()
+                .and_then(|s| s.connector_manager().peer_node_of(&v.id))
+                .unwrap_or_default();
             ServerConnectorView {
                 id: v.id.clone(),
                 name: v.name,
@@ -384,7 +393,8 @@ pub(crate) async fn list_server_connectors(
                     .map(|rec| agile_net_node::service::connectors::effective_advertise_of(&db, &rec))
                     .unwrap_or_default(),
                 group_id: v.group_id,
-                group_name: v.group_name,
+                groups: v.groups,
+                peer_node,
                 push_groups: v.push_groups,
                 enabled: v.enabled,
                 remark: v.remark,

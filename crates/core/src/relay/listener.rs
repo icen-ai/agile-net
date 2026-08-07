@@ -10,7 +10,8 @@
 use crate::error::{Error, Result};
 use crate::proto::frame::{Frame, FrameType};
 use crate::proto::message::{
-    AuthKind, AuthRequest, Concurrency, OpenChannel, PROTOCOL_VERSION, PROTOCOL_VERSION_FLOW_CONTROL,
+    AuthKind, AuthRequest, Concurrency, FailReason, OpenChannel, PROTOCOL_VERSION,
+    PROTOCOL_VERSION_FLOW_CONTROL, reason,
 };
 use crate::proxy::router::{Outbound, ProxyRouter};
 use crate::relay::acl::PeerAcl;
@@ -221,6 +222,44 @@ pub struct PeerSession {
     pub token_hash: String,
     /// Display name: the auth identity's admin-assigned label (token remark) when present, else node_id
     pub display: String,
+    /// Proven device identity (handshake v4): sha256 of the device public key, derived locally
+    pub device_fp: String,
+    /// Peer's self-declared display name ("我的名称"; decorative, shown next to OUR remark)
+    pub my_name: String,
+}
+
+/// Device identity proven during the handshake (device_fp derived locally from the presented
+/// public key — never trusted from the wire).
+#[derive(Debug, Clone)]
+pub struct DeviceMeta {
+    pub device_fp: String,
+    /// The presented ed25519 public key (canonical base64; for the device registry)
+    pub pubkey: String,
+    /// Peer's self-declared display name ("我的名称"; decorative, capped at 64 chars)
+    pub my_name: String,
+}
+
+/// Proven device identity + connection metadata of one authenticated session (node.md M2 → M3
+/// session tables / device profile). Keyed by a unique per-session id (multi tokens can run
+/// several sessions under one session key); `session_key` links back to the kick tables.
+#[derive(Debug, Clone)]
+pub struct SessionMeta {
+    /// Unique per accepted session
+    pub session_id: String,
+    /// node_id for fan-in peers, `delegated:<token_hash>:<node_id>` for consumers
+    pub session_key: String,
+    /// Locally derived device fingerprint (sha256 of the presented ed25519 pubkey)
+    pub device_fp: String,
+    /// The presented ed25519 public key (canonical base64)
+    pub pubkey: String,
+    /// Credential the session authenticated with (token sha256)
+    pub token_hash: String,
+    /// Peer's self-declared display name (decorative)
+    pub my_name: String,
+    /// Remote IP of the TLS connection
+    pub peer_ip: String,
+    /// Session start (uptime/duration display)
+    pub connected_at: std::time::Instant,
 }
 
 /// Route table advertised by downstream nodes (target -> peer node_id).
@@ -237,6 +276,8 @@ type RateLimitProvider = Arc<dyn Fn(&AuthIdentity, &str) -> Option<u64> + Send +
 /// Relay listener.
 pub struct RelayListener {
     listen_addr: SocketAddr,
+    /// This node's self-declared name (announced to fan-out peers in AuthOk; display only)
+    node_id: String,
     validator: Arc<dyn TokenValidator>,
     tls_acceptor: TlsAcceptor,
     peers: Arc<DashMap<String, PeerSession>>,
@@ -261,6 +302,9 @@ pub struct RelayListener {
     /// Online consumer sessions (session key -> session handle list, for online checks and forced
     /// disconnect; delegated consumers key on `delegated:<token_hash>:<node_id>`)
     clients: Arc<DashMap<String, Vec<Arc<MuxSession>>>>,
+    /// Proven device identity + connection metadata, keyed by unique session id (M3 session
+    /// tables); entries die with their session
+    session_meta: Arc<DashMap<String, SessionMeta>>,
     events: broadcast::Sender<PeerEvent>,
     active_connections: Arc<AtomicUsize>,
     pending_auth: Arc<AtomicUsize>,
@@ -308,6 +352,7 @@ impl RelayListener {
         let (events, _) = broadcast::channel(256);
         Self {
             listen_addr,
+            node_id: String::new(),
             validator,
             tls_acceptor,
             peers: Arc::new(DashMap::new()),
@@ -318,6 +363,7 @@ impl RelayListener {
             entrust: Arc::new(DashMap::new()),
             routes: Arc::new(arc_swap::ArcSwap::from_pointee(AdvertisedRoutes::default())),
             clients: Arc::new(DashMap::new()),
+            session_meta: Arc::new(DashMap::new()),
             events,
             active_connections: Arc::new(AtomicUsize::new(0)),
             pending_auth: Arc::new(AtomicUsize::new(0)),
@@ -333,6 +379,13 @@ impl RelayListener {
     /// Attach the relay transit meter (fan-in peer-initiated forwards booked with from=node_id).
     pub fn with_transit_meter(mut self, meter: Arc<TransitMeter>) -> Self {
         self.transit = Some(meter);
+        self
+    }
+
+    /// Set this node's self-declared name (announced to authenticated fan-out peers in AuthOk —
+    /// the peer renders it as the upstream identity badge).
+    pub fn with_node_id(mut self, node_id: String) -> Self {
+        self.node_id = node_id;
         self
     }
 
@@ -410,10 +463,12 @@ impl RelayListener {
     }
 
     /// Force-disconnect a downstream node (control-plane kick / effective immediately after token revocation).
+    /// The session gets a SessionNotice (reason + one-time message) before the close.
     /// Returns whether such a node session existed.
-    pub fn disconnect_peer(&self, node_id: &str) -> bool {
+    pub async fn disconnect_peer(&self, node_id: &str, reason_code: &str, message: &str) -> bool {
         if let Some((_, peer)) = self.peers.remove(node_id) {
-            peer.mux.shutdown();
+            Self::notify_and_shutdown(&peer.mux, reason_code, message).await;
+            self.session_meta.retain(|_, m| m.session_key != node_id);
             self.set_peer_routes(node_id, Vec::new());
             self.peer_groups.remove(node_id);
             let _ = self.events.send(PeerEvent::NodeDisconnected {
@@ -472,11 +527,12 @@ impl RelayListener {
     /// Delegated consumer auth (unified issuance): resolve the token against the delegated
     /// registries and enforce the token's session concurrency policy — single kicks every older
     /// session of the token; multi admits while active sessions stay below `max_sessions`.
-    fn delegated_auth(&self, auth: &AuthRequest, token_hash: &str) -> Option<AuthIdentity> {
+    async fn delegated_auth(&self, auth: &AuthRequest, token_hash: &str) -> Option<AuthIdentity> {
         let entry = self.resolve_delegated_token(token_hash)?;
         match entry.concurrency {
             Concurrency::Single => {
-                self.disconnect_delegated_token(token_hash);
+                self.disconnect_delegated_token(token_hash, reason::SESSION_TAKEOVER, "")
+                    .await;
             }
             Concurrency::Multi => {
                 if self.active_delegated_sessions(token_hash) >= entry.max_sessions as usize {
@@ -502,9 +558,15 @@ impl RelayListener {
     }
 
     /// Force-disconnect every consumer session authenticated from one delegated token (any
-    /// node_id) — token revocation, single-policy kick, issuer-session teardown. Returns the
-    /// number of disconnected sessions.
-    pub fn disconnect_delegated_token(&self, token_hash: &str) -> usize {
+    /// node_id) — token revocation, single-policy kick, issuer-session teardown. Each session
+    /// gets a SessionNotice (reason + one-time message) before the close. Returns the number of
+    /// disconnected sessions.
+    pub async fn disconnect_delegated_token(
+        &self,
+        token_hash: &str,
+        reason_code: &str,
+        message: &str,
+    ) -> usize {
         let prefix = delegated_session_prefix(token_hash);
         let keys: Vec<String> = self
             .clients
@@ -512,7 +574,11 @@ impl RelayListener {
             .filter(|c| c.key().starts_with(&prefix))
             .map(|c| c.key().clone())
             .collect();
-        keys.iter().map(|k| self.disconnect_client(k)).sum()
+        let mut n = 0;
+        for k in keys {
+            n += self.disconnect_client(&k, reason_code, message).await;
+        }
+        n
     }
 
     /// Number of online consumer sessions (delegated session keys).
@@ -528,15 +594,31 @@ impl RelayListener {
             .unwrap_or(false)
     }
 
-    /// Force-disconnect all sessions under one consumer session key. Returns the number of
-    /// disconnected sessions.
-    pub fn disconnect_client(&self, session_key: &str) -> usize {
+    /// Send a session notice (reason + one-time message) right before a forced close; the write
+    /// is flushed first so the peer reliably sees WHY the session died (M4 client notification).
+    async fn notify_and_shutdown(mux: &Arc<MuxSession>, reason_code: &str, message: &str) {
+        if !reason_code.is_empty() {
+            let notice = crate::proto::message::CtrlMessage::SessionNotice {
+                reason_code: reason_code.to_string(),
+                message: message.to_string(),
+            };
+            if let Ok(p) = serde_json::to_vec(&notice) {
+                let _ = mux.send_frame(Frame::new(FrameType::Ctrl, 0, Bytes::from(p))).await;
+            }
+        }
+        mux.shutdown();
+    }
+
+    /// Force-disconnect all sessions under one consumer session key (a SessionNotice with the
+    /// reason precedes the close). Returns the number of disconnected sessions.
+    pub async fn disconnect_client(&self, session_key: &str, reason_code: &str, message: &str) -> usize {
         let Some((_, sessions)) = self.clients.remove(session_key) else {
             return 0;
         };
+        self.session_meta.retain(|_, m| m.session_key != session_key);
         let count = sessions.len();
         for mux in sessions {
-            mux.shutdown();
+            Self::notify_and_shutdown(&mux, reason_code, message).await;
         }
         let _ = self.events.send(PeerEvent::ClientDisconnected {
             session_key: session_key.to_string(),
@@ -545,16 +627,17 @@ impl RelayListener {
     }
 
     /// Force-close every session (peers and clients) — server shutdown / role stop.
-    /// Mux shutdown drops the TLS streams, so the remote ends see a clean disconnect and can
-    /// fail over immediately instead of waiting out the idle timeout.
-    pub fn shutdown_all(&self) {
+    /// A SessionNotice(server_shutdown) precedes each close, and the mux shutdown drops the TLS
+    /// streams, so the remote ends see a clean disconnect and can fail over immediately instead
+    /// of waiting out the idle timeout.
+    pub async fn shutdown_all(&self) {
         let peers: Vec<String> = self.peers.iter().map(|p| p.key().clone()).collect();
         for id in peers {
-            self.disconnect_peer(&id);
+            self.disconnect_peer(&id, reason::SERVER_SHUTDOWN, "").await;
         }
         let clients: Vec<String> = self.clients.iter().map(|c| c.key().clone()).collect();
         for id in clients {
-            self.disconnect_client(&id);
+            self.disconnect_client(&id, reason::SERVER_SHUTDOWN, "").await;
         }
     }
 
@@ -571,13 +654,13 @@ impl RelayListener {
 
     /// Force-disconnect a downstream node session by token hash (called when a relay token is revoked).
     /// Returns the disconnected node ID (if online).
-    pub fn disconnect_by_token_hash(&self, token_hash: &str) -> Option<String> {
+    pub async fn disconnect_by_token_hash(&self, token_hash: &str, reason_code: &str, message: &str) -> Option<String> {
         let node_id = self
             .peers
             .iter()
             .find(|p| p.value().token_hash == token_hash)
             .map(|p| p.key().clone())?;
-        if self.disconnect_peer(&node_id) {
+        if self.disconnect_peer(&node_id, reason_code, message).await {
             Some(node_id)
         } else {
             None
@@ -587,6 +670,11 @@ impl RelayListener {
     /// Subscribe to online/offline events.
     pub fn subscribe_events(&self) -> broadcast::Receiver<PeerEvent> {
         self.events.subscribe()
+    }
+
+    /// Snapshot of every live session's device/connection metadata (M3 session tables).
+    pub fn session_metas(&self) -> Vec<SessionMeta> {
+        self.session_meta.iter().map(|e| e.value().clone()).collect()
     }
 
     /// Resolve an entrust word (en_xxx opaque ID) to its issuer node_id (federation P3 entrust
@@ -715,7 +803,7 @@ impl RelayListener {
                 .await
                 .map_err(|_| Error::Timeout)??;
 
-        let (tls_stream, identity, token_hash, peer_version) = match authed {
+        let (tls_stream, identity, token_hash, peer_version, device_meta) = match authed {
             Some(v) => v,
             None => return Err(Error::Auth("authentication failed".into())),
         };
@@ -744,6 +832,7 @@ impl RelayListener {
                     acl,
                     limiter,
                     display,
+                    device_meta,
                 )
                 .await
             }
@@ -757,6 +846,7 @@ impl RelayListener {
                     token_hash,
                     flow_control,
                     limiter,
+                    device_meta,
                 )
                 .await
             }
@@ -774,6 +864,7 @@ impl RelayListener {
             AuthIdentity,
             String,
             u32,
+            DeviceMeta,
         )>,
     > {
         let mut tls_stream = self.tls_acceptor.accept(stream).await?;
@@ -808,13 +899,43 @@ impl RelayListener {
             return Err(Error::Protocol("invalid node_id".into()));
         }
 
+        // Device identity proof (mandatory since handshake v4): the signature covers the
+        // TLS-exporter challenge (RFC 5705, replay-bound to this session); device_fp is derived
+        // from the presented pubkey — a wire-claimed fingerprint is never trusted. Failures get
+        // the standard auth-failure penalty (rate limit + random delay), same as a bad token.
+        let device_meta = match crate::device::session_challenge(tls_stream.get_ref().1)
+            .ok()
+            .and_then(|ch| auth_req.verify_device_proof(&ch))
+        {
+            Some((fp, pubkey)) => DeviceMeta {
+                device_fp: fp,
+                pubkey,
+                my_name: auth_req.my_name.chars().take(64).collect(),
+            },
+            None => {
+                warn!(peer = %peer_addr, node_id = %auth_req.node_id, "auth failed: invalid device proof");
+                self.record_auth_failure(&peer_addr.ip());
+                let delay_ms = 150 + rand::random::<u64>() % 250;
+                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                let fail = FailReason {
+                    reason_code: reason::DEVICE_PROOF_INVALID.into(),
+                    message: String::new(),
+                };
+                let payload = serde_json::to_vec(&fail).unwrap_or_default();
+                let _ = Frame::new(FrameType::AuthFail, 0, Bytes::from(payload))
+                    .write_to(&mut tls_stream)
+                    .await;
+                return Ok(None);
+            }
+        };
+
         let token_hash = sha256_hex(auth_req.token.as_bytes());
         // node/relay tokens resolve through the injected validator hook; consumer auths
         // (kind = Client) fall through to the listener's own delegated token registries
         // (persistent local first, then session-scoped) with concurrency enforcement
         let identity = match self.validator.validate(&auth_req) {
             Some(identity) => Some(identity),
-            None if auth_req.kind == AuthKind::Client => self.delegated_auth(&auth_req, &token_hash),
+            None if auth_req.kind == AuthKind::Client => self.delegated_auth(&auth_req, &token_hash).await,
             None => None,
         };
         match identity {
@@ -827,9 +948,9 @@ impl RelayListener {
                         control: Some(offer),
                         ..
                     } => {
-                        serde_json::json!({ "version": PROTOCOL_VERSION, "control": offer })
+                        serde_json::json!({ "version": PROTOCOL_VERSION, "node_id": self.node_id, "control": offer })
                     }
-                    _ => serde_json::json!({ "version": PROTOCOL_VERSION }),
+                    _ => serde_json::json!({ "version": PROTOCOL_VERSION, "node_id": self.node_id }),
                 };
                 Frame::new(
                     FrameType::AuthOk,
@@ -838,7 +959,7 @@ impl RelayListener {
                 )
                 .write_to(&mut tls_stream)
                 .await?;
-                Ok(Some((tls_stream, identity, token_hash, peer_version)))
+                Ok(Some((tls_stream, identity, token_hash, peer_version, device_meta)))
             }
             None => {
                 warn!(peer = %peer_addr, node_id = %auth_req.node_id, "auth failed: bad token");
@@ -846,7 +967,12 @@ impl RelayListener {
                 // random 150-400ms delay to slow down online brute force
                 let delay_ms = 150 + rand::random::<u64>() % 250;
                 tokio::time::sleep(Duration::from_millis(delay_ms)).await;
-                let _ = Frame::empty(FrameType::AuthFail, 0)
+                let fail = FailReason {
+                    reason_code: reason::BAD_CREDENTIALS.into(),
+                    message: String::new(),
+                };
+                let payload = serde_json::to_vec(&fail).unwrap_or_default();
+                let _ = Frame::new(FrameType::AuthFail, 0, Bytes::from(payload))
                     .write_to(&mut tls_stream)
                     .await;
                 Ok(None)
@@ -868,8 +994,9 @@ impl RelayListener {
         acl: Option<Arc<PeerAcl>>,
         limiter: Option<Arc<TokenBucket>>,
         display: Option<String>,
+        device_meta: DeviceMeta,
     ) -> Result<()> {
-        info!(peer = %peer_addr, node_id = %node_id, "node authenticated successfully");
+        info!(peer = %peer_addr, node_id = %node_id, device = %device_meta.device_fp, "node authenticated successfully");
 
         let (open_tx, mut open_rx) = tokio::sync::mpsc::channel::<OpenRequest>(64);
         let (ctrl_tx, mut ctrl_rx) = tokio::sync::mpsc::channel::<Bytes>(64);
@@ -886,7 +1013,7 @@ impl RelayListener {
         // session's delegated registrations die with it (federation P2, session-scoped).
         if let Some((_, old)) = self.peers.remove(&node_id) {
             info!(node = %node_id, "duplicate node session: kicking the stale one");
-            old.mux.shutdown();
+            Self::notify_and_shutdown(&old.mux, reason::SESSION_TAKEOVER, "").await;
             let stale: Vec<String> = self
                 .delegated
                 .iter()
@@ -895,12 +1022,27 @@ impl RelayListener {
                 .collect();
             for hash in stale {
                 self.delegated.remove(&hash);
-                self.disconnect_delegated_token(&hash);
+                self.disconnect_delegated_token(&hash, reason::SESSION_TAKEOVER, "")
+                    .await;
             }
             let _ = self.events.send(PeerEvent::NodeDisconnected {
                 node_id: node_id.clone(),
             });
         }
+        let session_id = new_session_id();
+        self.session_meta.insert(
+            session_id.clone(),
+            SessionMeta {
+                session_id: session_id.clone(),
+                session_key: node_id.clone(),
+                device_fp: device_meta.device_fp.clone(),
+                pubkey: device_meta.pubkey.clone(),
+                token_hash: token_hash.clone(),
+                my_name: device_meta.my_name.clone(),
+                peer_ip: peer_addr.ip().to_string(),
+                connected_at: Instant::now(),
+            },
+        );
         self.peers.insert(
             node_id.clone(),
             PeerSession {
@@ -908,6 +1050,8 @@ impl RelayListener {
                 mux: mux.clone(),
                 token_hash,
                 display: display.filter(|d| !d.trim().is_empty()).unwrap_or_else(|| node_id.clone()),
+                device_fp: device_meta.device_fp,
+                my_name: device_meta.my_name,
             },
         );
         self.set_peer_routes(&node_id, advertise);
@@ -959,6 +1103,7 @@ impl RelayListener {
 
         // cleanup ONLY if the registry still points at this session — a kicked stale session's
         // exit path must not strip the fresh session's routes / pushed groups / registrations
+        self.session_meta.remove(&session_id);
         if self
             .peers
             .remove_if(&node_id, |_, p| Arc::ptr_eq(&p.mux, &mux))
@@ -976,7 +1121,8 @@ impl RelayListener {
                 .collect();
             for hash in dead {
                 self.delegated.remove(&hash);
-                self.disconnect_delegated_token(&hash);
+                self.disconnect_delegated_token(&hash, reason::ISSUER_OFFLINE, "")
+                    .await;
             }
             // entrust words die with the issuer session too (same revoke-by-disconnect contract)
             self.entrust.retain(|_, v| v != &node_id);
@@ -1032,8 +1178,16 @@ impl RelayListener {
                 };
                 self.send_ctrl_ack(mux, token_hash, ok, error).await;
             }
-            C::TokenRevoke { token_hash, .. } => {
-                if let Some(label) = self.revoke_delegated(node_id, &token_hash) {
+            C::TokenRevoke {
+                token_hash,
+                reason_code,
+                message,
+                ..
+            } => {
+                if let Some(label) = self
+                    .revoke_delegated(node_id, &token_hash, &reason_code, &message)
+                    .await
+                {
                     info!(node = %node_id, label = %label, "delegated token revoked");
                     let _ = self.events.send(PeerEvent::DelegationRevoked {
                         node_id: node_id.to_string(),
@@ -1044,6 +1198,12 @@ impl RelayListener {
             }
             C::TokenAck { .. } => {
                 debug!(node = %node_id, "unexpected TokenAck from issuer ignored");
+            }
+            C::SessionNotice { .. } | C::PendingNote { .. } => {
+                // SessionNotice flows TO the kicked peer; PendingNote flows from a pending
+                // consumer to its issuer (the node crate's delegated console, M3) — neither is
+                // meaningful on an issuer session at this relay
+                debug!(node = %node_id, "unexpected session-notice/pending-note from issuer ignored");
             }
         }
     }
@@ -1181,9 +1341,10 @@ impl RelayListener {
         Ok(())
     }
 
-    /// Drop a delegated token (issuer-scoped) and kick the consumer sessions it authenticated.
+    /// Drop a delegated token (issuer-scoped) and kick the consumer sessions it authenticated
+    /// (a SessionNotice with the revoke reason + one-time message precedes each close).
     /// Returns the label for audit when a registration existed.
-    fn revoke_delegated(&self, node_id: &str, token_hash: &str) -> Option<String> {
+    async fn revoke_delegated(&self, node_id: &str, token_hash: &str, reason_code: &str, message: &str) -> Option<String> {
         let (hash, tok) = self
             .delegated
             .remove_if(token_hash, |_, v| v.issuer == node_id)?;
@@ -1194,7 +1355,13 @@ impl RelayListener {
             }
         }
         let label = tok.label;
-        self.disconnect_delegated_token(&hash);
+        // an issuer-initiated revoke without an explicit reason defaults to an admin revoke
+        let rc = if reason_code.is_empty() {
+            reason::REVOKED_BY_ADMIN
+        } else {
+            reason_code
+        };
+        self.disconnect_delegated_token(&hash, rc, message).await;
         Some(label)
     }
 
@@ -1209,8 +1376,9 @@ impl RelayListener {
         token_hash: String,
         flow_control: bool,
         limiter: Option<Arc<TokenBucket>>,
+        device_meta: DeviceMeta,
     ) -> Result<()> {
-        info!(peer = %peer_addr, session = %session_key, "delegated consumer authenticated successfully");
+        info!(peer = %peer_addr, session = %session_key, device = %device_meta.device_fp, "delegated consumer authenticated successfully");
 
         // Hot ACL state: the router is rebuilt in place whenever the token's registry snapshot
         // changes (rule edits / revocation take effect on live sessions, no reconnect needed).
@@ -1224,6 +1392,20 @@ impl RelayListener {
             .entry(session_key.clone())
             .or_default()
             .push(mux.clone());
+        let session_id = new_session_id();
+        self.session_meta.insert(
+            session_id.clone(),
+            SessionMeta {
+                session_id: session_id.clone(),
+                session_key: session_key.clone(),
+                device_fp: device_meta.device_fp,
+                pubkey: device_meta.pubkey,
+                token_hash: token_hash.clone(),
+                my_name: device_meta.my_name,
+                peer_ip: peer_addr.ip().to_string(),
+                connected_at: Instant::now(),
+            },
+        );
         let _ = self.events.send(PeerEvent::ClientConnected {
             session_key: session_key.clone(),
         });
@@ -1252,6 +1434,7 @@ impl RelayListener {
 
         let _ = reader_handle.await;
         // remove this session from the session table (may already have been cleared by disconnect_client)
+        self.session_meta.remove(&session_id);
         if let Some(mut sessions) = self.clients.get_mut(&session_key) {
             sessions.retain(|m| !Arc::ptr_eq(m, &mux));
             let empty = sessions.is_empty();
@@ -1564,6 +1747,11 @@ pub fn delegated_session_key(token_hash: &str, node_id: &str) -> String {
 /// Key prefix covering every consumer session of one delegated token (any node_id).
 fn delegated_session_prefix(token_hash: &str) -> String {
     format!("delegated:{token_hash}:")
+}
+
+/// Unique per-session id (session metadata tables; M3 session management).
+fn new_session_id() -> String {
+    format!("sess_{:012x}", rand::random::<u64>() & 0xffff_ffff_ffff)
 }
 
 /// Effective ACL vocabulary of a delegated token: transparent rules plus the hint words.

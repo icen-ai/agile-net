@@ -137,6 +137,7 @@ fn connect_params(relay_port: u16, label: &str, token: &str) -> ConnectParams {
         en: None,
         emode: None,
         eadmin: false,
+        myname: None,
     }
 }
 

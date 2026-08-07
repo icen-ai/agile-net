@@ -160,14 +160,20 @@ async fn wrong_token_has_penalty_delay() -> Result<()> {
         rustls::pki_types::ServerName::try_from("cdn.cloudflare.com".to_string()).unwrap();
     let mut stream = connector.connect(server_name, tcp).await?;
 
-    let auth = AuthRequest {
+    let mut auth = AuthRequest {
         node_id: "attacker".into(),
         token: "wrong_token".into(),
         kind: agile_net_core::proto::message::AuthKind::Node,
         advertise: vec![],
         groups: Vec::new(),
         version: 1,
+        my_name: String::new(),
+        device_pubkey: String::new(),
+        device_sig: String::new(),
     };
+    // valid device proof (mandatory since handshake v4) so the wrong-token path is what actually fails
+    let challenge = agile_net_core::device::session_challenge(stream.get_ref().1)?;
+    auth.attach_device_proof(&challenge, &agile_net_core::device::DeviceIdentity::ephemeral());
     let payload = serde_json::to_vec(&auth).unwrap();
     let start = Instant::now();
     Frame::new(FrameType::Auth, 0, Bytes::from(payload))
@@ -373,6 +379,9 @@ fn auth_kind_enforced() {
         advertise: vec![],
         groups: Vec::new(),
         version: 1,
+        my_name: String::new(),
+        device_pubkey: String::new(),
+        device_sig: String::new(),
     };
     assert!(
         v.validate(&auth).is_none(),
@@ -644,14 +653,20 @@ async fn open_flood_capped() -> Result<()> {
     let server_name =
         rustls::pki_types::ServerName::try_from("cdn.cloudflare.com".to_string()).unwrap();
     let mut stream = connector.connect(server_name, tcp).await?;
-    let auth = AuthRequest {
+    let mut auth = AuthRequest {
         node_id: "flooder".into(),
         token: "tok".into(),
         kind: agile_net_core::proto::message::AuthKind::Node,
         advertise: vec![],
         groups: Vec::new(),
         version: 1,
+        my_name: String::new(),
+        device_pubkey: String::new(),
+        device_sig: String::new(),
     };
+    // device proof is mandatory (handshake v4): sign the TLS-exporter challenge (throwaway identity)
+    let challenge = agile_net_core::device::session_challenge(stream.get_ref().1)?;
+    auth.attach_device_proof(&challenge, &agile_net_core::device::DeviceIdentity::ephemeral());
     let payload = serde_json::to_vec(&auth).unwrap();
     Frame::new(FrameType::Auth, 0, Bytes::from(payload))
         .write_to(&mut stream)

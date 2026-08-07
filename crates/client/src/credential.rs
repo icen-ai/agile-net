@@ -41,6 +41,10 @@ pub struct Credential {
     /// Delegated admin capability hint
     #[serde(default)]
     pub eadmin: bool,
+    /// Self-declared display name uploaded to the issuer ("我的名称"; link-suggested, editable
+    /// in the credential form — M4-T6 three-field naming)
+    #[serde(default)]
+    pub myname: Option<String>,
 }
 
 pub struct CredentialStore {
@@ -139,6 +143,7 @@ mod tests {
             en: None,
             emode: None,
             eadmin: false,
+            myname: None,
         }
     }
 

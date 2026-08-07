@@ -16,6 +16,7 @@ async fn credentials_persist() {
                 label: "alice".into(),
                 token: "psk_secret".into(),
                 name: None,
+                myname: None,
                 insecure: false,
                 pinned_fingerprint: Some("ab12".into()),
                 entries: vec!["1.2.3.4:54430".into()],

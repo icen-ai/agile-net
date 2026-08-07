@@ -44,6 +44,9 @@ pub struct ParsedConnect {
     /// Delegated admin capability hint (ticket pull via the E2E config channel)
     #[serde(default)]
     pub eadmin: bool,
+    /// Self-declared display name suggestion from the link ("我的名称", node.md M2)
+    #[serde(default)]
+    pub myname: Option<String>,
 }
 
 /// Parse an `anet://connect?...` URL (delegated credentials only).
@@ -65,6 +68,7 @@ pub fn parse_connect_url(url: &str) -> std::result::Result<ParsedConnect, String
         en: link.en,
         emode: link.emode,
         eadmin: link.eadmin,
+        myname: link.myname,
     })
 }
 
@@ -91,6 +95,9 @@ pub fn connect_url_of(c: &Credential) -> String {
         c.en.as_deref(),
         c.emode.as_deref(),
         c.eadmin,
+        // myname is the importer-side "我的名称" suggestion; re-export keeps whatever the
+        // original link carried (Credential.myname, wired by the client form in M4-T6)
+        c.myname.as_deref(),
     )
 }
 
@@ -135,6 +142,7 @@ mod tests {
             en: Some("en_a1b2c3d4e5f6".into()),
             emode: Some("split".into()),
             eadmin: true,
+            myname: Some("小明".into()),
         };
         let url = connect_url_of(&c);
         assert!(url.starts_with("anet://connect?"));
@@ -146,5 +154,6 @@ mod tests {
         assert_eq!(p.en.as_deref(), Some("en_a1b2c3d4e5f6"));
         assert_eq!(p.emode.as_deref(), Some("split"));
         assert!(p.eadmin);
+        assert_eq!(p.myname.as_deref(), Some("小明"));
     }
 }

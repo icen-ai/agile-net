@@ -263,3 +263,17 @@ pub(crate) async fn resolve_id_set(
     }
     Ok(if out.is_empty() { None } else { Some(out.join(",")) })
 }
+
+/// Group-set display cell of a list item: comma-joined names of the resolved `groups` refs
+/// (empty/absent = unrestricted).
+pub(crate) fn group_set_display(item: &serde_json::Value, unrestricted: &str) -> String {
+    let names: Vec<&str> = item["groups"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|g| g["name"].as_str()).collect())
+        .unwrap_or_default();
+    if names.is_empty() {
+        unrestricted.to_string()
+    } else {
+        names.join(",")
+    }
+}

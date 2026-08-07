@@ -1,10 +1,10 @@
 //! Federation API handlers (federation P1: authorizable pool + one-click adoption).
 //!
 //! The authorizable pool is the live view of every online fan-in peer: its advertised routes
-//! and the policy groups it pushed at auth (source-tagged by node_id, namespace isolation).
-//! Adoption materializes a pushed group into a local group (rules reused by unique
-//! (type, value), group name suffixed `@<node_id>`), so the resource owner's policy becomes
-//! grantable to local identities without the upstream admin re-typing a single rule.
+//! and the policy groups it pushed at auth (lineage keyed by node_id). Adoption materializes a
+//! pushed group into a local read-only mirror (rules reused by unique (type, value)); the mirror
+//! carries the PURE source name — the source node is shown as a badge via adopted_node lineage,
+//! never baked into the name (naming sovereignty).
 
 use super::audit;
 use crate::api::extractors::{AdminAuth, ClientIp};
@@ -81,28 +81,11 @@ fn rule_type_of(value: &str) -> &'static str {
     }
 }
 
-/// Adopted group name: `{name}@{node_id}` (source tag, namespace isolation), truncated to
-/// the group name limit; collisions get a `·N` suffix.
-fn adopt_name(base: &str, node_id: &str, exists: &mut dyn FnMut(&str) -> bool) -> String {
-    let raw = format!("{base}@{node_id}");
-    let truncated: String = raw.chars().take(MAX_GROUP_NAME).collect();
-    if !exists(&truncated) {
-        return truncated;
-    }
-    for n in 2..100 {
-        let suffix = format!("·{n}");
-        let keep = MAX_GROUP_NAME.saturating_sub(suffix.chars().count());
-        let candidate: String = truncated.chars().take(keep).collect::<String>() + &suffix;
-        if !exists(&candidate) {
-            return candidate;
-        }
-    }
-    // Effectively unreachable (100 same-named groups); fall back to a uuid-suffixed name
-    format!(
-        "{}·{}",
-        truncated.chars().take(56).collect::<String>(),
-        &uuid::Uuid::new_v4().to_string()[..6]
-    )
+/// Adopted group name (naming sovereignty): the pure source name, truncated to the group name
+/// limit. The source node is carried by the adopted_node lineage and shown as a badge — never
+/// baked into the name. Coexistence with a same-named local group is by design.
+fn pure_adopt_name(src_name: &str) -> String {
+    src_name.chars().take(MAX_GROUP_NAME).collect()
 }
 
 /// POST /api/v1/admin/federation/adopt — materialize a pushed group into a local group.
@@ -181,10 +164,10 @@ pub async fn adopt(
 
     let created = state
         .db_call(move |db| {
-            // Group name with source tag = my title for the source node (dedup via get_group_by_name)
-            let name = adopt_name(&src_name, &display, &mut |n| {
-                db.get_group_by_name(n).ok().flatten().is_some()
-            });
+            // Naming sovereignty: the mirror carries the pure source name; the source node lives
+            // in the adopted_node lineage (UI badge), never in the name. (name, adopted_node) is
+            // unique, so re-adopting a second same-named group from the same node fails cleanly.
+            let name = pure_adopt_name(&src_name);
             // Materialize rules: reuse by unique (type, value), else create with a source-tag remark
             let mut rule_ids: Vec<String> = Vec::new();
             let mut reused = 0usize;
@@ -206,10 +189,9 @@ pub async fn adopt(
                     }
                 }
             }
-            let group = db.create_group(&name, &format!("上送自 {display}：{src_remark}"))?;
+            let group =
+                db.create_adopted_group(&name, &format!("上送自 {display}：{src_remark}"), &node_id, &src_name)?;
             db.set_group_rules(&group.id, &rule_ids)?;
-            // adoption lineage: the group becomes a read-only live mirror of the pushed source
-            db.set_group_adoption(&group.id, &node_id, &src_name)?;
             // federation P3: adoption inherits the E2E enforcement flag (fresh group has no
             // attachments yet, so the guard always passes)
             if src_e2e {
@@ -229,7 +211,7 @@ pub async fn adopt(
                 "federation.adopt",
                 Some(&group.id),
                 &format!(
-                    "{}@{} rules={} reused={}",
+                    "{} ← {} rules={} reused={}",
                     req.group, req.node_id, total, reused
                 ),
             )
@@ -265,11 +247,11 @@ pub async fn copy_adopted(
             if src.adopted_node.is_empty() {
                 return Ok(Err("该组不是采纳组".to_string()));
             }
-            // detached editable copy: `<name> 副本`, deduped with ·N suffixes
+            // detached editable copy: `<name> 副本`, deduped with ·N suffixes (local namespace)
             let base: String = src.name.chars().take(MAX_GROUP_NAME - 6).collect();
             let mut name = format!("{base} 副本");
             let mut n = 2u32;
-            while db.get_group_by_name(&name)?.is_some() {
+            while db.get_local_group_by_name(&name)?.is_some() {
                 name = format!("{base} 副本·{n}");
                 n += 1;
             }
@@ -321,19 +303,11 @@ mod tests {
     }
 
     #[test]
-    fn adopt_name_tags_source_and_dedups() {
-        let name = adopt_name("git", "peer-c", &mut |_| false);
-        assert_eq!(name, "git@peer-c");
-        // Collision chain: base, ·2, ·3 ...
-        let mut calls = 0;
-        let name = adopt_name("git", "peer-c", &mut |_| {
-            calls += 1;
-            calls <= 2
-        });
-        assert_eq!(name, "git@peer-c·3");
-        // Long inputs truncated to the limit
+    fn adopt_name_is_pure_source_name() {
+        // Naming sovereignty: the adopted mirror carries the pure source name, truncated to the
+        // group name limit; the source node lives in adopted_node lineage (badge), not the name.
+        assert_eq!(pure_adopt_name("git"), "git");
         let long = "x".repeat(200);
-        let name = adopt_name(&long, "peer-c", &mut |_| false);
-        assert_eq!(name.chars().count(), MAX_GROUP_NAME);
+        assert_eq!(pure_adopt_name(&long).chars().count(), MAX_GROUP_NAME);
     }
 }

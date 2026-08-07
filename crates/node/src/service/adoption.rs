@@ -94,8 +94,7 @@ mod tests {
     #[test]
     fn mirror_follows_source_drift_and_stays_on_vanish() {
         let db = Database::in_memory().unwrap();
-        let g = db.create_group("git@peer-c", "上送").unwrap();
-        db.set_group_adoption(&g.id, "peer-c", "git").unwrap();
+        let g = db.create_adopted_group("git", "上送", "peer-c", "git").unwrap();
 
         // source appears with two rules -> mirrored
         let offers = vec![pushed("peer-c", "git", &["10.12.0.0/16", "git.internal"], false)];

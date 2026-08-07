@@ -145,6 +145,12 @@ pub struct RelayConnector {
     token: String,
     tls_connector: TlsConnector,
     sni_hostname: String,
+    /// Device identity signed into every handshake (machine identity in production, ephemeral in tests)
+    device: Arc<crate::device::DeviceIdentity>,
+    /// Last upstream session notice before a forced close (reason_code, one-time message)
+    notice: std::sync::Arc<std::sync::Mutex<Option<(String, String)>>>,
+    /// Self-declared display name uploaded in AuthRequest.my_name (defaults to node_id at send)
+    my_name: String,
     /// Listener through which this node routes to **downstream** (chained forwarding in multi-hop chains)
     peer_router: Option<Arc<RelayListener>>,
     /// Serviceable CIDRs/domains advertised upstream (static config)
@@ -154,6 +160,8 @@ pub struct RelayConnector {
     push_groups: Arc<arc_swap::ArcSwap<Vec<PushedGroupMsg>>>,
     /// Handshake v2: management endpoint pushed by the upstream when it exposes a control plane
     control: Arc<arc_swap::ArcSwapOption<ControlOffer>>,
+    /// Upstream's self-declared node name (AuthOk payload; Some only for the live session)
+    peer_node: Arc<arc_swap::ArcSwapOption<String>>,
     /// Route re-advertise: client-tunnel merged routes (rules resold downstream, via=client tunnel)
     client_router: Option<Arc<arc_swap::ArcSwap<ProxyRouter>>>,
     /// Route re-advertise: node_id -> client tunnel opener
@@ -211,10 +219,14 @@ impl RelayConnector {
             token: token.into(),
             tls_connector,
             sni_hostname: tls_builder.sni_hostname,
+            device: Arc::new(crate::device::DeviceIdentity::ephemeral()),
+            notice: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            my_name: String::new(),
             peer_router: None,
             advertise: Vec::new(),
             push_groups: Arc::new(arc_swap::ArcSwap::from_pointee(Vec::new())),
             control: Arc::new(arc_swap::ArcSwapOption::from_pointee(None)),
+            peer_node: Arc::new(arc_swap::ArcSwapOption::from_pointee(None)),
             client_router: None,
             openers: None,
             acl: None,
@@ -228,6 +240,25 @@ impl RelayConnector {
             shutdown_notify: Arc::new(Notify::new()),
             shutdown_flag: Arc::new(AtomicBool::new(false)),
         })
+    }
+
+    /// Inject the machine device identity (production path; default is a per-instance ephemeral
+    /// identity — tests and throwaway connectors only, the fp changes every restart).
+    pub fn with_device(mut self, device: Arc<crate::device::DeviceIdentity>) -> Self {
+        self.device = device;
+        self
+    }
+
+    /// Take the last upstream session notice (reason_code, one-time message); None when the
+    /// session ended without one.
+    pub fn take_notice(&self) -> Option<(String, String)> {
+        self.notice.lock().unwrap_or_else(|e| e.into_inner()).take()
+    }
+
+    /// Set the self-declared display name uploaded in AuthRequest.my_name (defaults to node_id).
+    pub fn with_my_name(mut self, my_name: impl Into<String>) -> Self {
+        self.my_name = my_name.into();
+        self
     }
 
     /// Set the downstream routing Listener (Open requests can be forwarded further downstream in multi-hop chains).
@@ -268,6 +299,11 @@ impl RelayConnector {
     /// Handshake v2: control-plane endpoint exposed by the upstream (None when not exposed / not connected).
     pub fn control_offer(&self) -> Option<ControlOffer> {
         self.control.load_full().map(|a| (*a).clone())
+    }
+
+    /// Upstream's self-declared node name of the current session (None when offline / unannounced).
+    pub fn peer_node(&self) -> Option<String> {
+        self.peer_node.load_full().map(|a| (*a).clone())
     }
 
     /// Current session's mux handle (None when not connected).
@@ -405,14 +441,27 @@ impl RelayConnector {
         debug!(upstream = %self.upstream_addr, "tls connected to upstream");
 
         // send the Auth frame (advertise set = static + re-advertised client tunnel rules; groups = pushed policy slot)
-        let auth_req = AuthRequest {
+        let mut auth_req = AuthRequest {
             node_id: self.node_id.clone(),
             token: self.token.clone(),
             kind: AuthKind::Node,
             advertise: self.effective_advertise(),
             groups: self.push_groups.load().as_ref().clone(),
             version: PROTOCOL_VERSION,
+            // device identity (node.md M2): filled by attach_device_proof below; my_name
+            // defaults to node_id (the clean display name rides my_name when node_id is
+            // suffixed, e.g. `name#connector`)
+            my_name: if self.my_name.is_empty() {
+                self.node_id.clone()
+            } else {
+                self.my_name.clone()
+            },
+            device_pubkey: String::new(),
+            device_sig: String::new(),
         };
+        // device identity proof: sign the TLS-exporter challenge (RFC 5705, zero extra RTT)
+        let challenge = crate::device::session_challenge(tls_stream.get_ref().1)?;
+        auth_req.attach_device_proof(&challenge, &self.device);
         let payload = serde_json::to_vec(&auth_req).map_err(|e| Error::Protocol(e.to_string()))?;
         Frame::new(FrameType::Auth, 0, Bytes::from(payload))
             .write_to(&mut tls_stream)
@@ -429,6 +478,13 @@ impl RelayConnector {
                     && let Ok(v) = serde_json::from_slice::<serde_json::Value>(&res_frame.payload)
                 {
                     server_version = v["version"].as_u64().unwrap_or(1) as u32;
+                    // upstream self-declared node name (badge display; empty/absent = unknown)
+                    self.peer_node.store(
+                        v["node_id"]
+                            .as_str()
+                            .filter(|s| !s.is_empty())
+                            .map(|s| Arc::new(s.to_string())),
+                    );
                     if let Some(cv) = v.get("control") {
                         match serde_json::from_value::<ControlOffer>(cv.clone()) {
                             Ok(mut offer) => {
@@ -455,7 +511,7 @@ impl RelayConnector {
                 }
             }
             FrameType::AuthFail => {
-                return Err(Error::Auth("upstream rejected authentication token".into()));
+                return Err(Error::Auth(crate::proto::message::FailReason::from_payload(&res_frame.payload).map(|f| f.render()).unwrap_or_else(|| "upstream rejected authentication token".into())));
             }
             other => {
                 return Err(Error::Protocol(format!(
@@ -498,7 +554,9 @@ impl RelayConnector {
         let mux_task = mux.clone();
         let current_mux = self.current_mux.clone();
         let upstream_version = self.upstream_version.clone();
+        let peer_node = self.peer_node.clone();
         let delegation_acks = self.delegation_acks.clone();
+        let notice_slot = self.notice.clone();
         let hooks = self.hooks.clone();
 
         tokio::spawn(async move {
@@ -558,6 +616,10 @@ impl RelayConnector {
                                 debug!(ok, error = %error, "delegation ack received");
                                 delegation_acks.insert(token_hash, (ok, error));
                             }
+                            Ok(CtrlMessage::SessionNotice { reason_code, message }) => {
+                                warn!(reason = %reason_code, message = %message, "session notice from upstream");
+                                *notice_slot.lock().unwrap_or_else(|e| e.into_inner()) = Some((reason_code, message));
+                            }
                             _ => debug!("ignoring unknown/malformed ctrl frame from upstream"),
                         }
                     }
@@ -570,6 +632,8 @@ impl RelayConnector {
                 && Arc::ptr_eq(&cur, &mux_task)
             {
                 current_mux.store(None);
+                // the peer identity dies with its session (guarded like the mux handle)
+                peer_node.store(None);
             }
             upstream_version.store(0, Ordering::Relaxed);
             state.store(ConnectionState::Disconnected as u8, Ordering::Relaxed);

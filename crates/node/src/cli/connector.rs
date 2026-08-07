@@ -4,7 +4,10 @@ use anyhow::{Result, anyhow};
 use clap::{Args, Subcommand};
 use serde_json::json;
 
-use super::common::{AnetClient, IdOnlyArgs, print_json, print_table, resolve_id, resolve_id_set, split_csv};
+use super::common::{
+    AnetClient, IdOnlyArgs, group_set_display, print_json, print_table, resolve_id, resolve_id_set,
+    split_csv,
+};
 
 #[derive(Args, Debug)]
 pub struct ConnectorArgs {
@@ -108,7 +111,7 @@ pub(super) async fn cmd_connector(
                             c["id"].as_str().unwrap_or("")[..8].to_string(),
                             c["name"].as_str().unwrap_or("-").to_string(),
                             c["upstream_addr"].as_str().unwrap_or("-").to_string(),
-                            c["group_name"].as_str().unwrap_or("不收敛").to_string(),
+                            group_set_display(c, "不收敛"),
                             c["state"].as_str().unwrap_or("-").to_string(),
                             if c["enabled"].as_bool().unwrap_or(false) {
                                 "启用"

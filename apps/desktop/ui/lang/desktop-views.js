@@ -112,7 +112,6 @@ AgI18n.register({
   'views.fo-push-empty': { zh: '暂无权限组（先在控制台创建）', en: 'No groups yet (create one in the console first)' },
   'views.load-failed': { zh: '加载失败', en: 'Failed to load' },
   'views.fo-empty': { zh: '尚未配置扇出连接（添加后内嵌端点将扇出到目标端点）', en: 'No fan-out connectors yet (the embedded endpoint will fan out to targets once added)' },
-  'views.fo-group-fmt': { zh: ' · 组 {name}', en: ' · Group {name}' },
   'views.fo-adv': { zh: '广告路由', en: 'Advertised' },
   'views.fo-group-none': { zh: '不收敛', en: 'Unrestricted' },
   'views.fo-title-edit': { zh: '编辑扇出', en: 'Edit Fan-out' },

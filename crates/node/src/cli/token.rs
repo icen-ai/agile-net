@@ -4,7 +4,9 @@ use anyhow::Result;
 use clap::{Args, Subcommand};
 use serde_json::json;
 
-use super::common::{AnetClient, IdOnlyArgs, print_json, print_table, resolve_id, resolve_id_set};
+use super::common::{
+    AnetClient, IdOnlyArgs, group_set_display, print_json, print_table, resolve_id, resolve_id_set,
+};
 
 #[derive(Args, Debug)]
 pub struct TokenArgs {
@@ -59,7 +61,7 @@ pub(super) async fn cmd_token(api: Option<String>, args: TokenArgs, json_out: bo
                         vec![
                             t["id"].as_str().unwrap_or("")[..8].to_string(),
                             t["token_prefix"].as_str().unwrap_or("-").to_string(),
-                            t["group_name"].as_str().unwrap_or("不收敛").to_string(),
+                            group_set_display(t, "不收敛"),
                             if t["expose_control"].as_bool().unwrap_or(false) {
                                 t["control_scope"].as_str().unwrap_or("开").to_string()
                             } else {

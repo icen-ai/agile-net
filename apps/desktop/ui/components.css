@@ -310,3 +310,24 @@ html[data-theme="dark"] .badge-beta { color: rgba(255,255,255,.95); }
 .well { display: flex; align-items: center; gap: 10px; background: var(--input-bg); border: 1px solid var(--border); border-radius: 8px; box-shadow: var(--well-inset); padding: 7px 12px; font-size: 12.5px; }
 .well .k { color: var(--dim); font-size: 11px; font-weight: 600; letter-spacing: .04em; flex-shrink: 0; }
 .well .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ================= source/auth badges (naming sovereignty, node.md M1; prototype target/badge-preview) =================
+   Group names stay clean; the adoption source and the TLS verification state ride badges.
+   .src-verify: federation source badge (info blue, badge-check icon) — adopted-group lineage.
+   .grp-chip: issuance-table group capsule carrying name + source in one chip (local = gray).
+   .nodebadge: mono peer/device identity + .nb-auth mark (badge-check, ok green) for pin/tls auth;
+   insecure peers get no mark at all (never a "broken" badge).
+   .local: weak "this machine" tag. All colors eat tokens only. */
+.src { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px 2px 7px; border-radius: 999px; font-size: 11px; font-weight: 600; line-height: 1.5; white-space: nowrap; cursor: help; }
+.src svg { width: 12px; height: 12px; flex: none; opacity: .85; }
+.src-verify { background: var(--info-bg); color: var(--info-text); }
+.grp-chip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 9px; border-radius: 999px; font-size: 11px; font-weight: 600; background: var(--info-bg); color: var(--info-text); white-space: nowrap; }
+.grp-chip.local { background: var(--chip); color: var(--dim); }
+.grp-chip svg { width: 11px; height: 11px; opacity: .85; flex: none; }
+.grp-chip .grp-sep { opacity: .55; }
+.nodebadge { display: inline-flex; align-items: center; gap: 4px; color: var(--info-text); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; white-space: nowrap; }
+.nodebadge b { font-weight: 600; }
+.nodebadge .nb-auth { display: inline-flex; color: var(--ok-text); }
+.nodebadge .nb-auth svg { width: 10px; height: 10px; }
+.local { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 999px; font-size: 10.5px; font-weight: 600; color: var(--dim2); background: transparent; }
+.local svg { width: 11px; height: 11px; }

@@ -67,6 +67,7 @@ pub async fn run(config_path: &str) -> Result<()> {
             en: parsed.en,
             emode: parsed.emode,
             eadmin: parsed.eadmin,
+            myname: parsed.myname,
         };
         match client.connect(params).await {
             Ok(state) => {

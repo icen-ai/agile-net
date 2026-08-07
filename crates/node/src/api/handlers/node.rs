@@ -354,7 +354,10 @@ pub async fn kick_peer(
             "relay listener not enabled",
         );
     };
-    if listener.disconnect_peer(&req.node_id) {
+    if listener
+        .disconnect_peer(&req.node_id, agile_net_core::proto::message::reason::KICKED, "")
+        .await
+    {
         audit(
             &state,
             &claims,
@@ -494,21 +497,37 @@ async fn handle_ws(mut socket: WebSocket, state: ApiState) {
                 }
             } => {
                 match evt {
-                    Some(PeerEvent::NodeConnected { node_id }) => json!({
-                        "type": "connector.connected",
-                        "time": chrono::Utc::now().to_rfc3339(),
-                        "data": { "node_id": node_id },
-                    }),
+                    Some(PeerEvent::NodeConnected { node_id }) => {
+                        let fp = state.runtime.listener.as_ref().and_then(|l| {
+                            l.session_metas()
+                                .into_iter()
+                                .find(|m| m.session_key == node_id)
+                                .map(|m| m.device_fp)
+                        });
+                        json!({
+                            "type": "connector.connected",
+                            "time": chrono::Utc::now().to_rfc3339(),
+                            "data": { "node_id": node_id, "device_fp": fp },
+                        })
+                    }
                     Some(PeerEvent::NodeDisconnected { node_id }) => json!({
                         "type": "connector.disconnected",
                         "time": chrono::Utc::now().to_rfc3339(),
                         "data": { "node_id": node_id },
                     }),
-                    Some(PeerEvent::ClientConnected { session_key }) => json!({
-                        "type": "consumer.online",
-                        "time": chrono::Utc::now().to_rfc3339(),
-                        "data": { "session_key": session_key },
-                    }),
+                    Some(PeerEvent::ClientConnected { session_key }) => {
+                        let fp = state.runtime.listener.as_ref().and_then(|l| {
+                            l.session_metas()
+                                .into_iter()
+                                .find(|m| m.session_key == session_key)
+                                .map(|m| m.device_fp)
+                        });
+                        json!({
+                            "type": "consumer.online",
+                            "time": chrono::Utc::now().to_rfc3339(),
+                            "data": { "session_key": session_key, "device_fp": fp },
+                        })
+                    }
                     Some(PeerEvent::ClientDisconnected { session_key }) => json!({
                         "type": "consumer.offline",
                         "time": chrono::Utc::now().to_rfc3339(),

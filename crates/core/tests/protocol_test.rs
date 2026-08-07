@@ -95,6 +95,8 @@ fn ctrl_message_wire_format() {
         token_hash: "cd".repeat(32),
         concurrency: Concurrency::Single,
         max_sessions: 1,
+        reason_code: String::new(),
+        message: String::new(),
     })
     .unwrap();
     assert_eq!(revoke["op"], "token_revoke");
@@ -141,6 +143,8 @@ async fn ctrl_frame_reaches_ctrl_subscriber() {
         token_hash: "ff".repeat(32),
         concurrency: Concurrency::Single,
         max_sessions: 1,
+        reason_code: String::new(),
+        message: String::new(),
     })
     .unwrap();
     a.send_frame(Frame::new(FrameType::Ctrl, 0, Bytes::from(msg.clone())))

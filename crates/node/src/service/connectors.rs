@@ -51,6 +51,8 @@ pub struct ConnectorManager {
     /// Federation P2/P3: data-plane enforcement engine (group ACL / E2E unwrap / fail-close),
     /// shared by every connector this node runs
     delegation: Arc<DelegationEngine>,
+    /// This machine's device identity (handshake proof upstream); ephemeral in tests
+    device: Arc<agile_net_core::device::DeviceIdentity>,
     handles: DashMap<String, ConnectorHandle>,
 }
 
@@ -67,8 +69,15 @@ impl ConnectorManager {
             transit: None,
             delegation_states: Arc::new(DashMap::new()),
             delegation: DelegationEngine::new(),
+            device: Arc::new(agile_net_core::device::DeviceIdentity::ephemeral()),
             handles: DashMap::new(),
         }
+    }
+
+    /// Inject the machine device identity (production assembly path; tests keep the ephemeral).
+    pub fn with_device(mut self, device: Arc<agile_net_core::device::DeviceIdentity>) -> Self {
+        self.device = device;
+        self
     }
 
     pub fn with_node_id(mut self, node_id: String) -> Self {
@@ -316,6 +325,8 @@ impl ConnectorManager {
             token,
             tls_builder,
         )?
+        .with_device(self.device.clone())
+        .with_my_name(self.node_id.clone())
         .with_advertise(parse_advertise(&rec.advertise))
         .with_acl(self.acl.handle(rec.group_id.as_deref(), &self.db))
         .with_delegation_hooks(self.delegation.clone());
@@ -575,6 +586,8 @@ impl ConnectorManager {
                     token_hash: rec.token_hash.clone(),
                     concurrency: crate::service::delegation::concurrency_of(&rec.concurrency),
                     max_sessions: rec.max_sessions.clamp(1, u32::MAX as i64) as u32,
+                    reason_code: agile_net_core::proto::message::reason::REVOKED_BY_ADMIN.into(),
+                    message: String::new(),
                 };
                 if let Ok(payload) = serde_json::to_vec(&msg) {
                     let _ = mux
@@ -599,6 +612,14 @@ impl ConnectorManager {
     /// Negotiated upstream protocol version of a connector (None = no runtime handle; 0 = offline).
     pub fn upstream_version_of(&self, id: &str) -> Option<u32> {
         self.handles.get(id).map(|h| h.connector.upstream_version())
+    }
+
+    /// Upstream's self-declared node name of the live session (None = offline or unannounced).
+    pub fn peer_node_of(&self, id: &str) -> Option<String> {
+        self.handles
+            .get(id)
+            .filter(|h| h.connector.is_connected())
+            .and_then(|h| h.connector.peer_node())
     }
 }
 
@@ -691,13 +712,19 @@ fn parse_advertise(advertise: &str) -> Vec<String> {
 }
 
 /// Assemble the pushed policy groups of a connector record (push_groups ids -> name + rule values).
+/// Names are pure (naming sovereignty) and deduped first-wins: the upstream adoption unique key
+/// is (name, source node), so two same-named pushes from this node would collide there.
 fn pushed_group_msgs(db: &Database, rec: &ConnectorRecord) -> Vec<PushedGroupMsg> {
+    let mut seen = std::collections::HashSet::new();
     rec.push_groups
         .split(',')
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
         .filter_map(|gid| {
             let g = db.get_group(gid).ok()??;
+            if !seen.insert(g.name.clone()) {
+                return None;
+            }
             let rules = db
                 .rules_of_group(gid)
                 .map(|rs| rs.into_iter().map(|r| r.value).collect())

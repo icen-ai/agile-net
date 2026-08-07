@@ -553,6 +553,9 @@ struct ConnectInput {
     emode: Option<String>,
     #[serde(default)]
     eadmin: bool,
+    /// Self-declared display name suggestion ("我的名称", link myname word)
+    #[serde(default)]
+    myname: Option<String>,
 }
 
 async fn connect_node(State(state): State<ClientApiState>, Json(input): Json<ConnectInput>) -> Response {
@@ -568,6 +571,7 @@ async fn connect_node(State(state): State<ClientApiState>, Json(input): Json<Con
         en: input.en.clone(),
         emode: input.emode.clone(),
         eadmin: input.eadmin,
+        myname: input.myname.clone(),
     };
     let node_state = match state.client.connect(params).await {
         Ok(s) => s,
@@ -591,6 +595,7 @@ async fn connect_node(State(state): State<ClientApiState>, Json(input): Json<Con
                     en: input.en,
                     emode: input.emode,
                     eadmin: input.eadmin,
+                    myname: input.myname,
                 },
             )
             .await;

@@ -556,16 +556,6 @@ async function loadGroupsCache() {
   // After a group cache refresh, sync the labels of existing custom dropdowns (option lists are rebuilt by each render entry)
   document.querySelectorAll('select[data-agsel]').forEach(agSelectRefresh);
 }
-function groupName(id) {
-  const g = S.groups.find(g => g.id === id);
-  return g ? g.name : (id || '-');
-}
-/* Group-set display: resolve each member of a stored CSV to its cached name (dangling ids verbatim) */
-function groupNamesOf(csv) {
-  const parts = String(csv || '').split(',').filter(Boolean);
-  if (!parts.length) return '-';
-  return parts.map(id => groupName(id)).join(', ');
-}
 /* Proxy mode text (client proxy slot mode: system = system proxy / local = local proxy) */
 function proxyModeText(m) { return ({ system: T('adm.modeSystem'), local: T('adm.modeLocal') })[m] || m || ''; }
 /* Connection status text (shared by fan-out connectors and the dashboard; function form re-fetches locale entries after a language switch) */
@@ -832,7 +822,7 @@ async function loadGroups() {
     body.innerHTML = (d.items||[]).map(g => {
       const adopted = !!g.adopted_node;
       const nameCell = '<b>' + esc(g.name) + '</b>' + (g.e2e_required ? ' <span class="badge b-warn" title="' + T('groups.e2e') + '">E2E</span>' : '') +
-        (adopted ? ' <span class="badge b-info" title="' + esc(T('groups.adoptedTip', { node: g.adopted_node, src: g.adopted_name })) + '">' + T('groups.adoptedBadge') + '</span>' : '') +
+        (adopted ? ' ' + srcBadge(g.adopted_node, T('groups.adoptedTip', { node: g.adopted_node, src: g.adopted_name })) : '') +
         '<div class="mono" style="color:var(--dim2)">' + shortId(g.id) + '</div>';
       // adopted groups are read-only mirrors: 绑定/编辑 swap for 复制 (detach into an editable group)
       const ops = adopted
@@ -1204,7 +1194,7 @@ async function openAdoptCenter() {
     '<div style="margin:10px 0 4px"><b>' + esc(o.node_id) + '</b></div>' +
     o.groups.map(g => {
       const status = g.adopted
-        ? '<span class="badge b-ok">' + T('groups.adoptedBadge') + '</span> <span class="hint">' + esc(g.adopted_name || '') + '</span>'
+        ? srcBadge(o.node_id, T('groups.adoptedTip', { node: o.node_id, src: g.name })) + ' <span class="hint">' + esc(g.adopted_name || '') + '</span>'
         : '<span class="badge b-off">' + T('groups.adoptPending') + '</span>';
       const action = g.adopted
         ? '<button class="ghost small" data-act="grp-copy" data-id="' + esc(g.adopted_id) + '" data-name="' + esc(g.adopted_name || g.name) + '">' + T('groups.copy') + '</button>'
@@ -1244,11 +1234,11 @@ function renderFaninTokens() {
   const items = q ? FANIN_TOKENS.filter(t =>
     (t.token_prefix || '').toLowerCase().includes(q) ||
     (t.remark || '').toLowerCase().includes(q) ||
-    (t.group_id && (t.group_name || groupNamesOf(t.group_id)).toLowerCase().includes(q))
+    (t.groups || []).some(g => (g.name || '').toLowerCase().includes(q))
   ) : FANIN_TOKENS;
   body.innerHTML = items.map(t =>
     '<tr><td class="mono">' + esc(t.token_prefix) + lifecycleBadge(t) + '</td>' +
-    '<td>' + (t.group_id ? esc(t.group_name || groupNamesOf(t.group_id)) : '<span style="color:var(--dim2)">' + T('adm.noRestrict') + '</span>') + '</td>' +
+    '<td>' + ((t.groups || []).length ? t.groups.map(g => grpChip({ name: g.name, adopted: g.adopted_node })).join(' ') : '<span style="color:var(--dim2)">' + T('adm.noRestrict') + '</span>') + '</td>' +
     '<td class="mono">' + (t.rate_limit_kbps ? esc(t.rate_limit_kbps) + ' KB/s' : '<span style="color:var(--dim2)">' + T('adm.unlimited') + '</span>') + '</td>' +
     '<td>' + esc(t.remark || '-') + '</td>' +
     '<td><label class="chk" style="display:flex;align-items:center;gap:5px"><input type="checkbox" data-act-chg="tok-expose" data-id="' + esc(t.id) + '"' + (t.expose_control ? ' checked' : '') +
@@ -1283,7 +1273,7 @@ function openCreateToken() {
     '<div class="rule-check" style="max-height:130px">' +
       (S.groups.length ? S.groups.map(g =>
         '<label><input type="checkbox" class="nt-acl" value="' + esc(g.id) + '"' + (g.e2e_required ? ' disabled' : '') + '>' +
-        '<span>' + esc(g.name) + '</span>' + (g.e2e_required ? '<span class="badge b-warn">E2E</span>' : '<span class="badge b-info">' + (g.rule_count || 0) + '</span>') + '</label>'
+        '<span>' + esc(g.name) + '</span>' + (g.adopted_node ? ' ' + srcBadge(g.adopted_node) : '') + (g.e2e_required ? '<span class="badge b-warn">E2E</span>' : '<span class="badge b-info">' + (g.rule_count || 0) + '</span>') + '</label>'
       ).join('') : '<div class="empty">' + T('groups.empty') + '</div>') + '</div>' +
     '<label>' + T('fanin.rateLabel') + '</label><input id="nt-rate" type="number" min="1" placeholder="' + T('fanin.ratePh') + '" style="width:100%">' +
     '<div class="hint">' + T('fanin.rateHint') + '</div>' +
@@ -1337,7 +1327,7 @@ function openEditToken(id, groupId, exposeControl, controlScope, expiresAt, maxU
     '<div class="rule-check" style="max-height:130px">' +
       (S.groups.length ? S.groups.map(g =>
         '<label><input type="checkbox" class="et-acl" value="' + esc(g.id) + '" ' + ((groupId||'').split(',').includes(g.id)?'checked':'') + (g.e2e_required ? ' disabled' : '') + '>' +
-        '<span>' + esc(g.name) + '</span>' + (g.e2e_required ? '<span class="badge b-warn">E2E</span>' : '<span class="badge b-info">' + (g.rule_count || 0) + '</span>') + '</label>'
+        '<span>' + esc(g.name) + '</span>' + (g.adopted_node ? ' ' + srcBadge(g.adopted_node) : '') + (g.e2e_required ? '<span class="badge b-warn">E2E</span>' : '<span class="badge b-info">' + (g.rule_count || 0) + '</span>') + '</label>'
       ).join('') : '<div class="empty">' + T('groups.empty') + '</div>') + '</div>' +
     '<label>' + T('fanin.editRateLabel') + '</label><input id="et-rate" type="number" min="1" value="' + (rateKbps > 0 ? rateKbps : '') + '" placeholder="' + T('adm.unlimited') + '" style="width:100%">' +
     lifecycleFieldsHtml('et', expiresAt, maxUses) +
@@ -1424,9 +1414,10 @@ async function loadConnectors() {
       body.dataset.sig = sig;
       body.innerHTML = items.map(c => {
         const adv = (c.advertise || '').split(',').filter(Boolean).join(' · ');
-        return '<tr><td><b>' + esc(c.name) + '</b><div class="mono" style="color:var(--dim2)">' + (c.token_prefix ? esc(c.token_prefix) : shortId(c.id)) + '</div></td>' +
+        return '<tr><td><b>' + esc(c.name) + '</b><div class="mono" style="color:var(--dim2)">' + (c.token_prefix ? esc(c.token_prefix) : shortId(c.id)) + '</div>' +
+        (c.peer_node ? nodeBadge(c.peer_node, connAuthTier(c)) : '') + '</td>' +
         '<td class="mono">' + esc(c.upstream_addr) + (adv ? '<div style="color:var(--dim2);font-size:12px">' + esc(adv) + '</div>' : '') + '</td>' +
-        '<td>' + (c.group_id ? esc(c.group_name || groupNamesOf(c.group_id)) : '<span style="color:var(--dim2)">' + T('adm.noRestrict') + '</span>') + '</td>' +
+        '<td>' + ((c.groups || []).length ? c.groups.map(g => grpChip({ name: g.name, adopted: g.adopted_node })).join(' ') : '<span style="color:var(--dim2)">' + T('adm.noRestrict') + '</span>') + '</td>' +
         '<td>' + connStatusBadge(c.state) + '</td>' +
         '<td>' + (c.enabled ? '<span class="badge b-ok">' + T('adm.stOn') + '</span>' : '<span class="badge b-off">' + T('adm.stOff') + '</span>') + '</td>' +
         '<td style="color:var(--dim)">' + esc(c.remark || '-') + '</td>' +
@@ -1521,9 +1512,7 @@ async function loadDelegation() {
     if (sig !== body.dataset.sig) {
       body.dataset.sig = sig;
       body.innerHTML = FANOUT_DELEG.map(t => {
-        const groups = (t.groups || []).map(g =>
-          '<span class="badge b-info">' + esc(g.name) + '</span>' + (g.e2e_required ? ' <span class="badge b-warn">E2E</span>' : '')
-        ).join(' ');
+        const groups = (t.groups || []).map(g => grpChip({ name: g.name, adopted: g.adopted_node, e2e: g.e2e_required })).join(' ');
         return '<tr><td><b>' + esc(t.label || t.token_prefix) + '</b> ' + delegEntryBadge(t) + ' ' + delegConcBadge(t) + ' ' + delegTierBadges(t) + lifecycleBadge(t) +
           '<div class="mono" style="color:var(--dim2)">' + esc(t.token_prefix) + '</div></td>' +
           '<td>' + (groups || '-') + '</td>' +
@@ -1595,7 +1584,7 @@ async function openIssueDelegation() {
   // dedicated mode defaults to 全量: every group starts checked (the picker folds away under 专线)
   const groupRows = (S.groups || []).map(g =>
     '<label><input type="checkbox" class="di-group" value="' + esc(g.id) + '" checked>' +
-    '<span>' + esc(g.name) + '</span>' + (g.e2e_required ? '<span class="badge b-warn">E2E</span>' : '<span class="badge b-info">' + (g.rule_count || 0) + '</span>') + '</label>'
+    '<span>' + esc(g.name) + '</span>' + (g.adopted_node ? ' ' + srcBadge(g.adopted_node) : '') + (g.e2e_required ? '<span class="badge b-warn">E2E</span>' : '<span class="badge b-info">' + (g.rule_count || 0) + '</span>') + '</label>'
   ).join('');
 
   openModal(T('deleg.issue'),
@@ -1759,13 +1748,13 @@ function connectorFormHtml(c) {
     '<div class="rule-check" style="max-height:130px">' +
       (S.groups.length ? S.groups.map(g =>
         '<label><input type="checkbox" class="cf-acl" value="' + esc(g.id) + '" ' + ((c.group_id||'').split(',').includes(g.id)?'checked':'') + (g.e2e_required ? ' disabled' : '') + '>' +
-        '<span>' + esc(g.name) + '</span>' + (g.e2e_required ? '<span class="badge b-warn">E2E</span>' : '<span class="badge b-info">' + (g.rule_count || 0) + '</span>') + '</label>'
+        '<span>' + esc(g.name) + '</span>' + (g.adopted_node ? ' ' + srcBadge(g.adopted_node) : '') + (g.e2e_required ? '<span class="badge b-warn">E2E</span>' : '<span class="badge b-info">' + (g.rule_count || 0) + '</span>') + '</label>'
       ).join('') : '<div class="empty">' + T('groups.empty') + '</div>') + '</div>' +
     '<label>' + T('fanout.pushLabel') + ' <span class="hint">' + T('fanout.pushHint') + '</span></label>' +
     '<div class="rule-check" style="max-height:130px">' +
       (S.groups.length ? S.groups.map(g =>
         '<label><input type="checkbox" class="cf-push" value="' + esc(g.id) + '" ' + ((c.push_groups||'').split(',').includes(g.id)?'checked':'') + '>' +
-        '<span>' + esc(g.name) + '</span><span class="badge b-info">' + (g.rule_count||0) + '</span></label>'
+        '<span>' + esc(g.name) + '</span>' + (g.adopted_node ? ' ' + srcBadge(g.adopted_node) : '') + '<span class="badge b-info">' + (g.rule_count||0) + '</span></label>'
       ).join('') : '<div class="empty">' + T('groups.empty') + '</div>') + '</div>' +
     '<label>' + T('common.remark') + '</label><input id="cf-remark" style="width:100%" value="' + esc(c.remark||'') + '">';
 }

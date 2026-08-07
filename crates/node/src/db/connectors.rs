@@ -57,20 +57,21 @@ impl Database {
 
     /// List all fan-out connectors (display view; never contains token plaintext/ciphertext).
     pub fn list_connectors(&self) -> Result<Vec<ConnectorView>> {
-        // Fetch all rows and release the connection first (memory pool size is 1; decryption needs another conn)
+        // Fetch all rows and release the connection first (memory pool size is 1; decryption and
+        // the group-ref resolution below need another conn)
         let recs = {
             let conn = self.conn();
             let mut stmt = conn
                 .prepare(
                     "SELECT c.id, c.name, c.upstream_addr, c.token_enc, c.sni_hostname, c.insecure, c.ca_cert_path, c.pinned_cert_path, c.pinned_fingerprint, c.advertise,
-                            c.group_id, g.name, c.enabled, c.remark, c.created_at, c.updated_at, c.push_groups
-                     FROM connector c LEFT JOIN \"group\" g ON c.group_id = g.id ORDER BY c.created_at DESC",
+                            c.group_id, c.enabled, c.remark, c.created_at, c.updated_at, c.push_groups
+                     FROM connector c ORDER BY c.created_at DESC",
                 )
                 .map_err(db_err)?;
             let mut rows = stmt.query([]).map_err(db_err)?;
             let mut recs = Vec::new();
             while let Some(r) = rows.next().map_err(db_err)? {
-                let rec = ConnectorRecord {
+                recs.push(ConnectorRecord {
                     id: r.get(0).map_err(db_err)?,
                     name: r.get(1).map_err(db_err)?,
                     upstream_addr: r.get(2).map_err(db_err)?,
@@ -82,33 +83,20 @@ impl Database {
                     pinned_fingerprint: r.get(8).map_err(db_err)?,
                     advertise: r.get(9).map_err(db_err)?,
                     group_id: r.get(10).map_err(db_err)?,
-                    enabled: r.get::<_, i32>(12).map_err(db_err)? != 0,
-                    remark: r.get(13).map_err(db_err)?,
-                    created_at: r.get(14).map_err(db_err)?,
-                    updated_at: r.get(15).map_err(db_err)?,
-                    push_groups: r.get(16).map_err(db_err)?,
-                };
-                let group_name: Option<String> = r.get(11).map_err(db_err)?;
-                recs.push((rec, group_name));
+                    enabled: r.get::<_, i32>(11).map_err(db_err)? != 0,
+                    remark: r.get(12).map_err(db_err)?,
+                    created_at: r.get(13).map_err(db_err)?,
+                    updated_at: r.get(14).map_err(db_err)?,
+                    push_groups: r.get(15).map_err(db_err)?,
+                });
             }
             recs
         };
         let mut items = Vec::new();
-        // Display names of multi-group sets (comma-separated group_id) resolve per member in
-        // Rust — the SQL LEFT JOIN only covers the single-id case
-        let name_map = self.group_name_map().unwrap_or_default();
-        for (rec, group_name) in recs {
-            let group_name = match &rec.group_id {
-                Some(set) if set.contains(',') => Some(
-                    set.split(',')
-                        .map(str::trim)
-                        .filter(|s| !s.is_empty())
-                        .map(|s| name_map.get(s).cloned().unwrap_or_else(|| s.to_string()))
-                        .collect::<Vec<_>>()
-                        .join(","),
-                ),
-                _ => group_name,
-            };
+        for rec in recs {
+            // Group sets (comma-separated group_id) resolve per member in Rust (naming
+            // sovereignty: refs carry the adoption lineage for badge rendering)
+            let groups = self.group_refs_of(rec.group_id.as_deref());
             // Prefix display: decrypt and take the first 8 chars for identification only; leave empty on decrypt failure (key rotation etc.)
             let token_prefix = self
                 .decrypt_secret(&rec.token_enc)
@@ -126,7 +114,7 @@ impl Database {
                 pinned_fingerprint: rec.pinned_fingerprint,
                 advertise: rec.advertise,
                 group_id: rec.group_id,
-                group_name,
+                groups,
                 push_groups: rec.push_groups,
                 enabled: rec.enabled,
                 remark: rec.remark,
@@ -491,11 +479,13 @@ mod tests {
         assert_eq!(got.name, "site-a");
         assert_eq!(db.get_connector_secret(&rec.id).unwrap(), token);
 
-        // list (view carries group name and prefix display, no plaintext/ciphertext)
+        // list (view carries the resolved group set and prefix display, no plaintext/ciphertext)
         let views = db.list_connectors().unwrap();
         assert_eq!(views.len(), 1);
         let v = &views[0];
-        assert_eq!(v.group_name.as_deref(), Some("peers"));
+        assert_eq!(v.groups.len(), 1);
+        assert_eq!(v.groups[0].name, "peers");
+        assert!(v.groups[0].adopted_node.is_empty());
         assert_eq!(v.token_prefix, "psk_conn");
         let json = serde_json::to_string(v).unwrap();
         assert!(!json.contains(token));

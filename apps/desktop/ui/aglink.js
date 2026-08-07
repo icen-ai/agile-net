@@ -5,8 +5,8 @@
    paste-to-import must never fork a second implementation.
    Link shapes (three-piece set: entry address + credential + entry cert fingerprint):
      delegated credential: anet://connect?server=H&port=P&account=d:<label>&password=psk_...&fp=FP
-                           (+ entry/entryfp disaster set, en entrust word, emode, eadmin)
-     fan-out peer:         anet://fanout?server=H&port=P&token=psk_...&sni=SNI&fp=FP
+                           (+ entry/entryfp disaster set, en entrust word, emode, eadmin, myname)
+     fan-out peer:         anet://fanout?server=H&port=P&token=psk_...&sni=SNI&fp=FP&myname=NAME
    `server` may be a full `https://host[:port]` form (API behind a reverse proxy; the port param is then ignored).
    Only the `anet://` scheme is recognized — anything else is an error.
    Errors are returned as neutral codes ({ error: 'bad_prefix'|'bad_role'|'missing_params'|'bad_port' }) — the caller maps them to i18n. */
@@ -96,6 +96,8 @@ function parse(url) {
       emode: p.emode || '',
       // delegated admin capability hint (ticket pull via the E2E config channel)
       eadmin: truthy(p.eadmin),
+      // self-declared display name suggestion ("我的名称", node.md M2)
+      myname: p.myname || '',
     };
   }
   const sv = resolveServer(p, 54430);
@@ -105,6 +107,7 @@ function parse(url) {
   return {
     role: 'fanout', server: sv.server, addr: sv.addr,
     token: p.token, sni: p.sni || '', fp: p.fp || '', insecure: truthy(p.insecure),
+    myname: p.myname || '',
   };
 }
 
@@ -138,6 +141,7 @@ function buildConnect(f) {
   if (f.en) params.push(['en', f.en]);
   if (f.emode === 'split') params.push(['emode', 'split']);
   if (f.eadmin) params.push(['eadmin', '1']);
+  if (f.myname) params.push(['myname', f.myname]);
   return 'anet://connect?' + qs(params);
 }
 
@@ -146,6 +150,7 @@ function buildFanout(f) {
   return 'anet://fanout?' + qs([
     ...serverParams(f.addr || f.server),
     ['token', f.token], ['sni', f.sni], ['fp', f.fp], ['insecure', !!f.insecure],
+    ['myname', f.myname],
   ]);
 }
 

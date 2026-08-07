@@ -3,7 +3,7 @@
    desktop loads via <script src="agutil.js">; admin UI serves it embedded via crates/node/src/ui/mod.rs at /ui/agutil.js
    (same mechanism as agchart.js / icons.js). Only utilities with identical semantics on both ends —
    divergent ones (e.g. fmtBytes output format, toast channel) keep local per-end implementations; never change behavior to force a merge.
-   Dependency: ahelp's question-mark icon uses the shared icon table AgIcon (icons.js must load first). */
+   Dependency: icons.js must load first (AgIcon); badge helpers call AgI18n.t at render time. */
 (function () {
 
 const $ = (id) => document.getElementById(id);
@@ -20,7 +20,55 @@ function ahelp(text) {
   return '<span class="ahelp">' + AgIcon('badge-question-mark', 13) + '<span class="ahelp-tip">' + esc(text) + '</span></span>';
 }
 
+/* ---- Source/auth badges (naming sovereignty, node.md M1; styles in components.css) ----
+   Group names stay clean; source/auth state rides badges. All strings via AgI18n (badge.* keys
+   in aglang.js base layer). */
+
+/* Federation source badge: adopted-group lineage. title optional — defaults to the standard
+   "pushed by X · read-only mirror" tip. */
+function srcBadge(node, title) {
+  const tip = title || AgI18n.t('badge.srcTip', { name: node });
+  return '<span class="src src-verify" title="' + esc(tip) + '">' + AgIcon('badge-check', 12) + esc(node) + '</span>';
+}
+
+/* Node auth mark: badge-check in ok green for cryptographically verified peers. auth = 'pin'
+   (fingerprint pinning) | 'tls' (CA/cert verification); anything else (insecure) shows NO mark. */
+function nodeBadge(node, auth, strong) {
+  const tip = auth === 'pin' ? AgI18n.t('badge.authPin') : auth === 'tls' ? AgI18n.t('badge.authTls') : '';
+  const mark = tip ? '<span class="nb-auth" title="' + esc(tip) + '">' + AgIcon('badge-check', 10) + '</span>' : '';
+  return '<span class="nodebadge">' + (strong ? '<b>' : '') + esc(node) + (strong ? '</b>' : '') + mark + '</span>';
+}
+
+/* Issuance-table group capsule: one chip carries name + source. g = {name, adopted, e2e}. */
+function grpChip(g) {
+  const e2e = g.e2e ? ' <span class="badge b-warn">E2E</span>' : '';
+  if (g.adopted) {
+    const tip = AgI18n.t('badge.srcTip', { name: g.adopted });
+    return '<span class="grp-chip" title="' + esc(tip) + '">' + AgIcon('badge-check', 11) + esc(g.name) +
+      ' <span class="grp-sep">·</span> ' + esc(g.adopted) + '</span>' + e2e;
+  }
+  return '<span class="grp-chip local">' + esc(g.name) + '</span>' + e2e;
+}
+
+/* Weak "this machine" tag (home icon). */
+function localTag() {
+  return '<span class="local">' + AgIcon('home', 11) + esc(AgI18n.t('badge.local')) + '</span>';
+}
+
+/* Fan-out TLS verification tier (drives nodeBadge's auth mark): fingerprint pinning > pinned
+   cert / custom CA > system CA; insecure carries NO mark. c = connector list item. */
+function connAuthTier(c) {
+  if (c.pinned_fingerprint) return 'pin';
+  if (c.insecure) return '';
+  return 'tls';
+}
+
 window.$ = $;
 window.esc = esc;
 window.ahelp = ahelp;
+window.srcBadge = srcBadge;
+window.nodeBadge = nodeBadge;
+window.grpChip = grpChip;
+window.localTag = localTag;
+window.connAuthTier = connAuthTier;
 })();

@@ -1061,7 +1061,7 @@ async function foLoadGroups() {
       const checked = FO_ACL_PENDING || new Set([...aclList.querySelectorAll('input:checked')].map(c => c.value));
       FO_ACL_PENDING = null;
       aclList.innerHTML = groups.length
-        ? groups.map(g => '<label class="chk"><input type="checkbox" class="fo-acl" value="' + esc(g.id) + '"' + (checked.has(g.id) ? ' checked' : '') + (g.e2e_required ? ' disabled' : '') + '> <span>' + esc(g.name) + '</span>' + (g.e2e_required ? ' <span class="badge b-warn">E2E</span>' : '') + '</label>').join('')
+        ? groups.map(g => '<label class="chk"><input type="checkbox" class="fo-acl" value="' + esc(g.id) + '"' + (checked.has(g.id) ? ' checked' : '') + (g.e2e_required ? ' disabled' : '') + '> <span>' + esc(g.name) + '</span>' + (g.adopted_node ? ' ' + srcBadge(g.adopted_node) : '') + (g.e2e_required ? ' <span class="badge b-warn">E2E</span>' : '') + '</label>').join('')
         : '<div class="hint">' + AgI18n.t('views.fo-no-group') + '</div>';
     }
     // Policy upload (federation P1): checkbox list, selections kept across re-renders
@@ -1070,7 +1070,7 @@ async function foLoadGroups() {
       const checked = FO_PUSH_PENDING || new Set([...pushList.querySelectorAll('input:checked')].map(c => c.value));
       FO_PUSH_PENDING = null;
       pushList.innerHTML = groups.length
-        ? groups.map(g => '<label class="chk"><input type="checkbox" class="fo-push" value="' + esc(g.id) + '"' + (checked.has(g.id) ? ' checked' : '') + '> <span>' + esc(g.name) + '</span></label>').join('')
+        ? groups.map(g => '<label class="chk"><input type="checkbox" class="fo-push" value="' + esc(g.id) + '"' + (checked.has(g.id) ? ' checked' : '') + '> <span>' + esc(g.name) + '</span>' + (g.adopted_node ? ' ' + srcBadge(g.adopted_node) : '') + '</label>').join('')
         : '<div class="hint">' + AgI18n.t('views.fo-push-empty') + '</div>';
     }
   } catch (e) { /* group list load failure doesn't block the fan-out list */ }
@@ -1088,10 +1088,14 @@ async function refreshUpstreams() {
   $('fo-list').innerHTML = FO_ITEMS.map(c =>
     '<div class="node-card"><div class="info">' +
     '<div class="name">' + esc(c.name || c.upstream_addr) + ' ' + foBadge(c) + '</div>' +
+    // live upstream identity (self-declared node name + TLS verification tier mark)
+    (c.peer_node ? '<div class="addr mono">' + nodeBadge(c.peer_node, connAuthTier(c)) + '</div>' : '') +
     '<div class="addr mono">' + esc(c.upstream_addr) + ' · ' + esc(c.token_prefix) + ' · SNI ' + esc(c.sni_hostname) +
     (c.pinned_fingerprint ? ' · <span class="badge b-ok">pinned</span>' : '') +
-    (c.insecure ? ' · <span class="badge b-warn">insecure</span>' : '') +
-    AgI18n.t('views.fo-group-fmt', { name: c.group_name ? esc(c.group_name) : AgI18n.t('views.fo-group-none') }) + '</div>' +
+    (c.insecure ? ' · <span class="badge b-warn">insecure</span>' : '') + '</div>' +
+    '<div class="addr">' + ((c.groups || []).length
+      ? c.groups.map(g => grpChip({ name: g.name, adopted: g.adopted_node })).join(' ')
+      : '<span class="dim">' + AgI18n.t('views.fo-group-none') + '</span>') + '</div>' +
     // effective advertise (manual ∪ pushed-group rules) — the set the upstream route table carries
     ((c.effective_advertise || []).length
       ? '<div class="addr mono" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + esc(c.effective_advertise.join(', ')) + '">' + AgI18n.t('views.fo-adv') + ' ' + esc(c.effective_advertise.join(' · ')) + '</div>'
@@ -1242,7 +1246,7 @@ async function refreshDelegation() {
   list.dataset.sig = sig;
   if (!items.length) { list.innerHTML = '<div class="empty">' + AgI18n.t('dt.empty') + '</div>'; return; }
   list.innerHTML = items.map(t => {
-    const groups = (t.groups || []).map(g => esc(g.name)).join(' · ');
+    const groups = (t.groups || []).map(g => grpChip({ name: g.name, adopted: g.adopted_node, e2e: g.e2e_required })).join(' ');
     const regs = (t.regs || []).map(r =>
       esc(r.connector_name) + (r.is_primary ? ' <span class="badge b-info">' + AgI18n.t('dt.primary') + '</span>' : '') + ' <span class="dim">' + esc(r.state || 'offline') + '</span>').join(' · ');
     return '<div class="node-card"><div class="info">' +
@@ -1290,7 +1294,7 @@ function dtSync() {
     summary.style.display = 'none';
     list.style.display = '';
     list.innerHTML = eligible.length
-      ? eligible.map(g => '<label class="chk"><input type="checkbox" class="dt-grp" value="' + esc(g.id) + '"> <span>' + esc(g.name) + '</span>' + (g.e2e_required ? ' <span class="badge b-warn">E2E</span>' : '') + '</label>').join('')
+      ? eligible.map(g => '<label class="chk"><input type="checkbox" class="dt-grp" value="' + esc(g.id) + '"> <span>' + esc(g.name) + '</span>' + (g.adopted_node ? ' ' + srcBadge(g.adopted_node) : '') + (g.e2e_required ? ' <span class="badge b-warn">E2E</span>' : '') + '</label>').join('')
       : '<div class="hint">' + AgI18n.t('dt.noGroups') + '</div>';
   }
   $('dt-groups-hint').textContent = AgI18n.t(s.trust === 'plain' ? 'dt.groupsHintPlain' : 'dt.groupsHintE2e');

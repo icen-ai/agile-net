@@ -38,7 +38,7 @@ impl Database {
             expose_control,
             control_scope: control_scope.to_string(),
             group_id: group_id.map(|g| g.to_string()),
-            group_name: None,
+            groups: Vec::new(),
             rate_limit_kbps,
             expires_at: None,
             max_uses: None,
@@ -123,13 +123,13 @@ impl Database {
     }
 
     pub fn list_relay_tokens(&self) -> Result<Vec<RelayTokenRecord>> {
-        // Fetch all rows and release the connection first (memory pool size is 1; the name-map
-        // fixup below needs another conn)
+        // Fetch all rows and release the connection first (memory pool size is 1; the group-ref
+        // resolution below needs another conn)
         let mut items = {
             let conn = self.conn();
             let mut stmt = conn
-                .prepare("SELECT t.id, t.token_prefix, t.remark, t.expose_control, t.control_scope, t.last_used_at, t.created_at, t.group_id, g.name, t.rate_limit_kbps, t.expires_at, t.max_uses, t.used_count
-                          FROM relay_token t LEFT JOIN \"group\" g ON t.group_id = g.id ORDER BY t.created_at DESC")
+                .prepare("SELECT t.id, t.token_prefix, t.remark, t.expose_control, t.control_scope, t.last_used_at, t.created_at, t.group_id, t.rate_limit_kbps, t.expires_at, t.max_uses, t.used_count
+                          FROM relay_token t ORDER BY t.created_at DESC")
                 .map_err(db_err)?;
             let rows = stmt.query_map([], map_relay_token_row).map_err(db_err)?;
             let mut items = Vec::new();
@@ -138,19 +138,21 @@ impl Database {
             }
             items
         };
-        // Display names of multi-group sets resolve per member in Rust (the SQL join only
-        // covers the single-id case)
-        self.fixup_group_set_names(&mut items);
+        // Group sets (comma-separated group_id) resolve per member in Rust (naming sovereignty:
+        // refs carry the adoption lineage for badge rendering; dangling ids echo verbatim)
+        for it in items.iter_mut() {
+            it.groups = self.group_refs_of(it.group_id.as_deref());
+        }
         Ok(items)
     }
 
-    /// Look up relay token detail by ID (with ACL group ID and group name)
+    /// Look up relay token detail by ID (with ACL group ID and resolved group set)
     pub fn get_relay_token(&self, id: &str) -> Result<Option<RelayTokenRecord>> {
         let mut rec = {
             let conn = self.conn();
             let mut stmt = conn
-                .prepare("SELECT t.id, t.token_prefix, t.remark, t.expose_control, t.control_scope, t.last_used_at, t.created_at, t.group_id, g.name, t.rate_limit_kbps, t.expires_at, t.max_uses, t.used_count
-                          FROM relay_token t LEFT JOIN \"group\" g ON t.group_id = g.id WHERE t.id = ?1")
+                .prepare("SELECT t.id, t.token_prefix, t.remark, t.expose_control, t.control_scope, t.last_used_at, t.created_at, t.group_id, t.rate_limit_kbps, t.expires_at, t.max_uses, t.used_count
+                          FROM relay_token t WHERE t.id = ?1")
                 .map_err(db_err)?;
             let mut rows = stmt.query(params![id]).map_err(db_err)?;
             match rows.next().map_err(db_err)? {
@@ -159,29 +161,9 @@ impl Database {
             }
         };
         if let Some(recs) = rec.as_mut() {
-            self.fixup_group_set_names(std::slice::from_mut(recs));
+            recs.groups = self.group_refs_of(recs.group_id.as_deref());
         }
         Ok(rec)
-    }
-
-    /// Resolve comma-separated group sets to per-member display names (dangling ids echo verbatim).
-    fn fixup_group_set_names(&self, items: &mut [RelayTokenRecord]) {
-        let mut name_map = None;
-        for it in items.iter_mut() {
-            let Some(set) = &it.group_id else { continue };
-            if !set.contains(',') {
-                continue;
-            }
-            let names = name_map.get_or_insert_with(|| self.group_name_map().unwrap_or_default());
-            it.group_name = Some(
-                set.split(',')
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .map(|s| names.get(s).cloned().unwrap_or_else(|| s.to_string()))
-                    .collect::<Vec<_>>()
-                    .join(","),
-            );
-        }
     }
 
     /// Look up a relay token's ACL group by hash (data-plane fan-in restriction).
@@ -293,8 +275,9 @@ fn map_relay_token_row(r: &rusqlite::Row) -> rusqlite::Result<RelayTokenRecord> 
         last_used_at: r.get(5)?,
         created_at: r.get(6)?,
         group_id: r.get(7)?,
-        group_name: r.get(8)?,
-        rate_limit_kbps: r.get(9)?,
+        // resolved after the row fetch (needs a second conn on memory pools)
+        groups: Vec::new(),
+        rate_limit_kbps: r.get(8)?,
         expires_at: r.get("expires_at")?,
         max_uses: r.get("max_uses")?,
         used_count: r.get("used_count")?,
@@ -323,12 +306,14 @@ mod tests {
             .expect("create with group");
         assert_eq!(rec.group_id.as_deref(), Some(gid.as_str()));
 
-        // list / detail carry group ID and group name
+        // list / detail carry the group ID and the resolved group set
         let list = db.list_relay_tokens().unwrap();
         assert_eq!(list[0].group_id.as_deref(), Some(gid.as_str()));
-        assert_eq!(list[0].group_name.as_deref(), Some("peers"));
+        assert_eq!(list[0].groups.len(), 1);
+        assert_eq!(list[0].groups[0].name, "peers");
         let detail = db.get_relay_token(&rec.id).unwrap().unwrap();
-        assert_eq!(detail.group_name.as_deref(), Some("peers"));
+        assert_eq!(detail.groups.len(), 1);
+        assert_eq!(detail.groups[0].name, "peers");
 
         // ACL group lookup by hash (data plane): Some(Some(gid))
         assert_eq!(

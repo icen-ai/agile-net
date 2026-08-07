@@ -22,6 +22,7 @@ pub(crate) async fn connect_node(state: State<'_, AppState>, input: ConnectInput
         en: input.en.clone(),
         emode: input.emode.clone(),
         eadmin: input.eadmin,
+        myname: input.myname.clone(),
     };
     let node_state = state.client.connect(params).await.map_err(map_err)?;
 
@@ -42,6 +43,7 @@ pub(crate) async fn connect_node(state: State<'_, AppState>, input: ConnectInput
                         en: input.en,
                         emode: input.emode,
                         eadmin: input.eadmin,
+                        myname: input.myname,
                     },
                 )
                 .await;

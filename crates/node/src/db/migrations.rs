@@ -36,7 +36,7 @@ const MIGRATIONS: &[(u32, &str, &str)] = &[(
 
     CREATE TABLE "group" (
         id           TEXT PRIMARY KEY,
-        name         TEXT NOT NULL UNIQUE,
+        name         TEXT NOT NULL,
         remark       TEXT NOT NULL DEFAULT '',
         e2e_required INTEGER NOT NULL DEFAULT 0,
         adopted_node TEXT NOT NULL DEFAULT '',
@@ -44,6 +44,14 @@ const MIGRATIONS: &[(u32, &str, &str)] = &[(
         created_at   TEXT NOT NULL DEFAULT (datetime('now')),
         updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
     );
+    -- Naming sovereignty: the name stays clean (source name); the adoption source rides the
+    -- adopted_node lineage, never the name. Uniqueness needs two PARTIAL indexes — SQLite
+    -- treats NULLs as distinct, and adopted_node is '' (not NULL) for local groups, so a single
+    -- UNIQUE(name, adopted_node) would not work: local groups unique by name alone, adopted
+    -- mirrors unique per (name, source node); a local and an adopted group may share a name
+    -- (the UI distinguishes them with a source badge).
+    CREATE UNIQUE INDEX idx_group_name_local ON "group"(name) WHERE adopted_node = '';
+    CREATE UNIQUE INDEX idx_group_name_adopted ON "group"(name, adopted_node) WHERE adopted_node != '';
 
     CREATE TABLE group_rule (
         group_id TEXT NOT NULL REFERENCES "group"(id) ON DELETE CASCADE,
@@ -133,6 +141,7 @@ const MIGRATIONS: &[(u32, &str, &str)] = &[(
         pinned_cert_path   TEXT NOT NULL DEFAULT '',
         pinned_fingerprint TEXT NOT NULL DEFAULT '',
         push_groups        TEXT NOT NULL DEFAULT '',
+        cert_relay         INTEGER NOT NULL DEFAULT 0, -- transitive certification opt-in (node.md M6,双向开关)
         created_at         TEXT NOT NULL DEFAULT (datetime('now')),
         updated_at         TEXT NOT NULL DEFAULT (datetime('now'))
     );
@@ -162,6 +171,8 @@ const MIGRATIONS: &[(u32, &str, &str)] = &[(
     -- groups = JSON array of local group IDs; hint_map = JSON array of {hint, groups}
     -- (entrust words only; empty for the transparent tier); e2e_key_enc = E2E channel master
     -- key, AES-256-GCM encrypted like connector tokens.
+    -- visibility (node.md M6): topology disclosure tier of this grant — 'domain' (default:
+    -- only the domain principal is visible upstream) | 'disclose' | 'approve'.
     CREATE TABLE delegated_token (
         id           TEXT PRIMARY KEY,
         token_hash   TEXT NOT NULL UNIQUE,
@@ -175,6 +186,7 @@ const MIGRATIONS: &[(u32, &str, &str)] = &[(
         entry_mode   TEXT NOT NULL DEFAULT 'relay' CHECK(entry_mode IN ('direct','relay')),
         concurrency  TEXT NOT NULL DEFAULT 'single' CHECK(concurrency IN ('single','multi')),
         max_sessions INTEGER NOT NULL DEFAULT 8,
+        visibility   TEXT NOT NULL DEFAULT 'domain' CHECK(visibility IN ('domain','disclose','approve')),
         expires_at   TEXT,
         max_uses     INTEGER,
         used_count   INTEGER NOT NULL DEFAULT 0,
@@ -188,6 +200,87 @@ const MIGRATIONS: &[(u32, &str, &str)] = &[(
         connector_id TEXT NOT NULL REFERENCES connector(id) ON DELETE CASCADE,
         is_primary   INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY (token_id, connector_id)
+    );
+
+    -- Device registry (node.md M2): every device that proved itself at the handshake
+    -- (device_fp = sha256 of the device ed25519 pubkey, derived by us at auth — never trusted
+    -- from the wire). Devices bind at certification to a logical HOLDER (subject): one subject
+    -- may hold several devices (加绑) and stats follow the subject across device replacement
+    -- (换绑 = certify new + migrate subject/remark + revoke old). state: pending (default,
+    -- awaiting certification) / certified / revoked (terminal, never reusable).
+    CREATE TABLE device_registry (
+        id           TEXT PRIMARY KEY,
+        device_fp    TEXT NOT NULL UNIQUE,
+        pubkey       TEXT NOT NULL,              -- raw ed25519 pubkey (base64; OpenSSH export at UI)
+        token_hash   TEXT NOT NULL DEFAULT '',   -- credential of the latest session
+        subject      TEXT NOT NULL DEFAULT '',   -- logical holder (assigned at certification)
+        my_name      TEXT NOT NULL DEFAULT '',   -- device's self-declared name (decorative)
+        remark       TEXT NOT NULL DEFAULT '',   -- admin certification remark (the capsule title)
+        state        TEXT NOT NULL DEFAULT 'pending' CHECK(state IN ('pending','certified','revoked')),
+        certified_by TEXT NOT NULL DEFAULT '',   -- ''=local admin, else origin node id (M6 transitive)
+        certified_at TEXT,
+        first_seen   TEXT NOT NULL DEFAULT (datetime('now')),
+        last_seen    TEXT NOT NULL DEFAULT (datetime('now')),
+        bytes_up     INTEGER NOT NULL DEFAULT 0, -- cumulative traffic (B 口径, flushed at session close)
+        bytes_down   INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX idx_device_registry_state ON device_registry(state);
+    CREATE INDEX idx_device_registry_subject ON device_registry(subject);
+
+    -- Approval center (node.md M3): every human-adjudication event funnels here; types are
+    -- pluggable (device_certify / device_rebind / ref_cert_adopt / topo_approve ...).
+    CREATE TABLE approval (
+        id          TEXT PRIMARY KEY,
+        type        TEXT NOT NULL,
+        state       TEXT NOT NULL DEFAULT 'pending' CHECK(state IN ('pending','approved','rejected')),
+        object_ref  TEXT NOT NULL DEFAULT '',  -- device_fp / token id / cert hash ...
+        requester   TEXT NOT NULL DEFAULT '',  -- who asked (device_fp / node_id)
+        detail      TEXT NOT NULL DEFAULT '',  -- type-specific JSON payload
+        decided_by  TEXT NOT NULL DEFAULT '',
+        decided_at  TEXT,
+        created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX idx_approval_state ON approval(state);
+
+    -- Appeal/decision messages of an approval item: applicant appeals (≤3 per session,
+    -- Ctrl PendingNote uplink) + the final one-time operator notice (immutable once sent).
+    CREATE TABLE approval_message (
+        id          TEXT PRIMARY KEY,
+        approval_id TEXT NOT NULL REFERENCES approval(id) ON DELETE CASCADE,
+        direction   TEXT NOT NULL CHECK(direction IN ('appeal','notice')),
+        body        TEXT NOT NULL,
+        created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX idx_approval_msg ON approval_message(approval_id);
+
+    -- Per-session device traffic ledger (node.md M5): one row flushed at session close —
+    -- traffic time series, session history and the 7x24 activity heatmap all read this table.
+    CREATE TABLE device_session (
+        id           TEXT PRIMARY KEY,
+        device_fp    TEXT NOT NULL,
+        token_hash   TEXT NOT NULL DEFAULT '',
+        entry        TEXT NOT NULL DEFAULT '',   -- direct / relay·<node>
+        ip           TEXT NOT NULL DEFAULT '',
+        started_at   TEXT NOT NULL,
+        ended_at     TEXT NOT NULL DEFAULT (datetime('now')),
+        bytes_in     INTEGER NOT NULL DEFAULT 0,
+        bytes_out    INTEGER NOT NULL DEFAULT 0,
+        close_reason TEXT NOT NULL DEFAULT ''    -- M2 reason_code (kicked / revoked / ...)
+    );
+    CREATE INDEX idx_device_session_fp ON device_session(device_fp, started_at);
+    CREATE INDEX idx_device_session_time ON device_session(started_at);
+
+    -- Topology-visibility grant receipts (node.md M6): disclosure records of granted artifacts,
+    -- signed by the origin node's relay key and blindly relayed by intermediates.
+    CREATE TABLE grant_receipt (
+        id           TEXT PRIMARY KEY,
+        artifact_ref TEXT NOT NULL,              -- token_hash / group id / cert hash
+        holder       TEXT NOT NULL,              -- holder node_id / device_fp
+        lineage      TEXT NOT NULL DEFAULT '[]', -- JSON lineage segments (relay path)
+        visibility   TEXT NOT NULL DEFAULT 'domain' CHECK(visibility IN ('domain','disclose','approve')),
+        origin_sig   TEXT NOT NULL DEFAULT '',   -- origin signature over the record
+        state        TEXT NOT NULL DEFAULT 'pending' CHECK(state IN ('pending','confirmed','stopped')),
+        created_at   TEXT NOT NULL DEFAULT (datetime('now'))
     );
     "#,
 )];
@@ -263,10 +356,15 @@ mod tests {
             vec![
                 "admin",
                 "admin_ticket",
+                "approval",
+                "approval_message",
                 "audit_log",
                 "connector",
                 "delegated_token",
                 "delegated_token_reg",
+                "device_registry",
+                "device_session",
+                "grant_receipt",
                 "group",
                 "group_rule",
                 "node_config",
@@ -313,12 +411,42 @@ mod tests {
             "entry_mode",
             "concurrency",
             "max_sessions",
+            "visibility",
             "expires_at",
             "max_uses",
             "used_count",
         ] {
             assert!(cols.contains(&col.to_string()), "delegated_token.{col}");
         }
+
+        // device identity + approval + device-traffic baseline tables (node.md M2/M5/M6)
+        let cols = column_names(&db, "device_registry");
+        for col in [
+            "device_fp",
+            "pubkey",
+            "subject",
+            "my_name",
+            "state",
+            "certified_by",
+            "bytes_up",
+            "bytes_down",
+        ] {
+            assert!(cols.contains(&col.to_string()), "device_registry.{col}");
+        }
+        for col in ["type", "state", "object_ref", "requester", "decided_by"] {
+            assert!(
+                column_names(&db, "approval").contains(&col.to_string()),
+                "approval.{col}"
+            );
+        }
+        assert!(
+            column_names(&db, "device_session").contains(&"close_reason".to_string()),
+            "device_session.close_reason"
+        );
+        assert!(
+            column_names(&db, "connector").contains(&"cert_relay".to_string()),
+            "connector.cert_relay"
+        );
 
         // group carries the e2e flag + adoption lineage
         let cols = column_names(&db, "group");

@@ -140,6 +140,7 @@ fn delegated_params(entries: Vec<String>, label: &str, token: &str) -> ConnectPa
         en: None,
         emode: None,
         eadmin: false,
+        myname: None,
     }
 }
 

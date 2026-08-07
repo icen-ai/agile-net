@@ -178,6 +178,7 @@ async fn export_requires_confirm() {
                 label: "u1".into(),
                 token: "psk_test".into(),
                 name: None,
+                myname: None,
                 insecure: false,
                 pinned_fingerprint: None,
                 entries: Vec::new(),

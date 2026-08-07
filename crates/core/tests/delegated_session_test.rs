@@ -66,14 +66,20 @@ async fn consumer_auth(
     let server_name =
         rustls::pki_types::ServerName::try_from("cdn.cloudflare.com".to_string()).unwrap();
     let mut stream = connector.connect(server_name, tcp).await.ok()?;
-    let auth = AuthRequest {
+    let mut auth = AuthRequest {
         node_id: node_id.into(),
         token: token.into(),
         kind: AuthKind::Client,
         advertise: vec![],
         groups: vec![],
         version: PROTOCOL_VERSION,
+        my_name: String::new(),
+        device_pubkey: String::new(),
+        device_sig: String::new(),
     };
+    // device proof is mandatory (handshake v4): sign the TLS-exporter challenge (throwaway identity)
+    let challenge = agile_net_core::device::session_challenge(stream.get_ref().1).ok()?;
+    auth.attach_device_proof(&challenge, &agile_net_core::device::DeviceIdentity::ephemeral());
     let payload = serde_json::to_vec(&auth).unwrap();
     Frame::new(FrameType::Auth, 0, Bytes::from(payload))
         .write_to(&mut stream)
@@ -102,14 +108,20 @@ async fn issuer_peer(
     let server_name =
         rustls::pki_types::ServerName::try_from("cdn.cloudflare.com".to_string()).unwrap();
     let mut stream = connector.connect(server_name, tcp).await.unwrap();
-    let auth = AuthRequest {
+    let mut auth = AuthRequest {
         node_id: node_id.into(),
         token: token.into(),
         kind: AuthKind::Node,
         advertise: vec![],
         groups: vec![],
         version: PROTOCOL_VERSION,
+        my_name: String::new(),
+        device_pubkey: String::new(),
+        device_sig: String::new(),
     };
+    // device proof is mandatory (handshake v4): sign the TLS-exporter challenge (throwaway identity)
+    let challenge = agile_net_core::device::session_challenge(stream.get_ref().1).unwrap();
+    auth.attach_device_proof(&challenge, &agile_net_core::device::DeviceIdentity::ephemeral());
     let payload = serde_json::to_vec(&auth).unwrap();
     Frame::new(FrameType::Auth, 0, Bytes::from(payload))
         .write_to(&mut stream)
@@ -331,6 +343,8 @@ async fn ctrl_register_revoke_drives_consumer_sessions() {
             token_hash: hash.clone(),
             concurrency: Concurrency::Multi,
             max_sessions: 2,
+            reason_code: String::new(),
+            message: String::new(),
         },
     )
     .await;

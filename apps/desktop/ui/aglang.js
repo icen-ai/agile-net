@@ -115,4 +115,10 @@ AgI18n.register({
   'import.back': { zh: '上一步', en: 'Back' },
   'import.connectNope': { zh: '扇入凭据供客户端使用，本控制台仅导入扇出', en: 'Fan-in credentials are for clients; this console imports fan-out only' },
   'import.fanoutNope': { zh: '扇出连接为桌面端本地能力，远程面板仅导入扇入', en: 'Fan-out is a desktop-local capability; the remote panel imports fan-in only' },
+  // ---- source/auth badges (agutil.js badge helpers, both ends) ----
+  'badge.srcTip': { zh: '上送自 {name} · 只读自动跟随', en: 'Pushed by {name} · read-only mirror' },
+  'badge.authPin': { zh: '已认证 · 指纹钉值', en: 'Verified · pinned fingerprint' },
+  'badge.authTls': { zh: '已认证 · TLS 验证', en: 'Verified · TLS' },
+  'badge.local': { zh: '本机', en: 'Local' },
+  'badge.mirror': { zh: '只读镜像', en: 'Read-only mirror' },
 });

@@ -172,7 +172,7 @@ async fn federation_push_pool_adopt_grant() {
     let adopted = body["data"].clone();
     // naming sovereignty: the source tag is B's own title for the peer (the relay token remark
     // "for peer-c"), never the peer's self-reported node name (a default like "AgileNet Node")
-    assert_eq!(adopted["name"].as_str().unwrap(), "git@for peer-c");
+    assert_eq!(adopted["name"].as_str().unwrap(), "git");
     assert_eq!(adopted["rule_count"].as_u64(), Some(2));
     let adopted_gid = adopted["id"].as_str().unwrap().to_string();
 
@@ -442,7 +442,7 @@ async fn federation_adopted_group_delegated_grant() {
         .get(&token_hash)
         .expect("direct token self-registers on B at issuance")
         .clone();
-    assert_eq!(entry.groups, vec!["git@for peer-c".to_string()]);
+    assert_eq!(entry.groups, vec!["git".to_string()]);
     assert!(
         entry.acl_rules.iter().any(|r| r == "127.0.0.1/32"),
         "ACL snapshot from the adopted mirror: {:?}",
@@ -464,6 +464,7 @@ async fn federation_adopted_group_delegated_grant() {
             en: None,
             emode: None,
             eadmin: false,
+            myname: None,
         })
         .await
         .expect("delegated connect");

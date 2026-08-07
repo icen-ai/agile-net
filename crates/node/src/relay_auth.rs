@@ -150,6 +150,9 @@ mod tests {
             advertise: Vec::new(),
             groups: Vec::new(),
             version: 1,
+            my_name: String::new(),
+            device_pubkey: String::new(),
+            device_sig: String::new(),
         }
     }
 
@@ -237,6 +240,9 @@ mod tests {
             advertise: Vec::new(),
             groups: Vec::new(),
             version: 4,
+            my_name: String::new(),
+            device_pubkey: String::new(),
+            device_sig: String::new(),
         };
         assert!(validator.validate(&auth).is_none());
     }

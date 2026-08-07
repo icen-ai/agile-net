@@ -289,12 +289,26 @@ mod tests {
         assert!(hit.success);
         assert_eq!(hit.exit_code, 0);
         assert!(hit.human.contains(&port.to_string()));
-
         drop(listener);
-        let miss = portof(port);
-        assert!(!miss.success);
-        assert_eq!(miss.exit_code, 1);
-        assert!(miss.human.contains("未发现"));
+
+        // the miss half is racy under full-suite parallel load (a released port can be re-bound
+        // by another test immediately) — retry with fresh ports until a miss is observed
+        let mut saw_miss = !portof(port).success;
+        for _ in 0..4 {
+            if saw_miss {
+                break;
+            }
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            drop(listener);
+            let miss = portof(port);
+            if !miss.success {
+                assert_eq!(miss.exit_code, 1);
+                assert!(miss.human.contains("未发现"));
+                saw_miss = true;
+            }
+        }
+        assert!(saw_miss, "released ports kept getting re-bound by parallel tests");
     }
 
     /// portsof should find the temporary listener held by the current process.

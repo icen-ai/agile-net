@@ -180,7 +180,7 @@ pub async fn create_group(
     }
     let name_owned = name.to_string();
     let exists = state
-        .db_call(move |db| db.get_group_by_name(&name_owned))
+        .db_call(move |db| db.get_local_group_by_name(&name_owned))
         .await
         .unwrap_or(None)
         .is_some();
@@ -289,7 +289,7 @@ pub async fn update_group(
         let (name_owned, gid) = (name.to_string(), id.clone());
         let conflict = state
             .db_call(move |db| {
-                Ok(match db.get_group_by_name(&name_owned)? {
+                Ok(match db.get_local_group_by_name(&name_owned)? {
                     Some(existing) => existing.id != gid,
                     None => false,
                 })

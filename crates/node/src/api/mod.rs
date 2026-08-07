@@ -43,6 +43,9 @@ pub struct NodeRuntime {
     pub client_proxy_slot: crate::service::ClientProxySlot,
     /// Relay transit meter (instrumented at listener/connector/proxy; data source for the status transit section)
     pub transit_meter: Arc<TransitMeter>,
+    /// This machine's device identity (node.md M2): connectors prove it at the handshake; the
+    /// admin identity card renders device_fp + OpenSSH pubkey from it
+    pub device: Arc<agile_net_core::device::DeviceIdentity>,
 }
 
 impl NodeRuntime {

@@ -54,6 +54,10 @@ pub struct ConnectLink {
     /// bootstrap ticket over the E2E config channel and manage the issuer.
     #[serde(default)]
     pub eadmin: bool,
+    /// Self-declared display name suggestion ("我的名称", node.md M2): the importer's own name
+    /// as it should appear on the issuer's side (decorative; certification rides device proof).
+    #[serde(default)]
+    pub myname: Option<String>,
 }
 
 impl ConnectLink {
@@ -90,6 +94,9 @@ pub struct FanoutLink {
     pub pinned_fingerprint: Option<String>,
     #[serde(default)]
     pub insecure: bool,
+    /// Self-declared display name suggestion ("我的名称"; what we call ourselves on the peer)
+    #[serde(default)]
+    pub myname: Option<String>,
 }
 
 /// Strip the scheme + role prefix (`anet://connect?` etc.); None on mismatch.
@@ -131,6 +138,7 @@ pub fn parse_connect_url(url: &str) -> std::result::Result<ConnectLink, String> 
     let mut en: Option<String> = None;
     let mut emode: Option<String> = None;
     let mut eadmin = false;
+    let mut myname: Option<String> = None;
     for pair in rest.split('&') {
         let mut kv = pair.splitn(2, '=');
         let (k, v) = (kv.next().unwrap_or(""), kv.next().unwrap_or(""));
@@ -152,6 +160,8 @@ pub fn parse_connect_url(url: &str) -> std::result::Result<ConnectLink, String> 
             "emode" => emode = Some(v),
             // delegated admin: the token may manage the issuer (ticket via config channel)
             "eadmin" => eadmin = truthy(&v),
+            // self-declared display name suggestion ("我的名称")
+            "myname" => myname = Some(v),
             _ => {}
         }
     }
@@ -171,6 +181,7 @@ pub fn parse_connect_url(url: &str) -> std::result::Result<ConnectLink, String> 
         en,
         emode,
         eadmin,
+        myname,
     })
 }
 
@@ -184,6 +195,7 @@ pub fn parse_fanout_url(url: &str) -> std::result::Result<FanoutLink, String> {
     let mut sni = String::new();
     let mut fp: Option<String> = None;
     let mut insecure = false;
+    let mut myname: Option<String> = None;
     for pair in rest.split('&') {
         let mut kv = pair.splitn(2, '=');
         let (k, v) = (kv.next().unwrap_or(""), kv.next().unwrap_or(""));
@@ -195,6 +207,7 @@ pub fn parse_fanout_url(url: &str) -> std::result::Result<FanoutLink, String> {
             "sni" => sni = v,
             "fp" => fp = Some(v),
             "insecure" => insecure = truthy(&v),
+            "myname" => myname = Some(v),
             _ => {}
         }
     }
@@ -207,6 +220,7 @@ pub fn parse_fanout_url(url: &str) -> std::result::Result<FanoutLink, String> {
         sni_hostname: sni,
         pinned_fingerprint: fp,
         insecure,
+        myname,
     })
 }
 
@@ -256,11 +270,13 @@ fn server_params(addr: &str) -> (String, Option<u16>) {
 }
 
 /// Build an anet://fanout URL (contains the fan-out token; share with care).
+/// `myname` = the recipient's suggested self-declared name on OUR side ("我的名称" word).
 pub fn build_fanout_url(
     addr: &str,
     token: &str,
     sni: &str,
     pinned_fingerprint: Option<&str>,
+    myname: Option<&str>,
 ) -> String {
     let server = server_query(addr, DEFAULT_RELAY_PORT);
     let mut url = format!("anet://fanout?{server}&token={}", url_encode(token));
@@ -269,6 +285,9 @@ pub fn build_fanout_url(
     }
     if let Some(fp) = pinned_fingerprint.filter(|s| !s.is_empty()) {
         url.push_str(&format!("&fp={fp}"));
+    }
+    if let Some(n) = myname.filter(|s| !s.is_empty()) {
+        url.push_str(&format!("&myname={}", url_encode(n)));
     }
     url
 }
@@ -288,6 +307,7 @@ pub fn build_delegate_url(
     en: Option<&str>,
     emode: Option<&str>,
     eadmin: bool,
+    myname: Option<&str>,
 ) -> String {
     debug_assert!(
         entries.iter().any(|(a, _)| a == primary_addr),
@@ -316,6 +336,9 @@ pub fn build_delegate_url(
     }
     if eadmin {
         url.push_str("&eadmin=1");
+    }
+    if let Some(n) = myname.filter(|s| !s.is_empty()) {
+        url.push_str(&format!("&myname={}", url_encode(n)));
     }
     if entries.len() > 1 {
         let addrs = entries
@@ -386,10 +409,10 @@ mod tests {
 
     #[test]
     fn fanout_roundtrip() {
-        let url = build_fanout_url("b.example.com:54430", "psk_secret-123", "cdn.cloudflare.com", Some("ff00aa"));
+        let url = build_fanout_url("b.example.com:54430", "psk_secret-123", "cdn.cloudflare.com", Some("ff00aa"), Some("机房A"));
         assert_eq!(
             url,
-            "anet://fanout?server=b.example.com&port=54430&token=psk_secret-123&sni=cdn.cloudflare.com&fp=ff00aa"
+            "anet://fanout?server=b.example.com&port=54430&token=psk_secret-123&sni=cdn.cloudflare.com&fp=ff00aa&myname=%E6%9C%BA%E6%88%BFA"
         );
         let p = parse_fanout_url(&url).expect("parse");
         assert_eq!(p.addr, "b.example.com:54430");
@@ -397,6 +420,7 @@ mod tests {
         assert_eq!(p.sni_hostname, "cdn.cloudflare.com");
         assert_eq!(p.pinned_fingerprint.as_deref(), Some("ff00aa"));
         assert!(!p.insecure);
+        assert_eq!(p.myname.as_deref(), Some("机房A"));
     }
 
     #[test]
@@ -408,7 +432,7 @@ mod tests {
     #[test]
     fn password_special_chars_encoded() {
         let entries = vec![("h:54430".to_string(), String::new())];
-        let url = build_delegate_url("h:54430", "u", "p&=x%", &entries, None, None, false);
+        let url = build_delegate_url("h:54430", "u", "p&=x%", &entries, None, None, false, None);
         let p = parse_connect_url(&url).unwrap();
         assert_eq!(p.password, "p&=x%");
     }
@@ -420,7 +444,7 @@ mod tests {
             ("b2.example.com:54430".to_string(), "".to_string()),
             ("10.0.0.3:54430".to_string(), "cc33".to_string()),
         ];
-        let url = build_delegate_url("b1.example.com:54430", "alice-laptop", "psk_secret", &entries, Some("en_a1b2c3d4e5f6"), Some("split"), true);
+        let url = build_delegate_url("b1.example.com:54430", "alice-laptop", "psk_secret", &entries, Some("en_a1b2c3d4e5f6"), Some("split"), true, Some("小明"));
         let p = parse_connect_url(&url).expect("parse delegate link");
         assert!(p.is_delegated());
         assert_eq!(p.delegated_label(), Some("alice-laptop"));
@@ -430,6 +454,7 @@ mod tests {
         assert_eq!(p.en.as_deref(), Some("en_a1b2c3d4e5f6"));
         assert_eq!(p.emode.as_deref(), Some("split"));
         assert!(p.eadmin);
+        assert_eq!(p.myname.as_deref(), Some("小明"));
         assert_eq!(
             p.entries(),
             vec![
@@ -444,7 +469,7 @@ mod tests {
     #[test]
     fn delegate_url_single_entry_omits_entry_params() {
         let entries = vec![("b1.example.com:54430".to_string(), "aa11".to_string())];
-        let url = build_delegate_url("b1.example.com:54430", "bob", "psk_x", &entries, None, None, false);
+        let url = build_delegate_url("b1.example.com:54430", "bob", "psk_x", &entries, None, None, false, None);
         assert!(!url.contains("entry="));
         assert!(!url.contains("&en="));
         assert!(!url.contains("emode="));
