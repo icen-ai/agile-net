@@ -318,18 +318,15 @@ async fn spa_assets_served() {
         "127.0.0.1:0".parse().unwrap(),
         Some(SpaAssets {
             index: "<html>spa</html>",
-            app_js: "app",
-            icons_js: "icons",
-            agchart_js: "agchart",
-            app_core_js: "core",
-            app_views_js: "views",
-            app_subscription_js: "subscription",
-            app_hero_js: "hero",
-            app_logs_js: "logs",
-            app_settings_js: "settings",
-            style_css: "css",
-            tokens_css: "tokens",
-            components_css: "components",
+            files: vec![
+                ("app.js", "app"),
+                ("app-core.js", "core"),
+                ("agchart.js", "agchart"),
+                ("style.css", "css"),
+                ("tokens.css", "tokens"),
+                ("components.css", "components"),
+                ("lang/desktop-core.js", "shard"),
+            ],
         }),
     )
     .await
@@ -357,11 +354,12 @@ async fn spa_assets_served() {
         .await
         .unwrap();
     assert_eq!(r.text().await.unwrap(), "core");
+    // nested path (lang shard) routes too
     let r = http
-        .get(format!("{base}/app-settings.js"))
+        .get(format!("{base}/lang/desktop-core.js"))
         .send()
         .await
         .unwrap();
-    assert_eq!(r.text().await.unwrap(), "settings");
+    assert_eq!(r.text().await.unwrap(), "shard");
     handle.stop().await;
 }

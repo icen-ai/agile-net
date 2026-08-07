@@ -28,21 +28,40 @@ pub(crate) fn open_url(url: String) -> Result<(), String> {
 }
 
 /// Desktop admin SPA static assets (embedded via include_str!, no Node build chain).
+/// Every asset index.html references must appear here — a missing entry 404s the web remote panel
+/// (the `spa_assets_cover_index_references` test guards this list against index.html drift).
 pub(crate) fn spa_assets() -> agile_net_client::api::SpaAssets {
     agile_net_client::api::SpaAssets {
         index: include_str!("../../ui/index.html"),
-        app_js: include_str!("../../ui/app.js"),
-        icons_js: include_str!("../../ui/icons.js"),
-        agchart_js: include_str!("../../ui/agchart.js"),
-        app_core_js: include_str!("../../ui/app-core.js"),
-        app_views_js: include_str!("../../ui/app-views.js"),
-        app_subscription_js: include_str!("../../ui/app-subscription.js"),
-        app_hero_js: include_str!("../../ui/app-hero.js"),
-        app_logs_js: include_str!("../../ui/app-logs.js"),
-        app_settings_js: include_str!("../../ui/app-settings.js"),
-        style_css: include_str!("../../ui/style.css"),
-        tokens_css: include_str!("../../ui/tokens.css"),
-        components_css: include_str!("../../ui/components.css"),
+        files: vec![
+            ("app.js", include_str!("../../ui/app.js")),
+            ("app-core.js", include_str!("../../ui/app-core.js")),
+            ("app-views.js", include_str!("../../ui/app-views.js")),
+            ("app-subscription.js", include_str!("../../ui/app-subscription.js")),
+            ("app-hero.js", include_str!("../../ui/app-hero.js")),
+            ("app-logs.js", include_str!("../../ui/app-logs.js")),
+            ("app-settings.js", include_str!("../../ui/app-settings.js")),
+            ("agent.js", include_str!("../../ui/agent.js")),
+            ("icons.js", include_str!("../../ui/icons.js")),
+            ("agchart.js", include_str!("../../ui/agchart.js")),
+            ("agutil.js", include_str!("../../ui/agutil.js")),
+            ("agtbl.js", include_str!("../../ui/agtbl.js")),
+            ("aglink.js", include_str!("../../ui/aglink.js")),
+            ("aganet.js", include_str!("../../ui/aganet.js")),
+            ("agimport.js", include_str!("../../ui/agimport.js")),
+            ("agi18n.js", include_str!("../../ui/agi18n.js")),
+            ("aglang.js", include_str!("../../ui/aglang.js")),
+            ("lang-switcher.js", include_str!("../../ui/lang-switcher.js")),
+            ("lang/desktop-html.js", include_str!("../../ui/lang/desktop-html.js")),
+            ("lang/desktop-views.js", include_str!("../../ui/lang/desktop-views.js")),
+            ("lang/desktop-sub.js", include_str!("../../ui/lang/desktop-sub.js")),
+            ("lang/desktop-core.js", include_str!("../../ui/lang/desktop-core.js")),
+            ("lang/desktop-trayfloat.js", include_str!("../../ui/lang/desktop-trayfloat.js")),
+            ("lang/desktop-agent.js", include_str!("../../ui/lang/desktop-agent.js")),
+            ("style.css", include_str!("../../ui/style.css")),
+            ("tokens.css", include_str!("../../ui/tokens.css")),
+            ("components.css", include_str!("../../ui/components.css")),
+        ],
     }
 }
 
@@ -908,4 +927,29 @@ pub(crate) fn launch_system_uninstaller() -> Result<(), String> {
 pub(crate) fn recent_events(limit: Option<u32>) -> Result<Vec<roles::GuiEvent>, String> {
     let n = limit.unwrap_or(50).clamp(1, 200) as usize;
     Ok(roles::recent_events(n))
+}
+
+#[cfg(test)]
+mod tests {
+    /// Every local .js/.css that index.html references must be served by the web remote panel —
+    /// a missing entry is a 404 blank-panel storm (the agi18n/aglang/lang-shard incident).
+    #[test]
+    fn spa_assets_cover_index_references() {
+        let assets = super::spa_assets();
+        let served: std::collections::HashSet<&str> =
+            assets.files.iter().map(|(p, _)| *p).collect();
+        let html = assets.index;
+        for attr in ["src=\"", "href=\""] {
+            let mut rest = html;
+            while let Some(i) = rest.find(attr) {
+                let after = &rest[i + attr.len()..];
+                let end = after.find('"').unwrap();
+                let v = &after[..end];
+                if (v.ends_with(".js") || v.ends_with(".css")) && !v.contains("://") {
+                    assert!(served.contains(v), "index.html references {v} but spa_assets lacks it");
+                }
+                rest = &after[end..];
+            }
+        }
+    }
 }

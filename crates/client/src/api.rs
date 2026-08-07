@@ -50,24 +50,12 @@ pub trait ClientWebAuth: Send + Sync {
 pub type ClientAudit = Arc<dyn Fn(&str, serde_json::Value) + Send + Sync>;
 
 /// SPA static assets (path → content), injected by the host via include_str!.
+/// `index` serves "/" and "/index.html"; every other referenced asset rides in `files`
+/// (path without a leading slash, e.g. "lang/desktop-core.js"). A flat list instead of named
+/// fields: a newly added shared file can never silently 404 the panel again.
 pub struct SpaAssets {
     pub index: &'static str,
-    pub app_js: &'static str,
-    pub icons_js: &'static str,
-    pub style_css: &'static str,
-    /// Shared design tokens (AGENTS.md §6; referenced by desktop index.html — without it all site variables break)
-    pub tokens_css: &'static str,
-    /// Shared component styles (ag-select/ag-tabs/agchart; without them: duplicate select UIs, unstyled chart popovers)
-    pub components_css: &'static str,
-    /// Shared chart component JS (referenced by desktop index.html — without it AgChart is undefined)
-    pub agchart_js: &'static str,
-    /// app.js domain-split six files (desktop index.html references them in dependency order; missing files = 404 blank panel)
-    pub app_core_js: &'static str,
-    pub app_views_js: &'static str,
-    pub app_subscription_js: &'static str,
-    pub app_hero_js: &'static str,
-    pub app_logs_js: &'static str,
-    pub app_settings_js: &'static str,
+    pub files: Vec<(&'static str, &'static str)>,
 }
 
 /// State of the pure REST router (auth lives with the host).
@@ -246,73 +234,29 @@ fn spa_router(spa: SpaAssets) -> Router {
         )
             .into_response()
     }
+    fn content_type_of(path: &str) -> &'static str {
+        match path.rsplit('.').next() {
+            Some("js") => "text/javascript; charset=utf-8",
+            Some("css") => "text/css; charset=utf-8",
+            Some("html") => "text/html; charset=utf-8",
+            Some("svg") => "image/svg+xml",
+            Some("png") => "image/png",
+            Some("woff2") => "font/woff2",
+            _ => "application/octet-stream",
+        }
+    }
     let index = spa.index;
-    let app_js = spa.app_js;
-    let icons_js = spa.icons_js;
-    let style_css = spa.style_css;
-    let tokens_css = spa.tokens_css;
-    let components_css = spa.components_css;
-    let agchart_js = spa.agchart_js;
-    let app_core_js = spa.app_core_js;
-    let app_views_js = spa.app_views_js;
-    let app_subscription_js = spa.app_subscription_js;
-    let app_hero_js = spa.app_hero_js;
-    let app_logs_js = spa.app_logs_js;
-    let app_settings_js = spa.app_settings_js;
-    Router::new()
+    let mut r = Router::new()
         .route("/", get(move || serve(index, "text/html; charset=utf-8")))
         .route(
             "/index.html",
             get(move || serve(index, "text/html; charset=utf-8")),
-        )
-        .route(
-            "/app.js",
-            get(move || serve(app_js, "text/javascript; charset=utf-8")),
-        )
-        .route(
-            "/icons.js",
-            get(move || serve(icons_js, "text/javascript; charset=utf-8")),
-        )
-        .route(
-            "/agchart.js",
-            get(move || serve(agchart_js, "text/javascript; charset=utf-8")),
-        )
-        .route(
-            "/app-core.js",
-            get(move || serve(app_core_js, "text/javascript; charset=utf-8")),
-        )
-        .route(
-            "/app-views.js",
-            get(move || serve(app_views_js, "text/javascript; charset=utf-8")),
-        )
-        .route(
-            "/app-subscription.js",
-            get(move || serve(app_subscription_js, "text/javascript; charset=utf-8")),
-        )
-        .route(
-            "/app-hero.js",
-            get(move || serve(app_hero_js, "text/javascript; charset=utf-8")),
-        )
-        .route(
-            "/app-logs.js",
-            get(move || serve(app_logs_js, "text/javascript; charset=utf-8")),
-        )
-        .route(
-            "/app-settings.js",
-            get(move || serve(app_settings_js, "text/javascript; charset=utf-8")),
-        )
-        .route(
-            "/style.css",
-            get(move || serve(style_css, "text/css; charset=utf-8")),
-        )
-        .route(
-            "/tokens.css",
-            get(move || serve(tokens_css, "text/css; charset=utf-8")),
-        )
-        .route(
-            "/components.css",
-            get(move || serve(components_css, "text/css; charset=utf-8")),
-        )
+        );
+    for (path, content) in spa.files {
+        let ct = content_type_of(path);
+        r = r.route(&format!("/{path}"), get(move || serve(content, ct)));
+    }
+    r
 }
 
 // ==================== unified response body ====================
