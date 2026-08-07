@@ -11,9 +11,8 @@ pub struct ProxyStatus {
 }
 
 /// Shared start-local-proxy logic (reused by the start_proxy command / proxy_power_toggle):
-/// engages the system proxy per the system_proxy role preference (idempotent; the snapshot is never overwritten twice).
-/// Locked mode (sysproxy_lock) counts as managed too: the patrol would reclaim within 30s anyway,
-/// engaging here keeps the takeover immediate and the snapshot semantics identical.
+/// engages the system proxy whenever it is managed (system-proxy preference / locked mode / TUN;
+/// idempotent — the snapshot is never overwritten twice).
 pub(crate) async fn start_proxy_inner(app: &tauri::AppHandle, state: &State<'_, AppState>, port: u16) -> Result<u16, String> {
     if !state.roles.lock().await.client {
         return Err("扇入已停用，请在首页开启".into());
@@ -22,7 +21,7 @@ pub(crate) async fn start_proxy_inner(app: &tauri::AppHandle, state: &State<'_, 
     crate::refresh_tray_icon(app);
     let managed = {
         let r = state.roles.lock().await;
-        r.system_proxy || r.sysproxy_lock
+        crate::sysproxy::managed(&r)
     };
     if managed {
         let server = expected_sysproxy(state);
@@ -32,14 +31,14 @@ pub(crate) async fn start_proxy_inner(app: &tauri::AppHandle, state: &State<'_, 
     Ok(state.client.proxy_port())
 }
 
-/// Shared stop-local-proxy logic: restores the system proxy whenever it is managed (preference on,
-/// locked mode, or both) — the system proxy must never be left pointing at a dead port;
+/// Shared stop-local-proxy logic: restores the system proxy whenever it is managed (system-proxy
+/// preference / locked mode / TUN) — the system proxy must never be left pointing at a dead port;
 /// the mode preference is kept, so the next start takes over automatically.
 pub(crate) async fn stop_proxy_inner(app: &tauri::AppHandle, state: &State<'_, AppState>) -> Result<(), String> {
     state.client.stop_proxy().await;
     let managed = {
         let r = state.roles.lock().await;
-        r.system_proxy || r.sysproxy_lock
+        crate::sysproxy::managed(&r)
     };
     if managed {
         let _ = tokio::task::spawn_blocking(sysproxy::disengage).await;

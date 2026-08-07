@@ -128,6 +128,47 @@ pub(crate) fn map_err<E: std::fmt::Display>(e: E) -> String {
     e.to_string()
 }
 
+/// Parse the watchdog invocation: `anet-gui.exe --sysproxy-watchdog <pid>` → Some(pid).
+#[cfg(windows)]
+fn watchdog_pid(args: &[String]) -> Option<u32> {
+    if args.get(1).map(String::as_str) != Some("--sysproxy-watchdog") {
+        return None;
+    }
+    args.get(2).and_then(|s| s.parse::<u32>().ok()).filter(|p| *p != 0)
+}
+
+/// Headless restore-watchdog entry (Windows only): wait for the parent process to exit, then restore
+/// the system proxy if a management snapshot is still pending (parent killed / crashed / terminated
+/// at shutdown or logoff without disengaging). Returns true when the process ran as the watchdog and
+/// must exit without starting the GUI.
+#[cfg(windows)]
+pub fn sysproxy_watchdog_main() -> bool {
+    let args: Vec<String> = std::env::args().collect();
+    let Some(pid) = watchdog_pid(&args) else {
+        return false;
+    };
+    wait_for_pid_exit(pid);
+    let _ = sysproxy::cleanup_if_pending();
+    true
+}
+
+/// Block until the given process exits (returns immediately when the pid is already gone).
+#[cfg(windows)]
+fn wait_for_pid_exit(pid: u32) {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, WaitForSingleObject, INFINITE, PROCESS_SYNCHRONIZE,
+    };
+    unsafe {
+        let h = OpenProcess(PROCESS_SYNCHRONIZE, 0, pid);
+        if h.is_null() {
+            return; // already dead (or access denied): proceed straight to the restore check
+        }
+        WaitForSingleObject(h, INFINITE);
+        CloseHandle(h);
+    }
+}
+
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -394,19 +435,50 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building AgileNet desktop");
     app.run(|app_handle: &tauri::AppHandle, event: tauri::RunEvent| {
-        // §2.6 Exit GUI (TUN mode): stop the kernel (mihomo exit auto-cleans the TUN adapter and routes)
-        // + restore the system proxy snapshot; the event callback runs on the main thread, block_on is safe
+        // Exit cleanup: stop the kernel in TUN mode (mihomo exit auto-cleans the TUN adapter and routes)
+        // and restore the system proxy whenever it is managed (system-proxy preference / locked mode /
+        // TUN) — every quit path funnels through here (tray quit, menu quit, app.exit from the elevated
+        // relaunch, etc.), and missing the restore would leave the system pointing at a dead port with
+        // the machine offline. The event callback runs on the main thread, block_on is safe.
         if let tauri::RunEvent::ExitRequested { .. } = event {
             let state = app_handle.state::<AppState>();
-            let tun_on =
-                tauri::async_runtime::block_on(async { state.roles.lock().await.tun_mode });
+            let (tun_on, managed) = tauri::async_runtime::block_on(async {
+                let r = state.roles.lock().await;
+                (r.tun_mode, sysproxy::managed(&r))
+            });
             if tun_on {
                 let kernel = state.kernel.clone();
                 let _ = tauri::async_runtime::block_on(async move {
                     tokio::time::timeout(std::time::Duration::from_secs(5), kernel.stop()).await
                 });
+            }
+            if managed {
                 let _ = sysproxy::disengage();
             }
         }
     });
+}
+
+#[cfg(all(test, windows))]
+mod watchdog_args_tests {
+    #[test]
+    fn watchdog_pid_parsing() {
+        use super::watchdog_pid;
+        let exe = "anet-gui.exe".to_string();
+        assert_eq!(watchdog_pid(&[exe.clone()]), None);
+        assert_eq!(watchdog_pid(&[exe.clone(), "--sysproxy-watchdog".into()]), None);
+        assert_eq!(
+            watchdog_pid(&[exe.clone(), "--sysproxy-watchdog".into(), "70308".into()]),
+            Some(70308)
+        );
+        assert_eq!(
+            watchdog_pid(&[exe.clone(), "--sysproxy-watchdog".into(), "0".into()]),
+            None
+        );
+        assert_eq!(
+            watchdog_pid(&[exe.clone(), "--sysproxy-watchdog".into(), "abc".into()]),
+            None
+        );
+        assert_eq!(watchdog_pid(&[exe, "--other-flag".into(), "123".into()]), None);
+    }
 }

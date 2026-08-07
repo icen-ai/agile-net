@@ -805,10 +805,10 @@ pub(crate) async fn uninstall_app(
     state.client.disconnect_all().await;
     state.client.stop_proxy().await;
 
-    // System proxy is managed (including auto-management in TUN mode): restore the system proxy before uninstall
+    // System proxy is managed (system-proxy preference / locked mode / TUN auto-management): restore it before uninstall
     {
         let r = state.roles.lock().await;
-        if r.system_proxy || r.tun_mode {
+        if sysproxy::managed(&r) {
             drop(r);
             let _ = tokio::task::spawn_blocking(sysproxy::disengage).await;
         }

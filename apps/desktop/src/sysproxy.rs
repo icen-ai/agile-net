@@ -279,6 +279,7 @@ pub fn engage(server: &str) -> Result<(), String> {
     }
     imp::set(server)?;
     roles::audit("gui.sysproxy_engage", serde_json::json!({"server": server}));
+    ensure_watchdog();
     Ok(())
 }
 
@@ -323,5 +324,70 @@ pub fn reclaim(server: &str) -> Result<(), String> {
     }
     imp::set(server)?;
     roles::audit("gui.sysproxy_reclaim", serde_json::json!({"server": server}));
+    ensure_watchdog();
     Ok(())
+}
+
+// ==================== Exit-path recovery ====================
+
+/// Whether the system proxy is (or should be) under our management: the explicit system-proxy
+/// preference, locked mode (patrol auto-reclaims), or TUN mode (side effects engage it).
+/// Every exit/uninstall path must disengage when this holds — otherwise the system is left
+/// pointing at a dead port and the machine goes offline.
+pub(crate) fn managed(r: &roles::RoleSettings) -> bool {
+    r.system_proxy || r.sysproxy_lock || r.tun_mode
+}
+
+/// Spawn the detached restore watchdog once per process (`--sysproxy-watchdog <pid>` headless mode):
+/// it waits for THIS process to die, then restores the system proxy if a management snapshot is
+/// still on disk — i.e. only when we were killed / crashed / force-terminated without disengaging
+/// (incl. Windows shutdown/logoff terminating the process). A clean exit deletes the snapshot
+/// first, so the watchdog then does nothing and exits.
+#[cfg(windows)]
+pub(crate) fn ensure_watchdog() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static STARTED: AtomicBool = AtomicBool::new(false);
+    if STARTED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    let mut cmd = std::process::Command::new(exe);
+    cmd.arg("--sysproxy-watchdog")
+        .arg(std::process::id().to_string());
+    use std::os::windows::process::CommandExt;
+    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW: debug builds are console-subsystem
+    if let Err(e) = cmd.spawn() {
+        tracing::warn!(error = %e, "failed to spawn sysproxy restore watchdog");
+    }
+}
+
+#[cfg(not(windows))]
+pub(crate) fn ensure_watchdog() {}
+
+#[cfg(test)]
+mod tests {
+    /// The managed predicate gates every exit/uninstall disengage path: it must cover the explicit
+    /// system-proxy preference, locked mode, and TUN mode — a mode escaping it strands the machine
+    /// on a dead proxy port (offline) after quit.
+    #[test]
+    fn managed_covers_all_takeover_modes() {
+        let base = crate::roles::RoleSettings {
+            system_proxy: false,
+            sysproxy_lock: false,
+            tun_mode: false,
+            ..Default::default()
+        };
+        assert!(!super::managed(&base));
+        for (sp, lock, tun) in [(true, false, false), (false, true, false), (false, false, true)] {
+            let r = crate::roles::RoleSettings {
+                system_proxy: sp,
+                sysproxy_lock: lock,
+                tun_mode: tun,
+                ..base.clone()
+            };
+            assert!(super::managed(&r), "managed must hold for sp={sp} lock={lock} tun={tun}");
+        }
+    }
 }
