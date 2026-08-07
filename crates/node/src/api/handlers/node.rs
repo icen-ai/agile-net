@@ -484,6 +484,7 @@ async fn handle_ws(mut socket: WebSocket, state: ApiState) {
         .listener
         .as_ref()
         .map(|l| l.subscribe_events());
+    let mut admin_rx = state.runtime.admin_events.subscribe();
 
     let mut ticker = tokio::time::interval(std::time::Duration::from_secs(30));
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -548,7 +549,19 @@ async fn handle_ws(mut socket: WebSocket, state: ApiState) {
                         "time": chrono::Utc::now().to_rfc3339(),
                         "data": { "node_id": node_id, "label": label },
                     }),
+                    Some(PeerEvent::AuthRejected { ip, node_id, device_fp, reason_code }) => json!({
+                        "type": "auth.rejected",
+                        "time": chrono::Utc::now().to_rfc3339(),
+                        "data": { "ip": ip, "node_id": node_id, "device_fp": device_fp, "reason_code": reason_code },
+                    }),
                     None => break,
+                }
+            }
+            admin_evt = admin_rx.recv() => {
+                match admin_evt {
+                    Ok(v) => v,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(_) => break,
                 }
             }
             _ = ticker.tick() => {

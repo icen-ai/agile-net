@@ -252,6 +252,8 @@ impl ChannelOpener for DelegatedOpener {
                         target_port: 0,
                         groups: Vec::new(),
                         e2e: Some(env),
+                        // the relay stamps the proven fp (M3-T2); consumers never self-assert it
+                        device_fp: String::new(),
                     };
                     let payload = serde_json::to_vec(&open)
                         .map_err(|e| agile_net_core::error::Error::Protocol(e.to_string()))?;

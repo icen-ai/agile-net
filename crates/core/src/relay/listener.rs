@@ -10,7 +10,7 @@
 use crate::error::{Error, Result};
 use crate::proto::frame::{Frame, FrameType};
 use crate::proto::message::{
-    AuthKind, AuthRequest, Concurrency, FailReason, OpenChannel, PROTOCOL_VERSION,
+    AuthKind, AuthRequest, Concurrency, FailReason, OpenChannel, OpenFailed, PROTOCOL_VERSION,
     PROTOCOL_VERSION_FLOW_CONTROL, reason,
 };
 use crate::proxy::router::{Outbound, ProxyRouter};
@@ -212,7 +212,39 @@ pub enum PeerEvent {
     /// Federation P2: a fan-out endpoint registered/revoked a delegated token on its session.
     DelegationRegistered { node_id: String, label: String },
     DelegationRevoked { node_id: String, label: String },
+    /// Auth rejection with a structured reason (node.md M3: revoked-device red alarm / admin
+    /// visibility into proof failures). Emitted after the AuthFail penalty path is taken.
+    AuthRejected {
+        ip: String,
+        node_id: String,
+        device_fp: String,
+        reason_code: String,
+    },
 }
+
+/// One live session's row for the M3 session tables: device/connection metadata plus live
+/// counters from the mux handle.
+#[derive(Debug, Clone)]
+pub struct SessionInfo {
+    pub meta: SessionMeta,
+    /// Session-scoped counters (up = peer -> us, down = us -> peer)
+    pub bytes_up: u64,
+    pub bytes_down: u64,
+    /// Open channels right now
+    pub channels: usize,
+}
+
+/// Device gate decision (node.md M3-T2): consulted at auth (Deny = reject with device_revoked)
+/// and per Open (Pending = blocked until certification when the policy is 'block').
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeviceGate {
+    Allow,
+    Pending,
+    Deny,
+}
+
+/// Device-gate hook injected by the node layer (device_registry state cache).
+pub type DeviceGateHook = Arc<dyn Fn(&str) -> DeviceGate + Send + Sync>;
 
 /// Connected node session
 pub struct PeerSession {
@@ -301,7 +333,7 @@ pub struct RelayListener {
     routes: Arc<arc_swap::ArcSwap<AdvertisedRoutes>>,
     /// Online consumer sessions (session key -> session handle list, for online checks and forced
     /// disconnect; delegated consumers key on `delegated:<token_hash>:<node_id>`)
-    clients: Arc<DashMap<String, Vec<Arc<MuxSession>>>>,
+    clients: Arc<DashMap<String, Vec<(String, Arc<MuxSession>)>>>,
     /// Proven device identity + connection metadata, keyed by unique session id (M3 session
     /// tables); entries die with their session
     session_meta: Arc<DashMap<String, SessionMeta>>,
@@ -316,6 +348,11 @@ pub struct RelayListener {
     transit: Option<Arc<TransitMeter>>,
     /// Session bandwidth limit provider: returns the bytes/sec cap per authenticated identity (None = unlimited)
     rate_limit_provider: Option<RateLimitProvider>,
+    /// Device gate (node.md M3-T2): consulted at auth (Deny -> device_revoked reject) and per
+    /// Open (Pending/Deny -> OpenFail). None = no certification enforcement (tests)
+    device_gate: Option<DeviceGateHook>,
+    /// Pending-session appeal sink (PendingNote ctrl uplink; node layer files approval messages)
+    pending_note_hook: Option<Arc<dyn Fn(String, String) + Send + Sync>>,
 }
 
 impl RelayListener {
@@ -373,6 +410,8 @@ impl RelayListener {
             max_auth_failures_per_minute: DEFAULT_MAX_AUTH_FAILURES_PER_MINUTE,
             transit: None,
             rate_limit_provider: None,
+            device_gate: None,
+            pending_note_hook: None,
         }
     }
 
@@ -386,6 +425,19 @@ impl RelayListener {
     /// the peer renders it as the upstream identity badge).
     pub fn with_node_id(mut self, node_id: String) -> Self {
         self.node_id = node_id;
+        self
+    }
+
+    /// Device gate (node.md M3-T2): consulted at auth (Deny -> device_revoked reject) and per
+    /// Open (Pending -> pending_approval block / Deny -> device_revoked fail-closed).
+    pub fn with_device_gate(mut self, gate: DeviceGateHook) -> Self {
+        self.device_gate = Some(gate);
+        self
+    }
+
+    /// Pending-session appeal sink (PendingNote ctrl uplink: (session_key, body)).
+    pub fn with_pending_note_hook(mut self, hook: Arc<dyn Fn(String, String) + Send + Sync>) -> Self {
+        self.pending_note_hook = Some(hook);
         self
     }
 
@@ -594,6 +646,11 @@ impl RelayListener {
             .unwrap_or(false)
     }
 
+    /// Whether a fan-in node session with the given node_id is online.
+    pub fn is_peer_online(&self, node_id: &str) -> bool {
+        self.peers.contains_key(node_id)
+    }
+
     /// Send a session notice (reason + one-time message) right before a forced close; the write
     /// is flushed first so the peer reliably sees WHY the session died (M4 client notification).
     async fn notify_and_shutdown(mux: &Arc<MuxSession>, reason_code: &str, message: &str) {
@@ -617,7 +674,7 @@ impl RelayListener {
         };
         self.session_meta.retain(|_, m| m.session_key != session_key);
         let count = sessions.len();
-        for mux in sessions {
+        for (_, mux) in sessions {
             Self::notify_and_shutdown(&mux, reason_code, message).await;
         }
         let _ = self.events.send(PeerEvent::ClientDisconnected {
@@ -676,6 +733,63 @@ impl RelayListener {
     pub fn session_metas(&self) -> Vec<SessionMeta> {
         self.session_meta.iter().map(|e| e.value().clone()).collect()
     }
+
+    /// Live session inventory for the M3 session tables: each session's metadata joined with
+    /// its live mux counters (per-session traffic + open channel count).
+    pub fn sessions_detail(&self) -> Vec<SessionInfo> {
+        let mut out = Vec::new();
+        for entry in self.clients.iter() {
+            for (sid, mux) in entry.value() {
+                if let Some(meta) = self.session_meta.get(sid) {
+                    let (up, down) = mux.traffic();
+                    out.push(SessionInfo {
+                        meta: meta.clone(),
+                        bytes_up: up,
+                        bytes_down: down,
+                        channels: mux.channel_count(),
+                    });
+                }
+            }
+        }
+        for p in self.peers.iter() {
+            let (up, down) = p.mux.traffic();
+            for m in self.session_meta.iter() {
+                if m.session_key == *p.key() {
+                    out.push(SessionInfo {
+                        meta: m.clone(),
+                        bytes_up: up,
+                        bytes_down: down,
+                        channels: p.mux.channel_count(),
+                    });
+                    break;
+                }
+            }
+        }
+        out
+    }
+
+    /// Force-disconnect EVERY session of one device (fan-in node peers and delegated consumers
+    /// alike); a SessionNotice with the given reason precedes each close. Returns sessions closed.
+    pub async fn disconnect_device(&self, device_fp: &str, reason_code: &str, message: &str) -> usize {
+        let keys: std::collections::HashSet<String> = self
+            .session_meta
+            .iter()
+            .filter(|m| m.device_fp == device_fp)
+            .map(|m| m.session_key.clone())
+            .collect();
+        let mut n = 0;
+        for key in keys {
+            if self.peers.contains_key(&key) {
+                if self.disconnect_peer(&key, reason_code, message).await {
+                    n += 1;
+                }
+            } else {
+                n += self.disconnect_client(&key, reason_code, message).await;
+            }
+        }
+        n
+    }
+
 
     /// Resolve an entrust word (en_xxx opaque ID) to its issuer node_id (federation P3 entrust
     /// mode; None = unknown word). Session-scoped like the delegated registry.
@@ -915,6 +1029,12 @@ impl RelayListener {
             None => {
                 warn!(peer = %peer_addr, node_id = %auth_req.node_id, "auth failed: invalid device proof");
                 self.record_auth_failure(&peer_addr.ip());
+                let _ = self.events.send(PeerEvent::AuthRejected {
+                    ip: peer_addr.ip().to_string(),
+                    node_id: auth_req.node_id.clone(),
+                    device_fp: String::new(),
+                    reason_code: reason::DEVICE_PROOF_INVALID.into(),
+                });
                 let delay_ms = 150 + rand::random::<u64>() % 250;
                 tokio::time::sleep(Duration::from_millis(delay_ms)).await;
                 let fail = FailReason {
@@ -928,6 +1048,29 @@ impl RelayListener {
                 return Ok(None);
             }
         };
+
+        // Device gate at auth (M3-T2): a revoked device is rejected outright (device_revoked);
+        // a pending device authenticates and is gated per-Open by the issuer's policy instead.
+        if let Some(gate) = &self.device_gate
+            && gate(&device_meta.device_fp) == DeviceGate::Deny
+        {
+            warn!(peer = %peer_addr, node_id = %auth_req.node_id, device = %device_meta.device_fp, "auth rejected: device revoked");
+            let _ = self.events.send(PeerEvent::AuthRejected {
+                ip: peer_addr.ip().to_string(),
+                node_id: auth_req.node_id.clone(),
+                device_fp: device_meta.device_fp.clone(),
+                reason_code: reason::DEVICE_REVOKED.into(),
+            });
+            let fail = FailReason {
+                reason_code: reason::DEVICE_REVOKED.into(),
+                message: String::new(),
+            };
+            let payload = serde_json::to_vec(&fail).unwrap_or_default();
+            let _ = Frame::new(FrameType::AuthFail, 0, Bytes::from(payload))
+                .write_to(&mut tls_stream)
+                .await;
+            return Ok(None);
+        }
 
         let token_hash = sha256_hex(auth_req.token.as_bytes());
         // node/relay tokens resolve through the injected validator hook; consumer auths
@@ -1385,14 +1528,22 @@ impl RelayListener {
         let acl_router = build_acl_router(&acl);
         let acl_state = Arc::new(arc_swap::ArcSwap::from_pointee((acl, acl_router)));
         let (open_tx, mut open_rx) = tokio::sync::mpsc::channel::<OpenRequest>(64);
-        let (mux, reader_handle) =
-            MuxSession::start(tls_stream, 1, SessionEvents::open(open_tx), flow_control, limiter);
+        // pending-session appeals ride the ctrl plane (PendingNote uplink, M3-T2/M4-T3)
+        let (ctrl_tx, mut ctrl_rx) = tokio::sync::mpsc::channel::<Bytes>(16);
+        let (mux, reader_handle) = MuxSession::start(
+            tls_stream,
+            1,
+            SessionEvents::open_and_ctrl(open_tx, ctrl_tx),
+            flow_control,
+            limiter,
+        );
 
+        let session_id = new_session_id();
+        let gate_fp = device_meta.device_fp.clone();
         self.clients
             .entry(session_key.clone())
             .or_default()
-            .push(mux.clone());
-        let session_id = new_session_id();
+            .push((session_id.clone(), mux.clone()));
         self.session_meta.insert(
             session_id.clone(),
             SessionMeta {
@@ -1410,33 +1561,51 @@ impl RelayListener {
             session_key: session_key.clone(),
         });
 
-        // handle this consumer's Open requests until the connection drops
-        // (open_tx is released when the reader task ends and recv returns None)
+        // handle this consumer's Open requests + ctrl uplink (pending appeals) until the
+        // connection drops (open_tx is released when the reader task ends and recv returns None)
         // concurrency cap: same as node sessions, guards against peer Open floods exhausting task/connection resources
         let open_permits = Arc::new(Semaphore::new(MAX_INBOUND_OPENS_PER_SESSION));
-        while let Some(req) = open_rx.recv().await {
-            let Ok(permit) = open_permits.clone().try_acquire_owned() else {
-                debug!(session = %session_key, channel = req.channel_id, "inbound open limit reached, rejecting");
-                let _ = mux
-                    .send_frame(Frame::empty(FrameType::OpenFail, req.channel_id))
-                    .await;
-                continue;
-            };
-            let this = self.clone();
-            let mux = mux.clone();
-            let acl_state = acl_state.clone();
-            let token_hash = token_hash.clone();
-            tokio::spawn(async move {
-                let _permit = permit; // permit held by the task until the bridge ends
-                this.handle_delegated_open(mux, req, acl_state, token_hash).await;
-            });
+        loop {
+            tokio::select! {
+                req = open_rx.recv() => {
+                    let Some(req) = req else { break };
+                    let Ok(permit) = open_permits.clone().try_acquire_owned() else {
+                        debug!(session = %session_key, channel = req.channel_id, "inbound open limit reached, rejecting");
+                        let _ = mux
+                            .send_frame(Frame::empty(FrameType::OpenFail, req.channel_id))
+                            .await;
+                        continue;
+                    };
+                    let this = self.clone();
+                    let mux = mux.clone();
+                    let acl_state = acl_state.clone();
+                    let token_hash = token_hash.clone();
+                    let device_fp = gate_fp.clone();
+                    tokio::spawn(async move {
+                        let _permit = permit; // permit held by the task until the bridge ends
+                        this.handle_delegated_open(mux, req, acl_state, token_hash, device_fp).await;
+                    });
+                }
+                payload = ctrl_rx.recv() => {
+                    let Some(payload) = payload else { break };
+                    if let Ok(crate::proto::message::CtrlMessage::PendingNote { body }) =
+                        serde_json::from_slice::<crate::proto::message::CtrlMessage>(&payload)
+                    {
+                        // pending-session appeal uplink: the node layer files it onto the
+                        // approval item (message cap enforced there, ≤3)
+                        if let Some(hook) = &self.pending_note_hook {
+                            hook(session_key.clone(), body);
+                        }
+                    }
+                }
+            }
         }
 
         let _ = reader_handle.await;
         // remove this session from the session table (may already have been cleared by disconnect_client)
         self.session_meta.remove(&session_id);
         if let Some(mut sessions) = self.clients.get_mut(&session_key) {
-            sessions.retain(|m| !Arc::ptr_eq(m, &mux));
+            sessions.retain(|(_, m)| !Arc::ptr_eq(m, &mux));
             let empty = sessions.is_empty();
             drop(sessions);
             if empty {
@@ -1458,6 +1627,7 @@ impl RelayListener {
         req: OpenRequest,
         acl_state: Arc<arc_swap::ArcSwap<(Vec<String>, Arc<ProxyRouter>)>>,
         token_hash: String,
+        device_fp: String,
     ) {
         // Re-resolve the token registration per open: rule edits refresh the router in place,
         // a vanished registration (revoked / issuer session gone) fails closed at once.
@@ -1468,6 +1638,27 @@ impl RelayListener {
                 .await;
             return;
         };
+        // Device gate per open (M3-T2), DIRECT-ENTRY tokens only (the local registry proves this
+        // node is the issuer and can certify). Relay-transit registrations defer to the issuer:
+        // the proven device_fp is stamped on the forwarded Open and the issuer's connector
+        // enforces its own certification policy on it (fail closed).
+        if self.local_delegated.contains_key(&token_hash)
+            && let Some(gate) = &self.device_gate
+        {
+            let decision = gate(&device_fp);
+            if decision != DeviceGate::Allow {
+                let rc = if decision == DeviceGate::Deny {
+                    reason::DEVICE_REVOKED
+                } else {
+                    reason::PENDING_APPROVAL
+                };
+                let payload = serde_json::to_vec(&OpenFailed { reason: rc.into() }).unwrap_or_default();
+                let _ = mux
+                    .send_frame(Frame::new(FrameType::OpenFail, req.channel_id, Bytes::from(payload)))
+                    .await;
+                return;
+            }
+        }
         let issuer = entry.issuer.clone();
         let groups = entry.groups.clone();
         let hints: Vec<String> = entry.hint_map.iter().map(|h| h.hint.clone()).collect();
@@ -1505,6 +1696,9 @@ impl RelayListener {
         // enforcement — route_open drops the stamp again unless the next hop is the issuer
         // session itself. E2E envelopes pass through blind (kid/hint consistency checked)
         let mut open_req = open_req;
+        // stamp the session's PROVEN device_fp for the issuer-side certification gate (the
+        // consumer never sets this field itself — it is always overwritten here)
+        open_req.device_fp = device_fp.clone();
         match &open_req.e2e {
             Some(e2e) => {
                 // kid is an exact 12-hex match against the session's token hash

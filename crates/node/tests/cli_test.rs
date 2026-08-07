@@ -162,6 +162,8 @@ async fn cli_full_workflow_against_live_api() {
         client_proxy_slot: Default::default(),
         transit_meter: agile_net_core::relay::transit::TransitMeter::new(),
         device: std::sync::Arc::new(agile_net_core::device::DeviceIdentity::ephemeral()),
+        device_gate: None,
+        admin_events: tokio::sync::broadcast::channel(4).0,
     });
     let state = ApiState::new(db.clone(), jwt, runtime, "127.0.0.1".into(), 59090, 54430);
     let app = create_app(state);

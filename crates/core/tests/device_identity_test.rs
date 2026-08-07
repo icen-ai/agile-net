@@ -17,7 +17,7 @@ use bytes::Bytes;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::net::TcpStream;
+use tokio::net::{TcpListener, TcpStream};
 
 fn get_free_addr() -> SocketAddr {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -198,6 +198,109 @@ async fn stale_node_session_gets_takeover_notice() {
     }
     mux1.shutdown();
     mux2.shutdown();
+}
+
+#[tokio::test]
+async fn device_gate_blocks_pending_and_rejects_revoked() {
+    // gate state machine for the test: 0=pending 1=certified 2=revoked
+    let gate_state = Arc::new(std::sync::atomic::AtomicU8::new(0));
+    let gs = gate_state.clone();
+    let gate: agile_net_core::relay::listener::DeviceGateHook = Arc::new(move |_fp| {
+        match gs.load(std::sync::atomic::Ordering::Relaxed) {
+            1 => agile_net_core::relay::listener::DeviceGate::Allow,
+            2 => agile_net_core::relay::listener::DeviceGate::Deny,
+            _ => agile_net_core::relay::listener::DeviceGate::Pending,
+        }
+    });
+
+    let addr = get_free_addr();
+    // direct-entry delegated token in the persistent local registry
+    let registry: agile_net_core::relay::listener::DelegatedRegistry =
+        Arc::new(dashmap::DashMap::new());
+    let token_hash = agile_net_core::util::sha256_hex(b"gate-token");
+    registry.insert(
+        token_hash.clone(),
+        agile_net_core::relay::listener::DelegatedToken {
+            issuer: "self".into(),
+            label: "gate-tok".into(),
+            groups: vec![],
+            acl_rules: vec!["127.0.0.0/8".into()],
+            hint_map: vec![],
+            concurrency: Concurrency::Multi,
+            max_sessions: 4,
+        },
+    );
+    let listener = RelayListener::new(addr, "node-psk").unwrap();
+    let listener = Arc::new(
+        listener
+            .with_local_delegated_registry(registry)
+            .with_device_gate(gate),
+    );
+    let l = listener.clone();
+    tokio::spawn(async move {
+        let _ = l.start().await;
+    });
+    tokio::time::sleep(Duration::from_millis(60)).await;
+
+    // dummy target for successful opens
+    let target = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let target_port = target.local_addr().unwrap().port();
+    tokio::spawn(async move { while target.accept().await.is_ok() {} });
+
+    // helper: consumer connect + auth (kind=Client)
+    async fn consumer_mux(addr: SocketAddr) -> Option<Arc<MuxSession>> {
+        let tls = TlsConfigBuilder::new()
+            .allow_self_signed(true)
+            .build_client()
+            .unwrap();
+        let connector = tokio_rustls::TlsConnector::from(tls);
+        let tcp = TcpStream::connect(addr).await.ok()?;
+        let server_name =
+            rustls::pki_types::ServerName::try_from("cdn.cloudflare.com".to_string()).unwrap();
+        let mut stream = connector.connect(server_name, tcp).await.ok()?;
+        let mut auth = AuthRequest {
+            node_id: "gate-consumer".into(),
+            token: "gate-token".into(),
+            kind: AuthKind::Client,
+            advertise: vec![],
+            groups: vec![],
+            version: PROTOCOL_VERSION,
+            my_name: String::new(),
+            device_pubkey: String::new(),
+            device_sig: String::new(),
+        };
+        let challenge = agile_net_core::device::session_challenge(stream.get_ref().1).ok()?;
+        auth.attach_device_proof(&challenge, &DeviceIdentity::ephemeral());
+        Frame::new(FrameType::Auth, 0, Bytes::from(serde_json::to_vec(&auth).unwrap()))
+            .write_to(&mut stream)
+            .await
+            .ok()?;
+        let res = Frame::read_from(&mut stream).await.ok()?;
+        if res.frame_type != FrameType::AuthOk {
+            return None;
+        }
+        let (mux, _r) = MuxSession::start(stream, 2, SessionEvents::default(), true, None);
+        Some(mux)
+    }
+
+    // pending: auth passes, opens are blocked with pending_approval
+    let mux = consumer_mux(addr).await.expect("pending device still authenticates");
+    let payload = serde_json::to_vec(&agile_net_core::proto::message::OpenChannel::new("127.0.0.1", target_port)).unwrap();
+    let denied = mux.open_channel(Bytes::from(payload)).await;
+    assert!(denied.is_err(), "pending device open must be blocked");
+    mux.shutdown();
+
+    // certified: opens flow
+    gate_state.store(1, std::sync::atomic::Ordering::Relaxed);
+    let mux = consumer_mux(addr).await.unwrap();
+    let payload = serde_json::to_vec(&agile_net_core::proto::message::OpenChannel::new("127.0.0.1", target_port)).unwrap();
+    let ch = mux.open_channel(Bytes::from(payload)).await;
+    assert!(ch.is_ok(), "certified device open must pass: {:?}", ch.err());
+    mux.shutdown();
+
+    // revoked: auth itself rejected with device_revoked
+    gate_state.store(2, std::sync::atomic::Ordering::Relaxed);
+    assert!(consumer_mux(addr).await.is_none(), "revoked device must not authenticate");
 }
 
 #[tokio::test]

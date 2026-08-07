@@ -121,18 +121,26 @@ const APPROVAL_COLS: &str =
 impl Database {
     // ==================== Device registry ====================
 
-    /// Handshake hook: record a proven device sighting. First sight inserts a `pending` row;
-    /// later sightings only refresh last_seen / latest credential / self-declared name.
-    /// Certification state is NEVER touched here.
+    /// Handshake hook: record a proven device sighting. First sight inserts a `pending` row
+    /// (returns true); later sightings only refresh last_seen / latest credential / self-declared
+    /// name (returns false). Certification state is NEVER touched here.
     pub fn touch_device(
         &self,
         device_fp: &str,
         pubkey_b64: &str,
         token_hash: &str,
         my_name: &str,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let conn = self.conn();
         let now = now_rfc3339();
+        let exists: bool = conn
+            .query_row(
+                "SELECT COUNT(1) FROM device_registry WHERE device_fp = ?1",
+                params![device_fp],
+                |r| r.get::<_, i64>(0),
+            )
+            .map_err(db_err)?
+            > 0;
         conn.execute(
             "INSERT INTO device_registry (id, device_fp, pubkey, token_hash, my_name, first_seen, last_seen)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)
@@ -142,7 +150,7 @@ impl Database {
             params![uuid::Uuid::new_v4().to_string(), device_fp, pubkey_b64, token_hash, my_name, now],
         )
         .map_err(db_err)?;
-        Ok(())
+        Ok(!exists)
     }
 
     pub fn get_device(&self, device_fp: &str) -> Result<Option<DeviceRecord>> {
@@ -482,8 +490,9 @@ mod tests {
     #[test]
     fn device_lifecycle_and_rebind() {
         let db = Database::in_memory().unwrap();
-        // first sight: pending
-        db.touch_device("fp1", "pk1", "th1", "小明-MacBook").unwrap();
+        // first sight: pending (touch returns true on insert)
+        assert!(db.touch_device("fp1", "pk1", "th1", "小明-MacBook").unwrap());
+        assert!(!db.touch_device("fp1", "pk1", "th1", "小明-MacBook").unwrap());
         let d = db.get_device("fp1").unwrap().unwrap();
         assert_eq!(d.state, "pending");
         assert_eq!(d.my_name, "小明-MacBook");

@@ -40,6 +40,7 @@ fn open_channel_extension_roundtrip() {
             hint: "git.internal".into(),
             blob: "AAECAwQ=".into(),
         }),
+        device_fp: String::new(),
     };
     let json = serde_json::to_value(&open).unwrap();
     let back: OpenChannel = serde_json::from_value(json).unwrap();

@@ -114,18 +114,7 @@ impl DeviceIdentity {
     /// OpenSSH `authorized_keys`-format public key line (display/copy only — the private key is
     /// never exported). `ssh-ed25519 <base64> [comment]`.
     pub fn openssh_pubkey(&self, comment: &str) -> String {
-        let mut blob = Vec::with_capacity(51);
-        let kind = b"ssh-ed25519";
-        blob.extend_from_slice(&(kind.len() as u32).to_be_bytes());
-        blob.extend_from_slice(kind);
-        blob.extend_from_slice(&(self.pubkey.len() as u32).to_be_bytes());
-        blob.extend_from_slice(&self.pubkey);
-        let line = format!("ssh-ed25519 {}", base64_encode(&blob));
-        if comment.is_empty() {
-            line
-        } else {
-            format!("{line} {comment}")
-        }
+        openssh_line(&self.pubkey, comment)
     }
 
     /// Load the machine identity from `path`, creating it on first use. An existing but
@@ -150,6 +139,22 @@ impl DeviceIdentity {
 /// device_fp of an arbitrary public key (peer-side binding check: claimed fp vs presented key).
 pub fn fp_of(pubkey: &[u8]) -> String {
     sha256_hex(pubkey)
+}
+
+/// OpenSSH `authorized_keys`-format line of a raw ed25519 public key (display/copy only).
+pub fn openssh_line(pubkey: &[u8], comment: &str) -> String {
+    let mut blob = Vec::with_capacity(51);
+    let kind = b"ssh-ed25519";
+    blob.extend_from_slice(&(kind.len() as u32).to_be_bytes());
+    blob.extend_from_slice(kind);
+    blob.extend_from_slice(&(pubkey.len() as u32).to_be_bytes());
+    blob.extend_from_slice(pubkey);
+    let line = format!("ssh-ed25519 {}", base64_encode(&blob));
+    if comment.is_empty() {
+        line
+    } else {
+        format!("{line} {comment}")
+    }
 }
 
 /// Write the private key with owner-only permissions (0600 on unix; Windows relies on the

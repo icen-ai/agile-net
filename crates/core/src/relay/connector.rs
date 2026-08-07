@@ -125,6 +125,13 @@ pub trait DelegationHooks: Send + Sync {
     fn delegation_upstream(&self, _kid: &str, _node_name: &str) -> Option<DelegationUpstream> {
         None
     }
+
+    /// Device certification gate (node.md M3-T2): the relay stamps the consumer's proven
+    /// device_fp on the Open; the issuer answers Allow/Pending/Deny from its device registry
+    /// (Pending -> pending_approval, Deny -> device_revoked; both fail closed). Default Allow.
+    fn device_open_gate(&self, _kid: Option<&str>, _device_fp: &str) -> crate::relay::listener::DeviceGate {
+        crate::relay::listener::DeviceGate::Allow
+    }
 }
 
 impl From<u8> for ConnectionState {
@@ -728,6 +735,26 @@ impl RelayConnector {
     /// On an Open frame: delegation enforcement (federation P2/P3) -> fan-out restriction ->
     /// downstream routing (multi-hop) -> client tunnel routes (re-advertise) -> local direct connect.
     #[allow(clippy::too_many_arguments)]
+    /// Map a device-gate decision to a wire reason code (None = allowed / not a delegated open).
+    fn device_gate_reason(
+        hooks: &Arc<dyn DelegationHooks>,
+        kid: Option<&str>,
+        device_fp: &str,
+    ) -> Option<&'static str> {
+        if device_fp.is_empty() {
+            return None;
+        }
+        match hooks.device_open_gate(kid, device_fp) {
+            crate::relay::listener::DeviceGate::Allow => None,
+            crate::relay::listener::DeviceGate::Pending => {
+                Some(crate::proto::message::reason::PENDING_APPROVAL)
+            }
+            crate::relay::listener::DeviceGate::Deny => {
+                Some(crate::proto::message::reason::DEVICE_REVOKED)
+            }
+        }
+    }
+
     async fn handle_open(
         mux: Arc<MuxSession>,
         req: OpenRequest,
@@ -756,6 +783,13 @@ impl RelayConnector {
             match &open_req.e2e {
                 Some(env) => match hooks.e2e_unwrap(env) {
                     Ok(Some((payload, cipher))) => {
+                        // device certification gate (relay-stamped fp; uniform fail-closed,
+                        // config/admin channels included)
+                        if let Some(rc) = Self::device_gate_reason(hooks, Some(&env.kid), &open_req.device_fp) {
+                            let p = serde_json::to_vec(&crate::proto::message::OpenFailed { reason: rc.into() }).unwrap_or_default();
+                            mux.send_frame(Frame::new(FrameType::OpenFail, req.channel_id, Bytes::from(p))).await?;
+                            return Ok(());
+                        }
                         // split-tier rule delivery: a config-fetch open is answered locally
                         // with the token's effective rule vocabulary — E2E-sealed like any
                         // payload, never dialed; the working key is the authorization (the
@@ -866,6 +900,12 @@ impl RelayConnector {
                         });
                         mux.send_frame(Frame::empty(FrameType::OpenFail, req.channel_id))
                             .await?;
+                        return Ok(());
+                    }
+                    // device certification gate (relay-stamped fp)
+                    if let Some(rc) = Self::device_gate_reason(hooks, None, &open_req.device_fp) {
+                        let p = serde_json::to_vec(&crate::proto::message::OpenFailed { reason: rc.into() }).unwrap_or_default();
+                        mux.send_frame(Frame::new(FrameType::OpenFail, req.channel_id, Bytes::from(p))).await?;
                         return Ok(());
                     }
                     // transparent tier: per-open group enforcement against local same-named groups

@@ -215,6 +215,15 @@ async fn direct_issue_self_registers_and_consumes() {
         entry.acl_rules
     );
 
+    // M3-T2 default policy blocks pending (uncertified) consumer devices at open; this test
+    // exercises the issuance flow, not certification — allow pending devices (gray flag)
+    issuer
+        .runtime()
+        .device_gate
+        .as_ref()
+        .expect("device gate wired")
+        .set_allow_pending(true);
+
     // the consumer dials the issuer's own listener and reaches the guarded segment
     let a = AgileNetClient::new();
     let state = a

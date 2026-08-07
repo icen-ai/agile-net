@@ -7,9 +7,11 @@
 
 pub mod acl;
 pub mod adoption;
+pub mod approvals;
 pub mod client_role;
 pub mod connectors;
 pub mod delegation;
+pub mod device_gate;
 pub mod rate_limit;
 
 pub use client_role::{ClientRoleConfig, load_client_role_config};
@@ -200,9 +202,16 @@ impl NodeServer {
         // transit meter (shared instrumentation across listener/connector/proxy; data source of the status transit section)
         let transit_meter = TransitMeter::new();
 
+        // admin-plane events bus (approval.new etc.; WS fan-out)
+        let (admin_events_tx, _) = tokio::sync::broadcast::channel::<serde_json::Value>(256);
+
         // 4. Relay Listener
         let mut relay_listener: Option<Arc<RelayListener>> = None;
         let mut cert_fingerprint: Option<String> = None;
+        // device gate + pending-note wiring (filled when the listener is enabled)
+        let mut device_gate_cache: Option<Arc<device_gate::DeviceGateCache>> = None;
+        let listener_slot: Arc<std::sync::OnceLock<Arc<RelayListener>>> =
+            Arc::new(std::sync::OnceLock::new());
         if let Some(listener_cfg) = &config.listener {
             let addr: SocketAddr = listener_cfg.addr.parse()?;
             // federation P2: one registry instance shared by the validator (auth reads) and
@@ -277,11 +286,38 @@ impl NodeServer {
             let listener = {
                 // session rate-limit wiring: relay_token.rate_limit_kbps -> core TokenBucket (B/s)
                 let db_rl = db.clone();
+                // device gate (node.md M3-T2): certification enforcement at auth + per open
+                let gate = device_gate::DeviceGateCache::new(db.clone());
+                gate.load_policy();
+                device_gate_cache = Some(gate.clone());
+                // pending-session appeal uplink: the note hook needs the Arc'd listener (session
+                // meta lookup) — break the construction cycle with a OnceLock filled right after
+                let note_hook = {
+                    let db_notes = db.clone();
+                    let slot = listener_slot.clone();
+                    Arc::new(move |session_key: String, body: String| {
+                        let Some(l) = slot.get() else { return };
+                        let body = body.chars().take(512).collect::<String>();
+                        if body.trim().is_empty() {
+                            return;
+                        }
+                        let Some(meta) = l
+                            .session_metas()
+                            .into_iter()
+                            .find(|m| m.session_key == session_key)
+                        else {
+                            return;
+                        };
+                        crate::service::approvals::file_pending_note(&db_notes, &meta, &body);
+                    }) as Arc<dyn Fn(String, String) + Send + Sync>
+                };
                 let l = RelayListener::with_validator(addr, validator, tls_acceptor)
                     .with_node_id(config.name.clone())
                     .with_transit_meter(transit_meter.clone())
                     .with_delegated_registry(delegated_registry)
                     .with_local_delegated_registry(local_delegated_registry)
+                    .with_device_gate(gate.gate())
+                    .with_pending_note_hook(note_hook)
                     .with_session_rate_limit(move |id, hash| {
                         rate_limit::token_rate_limit_bps(id, hash, &db_rl)
                     });
@@ -312,28 +348,48 @@ impl NodeServer {
                 listener.subscribe_events(),
             ));
             // Device registry hook (node.md M2): every authenticated session carries a proven
-            // device identity — record first/last sightings event-driven (no polling)
+            // device identity — record first/last sightings event-driven (no polling); a FIRST
+            // sight auto-files the certification approval (M3) and notifies the admin plane
             {
                 let db_dev = db.clone();
                 let l_dev = listener.clone();
+                let admin_tx = admin_events_tx.clone();
                 startup.tasks.push(tokio::spawn(async move {
                     use agile_net_core::relay::listener::PeerEvent;
                     let mut rx = l_dev.subscribe_events();
                     while let Ok(evt) = rx.recv().await {
-                        let key = match &evt {
-                            PeerEvent::NodeConnected { node_id } => Some(node_id.as_str()),
-                            PeerEvent::ClientConnected { session_key } => Some(session_key.as_str()),
-                            _ => None,
+                        let (key, is_consumer) = match &evt {
+                            PeerEvent::NodeConnected { node_id } => (node_id.as_str(), false),
+                            PeerEvent::ClientConnected { session_key } => (session_key.as_str(), true),
+                            _ => continue,
                         };
-                        let Some(key) = key else { continue };
                         for m in l_dev.session_metas() {
-                            if m.session_key == key {
+                            if m.session_key != key {
+                                continue;
+                            }
+                            // 认证申请只针对 direct 入口消费设备(本机签发的令牌);relay 中转的
+                            // 消费设备由签发者认证, 本端只落注册表(可见性), 不产生审批噪音
+                            let local_token = l_dev.local_delegated_registry().contains_key(&m.token_hash);
+                            if is_consumer
+                                && local_token
+                                && let Ok(true) =
+                                    db_dev.touch_device(&m.device_fp, &m.pubkey, &m.token_hash, &m.my_name)
+                            {
+                                // first sight: file the certification approval + notify
+                                let id = crate::service::approvals::ensure_device_certify_approval(&db_dev, &m.device_fp);
+                                let _ = admin_tx.send(serde_json::json!({
+                                    "type": "approval.new",
+                                    "time": chrono::Utc::now().to_rfc3339(),
+                                    "data": { "kind": "device_certify", "device_fp": m.device_fp, "approval_id": id },
+                                }));
+                            } else if !is_consumer {
                                 let _ = db_dev.touch_device(&m.device_fp, &m.pubkey, &m.token_hash, &m.my_name);
                             }
                         }
                     }
                 }));
             }
+            let _ = listener_slot.set(listener.clone());
             relay_listener = Some(listener);
         }
 
@@ -389,6 +445,10 @@ impl NodeServer {
             control_api_slot.clone(),
             manageable_registry.clone(),
         );
+        // device certification gate: issuer-side enforcement for relay-entry consumer opens
+        if let Some(g) = &device_gate_cache {
+            connector_manager.delegation_engine().set_device_gate(g.clone());
+        }
         connector_manager.start_all().await;
         startup.connectors = Some(connector_manager.clone());
 
@@ -454,6 +514,8 @@ impl NodeServer {
             client_proxy_slot: opts.client_proxy_slot.clone(),
             transit_meter: transit_meter.clone(),
             device,
+            device_gate: device_gate_cache.clone(),
+            admin_events: admin_events_tx,
         });
 
         // Route hot-reload watcher: rebuild the local proxy router and peer ACL group routers on config_version change.

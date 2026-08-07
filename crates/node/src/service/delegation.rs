@@ -303,6 +303,8 @@ pub struct DelegationEngine {
     keys: arc_swap::ArcSwap<std::collections::HashMap<String, KeyEntry>>,
     groups: arc_swap::ArcSwap<std::collections::HashMap<String, std::sync::Arc<GroupEntry>>>,
     admin_runtime: arc_swap::ArcSwapOption<AdminRuntime>,
+    /// Device certification gate cache (node.md M3-T2; wired at service assembly)
+    device_gate: arc_swap::ArcSwapOption<super::device_gate::DeviceGateCache>,
 }
 
 impl DelegationEngine {
@@ -336,6 +338,12 @@ impl DelegationEngine {
             control_api,
             manageable,
         })));
+    }
+
+    /// Wire the device certification gate (node.md M3-T2): the issuer-side enforcement for
+    /// relay-entry consumer opens (direct-entry opens are gated at the listener).
+    pub fn set_device_gate(&self, gate: std::sync::Arc<super::device_gate::DeviceGateCache>) {
+        self.device_gate.store(Some(gate));
     }
 
     /// Rebuild the kid -> E2E key cache from the DB (call on issue/revoke and at startup).
@@ -405,6 +413,19 @@ impl DelegationEngine {
 }
 
 impl agile_net_core::relay::DelegationHooks for DelegationEngine {
+    /// Device certification gate (node.md M3-T2): relay-entry consumer opens arrive with the
+    /// relay-stamped proven device_fp; answer from the local device registry (fail closed).
+    fn device_open_gate(
+        &self,
+        _kid: Option<&str>,
+        device_fp: &str,
+    ) -> agile_net_core::relay::listener::DeviceGate {
+        let Some(cache) = self.device_gate.load_full() else {
+            return agile_net_core::relay::listener::DeviceGate::Allow;
+        };
+        cache.gate()(device_fp)
+    }
+
     fn group_acl_allows(&self, groups: &[String], target: &str) -> Option<bool> {
         let cache = self.groups.load();
         let mut any_known = false;

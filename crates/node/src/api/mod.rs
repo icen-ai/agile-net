@@ -46,6 +46,11 @@ pub struct NodeRuntime {
     /// This machine's device identity (node.md M2): connectors prove it at the handshake; the
     /// admin identity card renders device_fp + OpenSSH pubkey from it
     pub device: Arc<agile_net_core::device::DeviceIdentity>,
+    /// Device gate cache (M3-T2): certification state for the data plane + the pending policy;
+    /// None when the relay listener is disabled
+    pub device_gate: Option<Arc<crate::service::device_gate::DeviceGateCache>>,
+    /// Admin-plane events bus (approval.new / device state changes; WS subscribers)
+    pub admin_events: tokio::sync::broadcast::Sender<serde_json::Value>,
 }
 
 impl NodeRuntime {
@@ -426,6 +431,51 @@ pub fn create_app(state: ApiState) -> Router {
             post(handlers::connectors::disable_connector),
         )
         .route("/api/v1/admin/node/events", any(handlers::node::events_ws))
+        // ---- Admin: Sessions / Devices / Approvals (node.md M3) ----
+        .route(
+            "/api/v1/admin/sessions",
+            get(handlers::sessions::list_sessions),
+        )
+        .route(
+            "/api/v1/admin/sessions/kick",
+            post(handlers::sessions::kick_session),
+        )
+        .route(
+            "/api/v1/admin/sessions/kick_token",
+            post(handlers::sessions::kick_token),
+        )
+        .route(
+            "/api/v1/admin/devices",
+            get(handlers::devices::list_devices),
+        )
+        .route(
+            "/api/v1/admin/devices/policy",
+            get(handlers::devices::get_policy).put(handlers::devices::put_policy),
+        )
+        .route(
+            "/api/v1/admin/devices/rebind",
+            post(handlers::devices::rebind_device),
+        )
+        .route(
+            "/api/v1/admin/devices/{fp}",
+            get(handlers::devices::get_device),
+        )
+        .route(
+            "/api/v1/admin/devices/{fp}/certify",
+            post(handlers::devices::certify_device),
+        )
+        .route(
+            "/api/v1/admin/devices/{fp}/revoke",
+            post(handlers::devices::revoke_device),
+        )
+        .route(
+            "/api/v1/admin/approvals",
+            get(handlers::approvals::list_approvals),
+        )
+        .route(
+            "/api/v1/admin/approvals/{id}/decide",
+            post(handlers::approvals::decide_approval),
+        )
         // ---- Admin: Federation (authorizable pool + one-click adoption) ----
         .route(
             "/api/v1/admin/federation/offered",

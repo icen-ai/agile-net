@@ -182,6 +182,11 @@ pub struct OpenChannel {
     /// and the real target lives encrypted inside `blob` (only issuer and client can read it).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub e2e: Option<E2eOpen>,
+    /// Consumer device fingerprint (node.md M3-T2): stamped by the relay listener from the
+    /// session's PROVEN identity when forwarding a delegated Open; the issuer enforces its
+    /// certification policy on it. Never accepted from a consumer's own hand.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub device_fp: String,
 }
 
 impl OpenChannel {
@@ -192,6 +197,7 @@ impl OpenChannel {
             target_port,
             groups: Vec::new(),
             e2e: None,
+            device_fp: String::new(),
         }
     }
 }

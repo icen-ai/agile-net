@@ -1,15 +1,18 @@
 //! Handler collection
 
 pub mod admins;
+pub mod approvals;
 pub mod audit;
 pub mod auth;
 pub mod connectors;
 pub mod delegation;
+pub mod devices;
 pub mod federation;
 pub mod groups;
 pub mod node;
 pub mod relay_tokens;
 pub mod rules;
+pub mod sessions;
 pub mod tool;
 
 use crate::api::ApiState;
