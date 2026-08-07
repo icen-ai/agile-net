@@ -430,6 +430,10 @@ pub fn create_app(state: ApiState) -> Router {
             "/api/v1/admin/connectors/{id}/disable",
             post(handlers::connectors::disable_connector),
         )
+        .route(
+            "/api/v1/admin/connectors/{id}/cert-relay",
+            post(handlers::connectors::toggle_cert_relay),
+        )
         .route("/api/v1/admin/node/events", any(handlers::node::events_ws))
         // ---- Admin: Sessions / Devices / Approvals (node.md M3) ----
         .route(
@@ -500,6 +504,14 @@ pub fn create_app(state: ApiState) -> Router {
         .route(
             "/api/v1/admin/federation/adopted/{id}/copy",
             post(handlers::federation::copy_adopted),
+        )
+        .route(
+            "/api/v1/admin/federation/cert",
+            get(handlers::federation_cert::get_cert_settings).put(handlers::federation_cert::put_cert_settings),
+        )
+        .route(
+            "/api/v1/admin/federation/receipts",
+            get(handlers::federation_cert::receipts),
         )
         // ---- Admin: Delegation (federation P2, issuer side) ----
         .route(

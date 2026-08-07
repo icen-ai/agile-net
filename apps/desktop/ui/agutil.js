@@ -72,6 +72,111 @@ function reasonText(rc) {
   return rc ? String(rc) : AgI18n.t('reason.unknown');
 }
 
+/* ---- Naming triplet (node.md M3-T6; i18n keys triplet.* in aglang.js) ----
+   Uniform three-field group for server/client forms: target name (local) / my name (shown to
+   the peer) / remark (local private). nameTriplet(prefix, values, opts) renders the inputs
+   (opts.target/myname/remark = false hides that field); nameTripletVal(prefix) reads them back
+   (hidden fields read as ''). */
+function nameTriplet(prefix, values, opts) {
+  values = values || {};
+  opts = opts || {};
+  let h = '';
+  if (opts.target !== false) {
+    h += '<label>' + AgI18n.t('triplet.target') + '</label>' +
+      '<input id="' + prefix + '-target" style="width:100%" value="' + esc(values.target || '') + '">';
+  }
+  if (opts.myname !== false) {
+    h += '<label>' + AgI18n.t('triplet.myname') + ' ' + ahelp(AgI18n.t('triplet.mynameTip')) + '</label>' +
+      '<input id="' + prefix + '-myname" style="width:100%" value="' + esc(values.myname || '') + '">';
+  }
+  if (opts.remark !== false) {
+    h += '<label>' + AgI18n.t('triplet.remark') + '</label>' +
+      '<input id="' + prefix + '-remark" style="width:100%" value="' + esc(values.remark || '') + '">';
+  }
+  return h;
+}
+function nameTripletVal(prefix) {
+  const v = (k) => { const el = $(prefix + '-' + k); return el ? el.value.trim() : ''; };
+  return { target: v('target'), myname: v('myname'), remark: v('remark') };
+}
+
+/* ---- AgIdCard hover identity card shell (.agidcard styles in components.css) ----
+   Document-level delegation over [data-agid] anchors: hover intent (240ms) → opts.load(fp,
+   anchor) resolves the card HTML (esc applied by the caller) → fixed-position card below the
+   anchor (flips above at the viewport edge). The card itself is hoverable (copy buttons inside
+   stay clickable); closes on leaving both anchor+card (140ms grace), on scroll, or on outside
+   click. attach() once per app; content/click behavior is the caller's (data-act delegation). */
+const AgIdCard = (() => {
+  let loader = null;
+  let card = null, anchor = null;
+  let showTimer = 0, hideTimer = 0;
+  let overAnchor = false, overCard = false;
+
+  function ensureCard() {
+    if (card) return card;
+    card = document.createElement('div');
+    card.className = 'agidcard';
+    card.hidden = true;
+    document.body.appendChild(card);
+    card.addEventListener('pointerenter', () => { overCard = true; });
+    card.addEventListener('pointerleave', () => { overCard = false; scheduleHide(); });
+    return card;
+  }
+  function place(a) {
+    const c = ensureCard();
+    const r = a.getBoundingClientRect();
+    const cw = c.offsetWidth, ch = c.offsetHeight;
+    c.style.left = Math.max(8, Math.min(r.left, window.innerWidth - cw - 8)) + 'px';
+    let top = r.bottom + 6;
+    if (top + ch > window.innerHeight - 8) top = Math.max(8, r.top - ch - 6);
+    c.style.top = top + 'px';
+  }
+  async function show(a) {
+    const fp = a.dataset.agid;
+    if (!fp || !loader || !a.isConnected) return;
+    const html = await loader(fp, a);
+    if (anchor !== a || !html || !a.isConnected) return; // stale hover or empty payload
+    const c = ensureCard();
+    c.innerHTML = html;
+    c.hidden = false;
+    place(a);
+  }
+  function hide() {
+    clearTimeout(showTimer); clearTimeout(hideTimer);
+    if (card) card.hidden = true;
+    anchor = null;
+  }
+  function scheduleHide() {
+    clearTimeout(hideTimer);
+    hideTimer = setTimeout(() => { if (!overAnchor && !overCard) hide(); }, 140);
+  }
+  function attach(opts) {
+    loader = (opts && opts.load) || null;
+    document.addEventListener('pointerover', (e) => {
+      const a = e.target && e.target.closest ? e.target.closest('[data-agid]') : null;
+      if (!a) {
+        if (!card || !card.contains(e.target)) { overAnchor = false; if (anchor) scheduleHide(); }
+        return;
+      }
+      overAnchor = true;
+      clearTimeout(hideTimer);
+      if (anchor === a && card && !card.hidden) return;
+      anchor = a;
+      clearTimeout(showTimer);
+      showTimer = setTimeout(() => { if (anchor === a) show(a); }, 240);
+    });
+    document.addEventListener('pointerout', (e) => {
+      const a = e.target && e.target.closest ? e.target.closest('[data-agid]') : null;
+      if (!a) return;
+      overAnchor = false;
+      scheduleHide();
+    });
+    document.addEventListener('scroll', hide, true);
+    document.addEventListener('click', (e) => { if (card && !card.contains(e.target)) hide(); }, true);
+  }
+  return { attach, hide };
+})();
+
 window.$ = $;
 window.esc = esc;
 window.ahelp = ahelp;
@@ -81,4 +186,7 @@ window.grpChip = grpChip;
 window.localTag = localTag;
 window.connAuthTier = connAuthTier;
 window.reasonText = reasonText;
+window.nameTriplet = nameTriplet;
+window.nameTripletVal = nameTripletVal;
+window.AgIdCard = AgIdCard;
 })();

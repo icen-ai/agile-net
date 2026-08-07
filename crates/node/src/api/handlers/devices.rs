@@ -175,6 +175,8 @@ pub async fn certify_device(
                 })
                 .await;
             audit(&state, &claims, &ip, "device.certify", Some(&fp), &format!("{subject} / {remark}")).await;
+            // M6: propagate the fresh certification to opted-in upstreams
+            state.runtime.connector_manager.broadcast_cert_records().await;
             ok(json!({ "certified": true }))
         }
         Err(e) => err(StatusCode::NOT_FOUND, codes::NOT_FOUND, e.to_string()),
@@ -212,6 +214,7 @@ pub async fn revoke_device(
                 None => 0,
             };
             audit(&state, &claims, &ip, "device.revoke", Some(&fp), &format!("kicked={kicked}")).await;
+            state.runtime.connector_manager.broadcast_cert_records().await;
             ok(json!({ "revoked": true, "kicked": kicked }))
         }
         Err(e) => err(StatusCode::NOT_FOUND, codes::NOT_FOUND, e.to_string()),
@@ -265,6 +268,7 @@ pub async fn rebind_device(
                 &format!("from {} kicked={kicked}", &req.old_fp[..12.min(req.old_fp.len())]),
             )
             .await;
+            state.runtime.connector_manager.broadcast_cert_records().await;
             ok(json!({ "rebound": true, "kicked": kicked }))
         }
         Err(e) => err(StatusCode::BAD_REQUEST, codes::VALIDATION_FAILED, e.to_string()),
@@ -297,7 +301,6 @@ pub async fn device_traffic(
         "30d" => (30, 86400),
         _ => (1, 300),
     };
-    let now = chrono::Utc::now().timestamp();
     let since = (chrono::Utc::now() - chrono::Duration::days(days)).format("%Y-%m-%d %H:%M:%S").to_string();
     let rows = state
         .db_call({

@@ -28,6 +28,13 @@ pub struct DeviceRecord {
     /// '' = local admin, else the origin node id (M6 transitive certification)
     pub certified_by: String,
     pub certified_at: Option<String>,
+    /// M6 transitive lineage (verbatim for blind forwarding): origin pubkey / signature / ts
+    #[serde(default)]
+    pub origin_pubkey: String,
+    #[serde(default)]
+    pub cert_sig: String,
+    #[serde(default)]
+    pub cert_ts: String,
     pub first_seen: String,
     pub last_seen: String,
     pub bytes_up: i64,
@@ -95,11 +102,14 @@ fn map_device(r: &rusqlite::Row) -> rusqlite::Result<DeviceRecord> {
         last_seen: r.get(11)?,
         bytes_up: r.get(12)?,
         bytes_down: r.get(13)?,
+        origin_pubkey: r.get(14).unwrap_or_default(),
+        cert_sig: r.get(15).unwrap_or_default(),
+        cert_ts: r.get(16).unwrap_or_default(),
     })
 }
 
 const DEVICE_COLS: &str =
-    "id, device_fp, pubkey, token_hash, subject, my_name, remark, state, certified_by, certified_at, first_seen, last_seen, bytes_up, bytes_down";
+    "id, device_fp, pubkey, token_hash, subject, my_name, remark, state, certified_by, certified_at, first_seen, last_seen, bytes_up, bytes_down, origin_pubkey, cert_sig, cert_ts";
 
 fn map_approval(r: &rusqlite::Row) -> rusqlite::Result<ApprovalRecord> {
     Ok(ApprovalRecord {
@@ -216,9 +226,48 @@ impl Database {
         Ok(())
     }
 
-    /// Revoke a device (terminal state, never reusable). Live sessions are kicked by the caller.
-    pub fn revoke_device(&self, device_fp: &str) -> Result<()> {
+    /// Certify transitively (M6): like certify_device but carries the origin lineage verbatim
+    /// so a middle hop can forward the ORIGINAL origin-signed record (blind relay).
+    #[allow(clippy::too_many_arguments)]
+    pub fn certify_device_transitive(
+        &self,
+        device_fp: &str,
+        subject: &str,
+        remark: &str,
+        origin_fp: &str,
+        origin_pubkey: &str,
+        cert_sig: &str,
+        cert_ts: &str,
+    ) -> Result<()> {
         let conn = self.conn();
+        let n = conn
+            .execute(
+                "UPDATE device_registry SET state = 'certified', subject = ?2, remark = ?3,
+                    certified_by = ?4, certified_at = ?5, origin_pubkey = ?6, cert_sig = ?7, cert_ts = ?8
+                 WHERE device_fp = ?1 AND state != 'revoked'",
+                params![device_fp, subject, remark, origin_fp, cert_ts, origin_pubkey, cert_sig, cert_ts],
+            )
+            .map_err(db_err)?;
+        if n == 0 {
+            return Err(Error::NotFound(format!("device {device_fp} missing or revoked")));
+        }
+        Ok(())
+    }
+
+    /// Update only the M6 lineage fields (used when adopting a signed revocation — the row's
+    /// state changes but the origin's latest record stays forwardable).
+    pub fn store_cert_lineage(&self, device_fp: &str, origin_pubkey: &str, cert_sig: &str, cert_ts: &str) -> Result<()> {
+        let conn = self.conn();
+        conn.execute(
+            "UPDATE device_registry SET origin_pubkey = ?2, cert_sig = ?3, cert_ts = ?4 WHERE device_fp = ?1",
+            params![device_fp, origin_pubkey, cert_sig, cert_ts],
+        )
+        .map_err(db_err)?;
+        Ok(())
+    }
+
+    /// Revoke a device (terminal state, never reusable). Live sessions are kicked by the caller.
+    pub fn revoke_device(&self, device_fp: &str) -> Result<()> {        let conn = self.conn();
         let n = conn
             .execute(
                 "UPDATE device_registry SET state = 'revoked' WHERE device_fp = ?1",

@@ -27,6 +27,8 @@ struct ConnectorHandle {
     /// Federation P1: pushed policy group slot (hot-swapped by refresh_push_groups;
     /// the connector reconnects to re-push on change)
     push_slot: Arc<arc_swap::ArcSwap<Vec<PushedGroupMsg>>>,
+    /// Transitive certification opt-in of this upstream (M6)
+    cert_relay: bool,
     tasks: Vec<tokio::task::JoinHandle<()>>,
 }
 
@@ -160,6 +162,30 @@ impl ConnectorManager {
     }
 
     /// (upstream addr, state) of each connector (same semantics as the former connector_states).
+    /// Push the current cert records to every live cert_relay-enabled upstream (M6 incremental
+    /// update after a local certification change / adoption forward).
+    pub async fn broadcast_cert_records(&self) {
+        let mut records =
+            crate::service::cert_relay::origin_records(&self.db, &self.device, &self.node_id);
+        records.extend(crate::service::cert_relay::transitive_records(&self.db));
+        if records.is_empty() {
+            return;
+        }
+        let Ok(payload) = serde_json::to_vec(&CtrlMessage::CertPush { records }) else {
+            return;
+        };
+        for h in self.handles.iter() {
+            if !h.cert_relay {
+                continue;
+            }
+            if let Some(mux) = h.connector.current_mux() {
+                let _ = mux
+                    .send_frame(Frame::new(FrameType::Ctrl, 0, payload.clone()))
+                    .await;
+            }
+        }
+    }
+
     pub fn states(&self) -> Vec<(String, String)> {
         let mut out: Vec<(String, String)> = self
             .handles
@@ -418,6 +444,10 @@ impl ConnectorManager {
             let db = self.db.clone();
             let connector_id = id.to_string();
             let states = self.delegation_states.clone();
+            let device = self.device.clone();
+            let node_name = self.node_id.clone();
+            let cert_relay_on = rec.cert_relay;
+            let upstream_label = rec.upstream_addr.clone();
             tasks.push(tokio::spawn(async move {
                 let mut last_mux: Option<Arc<MuxSession>> = None;
                 // token_id -> token_hash, already sent on the current session
@@ -449,6 +479,20 @@ impl ConnectorManager {
                     if new_session {
                         c.clear_delegation_acks();
                         live.clear();
+                        // M6: transitive certification full sync on every new session (opt-in)
+                        if cert_relay_on {
+                            let mut records =
+                                crate::service::cert_relay::origin_records(&db, &device, &node_name);
+                            records.extend(crate::service::cert_relay::transitive_records(&db));
+                            if !records.is_empty()
+                                && let Some(m) = &mux
+                            {
+                                let msg = CtrlMessage::CertPush { records };
+                                if let Ok(payload) = serde_json::to_vec(&msg) {
+                                    let _ = m.send_frame(Frame::new(FrameType::Ctrl, 0, payload)).await;
+                                }
+                            }
+                        }
                     }
                     last_mux = mux.clone();
                     let Some(mux) = mux else { continue };
@@ -461,6 +505,13 @@ impl ConnectorManager {
                             } else {
                                 format!("failed: {err}")
                             };
+                            if ok
+                                && let Some(rec) = tokens.iter().find(|t| &t.id == tid)
+                                && rec.visibility != "domain"
+                            {
+                                let holder = c.peer_node().unwrap_or_else(|| upstream_label.clone());
+                                let _ = db.confirm_grant_receipt(hash, &holder);
+                            }
                             states.insert((tid.clone(), connector_id.clone()), v);
                         }
                     }
@@ -481,6 +532,17 @@ impl ConnectorManager {
                             states.insert((rec.id.clone(), connector_id.clone()), "exhausted".into());
                             continue;
                         }
+                        // M6 approve tier: visibility=approve holds the upstream registration
+                        // until the admin approves the disclosure (拓扑审批)
+                        if rec.visibility == "approve"
+                            && !crate::service::cert_relay::topo_approved(&db, &rec.id, &connector_id)
+                        {
+                            crate::service::cert_relay::ensure_topo_approval(
+                                &db, &rec.id, &connector_id, &rec.label, &upstream_label,
+                            );
+                            states.insert((rec.id.clone(), connector_id.clone()), "awaiting-approval".into());
+                            continue;
+                        }
                         let msg = build_register_msg(&db, &rec);
                         let hash = rec.token_hash.clone();
                         let Ok(payload) = serde_json::to_vec(&msg) else {
@@ -493,6 +555,20 @@ impl ConnectorManager {
                         {
                             break; // session died mid-flush; next tick re-evaluates
                         }
+                        // M6 visibility receipt: disclose/approve grants record the disclosure
+                        // (domain tier records nothing — only the domain principal is visible)
+                        if rec.visibility != "domain" {
+                            let holder = c
+                                .peer_node()
+                                .unwrap_or_else(|| upstream_label.clone());
+                            let _ = db.record_grant_receipt(
+                                &rec.token_hash,
+                                &holder,
+                                &format!("[\"{node_name}\"]"),
+                                &rec.visibility,
+                                "pending",
+                            );
+                        }
                         states.insert((rec.id.clone(), connector_id.clone()), "pending".into());
                         live.insert(rec.id.clone(), hash);
                     }
@@ -503,6 +579,7 @@ impl ConnectorManager {
         Ok(Some(ConnectorHandle {
             connector,
             push_slot,
+            cert_relay: rec.cert_relay,
             tasks,
         }))
     }
@@ -818,6 +895,7 @@ mod tests {
             push_groups: push_groups.into(),
             enabled: true,
             remark: String::new(),
+            cert_relay: false,
             created_at: String::new(),
             updated_at: String::new(),
         }

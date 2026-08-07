@@ -458,6 +458,38 @@ function renderDoctor(res) {
 }
 
 /* ================= Settings ================= */
+/* ---- Machine identity card (node.md M4-T4): fp + OpenSSH pubkey copy, 我的名称 edit, per-endpoint cert state ---- */
+async function loadMachineIdentity() {
+  let id;
+  try { id = await invoke('get_machine_identity'); } catch (e) { return; }
+  window._machineId = id;
+  const fp = id.device_fp || '-';
+  const pub = id.openssh_pubkey || '-';
+  const fpEl = $('machine-fp'), pubEl = $('machine-pub');
+  if (fpEl) { if (fpEl.textContent !== fp) fpEl.textContent = fp; fpEl.title = fp; }
+  if (pubEl) { if (pubEl.textContent !== pub) pubEl.textContent = pub; pubEl.title = pub; }
+  const inp = $('machine-myname');
+  if (inp && document.activeElement !== inp) inp.value = id.myname || '';
+  renderMachineCert();
+}
+/* Per-endpoint certification echo (device_state from the nodes poll; signature-guarded) */
+function renderMachineCert() {
+  const box = $('machine-cert-list');
+  if (!box) return;
+  const nodes = window._nodes || [];
+  const html = nodes.length
+    ? nodes.map(n =>
+        '<div class="kv"><span class="k">' + esc(n.node_name || n.label || n.node_id) + '</span><span>' +
+        (n.device_state === 'pending'
+          ? '<span class="badge b-warn">' + AgI18n.t('identity.pending') + '</span>'
+          : '<span class="badge b-ok">' + AgI18n.t('identity.certified') + '</span>') +
+        '</span></div>').join('')
+    : '<div class="hint">' + AgI18n.t('identity.noNodes') + '</div>';
+  if (box.dataset.sig === html) return;
+  box.dataset.sig = html;
+  box.innerHTML = html;
+}
+
 async function loadSettings() {
   $('s-autoproxy').checked = PREFS.autoproxy;
   $('s-autoreconnect').checked = PREFS.autoreconnect;
@@ -479,6 +511,25 @@ async function loadSettings() {
 
   // Doctor (click again to re-run)
   $('btn-doctor-run').onclick = runDoctor;
+
+  // Machine identity card: copy buttons + 我的名称 save (M4-T4)
+  $('btn-machine-fp-copy').onclick = () => {
+    const fp = (window._machineId && window._machineId.device_fp) || '';
+    if (fp) navigator.clipboard.writeText(fp).then(() => toast(AgI18n.t('common.copied'), 'ok'), () => {});
+  };
+  $('btn-machine-pub-copy').onclick = () => {
+    const pub = (window._machineId && window._machineId.openssh_pubkey) || '';
+    if (pub) navigator.clipboard.writeText(pub).then(() => toast(AgI18n.t('common.copied'), 'ok'), () => {});
+  };
+  $('btn-machine-myname-save').onclick = async () => {
+    const name = $('machine-myname').value.trim();
+    try {
+      await invoke('set_machine_myname', { name });
+      toast(AgI18n.t('identity.mynameSaved'), 'ok');
+      loadMachineIdentity();
+    } catch (e) { toast(friendlyError(e), 'err'); }
+  };
+  $('machine-myname').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); $('btn-machine-myname-save').click(); } });
 
   // Sync & backup: channel switch toggles config areas; PIN input digit filter; button bindings (all re-entry-guarded inside)
   $('sync-target').onchange = () => syncShowTarget($('sync-target').value);

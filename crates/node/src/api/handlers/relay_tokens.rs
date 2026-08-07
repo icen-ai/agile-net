@@ -621,17 +621,29 @@ pub async fn update_token(
 }
 
 pub async fn list_tokens(AdminAuth(_): AdminAuth, State(state): State<ApiState>) -> Response {
-    match state.db_call(|db| db.list_relay_tokens()).await {
+    match state
+        .db_call(|db| {
+            let items = db.list_relay_tokens()?;
+            // the session inventory joins on token_hash (node.md M3-T1; the hash is not a secret)
+            let hashes: Vec<Option<String>> = items
+                .iter()
+                .map(|t| db.get_relay_token_hash(&t.id).unwrap_or(None))
+                .collect();
+            Ok(items.into_iter().zip(hashes).collect::<Vec<_>>())
+        })
+        .await
+    {
         Ok(items) => {
-            // fold the computed lifecycle status into each serialized record
+            // fold the computed lifecycle status + token hash into each serialized record
             let items: Vec<serde_json::Value> = items
                 .into_iter()
-                .map(|t| {
+                .map(|(t, hash)| {
                     let mut v = serde_json::to_value(&t).unwrap_or_default();
                     v["lifecycle"] = serde_json::Value::String(
                         super::lifecycle_status(t.expires_at.as_deref(), t.max_uses, t.used_count)
                             .into(),
                     );
+                    v["token_hash"] = hash.map(serde_json::Value::String).unwrap_or(serde_json::Value::Null);
                     v
                 })
                 .collect();

@@ -690,3 +690,32 @@ pub async fn disable_connector(
 ) -> Response {
     set_enabled(&state, &claims, &ip, &id, false).await
 }
+
+/// POST /api/v1/admin/connectors/{id}/cert-relay — transitive certification opt-in for this
+/// upstream (M6; cert records flow only when both sides opt in).
+pub async fn toggle_cert_relay(
+    AdminAuth(claims): AdminAuth,
+    State(state): State<ApiState>,
+    ClientIp(ip): ClientIp,
+    Path(id): Path<String>,
+    Json(req): Json<serde_json::Value>,
+) -> Response {
+    let on = req["on"].as_bool().unwrap_or(false);
+    let res = state
+        .db_call({
+            let id = id.clone();
+            move |db| db.set_connector_cert_relay(&id, on)
+        })
+        .await;
+    match res {
+        Ok(()) => {
+            // hot-apply: rebuild the handle so the new flag takes effect
+            if let Err(e) = state.runtime.connector_manager.upsert_from_db(&id).await {
+                tracing::error!(error = %e, "connector cert-relay hot-apply failed");
+            }
+            audit(&state, &claims, &ip, "connector.cert_relay", Some(&id), if on { "on" } else { "off" }).await;
+            ok(json!({ "cert_relay": on }))
+        }
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, codes::INTERNAL, e.to_string()),
+    }
+}

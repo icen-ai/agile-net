@@ -14,6 +14,7 @@ mod admin;
 mod connectors;
 mod delegation;
 mod devices;
+mod grants;
 mod logs;
 mod migrations;
 mod paginate;

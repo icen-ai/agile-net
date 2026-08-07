@@ -8,6 +8,7 @@
 pub mod acl;
 pub mod adoption;
 pub mod approvals;
+pub mod cert_relay;
 pub mod client_role;
 pub mod connectors;
 pub mod delegation;
@@ -61,6 +62,9 @@ pub struct NodeServerOptions {
     /// `[client]` section (embedded client role: delegated nodes + local proxy in-process;
     /// parsed by `load_client_role_config`, passed through by the host)
     pub client_role: Option<ClientRoleConfig>,
+    /// Device identity override (tests: per-node ephemeral; None = the machine identity at
+    /// ~/.anet/device.key)
+    pub device: Option<Arc<agile_net_core::device::DeviceIdentity>>,
 }
 
 /// Route re-publish injection: client engine's merged router + channel opener registry.
@@ -212,6 +216,10 @@ impl NodeServer {
         let mut device_gate_cache: Option<Arc<device_gate::DeviceGateCache>> = None;
         let listener_slot: Arc<std::sync::OnceLock<Arc<RelayListener>>> =
             Arc::new(std::sync::OnceLock::new());
+        // M6 cert-propagation inbox (CertPush frames land here; the adoption task is spawned
+        // once the connector manager exists)
+        let (cert_inbox_tx, mut cert_inbox_rx) =
+            tokio::sync::mpsc::unbounded_channel::<(String, Vec<agile_net_core::proto::message::CertRecord>)>();
         if let Some(listener_cfg) = &config.listener {
             let addr: SocketAddr = listener_cfg.addr.parse()?;
             // federation P2: one registry instance shared by the validator (auth reads) and
@@ -318,6 +326,15 @@ impl NodeServer {
                     .with_local_delegated_registry(local_delegated_registry)
                     .with_device_gate(gate.gate())
                     .with_pending_note_hook(note_hook)
+                    .with_cert_in_hook({
+                        // M6 transitive certification intake: adopt + blind-forward run on a
+                        // dedicated task (the hook itself only enqueues)
+                        let tx = cert_inbox_tx.clone();
+                        Arc::new(move |origin: String, records: Vec<agile_net_core::proto::message::CertRecord>| {
+                            let _ = tx.send((origin, records));
+                        })
+                            as Arc<dyn Fn(String, Vec<agile_net_core::proto::message::CertRecord>) + Send + Sync>
+                    })
                     .with_session_close_hook({
                         // M5: one ledger row per closed session + cumulative fold (device-perspective
                         // up = bytes_in received from the device)
@@ -445,12 +462,14 @@ impl NodeServer {
         }
         // Device identity (node.md M2): this machine's ed25519 keypair (~/.anet/device.key,
         // load-or-create), shared by the fan-out connectors (handshake proof) and the identity card
-        let device = Arc::new(
-            agile_net_core::device::DeviceIdentity::machine().unwrap_or_else(|e| {
-                tracing::warn!(error = %e, "machine device identity unavailable, using ephemeral");
-                agile_net_core::device::DeviceIdentity::ephemeral()
-            }),
-        );
+        let device = opts.device.clone().unwrap_or_else(|| {
+            Arc::new(
+                agile_net_core::device::DeviceIdentity::machine().unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "machine device identity unavailable, using ephemeral");
+                    agile_net_core::device::DeviceIdentity::ephemeral()
+                }),
+            )
+        });
         let connector_manager = Arc::new(
             ConnectorManager::new(db.clone())
                 .with_node_id(config.name.clone())
@@ -471,6 +490,41 @@ impl NodeServer {
         // device certification gate: issuer-side enforcement for relay-entry consumer opens
         if let Some(g) = &device_gate_cache {
             connector_manager.delegation_engine().set_device_gate(g.clone());
+        }
+
+        // M6 cert propagation: adoption + blind-forward of inbound cert records
+        {
+            let db_cert = db.clone();
+            let cm = connector_manager.clone();
+            let own_fp = device.device_fp();
+            let gate_for_cert = device_gate_cache.clone();
+            let listener_for_cert = relay_listener.clone();
+            startup.tasks.push(tokio::spawn(async move {
+                while let Some((origin_node, records)) = cert_inbox_rx.recv().await {
+                    if !crate::service::cert_relay::cert_relay_in_enabled(&db_cert) {
+                        continue; // inbound switch off (双向 opt-in)
+                    }
+                    let (adopted, reference, rejected) =
+                        crate::service::cert_relay::adopt_records(&db_cert, &records, &own_fp);
+                    if adopted + reference + rejected == 0 {
+                        continue; // pure echo / already current
+                    }
+                    if adopted > 0 || rejected > 0 {
+                        tracing::info!(origin = %origin_node, adopted, reference, rejected, "cert records processed");
+                    }
+                    // gate cache freshness for adopted/revoked devices
+                    if let Some(g) = &gate_for_cert {
+                        for r in &records {
+                            g.invalidate(&r.device_fp);
+                        }
+                    }
+                    // blind forward: downstream peers (except the sender session) + our upstreams
+                    if let Some(l) = &listener_for_cert {
+                        l.push_cert_records(&records, &origin_node).await;
+                    }
+                    cm.broadcast_cert_records().await;
+                }
+            }));
         }
         connector_manager.start_all().await;
         startup.connectors = Some(connector_manager.clone());

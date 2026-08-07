@@ -12,7 +12,7 @@ use agile_net_core::error::Result;
 use rusqlite::params;
 
 /// Column list shared by every delegated_token query (positional row mapping).
-const DELEGATED_COLS: &str = "id, token_hash, token_prefix, label, groups, hint_map, e2e_key_enc, mode, admin_scope, entry_mode, concurrency, max_sessions, expires_at, max_uses, used_count, created_at";
+const DELEGATED_COLS: &str = "id, token_hash, token_prefix, label, groups, hint_map, e2e_key_enc, mode, admin_scope, entry_mode, concurrency, max_sessions, visibility, expires_at, max_uses, used_count, created_at";
 
 impl Database {
     /// Insert a delegated token (hash + prefix + encrypted E2E key prepared by the caller).
@@ -61,12 +61,24 @@ impl Database {
             entry_mode: entry_mode.to_string(),
             concurrency: concurrency.to_string(),
             max_sessions,
+            visibility: "domain".to_string(),
             expires_at: expires_at.map(|s| s.to_string()),
             max_uses,
             used_count: 0,
             created_at: now,
             regs: Vec::new(),
         })
+    }
+
+    /// Set the topology-visibility tier (node.md M6: domain|disclose|approve).
+    pub fn set_delegated_token_visibility(&self, id: &str, visibility: &str) -> Result<()> {
+        let conn = self.conn();
+        conn.execute(
+            "UPDATE delegated_token SET visibility = ?2 WHERE id = ?1",
+            params![id, visibility],
+        )
+        .map_err(db_err)?;
+        Ok(())
     }
 
     /// Count one data-plane open against the token's usage cap (issuer-side, best effort).
@@ -259,6 +271,7 @@ fn map_delegated_row(r: &rusqlite::Row) -> rusqlite::Result<DelegatedTokenRecord
         entry_mode: r.get(9)?,
         concurrency: r.get(10)?,
         max_sessions: r.get(11)?,
+        visibility: r.get(12)?,
         expires_at: r.get("expires_at")?,
         max_uses: r.get("max_uses")?,
         used_count: r.get("used_count")?,

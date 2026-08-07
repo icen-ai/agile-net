@@ -18,11 +18,23 @@
       <button class="btn ghost small" id="adm-menu-btn"><i data-ic="layout-dashboard" data-sz="14"></i><span data-i18n="cl.adminMenu">管理端</span><i data-ic="chevron-down" data-sz="13"></i></button>
       <div class="adm-drop" id="adm-drop" hidden></div>
     </div>
+    <button class="btn ghost small ntf-btn" id="notify-btn" data-i18n-title="notify.title" title="通知"><i data-ic="bell" data-sz="14"></i><span class="ntf-badge" id="notify-badge" hidden></span></button>
     <button class="btn ghost small" id="theme-btn" data-i18n-title="cl.theme" title="切换主题"></button>
   </div>
 </header>
 
 <main class="wrap">
+  <!-- Notification inbox (node.md M4-T1; toggled by the topbar bell) -->
+  <section class="card" id="notify-card" hidden>
+    <div class="card-head">
+      <h2><i data-ic="bell" data-sz="15"></i><span data-i18n="notify.title">通知</span></h2>
+      <div class="head-actions">
+        <button class="btn ghost small" id="btn-notify-read-all"><span data-i18n="notify.markAll">全部已读</span></button>
+        <button class="btn ghost small" id="btn-notify-clear"><span data-i18n="common.clear">清空</span></button>
+      </div>
+    </div>
+    <div id="notify-list"></div>
+  </section>
   <section class="card">
     <div class="card-head">
       <h2><i data-ic="orbit" data-sz="15"></i><span data-i18n="cl.nodes">节点</span></h2>
@@ -52,6 +64,31 @@
       <h2><i data-ic="file-key" data-sz="15"></i><span data-i18n="cl.creds">凭据</span></h2>
     </div>
     <div id="cred-list"></div>
+  </section>
+
+  <!-- Machine identity (node.md M4-T4): device fingerprint + OpenSSH pubkey + 我的名称 + per-endpoint cert state -->
+  <section class="card">
+    <div class="card-head">
+      <h2><i data-ic="fingerprint" data-sz="15"></i><span data-i18n="identity.title">本机身份</span></h2>
+    </div>
+    <div class="id-row">
+      <span class="dim id-k" data-i18n="identity.fp">设备指纹</span>
+      <span class="mono id-val" id="machine-fp">-</span>
+      <button class="btn ghost small" id="btn-machine-fp-copy" data-i18n-title="common.copy" title="复制"><i data-ic="copy" data-sz="13"></i></button>
+    </div>
+    <div class="id-row">
+      <span class="dim id-k" data-i18n="identity.pubkey">OpenSSH 公钥</span>
+      <span class="mono id-val" id="machine-pub">-</span>
+      <button class="btn ghost small" id="btn-machine-pub-copy" data-i18n-title="common.copy" title="复制"><i data-ic="copy" data-sz="13"></i></button>
+    </div>
+    <div class="id-row">
+      <span class="dim id-k" data-i18n="identity.myname">我的名称</span>
+      <input class="id-name" id="machine-myname" maxlength="64">
+      <button class="btn primary small" id="btn-machine-myname-save"><span data-i18n="common.save">保存</span></button>
+    </div>
+    <div class="dim id-tip" data-i18n="identity.mynameTip">上送给签发者的自声明名称；写入全部已保存凭据，下次连接生效</div>
+    <div class="dim id-k" style="margin-top:10px" data-i18n="identity.certState">端点认证状态</div>
+    <div id="machine-cert-list"></div>
   </section>
 </main>
 

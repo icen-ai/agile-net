@@ -145,6 +145,11 @@ const S = {
   faninTab: 'listen',   // fan-in page current tab: listen | peers | tokens
   faninQuery: '',       // fan-in page search term: shared by the peers/tokens tabs (kept across tab switches)
   fanoutTab: 'conns',   // fan-out page current tab: watch | conns | issue
+  devQ: '',             // devices page search term
+  devState: '',         // devices page state filter: '' | online | offline | pending | certified | revoked
+  devFp: '',            // devices page: fingerprint of the open detail view ('' = list)
+  apprState: 'pending', // approvals page filter: pending | all | approved | rejected
+  apprTimer: null,      // global pending-approval badge poller (survives view switches)
   groups: [],
   timers: [],
   ws: null,
@@ -284,7 +289,7 @@ function shareCardBind(root, opts) {
   function currentLink() {
     const addr = epSel ? epSel.value : parsed.addr;
     return opts.role === 'fanout'
-      ? AgLink.buildFanout({ addr, token: parsed.token, sni: parsed.sni, fp: parsed.fp, insecure: parsed.insecure })
+      ? AgLink.buildFanout({ addr, token: parsed.token, sni: parsed.sni, fp: parsed.fp, insecure: parsed.insecure, myname: parsed.myname || '' })
       : AgLink.buildConnect({
           addr, account: parsed.account, password: parsed.password, fp: parsed.fp,
           insecure: parsed.insecure,
@@ -294,6 +299,8 @@ function shareCardBind(root, opts) {
           en: parsed.en || '',
           emode: parsed.emode || '',
           eadmin: !!parsed.eadmin,
+          // M3-T6: keep the issuer-suggested "my name" across endpoint switches
+          myname: parsed.myname || '',
         });
   }
   function render() {
@@ -483,6 +490,7 @@ function openUniversalImport() {
       try {
         await api('POST', '/api/v1/admin/connectors', {
           name: details.name || parsed.addr,
+          my_name: parsed.myname || '',
           upstream_addr: parsed.addr,
           token: parsed.token,
           sni_hostname: parsed.sni || '',
@@ -527,6 +535,7 @@ async function doLogout() {
   localStorage.removeItem('ag_refresh');
   if (S.ws) { try { S.ws.close(); } catch(e){} S.ws = null; }
   S.timers.forEach(clearInterval); S.timers = [];
+  if (S.apprTimer) { clearInterval(S.apprTimer); S.apprTimer = null; }
   $('app').style.display = 'none';
   $('login-view').style.display = 'flex';
 }
@@ -539,6 +548,11 @@ async function enterApp() {
     $('me-info').innerHTML = ic('user', 14) + ' ' + esc(me.username) + ' <span class="badge b-info">' + esc(me.role) + '</span>';
   } catch(e) { return; }
   await loadGroupsCache();
+  // Pending-approval badge: global poller (paused while hidden) + hover identity card shell
+  refreshApprovalsBadge();
+  if (S.apprTimer) clearInterval(S.apprTimer);
+  S.apprTimer = setInterval(() => { if (!document.hidden) refreshApprovalsBadge(); }, 20000);
+  AgIdCard.attach({ load: devCardHtml });
   switchView(S.view || 'dashboard');
 }
 
@@ -548,7 +562,7 @@ function switchView(v) {
   S.timers.forEach(clearInterval); S.timers = [];
   document.querySelectorAll('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.view === v));
   const fn = ({dashboard: renderDashboard, groups: renderGroups,
-    rules: renderRules, fanin: renderFanIn, connectors: renderConnectors, audit: renderAudit, settings: renderSettings})[v] || renderDashboard;
+    rules: renderRules, fanin: renderFanIn, connectors: renderConnectors, devices: renderDevices, approvals: renderApprovals, audit: renderAudit, settings: renderSettings})[v] || renderDashboard;
   fn();
 }
 async function loadGroupsCache() {
@@ -583,24 +597,37 @@ const ACT_CLICK = {
   'grp-del': b => delGroup(b.dataset.id, b.dataset.name),
   'rule-edit': b => openEditRule(b.dataset.id, b.dataset.type, b.dataset.value, b.dataset.resolve === 'true', b.dataset.remark || ''),
   'rule-del': b => delRule(b.dataset.id, b.dataset.value, Number(b.dataset.count || 0)),
-  'tok-edit': b => openEditToken(b.dataset.id, b.dataset.group || '', b.dataset.expose === 'true', b.dataset.scope, b.dataset.expires || '', b.dataset.maxuses || '', b.dataset.rate || ''),
+  'tok-edit': b => openEditToken(b.dataset.id, b.dataset.group || '', b.dataset.expose === 'true', b.dataset.scope, b.dataset.expires || '', b.dataset.maxuses || '', b.dataset.rate || '', b.dataset.remark || ''),
   'tok-del': b => delToken(b.dataset.id),
   'conn-edit': b => openEditConnector(b.dataset.id),
   'conn-toggle': b => toggleConnector(b.dataset.id, b.dataset.enabled === 'true'),
   'conn-del': b => delConnector(b.dataset.id, b.dataset.name),
   'deleg-revoke': b => revokeDelegation(b.dataset.id, b.dataset.name),
-  'deleg-expand': b => {
-    const row = document.querySelector('[data-delegrow="' + CSS.escape(b.dataset.id) + '"]');
-    if (row) row.hidden = !row.hidden;
-  },
+  'deleg-expand': b => toggleSessWrap('deleg:' + b.dataset.id),
   'grp-copy': b => copyAdopted(b.dataset.id, b.dataset.name),
   'fed-adopt-now': b => { adoptPushed(b.dataset.node, b.dataset.group).then(() => { closeModal(); }); },
-  'pool-toggle': b => {
-    const row = document.querySelector('[data-poolrow="' + CSS.escape(b.dataset.node) + '"]');
-    if (row) row.hidden = !row.hidden;
-  },
   'fed-adopt': b => adoptPushed(b.dataset.node, b.dataset.group),
   'admin-del': b => delAdmin(b.dataset.id, b.dataset.name),
+  // session management (M3-T1): expand/collapse + kicks
+  'sess-toggle': b => toggleSessWrap(b.dataset.sessrow),
+  'tok-sess': b => toggleSessWrap('tok:' + b.dataset.id),
+  'watch-sess': b => toggleSessWrap('watch:' + b.dataset.id),
+  'sess-kick': b => kickSession(b.dataset.key, b.dataset.name || ''),
+  'sess-kickall': b => kickTokenSessions(b.dataset.hash, b.dataset.name || ''),
+  // devices (M3-T2) + approvals (M3-T4)
+  'dev-open': b => {
+    S.devFp = b.dataset.fp || '';
+    if (!S.devFp) return;
+    // entering the detail view without switchView: clear the list poller explicitly
+    S.timers.forEach(clearInterval); S.timers = [];
+    if (S.view !== 'devices') switchView('devices'); else renderDeviceDetail();
+  },
+  'dev-certify': b => openCertify(b.dataset.fp),
+  'dev-revoke': b => openRevoke(b.dataset.fp),
+  'dev-rebind': b => openRebind(b.dataset.fp),
+  'appr-approve': b => openDecide(b.dataset.id, 'approve'),
+  'appr-reject': b => openDecide(b.dataset.id, 'reject'),
+  'appr-reject-revoke': b => openDecide(b.dataset.id, 'reject_revoke'),
 };
 const ACT_CHANGE = {
   'tok-expose': el => toggleExpose(el.dataset.id, el.checked),
@@ -626,6 +653,432 @@ document.addEventListener('change', (e) => {
   const fn = ACT_CHANGE[el.dataset.actChg];
   if (fn) fn(el);
 });
+
+/* ================= Live session inventory + device registry join (node.md M3-T1/T4) =================
+   SESS = /sessions rows (fanin peers + delegated consumers); DEV_MAP = /devices rows keyed by
+   device_fp (certification state badges + hover identity cards). Pollers skip while the page is
+   hidden; every container re-renders under its own signature so unchanged polls rewrite nothing. */
+let SESS = [];
+let DEV_MAP = {};
+/* Expanded session blocks across polls (keys: res-row id / 'deleg:'+id / 'tok:'+id / 'watch:'+id) */
+const SESS_OPEN = new Set();
+async function loadSessions() {
+  if (document.hidden) return;
+  try { const d = await api('GET', '/api/v1/admin/sessions'); SESS = d.items || []; }
+  catch (e) { /* listener off or transient failure: keep the last snapshot */ }
+}
+async function loadDevices() {
+  if (document.hidden) return;
+  try {
+    const d = await api('GET', '/api/v1/admin/devices');
+    DEV_MAP = {};
+    (d.items || []).forEach(x => { DEV_MAP[x.device_fp] = x; });
+  } catch (e) { /* keep the last snapshot */ }
+}
+async function reloadSessions() {
+  await Promise.all([loadSessions(), loadDevices()]);
+  rerenderSessBlocks();
+}
+/* Re-render every session-bearing container of the current view from caches (no refetch) */
+function rerenderSessBlocks() {
+  if (S.view === 'fanin') { renderFaninPeers(); renderFaninTokens(); }
+  else if (S.view === 'connectors') { renderConnsSess(); renderDelegation(); renderWatch(); }
+}
+/* Generic expand/collapse: the toggle carries data-sessopen="key", the block data-sesswrap="key";
+   SESS_OPEN persists the state across signature-driven rebuilds. */
+function toggleSessWrap(key) {
+  if (!key) return;
+  if (SESS_OPEN.has(key)) SESS_OPEN.delete(key); else SESS_OPEN.add(key);
+  const open = SESS_OPEN.has(key);
+  const w = document.querySelector('[data-sesswrap="' + CSS.escape(key) + '"]');
+  if (w) w.hidden = !open;
+  document.querySelectorAll('[data-sessopen="' + CSS.escape(key) + '"]').forEach(t => t.classList.toggle('open', open));
+}
+function sessWrapAttrs(key) { return 'data-sesswrap="' + esc(key) + '"' + (SESS_OPEN.has(key) ? '' : ' hidden'); }
+
+/* Column model ported from the design prototype (target/badge-preview scenario 8) */
+const SESS_COL_W = { who: 'minmax(150px,1.5fr)', ip: '108px', entry: '116px', ago: '64px', tr: '128px', key: '76px', token: '126px', chans: '62px', op: '58px' };
+function sessGrid(cols) { return cols.map(c => SESS_COL_W[c] || '1fr').join(' '); }
+/* Mono copyable field (.agcopy, M3-T7): full value copied, visible text may be truncated */
+function agcopy(full, display) {
+  return '<span class="agcopy" data-act="copy" data-copy="' + esc(full) + '" title="' + esc(full) + '"><span class="agcopy-v">' + esc(display == null ? full : display) + '</span>' + ic('copy', 11) + '</span>';
+}
+function devStateBadge(st) {
+  const m = ({ certified: ['b-ok', 'dev.stCertified'], pending: ['b-warn', 'dev.stPending'], revoked: ['b-off', 'dev.stRevoked'] })[st];
+  return m ? '<span class="badge ' + m[0] + '">' + T(m[1]) + '</span>' : '<span class="badge b-info">' + T('dev.stUnknown') + '</span>';
+}
+/* Clickable + hoverable device name: click jumps to the device page, hover opens the identity card */
+function devNameHtml(fp, name) {
+  if (!fp) return '<b>' + esc(name || '-') + '</b>';
+  return '<b data-agid="' + esc(fp) + '" data-act="dev-open" data-fp="' + esc(fp) + '" style="cursor:pointer">' + esc(name || T('dev.unnamed')) + '</b>';
+}
+function fmtAgo(s) { s = Number(s) || 0; return s < 60 ? T('sess.justNow') : fmtUptime(s); }
+function sessEntryBadge(entry) {
+  if (!entry) return '-';
+  return '<span class="badge b-info">' + (entry === 'direct' ? T('deleg.badgeDirect') : T('deleg.badgeRelay')) + '</span>';
+}
+function sessRowHtml(s, cols) {
+  const d = DEV_MAP[s.device_fp] || {};
+  const st = d.state || '';
+  const fpShort = (s.device_fp || '').slice(0, 12);
+  const authMark = st === 'certified'
+    ? ' <span class="nb-auth" title="' + T('dev.stCertified') + '">' + ic('badge-check', 10) + '</span>'
+    : '';
+  const cell = {
+    who: '<div class="sess-who"><span class="sess-dot pulse"></span>' + devNameHtml(s.device_fp, s.my_name || d.subject) +
+      (s.device_fp ? '<span class="nodebadge">' + esc(fpShort) + authMark + '</span>' : '') +
+      (st && st !== 'certified' ? ' ' + devStateBadge(st) : '') + '</div>',
+    ip: '<div class="mono" style="color:var(--dim)">' + esc(s.ip || '-') + '</div>',
+    entry: '<div>' + sessEntryBadge(s.entry) + '</div>',
+    ago: '<div style="color:var(--dim)">' + fmtAgo(s.connected_at) + '</div>',
+    tr: '<div class="tr-col"><div class="tr-rate"><span class="live-dot"></span><span class="up">↑ ' + fmtBytes(s.bytes_up) + '</span><span class="dn">↓ ' + fmtBytes(s.bytes_down) + '</span></div></div>',
+    key: '<div>' + agcopy(s.session_key || '', String(s.session_key || '').slice(0, 6)) + '</div>',
+    token: '<div style="color:var(--dim)">' + esc(s.token_label || '-') + '</div>',
+    chans: '<div style="color:var(--dim)">' + (s.channels || 0) + '</div>',
+    op: '<div><button class="danger small" data-act="sess-kick" data-key="' + esc(s.session_key) + '" data-name="' + esc(s.my_name || s.session_key || '') + '">' + T('sess.kick') + '</button></div>',
+  };
+  return '<div class="sess-row" style="grid-template-columns:' + sessGrid(cols) + '">' + cols.map(c => cell[c] || '').join('') + '</div>';
+}
+/* Inner panel of an expanded block: toolbar (count + optional kick-all) + header row + session rows */
+function sessPanelInner(b) {
+  return '<div class="sess-toolbar"><span>' + (b.toolbarText || T('sess.toolbar', { n: b.sessions.length })) + '</span>' +
+      (b.kickallHash && b.sessions.length ? '<button class="danger small" data-act="sess-kickall" data-hash="' + esc(b.kickallHash) + '" data-name="' + esc(b.name || '') + '">' + T('sess.kickAll') + '</button>' : '') + '</div>' +
+    '<div class="sess-row sess-head-row" style="grid-template-columns:' + sessGrid(b.cols) + '">' + b.cols.map(c => '<div>' + T('sess.col.' + c) + '</div>').join('') + '</div>' +
+    (b.sessions.length ? b.sessions.map(s => sessRowHtml(s, b.cols)).join('') : '<div class="empty">' + T('sess.empty') + '</div>') +
+    (b.extra || '');
+}
+/* Resource row (prototype sessBlockHtml): name/sub + tags + online badge; click expands the session panel */
+function sessBlockHtml(b) {
+  const cap = b.cap ? (b.online + '/' + b.cap) : String(b.online);
+  const open = SESS_OPEN.has(b.id);
+  return '<div class="res-row' + (open ? ' open' : '') + '" data-act="sess-toggle" data-sessrow="' + esc(b.id) + '" data-sessopen="' + esc(b.id) + '">' +
+      '<div class="res-who"><span class="caret">' + ic('chevron-right', 12) + '</span><div><b>' + esc(b.name) + '</b>' +
+      (b.sub ? '<div class="res-sub mono">' + esc(b.sub) + '</div>' : '') + '</div></div>' +
+      '<div class="res-meta">' + (b.tags || '') + '<span class="badge ' + (b.online > 0 ? 'b-ok' : 'b-off') + '">' + T('sess.onlineN', { n: cap }) + '</span></div></div>' +
+    '<div class="sess-wrap" ' + sessWrapAttrs(b.id) + '>' + sessPanelInner(b) + '</div>';
+}
+function kickModal(title, text, onYes) {
+  openModal(title,
+    '<p style="color:var(--dim)">' + esc(text) + '</p>' +
+    '<label>' + T('sess.kickMsg') + '</label><input id="kick-msg" style="width:100%" placeholder="' + T('sess.kickMsgPh') + '">',
+    [
+      { label: T('common.cancel'), kind: 'ghost', fn: closeModal },
+      { label: T('sess.kick'), kind: 'danger', fn: async () => { const m = $('kick-msg').value.trim(); closeModal(); await onYes(m); } },
+    ]);
+}
+function kickSession(key, name) {
+  kickModal(T('sess.kickTitle'), T('sess.kickConfirm', { name: name || key }), async (msg) => {
+    try {
+      await api('POST', '/api/v1/admin/sessions/kick', { session_key: key, message: msg });
+      toast(T('sess.kicked'), 'ok');
+      reloadSessions();
+    } catch (e) { toast(e.message, 'err'); }
+  });
+}
+function kickTokenSessions(hash, name) {
+  kickModal(T('sess.kickAllTitle'), T('sess.kickAllConfirm', { name: name || hash.slice(0, 12) }), async (msg) => {
+    try {
+      const d = await api('POST', '/api/v1/admin/sessions/kick_token', { token_hash: hash, message: msg });
+      toast(T('sess.kickedN', { n: d.kicked || 0 }), 'ok');
+      reloadSessions();
+    } catch (e) { toast(e.message, 'err'); }
+  });
+}
+
+/* ================= Hover identity card (node.md M3-T3; shell = AgIdCard in agutil.js) =================
+   Any [data-agid="<device_fp>"] element (session rows, device list, approval items) gets the card;
+   payloads are cached 30s (device state is slow-moving; the card re-fetches after expiry). */
+const DEV_CARD_CACHE = new Map(); // fp -> { html, ts }
+async function devCardHtml(fp) {
+  const hit = DEV_CARD_CACHE.get(fp);
+  if (hit && Date.now() - hit.ts < 30000) return hit.html;
+  let d;
+  try { d = await api('GET', '/api/v1/admin/devices/' + encodeURIComponent(fp)); }
+  catch (e) { return ''; }
+  const row = (k, v) => '<div class="agidcard-r"><span class="k">' + esc(k) + '</span><span class="v">' + v + '</span></div>';
+  const online = (d.sessions || []).length;
+  const html = '<div class="agidcard-h">' + esc(d.my_name || d.subject || T('dev.unnamed')) + ' ' + devStateBadge(d.state) + '</div>' +
+    row(T('dev.cardFp'), agcopy(d.device_fp, (d.device_fp || '').slice(0, 16) + '…')) +
+    (d.openssh ? row(T('dev.cardKey'), agcopy(d.openssh, d.openssh.slice(0, 30) + '…')) : '') +
+    row(T('dev.cardSubject'), esc(d.subject || '-')) +
+    row(T('dev.cardOnline'), online ? T('dev.onlineN', { n: online }) : T('dev.offline')) +
+    row(T('dev.cardTraffic'), '↑ ' + fmtBytes(d.bytes_up) + ' · ↓ ' + fmtBytes(d.bytes_down));
+  DEV_CARD_CACHE.set(fp, { html, ts: Date.now() });
+  return html;
+}
+
+/* ================= Devices (node.md M3-T2) + pending policy gate (M3-T5) ================= */
+async function renderDevices() {
+  if (S.devFp) return renderDeviceDetail();
+  $('view').innerHTML = '<div class="page-title">' + ic('monitor-smartphone', 20) + T('dev.title') + '</div><div class="page-desc">' + T('dev.desc') + '</div>' +
+    '<div class="card"><h3>' + T('dev.policyTitle') + ahelp(T('dev.policyTip')) + '</h3>' +
+      '<label class="chk" style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="dev-policy"> <span>' + T('dev.policyAllow') + '</span></label></div>' +
+    '<div class="toolbar"><input id="dev-q" placeholder="' + T('dev.searchPh') + '" value="' + esc(S.devQ) + '">' +
+      '<select id="dev-state">' +
+        ['', 'online', 'offline', 'pending', 'certified', 'revoked'].map(v =>
+          '<option value="' + v + '"' + (S.devState === v ? ' selected' : '') + '>' + T('dev.fs' + (v ? v.charAt(0).toUpperCase() + v.slice(1) : 'All')) + '</option>').join('') +
+      '</select></div>' +
+    '<div class="card table-wrap"><table><thead><tr><th>' + T('dev.colDevice') + '</th><th>' + T('common.status') + '</th><th>' + T('dev.colSess') + '</th><th>' + T('dev.colTraffic') + '</th><th>' + T('dev.colLastSeen') + '</th><th>' + T('common.action') + '</th></tr></thead><tbody id="dev-body"></tbody></table></div>';
+  agSelectEnhance($('view'));
+  $('dev-q').oninput = (e) => { S.devQ = e.target.value; renderDeviceRows(); };
+  $('dev-state').onchange = (e) => { S.devState = e.target.value; renderDeviceRows(); };
+  $('dev-policy').onchange = async (e) => {
+    const allow = e.target.checked;
+    try {
+      await api('PUT', '/api/v1/admin/devices/policy', { policy: allow ? 'allow' : 'block' });
+      toast(allow ? T('dev.policyOn') : T('dev.policyOff'), 'ok');
+    } catch (err) { toast(err.message, 'err'); e.target.checked = !allow; }
+  };
+  try { const p = await api('GET', '/api/v1/admin/devices/policy'); $('dev-policy').checked = p.policy === 'allow'; } catch (e) {}
+  await Promise.all([loadDevices(), loadSessions()]);
+  renderDeviceRows();
+  S.timers.push(setInterval(async () => { await Promise.all([loadDevices(), loadSessions()]); renderDeviceRows(); }, 10000));
+}
+function renderDeviceRows() {
+  const body = $('dev-body'); if (!body) return;
+  const q = S.devQ.trim().toLowerCase();
+  let items = Object.values(DEV_MAP);
+  if (S.devState === 'online') items = items.filter(d => d.online);
+  else if (S.devState === 'offline') items = items.filter(d => !d.online);
+  else if (S.devState) items = items.filter(d => d.state === S.devState);
+  if (q) items = items.filter(d => ((d.my_name || '') + (d.subject || '') + (d.remark || '') + (d.device_fp || '')).toLowerCase().includes(q));
+  items.sort((a, b) => (b.online - a.online) || String(b.last_seen || '').localeCompare(String(a.last_seen || '')));
+  const sig = JSON.stringify([items, q, S.devState]);
+  if (sig === body.dataset.sig) return;
+  body.dataset.sig = sig;
+  body.innerHTML = items.map(d =>
+    '<tr><td><span class="dot ' + (d.online ? 'on' : 'off') + '"></span>' + devNameHtml(d.device_fp, d.my_name || d.subject) +
+      '<div style="margin-top:2px">' + agcopy(d.device_fp, d.short_fp || (d.device_fp || '').slice(0, 12)) + '</div>' +
+      (d.subject ? '<div style="color:var(--dim2);font-size:12px">' + esc(d.subject) + (d.remark ? ' · ' + esc(d.remark) : '') + '</div>' : (d.remark ? '<div style="color:var(--dim2);font-size:12px">' + esc(d.remark) + '</div>' : '')) + '</td>' +
+    '<td>' + devStateBadge(d.state) + '</td>' +
+    '<td>' + T('adm.countN', { n: d.sessions || 0 }) + '</td>' +
+    '<td class="mono" style="color:var(--dim)">↑ ' + fmtBytes(d.bytes_up) + ' ↓ ' + fmtBytes(d.bytes_down) + '</td>' +
+    '<td style="color:var(--dim)">' + esc((d.last_seen || '').replace('T', ' ').replace('Z', '') || T('common.never')) + '</td>' +
+    '<td style="white-space:nowrap">' +
+      (d.state === 'pending' ? '<button class="ghost small" data-act="dev-certify" data-fp="' + esc(d.device_fp) + '">' + T('dev.certify') + '</button> ' : '') +
+      '<button class="ghost small" data-act="dev-open" data-fp="' + esc(d.device_fp) + '">' + T('groups.detail') + '</button></td></tr>'
+  ).join('') || '<tr><td colspan="6" class="empty">' + T('dev.empty') + '</td></tr>';
+}
+async function renderDeviceDetail() {
+  const fp = S.devFp;
+  $('view').innerHTML = '<div class="page-title">' + ic('monitor-smartphone', 20) + T('dev.detailTitle') + '<div class="spacer"></div><button class="ghost small" id="dev-back">' + ic('chevron-right', 13) + ' ' + T('common.back') + '</button></div>' +
+    '<div class="card" id="dev-hero"></div>' +
+    '<div class="stat-grid" id="dev-kpis"></div>' +
+    '<div class="card"><h3>' + T('dev.sessTitle') + '</h3><div class="table-wrap"><table><thead><tr><th>IP</th><th>' + T('sess.col.ago') + '</th><th>' + T('sess.col.tr') + '</th><th>' + T('sess.col.chans') + '</th><th>' + T('sess.col.key') + '</th><th>' + T('common.action') + '</th></tr></thead><tbody id="dev-sess"></tbody></table></div></div>';
+  $('dev-back').onclick = () => { S.devFp = ''; S.timers.forEach(clearInterval); S.timers = []; renderDevices(); };
+  await loadDeviceDetail();
+  S.timers.push(setInterval(loadDeviceDetail, 8000));
+}
+async function loadDeviceDetail() {
+  const hero = $('dev-hero'); if (!hero || !S.devFp) return;
+  if (document.hidden) return;
+  let d;
+  try { d = await api('GET', '/api/v1/admin/devices/' + encodeURIComponent(S.devFp)); }
+  catch (e) { toast(e.message, 'err'); S.devFp = ''; renderDevices(); return; }
+  if (!hero.isConnected) return; // view switched while the fetch was in flight
+  const sig = JSON.stringify(d);
+  if (sig === hero.dataset.sig) return;
+  hero.dataset.sig = sig;
+  const online = (d.sessions || []).length;
+  const acts =
+    (d.state === 'pending' ? '<button data-act="dev-certify" data-fp="' + esc(d.device_fp) + '">' + ic('stamp', 14) + T('dev.certify') + '</button> ' : '') +
+    (d.state === 'certified' ? '<button class="ghost" data-act="dev-rebind" data-fp="' + esc(d.device_fp) + '">' + ic('refresh-cw', 14) + T('dev.rebind') + '</button> ' : '') +
+    (d.state !== 'revoked' ? '<button class="danger" data-act="dev-revoke" data-fp="' + esc(d.device_fp) + '">' + ic('ban', 14) + T('adm.revoke') + '</button>' : '');
+  hero.innerHTML =
+    '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px">' +
+      '<b style="font-size:16px">' + esc(d.my_name || d.subject || T('dev.unnamed')) + '</b>' + devStateBadge(d.state) +
+      (online ? '<span class="badge b-ok">' + T('dev.onlineN', { n: online }) + '</span>' : '<span class="badge b-info">' + T('dev.offline') + '</span>') +
+      '<div class="spacer" style="flex:1"></div>' + acts + '</div>' +
+    '<div class="kv"><span class="k">' + T('dev.heroSubject') + '</span><span>' + esc(d.subject || '-') + (d.remark ? ' <span style="color:var(--dim2)">' + esc(d.remark) + '</span>' : '') + '</span></div>' +
+    '<div class="kv"><span class="k">' + T('dev.cardFp') + '</span><span>' + agcopy(d.device_fp, d.device_fp) + '</span></div>' +
+    (d.openssh ? '<div class="kv"><span class="k">' + T('dev.cardKey') + '</span><span>' + agcopy(d.openssh, d.openssh.slice(0, 42) + '…') + '</span></div>' : '') +
+    '<div class="kv"><span class="k">' + T('dev.heroCert') + '</span><span style="color:var(--dim)">' +
+      (d.state === 'certified' ? esc((d.certified_by || '-') + ' · ' + (d.certified_at || '')) : '-') + '</span></div>' +
+    '<div class="kv"><span class="k">' + T('dev.heroFirst') + '</span><span style="color:var(--dim)">' + esc((d.first_seen || '').replace('T', ' ').replace('Z', '')) + '</span></div>';
+  $('dev-kpis').innerHTML =
+    agkpi(fmtBytes(d.bytes_up), T('dev.kpiUp')) + agkpi(fmtBytes(d.bytes_down), T('dev.kpiDown')) +
+    agkpi(String(online), T('dev.kpiSessions')) +
+    agkpi(online ? T('dev.online') : T('dev.offline'), T('dev.kpiOnline')) +
+    agkpi(esc((d.last_seen || '-').replace('T', ' ').replace('Z', '')), T('dev.kpiLastSeen'));
+  $('dev-sess').innerHTML = (d.sessions || []).map(s =>
+    '<tr><td class="mono">' + esc(s.ip || '-') + '</td><td style="color:var(--dim)">' + fmtAgo(s.online_secs) + '</td>' +
+    '<td class="mono" style="color:var(--dim)">↑ ' + fmtBytes(s.bytes_up) + ' ↓ ' + fmtBytes(s.bytes_down) + '</td>' +
+    '<td style="color:var(--dim)">' + (s.channels || 0) + '</td>' +
+    '<td>' + agcopy(s.session_key || '', String(s.session_key || '').slice(0, 6)) + '</td>' +
+    '<td><button class="danger small" data-act="sess-kick" data-key="' + esc(s.session_key) + '" data-name="' + esc(d.my_name || '') + '">' + T('sess.kick') + '</button></td></tr>'
+  ).join('') || '<tr><td colspan="6" class="empty">' + T('sess.empty') + '</td></tr>';
+}
+/* KPI card helper (.agkpi, M3-T7): value + label + optional delta slot ({dir: up|down|flat, text}) */
+function agkpi(value, label, delta) {
+  return '<div class="agkpi"><div class="agkpi-v">' + value +
+    (delta ? ' <span class="agkpi-d ' + esc(delta.dir || 'flat') + '">' + ic('trending-up', 11) + esc(delta.text) + '</span>' : '') +
+    '</div><div class="agkpi-k">' + esc(label) + '</div></div>';
+}
+async function openCertify(fp) {
+  const d = DEV_MAP[fp] || {};
+  openModal(T('dev.certifyTitle'),
+    '<label>' + T('dev.certifySubject') + '</label><input id="cfy-subject" style="width:100%" value="' + esc(d.subject || '') + '" placeholder="' + T('dev.certifySubjectPh') + '">' +
+    '<label>' + T('dev.certifyRemark') + '</label><input id="cfy-remark" style="width:100%" value="' + esc(d.remark || '') + '">',
+    [
+      { label: T('common.cancel'), kind: 'ghost', fn: closeModal },
+      { label: T('dev.certify'), fn: async () => {
+        const subject = $('cfy-subject').value.trim();
+        if (!subject) { toast(T('dev.certifyNeedSubject'), 'err'); return; }
+        try {
+          await api('POST', '/api/v1/admin/devices/' + encodeURIComponent(fp) + '/certify', { subject, remark: $('cfy-remark').value.trim() });
+          closeModal(); toast(T('dev.certifyDone'), 'ok');
+          DEV_CARD_CACHE.delete(fp);
+          await loadDevices(); renderDeviceRows(); if (S.devFp) loadDeviceDetail();
+          refreshApprovalsBadge();
+        } catch (e) { toast(e.message, 'err'); }
+      } },
+    ]);
+}
+function openRevoke(fp) {
+  const d = DEV_MAP[fp] || {};
+  openModal(T('dev.revokeTitle'),
+    '<p style="color:var(--danger-text)">' + ic('triangle-alert', 13) + ' ' + T('dev.revokeWarn') + '</p>' +
+    '<label>' + T('sess.kickMsg') + '</label><input id="revoke-msg" style="width:100%" placeholder="' + T('sess.kickMsgPh') + '">',
+    [
+      { label: T('common.cancel'), kind: 'ghost', fn: closeModal },
+      { label: T('adm.revoke'), kind: 'danger', fn: async () => {
+        const msg = $('revoke-msg').value.trim(); closeModal();
+        try {
+          const r = await api('POST', '/api/v1/admin/devices/' + encodeURIComponent(fp) + '/revoke', { message: msg });
+          toast(T('dev.revokeDone', { n: r.kicked || 0 }), 'ok');
+          DEV_CARD_CACHE.delete(fp);
+          await loadDevices(); renderDeviceRows(); if (S.devFp) loadDeviceDetail();
+        } catch (e) { toast(e.message, 'err'); }
+      } },
+    ]);
+}
+async function openRebind(oldFp) {
+  let pend = [];
+  try { pend = (await api('GET', '/api/v1/admin/devices?state=pending')).items || []; }
+  catch (e) { toast(e.message, 'err'); return; }
+  if (!pend.length) { toast(T('dev.rebindEmpty'), 'err'); return; }
+  const old = DEV_MAP[oldFp] || {};
+  openModal(T('dev.rebindTitle'),
+    '<p style="color:var(--dim)">' + T('dev.rebindHint', { name: old.my_name || old.subject || (oldFp || '').slice(0, 12) }) + '</p>' +
+    '<div class="rule-check" style="max-height:180px">' + pend.map((p, i) =>
+      '<label><input type="radio" name="rebind-new" value="' + esc(p.device_fp) + '"' + (i === 0 ? ' checked' : '') + '>' +
+      '<span><b>' + esc(p.my_name || p.subject || T('dev.unnamed')) + '</b> <span class="mono" style="color:var(--dim2)">' + esc(p.short_fp || '') + '</span></span>' +
+      '<span style="color:var(--dim)">' + esc((p.first_seen || '').replace('T', ' ').replace('Z', '')) + '</span></label>').join('') + '</div>' +
+    '<label>' + T('sess.kickMsg') + '</label><input id="rebind-msg" style="width:100%" placeholder="' + T('sess.kickMsgPh') + '">',
+    [
+      { label: T('common.cancel'), kind: 'ghost', fn: closeModal },
+      { label: T('dev.rebind'), kind: 'danger', fn: async () => {
+        const sel = document.querySelector('input[name="rebind-new"]:checked');
+        if (!sel) return;
+        const msg = $('rebind-msg').value.trim(); closeModal();
+        try {
+          const r = await api('POST', '/api/v1/admin/devices/rebind', { old_fp: oldFp, new_fp: sel.value, message: msg });
+          toast(T('dev.rebindDone', { n: r.kicked || 0 }), 'ok');
+          DEV_CARD_CACHE.delete(oldFp); DEV_CARD_CACHE.delete(sel.value);
+          S.devFp = '';
+          await loadDevices(); renderDevices();
+        } catch (e) { toast(e.message, 'err'); }
+      } },
+    ]);
+}
+
+/* ================= Approval center (node.md M3-T4) ================= */
+let APPR_ITEMS = []; // latest loaded list (approve dialog prefills subject/remark from the request detail)
+async function renderApprovals() {
+  $('view').innerHTML = '<div class="page-title">' + ic('stamp', 20) + T('appr.title') + '</div><div class="page-desc">' + T('appr.desc') + '</div>' +
+    '<div class="toolbar"><select id="appr-state">' +
+      ['pending', 'all', 'approved', 'rejected'].map(v =>
+        '<option value="' + v + '"' + (S.apprState === v ? ' selected' : '') + '>' + T('appr.f' + v.charAt(0).toUpperCase() + v.slice(1)) + '</option>').join('') +
+    '</select></div><div id="appr-list"></div>';
+  agSelectEnhance($('view'));
+  $('appr-state').onchange = (e) => { S.apprState = e.target.value; loadApprovals(); };
+  await loadApprovals();
+  S.timers.push(setInterval(loadApprovals, 12000));
+}
+function apprTypeBadge(t) {
+  const m = ({ device_certify: 'appr.typeCertify', device_rebind: 'appr.typeRebind' })[t];
+  return '<span class="badge b-info">' + (m ? T(m) : esc(t)) + '</span>';
+}
+function apprStateBadge(st) {
+  const m = ({ pending: ['b-warn', 'appr.stPending'], approved: ['b-ok', 'appr.stApproved'], rejected: ['b-off', 'appr.stRejected'] })[st] || ['b-info', ''];
+  return '<span class="badge ' + m[0] + '">' + (m[1] ? T(m[1]) : esc(st)) + '</span>';
+}
+async function loadApprovals() {
+  const box = $('appr-list'); if (!box) return;
+  if (document.hidden) return;
+  const qs = S.apprState === 'all' ? '' : '?state=' + S.apprState;
+  let items;
+  try { items = (await api('GET', '/api/v1/admin/approvals' + qs)).items || []; }
+  catch (e) { toast(e.message, 'err'); return; }
+  APPR_ITEMS = items;
+  const sig = JSON.stringify(items);
+  if (sig === box.dataset.sig) return;
+  box.dataset.sig = sig;
+  box.innerHTML = items.map(a => {
+    const dt = a.detail || {};
+    const fp = a.object_ref || '';
+    const detailBits = [];
+    if (dt.my_name) detailBits.push(T('appr.detailName') + ' ' + esc(dt.my_name));
+    if (dt.ip) detailBits.push('IP ' + esc(dt.ip));
+    if (dt.subject) detailBits.push(T('appr.detailSubject') + ' ' + esc(dt.subject));
+    if (dt.new_fp) detailBits.push(T('appr.detailNew') + ' ' + esc(String(dt.new_fp).slice(0, 12)));
+    const msgs = (a.messages || []).map(m =>
+      '<div class="kv"><span class="k">' + (m.direction === 'appeal' ? T('appr.msgAppeal') : T('appr.msgNotice')) + '</span>' +
+      '<span style="text-align:right">' + esc(m.body || '') + ' <span style="color:var(--dim2)">' + esc((m.created_at || '').replace('T', ' ').replace(/\..*$/, '')) + '</span></span></div>').join('');
+    const acts = a.state === 'pending'
+      ? '<div class="actions" style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px">' +
+        '<button data-act="appr-approve" data-id="' + esc(a.id) + '">' + ic('check', 13) + T('appr.approve') + '</button> ' +
+        '<button class="ghost" data-act="appr-reject" data-id="' + esc(a.id) + '">' + T('appr.reject') + '</button> ' +
+        '<button class="danger" data-act="appr-reject-revoke" data-id="' + esc(a.id) + '">' + ic('ban', 13) + T('appr.rejectRevoke') + '</button></div>'
+      : '<div class="hint" style="margin-top:8px">' + T('appr.decidedBy', { by: a.decided_by || '-', at: (a.decided_at || '').replace('T', ' ').replace(/\..*$/, '') }) + '</div>';
+    return '<div class="card">' +
+      '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">' + apprTypeBadge(a.type) + apprStateBadge(a.state) +
+        '<b>' + esc(a.requester || '-') + '</b>' +
+        (fp ? devNameHtml(fp, (fp || '').slice(0, 12)) : '') +
+        '<div class="spacer" style="flex:1"></div><span style="color:var(--dim2);font-size:12px">' + esc((a.created_at || '').replace('T', ' ').replace(/\..*$/, '')) + '</span></div>' +
+      (detailBits.length ? '<div class="hint" style="margin-top:6px">' + detailBits.join(' · ') + '</div>' : '') +
+      msgs + acts + '</div>';
+  }).join('') || '<div class="card"><div class="empty">' + T('appr.empty') + '</div></div>';
+}
+function openDecide(id, action) {
+  const close = { label: T('common.cancel'), kind: 'ghost', fn: closeModal };
+  const post = async (body) => {
+    try {
+      await api('POST', '/api/v1/admin/approvals/' + encodeURIComponent(id) + '/decide', body);
+      toast(T('appr.done'), 'ok');
+      closeModal();
+      loadApprovals(); refreshApprovalsBadge(); loadDevices();
+    } catch (e) { toast(e.message, 'err'); }
+  };
+  if (action === 'approve') {
+    const it = APPR_ITEMS.find(a => a.id === id) || {};
+    const dt = it.detail || {};
+    openModal(T('appr.approveTitle'),
+      '<label>' + T('dev.certifySubject') + '</label><input id="dc-subject" style="width:100%" value="' + esc(dt.subject || '') + '">' +
+      '<label>' + T('dev.certifyRemark') + '</label><input id="dc-remark" style="width:100%" value="' + esc(dt.remark || '') + '">',
+      [close, { label: T('appr.approve'), fn: () => {
+        const subject = $('dc-subject').value.trim();
+        if (!subject) { toast(T('dev.certifyNeedSubject'), 'err'); return; }
+        post({ action, subject, remark: $('dc-remark').value.trim() });
+      } }]);
+    return;
+  }
+  const revoke = action === 'reject_revoke';
+  openModal(revoke ? T('appr.rejectRevokeTitle') : T('appr.rejectTitle'),
+    (revoke ? '<p style="color:var(--danger-text)">' + ic('triangle-alert', 13) + ' ' + T('appr.rejectRevokeWarn') + '</p>' : '') +
+    '<label>' + T('appr.notice') + ' ' + ahelp(T('appr.noticeTip')) + '</label><input id="dc-notice" style="width:100%">',
+    [close, { label: revoke ? T('appr.rejectRevoke') : T('appr.reject'), kind: 'danger', fn: () => post({ action, notice: $('dc-notice').value.trim() }) }]);
+}
+/* Sidebar pending-count badge: global poller (survives view switches), boosted by WS approval.new */
+async function refreshApprovalsBadge() {
+  const b = $('nav-approvals-badge'); if (!b) return;
+  try {
+    const d = await api('GET', '/api/v1/admin/approvals?state=pending');
+    const n = (d.items || []).length;
+    b.hidden = n === 0;
+    b.textContent = n > 99 ? '99+' : String(n);
+  } catch (e) { /* badge failure is silent */ }
+}
 
 /* ================= Dashboard ================= */
 async function renderDashboard() {
@@ -717,6 +1170,12 @@ async function renderDashboard() {
     ws.onmessage = (ev) => {
       try {
         const e = JSON.parse(ev.data);
+        // Approval center: instant badge + list refresh (M3-T4); the event feed below still prints it
+        if (e.type === 'approval.new') {
+          refreshApprovalsBadge();
+          if (S.view === 'approvals') loadApprovals();
+          if (S.view === 'devices') { loadDevices().then(renderDeviceRows); }
+        }
         const list = $('events-list');
         if (!list) return;
         if (list.dataset.loading) { list.innerHTML = ''; delete list.dataset.loading; }
@@ -1070,7 +1529,7 @@ async function renderFanIn() {
       '<div class="agtabs-tools"><input id="fanin-q" style="width:230px" placeholder="' + T('fanin.admSearchPh') + '" value="' + esc(S.faninQuery) + '"' + (tab === 'listen' ? ' hidden' : '') + '></div>' +
     '</div>' +
     '<div data-agpanel="listen"><div class="card"><h3>' + T('fanin.listenerTitle') + '</h3><div id="fanin-listener"></div></div></div>' +
-    '<div data-agpanel="peers" hidden><div class="card"><h3>' + T('fanin.peersTitle') + '</h3><div class="table-wrap"><table><thead><tr><th>' + T('fanin.colPeer') + '</th><th>' + T('dashboard.up') + '</th><th>' + T('dashboard.down') + '</th><th>' + T('fanin.advRoutes') + '</th><th>' + T('fanin.colPool') + '</th></tr></thead><tbody id="fanin-peers"></tbody></table></div></div></div>' +
+    '<div data-agpanel="peers" hidden><div class="card card-flush"><h3>' + T('fanin.peersTitle') + ahelp(T('sess.peersHelp')) + '</h3><div id="fanin-peers"></div></div></div>' +
     '<div data-agpanel="tokens" hidden><div class="card"><h3>' + T('fanin.tokensTitle') + ahelp(T('fanin.tokenHelp')) + '</h3>' +
       '<div class="toolbar"><div class="spacer"></div><button id="tok-create">' + ic('plus', 15) + T('fanin.createToken') + '</button></div>' +
       '<div class="table-wrap"><table><thead><tr><th>' + T('fanin.colPrefix') + '</th><th>' + T('term.group') + '</th><th>' + T('fanin.colRate') + '</th><th>' + T('common.remark') + '</th><th>' + T('fanin.colExpose') + '</th><th>' + T('fanin.colLastUsed') + '</th><th>' + T('common.createdAt') + '</th><th>' + T('common.action') + '</th></tr></thead><tbody id="tok-body"></tbody></table></div></div></div>';
@@ -1085,8 +1544,8 @@ async function renderFanIn() {
     renderFaninPeers();
     renderFaninTokens();
   };
-  await Promise.all([loadFaninStatus(), loadTokens()]);
-  S.timers.push(setInterval(loadFaninStatus, 10000));
+  await Promise.all([loadFaninStatus(), loadTokens(), reloadSessions()]);
+  S.timers.push(setInterval(() => { loadFaninStatus(); reloadSessions(); }, 10000));
 }
 /* Listener card + peers table share roles.listener: single fetch, single-signature change detection (no DOM rewrite when unchanged) */
 async function loadFaninStatus() {
@@ -1150,30 +1609,33 @@ function poolDetailHtml(o) {
     '</div>';
 }
 function renderFaninPeers() {
-  const body = $('fanin-peers'); if (!body) return;
+  const box = $('fanin-peers'); if (!box) return;
   const q = S.faninQuery.trim().toLowerCase();
   const disp = (id) => FANIN_NAMES[id] || id;
   const rows = q ? FANIN_PEERS.filter(t => ((t.node_id || '') + disp(t.node_id)).toLowerCase().includes(q)) : FANIN_PEERS;
-  body.innerHTML = rows.map(t => {
+  // Signature covers the row data + live sessions + expansion state: unchanged polls rewrite nothing
+  const sig = JSON.stringify({ rows, s: SESS, open: [...SESS_OPEN], off: FED_OFFERS, names: FANIN_NAMES });
+  if (sig === box.dataset.sig) return;
+  box.dataset.sig = sig;
+  // M3-T1 resource rows: one row per fan-in peer (grouped by node_id), expanding to its sessions;
+  // the pushed-group pool detail moves into the expansion (always visible while expanded)
+  box.innerHTML = rows.map(t => {
+    const sessions = SESS.filter(s => s.kind === 'fanin' && s.node_id === t.node_id);
     const o = FED_OFFERS[t.node_id];
     const hasPool = !!(o && ((o.advertise || []).length || (o.groups || []).length));
-    // Advertised route column: always rendered (badges, capped) so an empty set reads as
-    // "无宣告" instead of a missing pool entry — delegation issuance depends on confirming this
-    const adv = (o && o.advertise) || [];
-    const advCell = adv.length
-      ? adv.slice(0, 3).map(a => '<span class="badge b-info mono" style="margin:0 4px 2px 0">' + esc(a) + '</span>').join('') +
-        (adv.length > 3 ? '<span class="hint" title="' + esc(adv.join(', ')) + '">+' + (adv.length - 3) + '</span>' : '')
-      : '<span style="color:var(--dim2)">' + T('fanin.noAdv') + '</span>';
     const name = disp(t.node_id);
-    const nameCell = esc(name) + (name !== t.node_id ? ' <span style="color:var(--dim2)">' + esc(t.node_id) + '</span>' : '');
-    let html = '<tr><td class="mono"><span class="dot on"></span>' + nameCell + '</td>' +
-      '<td class="mono">' + fmtBytes(t.bytes_up) + '</td>' +
-      '<td class="mono">' + fmtBytes(t.bytes_down) + '</td>' +
-      '<td>' + advCell + '</td>' +
-      '<td>' + (hasPool ? '<button class="ghost small" data-act="pool-toggle" data-node="' + esc(t.node_id) + '">' + T('fanin.poolDetail') + '</button>' : '') + '</td></tr>';
-    if (hasPool) html += '<tr data-poolrow="' + esc(t.node_id) + '" hidden><td colspan="5" style="background:var(--bg2)">' + poolDetailHtml(o) + '</td></tr>';
-    return html;
-  }).join('') || '<tr><td colspan="5" class="empty">' + (q ? T('fanin.noMatchPeers') : T('fanin.emptyPeers')) + '</td></tr>';
+    return sessBlockHtml({
+      id: 'peer:' + t.node_id,
+      name,
+      sub: name !== t.node_id ? t.node_id : '',
+      tags: '<span class="mono" style="color:var(--dim2);font-size:11.5px">↑ ' + fmtBytes(t.bytes_up) + ' ↓ ' + fmtBytes(t.bytes_down) + '</span>',
+      online: sessions.length,
+      cap: 0,
+      sessions,
+      cols: ['who', 'ip', 'chans', 'ago', 'tr', 'key', 'op'],
+      extra: hasPool ? '<div style="padding:4px 14px 10px">' + poolDetailHtml(o) + '</div>' : '',
+    });
+  }).join('') || '<div class="empty">' + (q ? T('fanin.noMatchPeers') : T('fanin.emptyPeers')) + '</div>';
 }
 /* One-click adoption: materialize a pushed group into a local group (federation P1 acceptance) */
 async function adoptPushed(nodeId, groupName) {
@@ -1236,8 +1698,18 @@ function renderFaninTokens() {
     (t.remark || '').toLowerCase().includes(q) ||
     (t.groups || []).some(g => (g.name || '').toLowerCase().includes(q))
   ) : FANIN_TOKENS;
-  body.innerHTML = items.map(t =>
-    '<tr><td class="mono">' + esc(t.token_prefix) + lifecycleBadge(t) + '</td>' +
+  // Signature guard: polling re-renders only on real change (keeps expanded session rows + dropdowns alive)
+  const sig = JSON.stringify([items, q, SESS, [...SESS_OPEN], DEV_MAP]);
+  if (sig === body.dataset.sig) return;
+  body.dataset.sig = sig;
+  body.innerHTML = items.map(t => {
+    const key = 'tok:' + t.id;
+    // M3-T1: fan-in sessions authenticated with this token (per-session kick; no kick-all here —
+    // sessions/kick_token covers delegated tokens only)
+    const sessions = SESS.filter(s => s.kind === 'fanin' && s.token_hash === t.token_hash);
+    const sessTr = '<tr ' + sessWrapAttrs(key) + '><td colspan="8" style="background:var(--bg2);padding:0">' +
+      sessPanelInner({ name: t.remark || t.token_prefix, sessions, cols: ['who', 'ip', 'chans', 'ago', 'tr', 'key', 'op'] }) + '</td></tr>';
+    return '<tr><td class="mono">' + esc(t.token_prefix) + lifecycleBadge(t) + '</td>' +
     '<td>' + ((t.groups || []).length ? t.groups.map(g => grpChip({ name: g.name, adopted: g.adopted_node })).join(' ') : '<span style="color:var(--dim2)">' + T('adm.noRestrict') + '</span>') + '</td>' +
     '<td class="mono">' + (t.rate_limit_kbps ? esc(t.rate_limit_kbps) + ' KB/s' : '<span style="color:var(--dim2)">' + T('adm.unlimited') + '</span>') + '</td>' +
     '<td>' + esc(t.remark || '-') + '</td>' +
@@ -1247,9 +1719,10 @@ function renderFaninTokens() {
         ['ro','rules','full'].map(sc => '<option value="' + sc + '" ' + (t.control_scope === sc ? 'selected' : '') + '>' + ({ro: T('fanin.scopeRo'), rules: T('fanin.scopeRules'), full: T('fanin.scopeFull')})[sc] + '</option>').join('') + '</select>' : '') + '</td>' +
     '<td style="color:var(--dim)">' + esc(t.last_used_at || T('fanin.unused')) + '</td>' +
     '<td style="color:var(--dim)">' + esc(t.created_at) + '</td>' +
-    '<td style="white-space:nowrap"><button class="ghost small" data-act="tok-edit" data-id="' + esc(t.id) + '" data-group="' + esc(t.group_id||'') + '" data-expose="' + t.expose_control + '" data-scope="' + esc(t.control_scope) + '" data-expires="' + esc(t.expires_at||'') + '" data-maxuses="' + esc(t.max_uses||'') + '" data-rate="' + esc(t.rate_limit_kbps||'') + '">' + T('common.edit') + '</button> ' +
-    '<button class="danger small" data-act="tok-del" data-id="' + esc(t.id) + '">' + T('adm.revoke') + '</button></td></tr>'
-  ).join('') || '<tr><td colspan="8" class="empty">' + (q ? T('fanin.noMatchTokens') : T('fanin.emptyTokens')) + '</td></tr>';
+    '<td style="white-space:nowrap"><button class="ghost small" data-act="tok-sess" data-id="' + esc(t.id) + '" data-sessopen="' + esc(key) + '" title="' + T('sess.title') + '">' + ic('chevron-right', 13) + '</button> ' +
+    '<button class="ghost small" data-act="tok-edit" data-id="' + esc(t.id) + '" data-group="' + esc(t.group_id||'') + '" data-expose="' + t.expose_control + '" data-scope="' + esc(t.control_scope) + '" data-expires="' + esc(t.expires_at||'') + '" data-maxuses="' + esc(t.max_uses||'') + '" data-rate="' + esc(t.rate_limit_kbps||'') + '" data-remark="' + esc(t.remark||'') + '">' + T('common.edit') + '</button> ' +
+    '<button class="danger small" data-act="tok-del" data-id="' + esc(t.id) + '">' + T('adm.revoke') + '</button></td></tr>' + sessTr;
+  }).join('') || '<tr><td colspan="8" class="empty">' + (q ? T('fanin.noMatchTokens') : T('fanin.emptyTokens')) + '</td></tr>';
   agSelectEnhance(body);
 }
 async function toggleExpose(id, on) {
@@ -1268,7 +1741,8 @@ async function setScope(id, scope) {
 }
 function openCreateToken() {
   openModal(T('fanin.createTitle'),
-    '<label>' + T('fanin.remarkLabel') + '</label><input id="nt-remark" style="width:100%">' +
+    // M3-T6 naming triplet: target name (local display of the peer) + my name (prefilled into the link's myname word)
+    nameTriplet('nt', {}, { remark: false }) +
     '<label>' + T('adm.groupLabel') + '</label>' +
     '<div class="rule-check" style="max-height:130px">' +
       (S.groups.length ? S.groups.map(g =>
@@ -1293,8 +1767,10 @@ function openCreateToken() {
         try {
           const rateVal = parseInt($('nt-rate').value, 10);
           const life = lifecycleFieldsVal('nt');
+          const names = nameTripletVal('nt');
           const d = await api('POST', '/api/v1/admin/node/relay-tokens', {
-            remark: $('nt-remark').value.trim(),
+            remark: names.target,
+            my_name: names.myname,
             expose_control: $('nt-expose').checked,
             control_scope: $('nt-scope').value,
             group_id: [...document.querySelectorAll('.nt-acl:checked')].map(c => c.value).join(',') || null,
@@ -1321,8 +1797,10 @@ async function delToken(id) {
 }
 /* Edit bound group: PUT tri-state semantics (absent = unchanged / null = unbound / string = bind to group);
    editing is an explicit user choice so it is always sent; control-plane exposure is changed directly in the list (group_id not sent = unchanged) */
-function openEditToken(id, groupId, exposeControl, controlScope, expiresAt, maxUses, rateKbps) {
+function openEditToken(id, groupId, exposeControl, controlScope, expiresAt, maxUses, rateKbps, remark) {
   openModal(T('fanin.editTitle'),
+    // M3-T6: the target name is the issuer-assigned peer display name (relay_token.remark column)
+    nameTriplet('et', { target: remark || '' }, { myname: false, remark: false }) +
     '<label>' + T('adm.groupLabel') + '</label>' +
     '<div class="rule-check" style="max-height:130px">' +
       (S.groups.length ? S.groups.map(g =>
@@ -1340,6 +1818,7 @@ function openEditToken(id, groupId, exposeControl, controlScope, expiresAt, maxU
           const life = lifecycleFieldsVal('et');
           await api('PUT', '/api/v1/admin/node/relay-tokens/' + id, {
             expose_control: exposeControl, control_scope: controlScope,
+            remark: nameTripletVal('et').target,
             group_id: [...document.querySelectorAll('.et-acl:checked')].map(c => c.value).join(',') || null,
             rate_limit_kbps: rateVal > 0 ? rateVal : null,
             expires_at: life.expires_at || null,
@@ -1368,10 +1847,13 @@ async function renderConnectors() {
     '</div>' +
     // watch: consumer activity overview — per issued token, every disaster-set entry with its live state
     '<div data-agpanel="watch" hidden><div class="card"><h3>' + T('deleg.watchTitle') + ahelp(T('deleg.watchHelp')) + '</h3>' +
-      '<div class="table-wrap"><table><thead><tr><th>' + T('deleg.colLabel') + '</th><th>' + T('deleg.colEntry') + '</th><th>' + T('deleg.colSet') + '</th><th>' + T('deleg.colConcurrency') + '</th><th>' + T('deleg.colActivity') + '</th><th>' + T('common.createdAt') + '</th></tr></thead><tbody id="watch-body"></tbody></table></div></div></div>' +
+      '<div class="table-wrap"><table><thead><tr><th>' + T('deleg.colLabel') + '</th><th>' + T('deleg.colEntry') + '</th><th>' + T('deleg.colSet') + '</th><th>' + T('deleg.colConcurrency') + '</th><th>' + T('deleg.colActivity') + '</th><th>' + T('common.createdAt') + '</th><th></th></tr></thead><tbody id="watch-body"></tbody></table></div></div></div>' +
     '<div data-agpanel="conns" hidden>' +
       '<div class="toolbar"><div class="spacer"></div><button class="ghost" id="conn-adopt">' + ic('download', 15) + T('groups.adopt') + '</button><button class="ghost" id="conn-import">' + ic('upload', 15) + T('anet.importBtn') + '</button><button id="conn-create">' + ic('plus', 15) + T('fanout.create') + '</button></div>' +
       '<input type="file" id="conn-import-file" accept=".anet,application/json" style="display:none">' +
+      // M3-T1: relay transit block — consumer sessions relayed by THIS machine as a rendezvous
+      // (entry=relay; a per-connector mapping does not exist by design, one shared block instead)
+      '<div class="card card-flush"><h3>' + T('sess.transitTitle') + ahelp(T('sess.transitHelp')) + '</h3><div id="conns-transit"></div></div>' +
       '<div class="card table-wrap"><table><thead><tr><th>' + T('common.name') + '</th><th>' + T('fanout.colUpstream') + '</th><th>' + T('term.group') + '</th><th>' + T('common.status') + '</th><th>' + T('adm.stOn') + '</th><th>' + T('common.remark') + '</th><th>' + T('common.action') + '</th></tr></thead><tbody id="conn-body"></tbody></table></div>' +
     '</div>' +
     '<div data-agpanel="issue" hidden>' +
@@ -1393,8 +1875,26 @@ async function renderConnectors() {
     openAnetImport(await f.text(), f.name);
   };
   $('deleg-issue').onclick = () => openIssueDelegation();
-  await Promise.all([loadConnectors(), loadDelegation()]);
-  S.timers.push(setInterval(() => { loadConnectors(); loadDelegation(); }, 5000));
+  await Promise.all([loadConnectors(), loadDelegation(), reloadSessions()]);
+  S.timers.push(setInterval(() => { loadConnectors(); loadDelegation(); reloadSessions(); }, 5000));
+}
+/* M3-T1 relay transit block (fan-out 连接 tab): consumer sessions where this machine was the
+   rendezvous (entry=relay). Signature-guarded; expansion state lives in SESS_OPEN. */
+function renderConnsSess() {
+  const box = $('conns-transit'); if (!box) return;
+  const sessions = SESS.filter(s => s.kind === 'consumer' && s.entry === 'relay');
+  const sig = JSON.stringify([sessions, [...SESS_OPEN], DEV_MAP]);
+  if (sig === box.dataset.sig) return;
+  box.dataset.sig = sig;
+  box.innerHTML = sessBlockHtml({
+    id: 'transit',
+    name: T('sess.transitRow'),
+    sub: T('sess.transitSub'),
+    online: sessions.length,
+    cap: 0,
+    sessions,
+    cols: ['who', 'token', 'ip', 'ago', 'tr', 'key', 'op'],
+  });
 }
 /* Latest fan-out list caches: the watch tab joins both sources (delegation tokens × live connectors)
    without its own fetch; every poll updates the caches and re-renders under signature detection. */
@@ -1415,6 +1915,7 @@ async function loadConnectors() {
       body.innerHTML = items.map(c => {
         const adv = (c.advertise || '').split(',').filter(Boolean).join(' · ');
         return '<tr><td><b>' + esc(c.name) + '</b><div class="mono" style="color:var(--dim2)">' + (c.token_prefix ? esc(c.token_prefix) : shortId(c.id)) + '</div>' +
+        (c.my_name ? '<div style="color:var(--dim2);font-size:11px" title="' + T('triplet.myname') + '">' + ic('upload', 10) + ' ' + esc(c.my_name) + '</div>' : '') +
         (c.peer_node ? nodeBadge(c.peer_node, connAuthTier(c)) : '') + '</td>' +
         '<td class="mono">' + esc(c.upstream_addr) + (adv ? '<div style="color:var(--dim2);font-size:12px">' + esc(adv) + '</div>' : '') + '</td>' +
         '<td>' + ((c.groups || []).length ? c.groups.map(g => grpChip({ name: g.name, adopted: g.adopted_node })).join(' ') : '<span style="color:var(--dim2)">' + T('adm.noRestrict') + '</span>') + '</td>' +
@@ -1429,6 +1930,7 @@ async function loadConnectors() {
       }).join('') || '<tr><td colspan="7" class="empty">' + T('fanout.empty') + '</td></tr>';
     }
   }
+  renderConnsSess();
   renderWatch();
 }
 /* ---- Unified issuance: issue / list / revoke delegated tokens (the token is the only identity) ---- */
@@ -1505,42 +2007,54 @@ async function loadDelegation() {
     const d = await api('GET', '/api/v1/admin/delegation/tokens');
     FANOUT_DELEG = d.items || [];
   } catch(e) { toast(e.message, 'err'); return; }
-  const body = $('deleg-body');
-  if (body) {
-    // polling change detection: identical signature → no DOM rewrite (avoids flicker)
-    const sig = JSON.stringify(FANOUT_DELEG);
-    if (sig !== body.dataset.sig) {
-      body.dataset.sig = sig;
-      body.innerHTML = FANOUT_DELEG.map(t => {
-        const groups = (t.groups || []).map(g => grpChip({ name: g.name, adopted: g.adopted_node, e2e: g.e2e_required })).join(' ');
-        return '<tr><td><b>' + esc(t.label || t.token_prefix) + '</b> ' + delegEntryBadge(t) + ' ' + delegConcBadge(t) + ' ' + delegTierBadges(t) + lifecycleBadge(t) +
-          '<div class="mono" style="color:var(--dim2)">' + esc(t.token_prefix) + '</div></td>' +
-          '<td>' + (groups || '-') + '</td>' +
-          '<td style="color:var(--dim);white-space:nowrap">' + esc((t.created_at || '').replace('T', ' ').replace(/\..*$/, '')) + '</td>' +
-          '<td style="white-space:nowrap"><button class="ghost small" data-act="deleg-expand" data-id="' + esc(t.id) + '">' + T('groups.detail') + '</button> ' +
-          '<button class="danger small" data-act="deleg-revoke" data-id="' + esc(t.id) + '" data-name="' + esc(t.label || t.token_prefix) + '">' + T('adm.revoke') + '</button></td></tr>' +
-          '<tr data-delegrow="' + esc(t.id) + '" hidden><td colspan="4" style="background:var(--bg2)">' +
-            '<div class="hint" style="margin:4px 0">' + T('deleg.colSet') + '</div>' + (delegEntriesHtml(t, false) || '-') + '</td></tr>';
-      }).join('') || '<tr><td colspan="4" class="empty">' + T('deleg.empty') + '</td></tr>';
-    }
-  }
+  renderDelegation();
   renderWatch();
+}
+function renderDelegation() {
+  const body = $('deleg-body'); if (!body) return;
+  // polling change detection: identical signature → no DOM rewrite (avoids flicker);
+  // the signature covers live sessions + expansion state so kicks/expands refresh in place
+  const sig = JSON.stringify({ d: FANOUT_DELEG, s: SESS, open: [...SESS_OPEN], dev: DEV_MAP });
+  if (sig === body.dataset.sig) return;
+  body.dataset.sig = sig;
+  body.innerHTML = FANOUT_DELEG.map(t => {
+    const groups = (t.groups || []).map(g => grpChip({ name: g.name, adopted: g.adopted_node, e2e: g.e2e_required })).join(' ');
+    const key = 'deleg:' + t.id;
+    // M3-T1: live consumer sessions of this token (grouped by token_hash) + online/cap badge
+    const sessions = SESS.filter(s => s.kind === 'consumer' && s.token_hash === t.token_hash);
+    const cap = t.concurrency === 'multi' ? (t.max_sessions || 0) : 1;
+    const onlineBadge = '<span class="badge ' + (sessions.length ? 'b-ok' : 'b-off') + '">' + T('sess.onlineN', { n: sessions.length + '/' + cap }) + '</span>';
+    return '<tr><td><b>' + esc(t.label || t.token_prefix) + '</b> ' + delegEntryBadge(t) + ' ' + delegConcBadge(t) + ' ' + delegTierBadges(t) + lifecycleBadge(t) + ' ' + onlineBadge +
+      '<div class="mono" style="color:var(--dim2)">' + esc(t.token_prefix) + '</div></td>' +
+      '<td>' + (groups || '-') + '</td>' +
+      '<td style="color:var(--dim);white-space:nowrap">' + esc((t.created_at || '').replace('T', ' ').replace(/\..*$/, '')) + '</td>' +
+      '<td style="white-space:nowrap"><button class="ghost small" data-act="deleg-expand" data-id="' + esc(t.id) + '" data-sessopen="' + esc(key) + '">' + T('groups.detail') + '</button> ' +
+      '<button class="danger small" data-act="deleg-revoke" data-id="' + esc(t.id) + '" data-name="' + esc(t.label || t.token_prefix) + '">' + T('adm.revoke') + '</button></td></tr>' +
+      '<tr ' + sessWrapAttrs(key) + '><td colspan="4" style="background:var(--bg2)">' +
+        '<div class="hint" style="margin:4px 0">' + T('deleg.colSet') + '</div>' + (delegEntriesHtml(t, false) || '-') +
+        sessPanelInner({ name: t.label || t.token_prefix, sessions, cols: ['who', 'ip', 'entry', 'ago', 'tr', 'key', 'op'], kickallHash: t.token_hash }) + '</td></tr>';
+  }).join('') || '<tr><td colspan="4" class="empty">' + T('deleg.empty') + '</td></tr>';
 }
 /* Fan-out watch tab (consumer activity overview): every issued token with each disaster-set entry's
    live state (connector connection × registration) and its recent activity (data-plane opens + lifecycle). */
 function renderWatch() {
   const body = $('watch-body'); if (!body) return;
-  const sig = JSON.stringify({ d: FANOUT_DELEG, c: FANOUT_CONNS.map(c => [c.id, c.state]) });
+  const sig = JSON.stringify({ d: FANOUT_DELEG, c: FANOUT_CONNS.map(c => [c.id, c.state]), s: SESS, open: [...SESS_OPEN], dev: DEV_MAP });
   if (sig === body.dataset.sig) return;
   body.dataset.sig = sig;
-  body.innerHTML = FANOUT_DELEG.map(t =>
-    '<tr><td><b>' + esc(t.label || t.token_prefix) + '</b> ' + delegTierBadges(t) + '<div class="mono" style="color:var(--dim2)">' + esc(t.token_prefix) + '</div></td>' +
+  body.innerHTML = FANOUT_DELEG.map(t => {
+    const key = 'watch:' + t.id;
+    const sessions = SESS.filter(s => s.kind === 'consumer' && s.token_hash === t.token_hash);
+    return '<tr><td><b>' + esc(t.label || t.token_prefix) + '</b> ' + delegTierBadges(t) + '<div class="mono" style="color:var(--dim2)">' + esc(t.token_prefix) + '</div></td>' +
     '<td>' + delegEntryBadge(t) + '</td>' +
     '<td>' + (delegEntriesHtml(t, true) || '-') + '</td>' +
     '<td>' + delegConcBadge(t) + '</td>' +
     '<td style="white-space:nowrap">' + T('deleg.opensN', { n: t.used_count || 0 }) + lifecycleBadge(t) + '</td>' +
-    '<td style="color:var(--dim);white-space:nowrap">' + esc((t.created_at || '').replace('T', ' ').replace(/\..*$/, '')) + '</td></tr>'
-  ).join('') || '<tr><td colspan="6" class="empty">' + T('deleg.empty') + '</td></tr>';
+    '<td style="color:var(--dim);white-space:nowrap">' + esc((t.created_at || '').replace('T', ' ').replace(/\..*$/, '')) + '</td>' +
+    '<td><button class="ghost small" data-act="watch-sess" data-id="' + esc(t.id) + '" data-sessopen="' + esc(key) + '" title="' + T('sess.title') + '">' + ic('chevron-right', 13) + '</button></td></tr>' +
+    '<tr ' + sessWrapAttrs(key) + '><td colspan="7" style="background:var(--bg2);padding:0">' +
+      sessPanelInner({ name: t.label || t.token_prefix, sessions, cols: ['who', 'ip', 'entry', 'ago', 'tr', 'key', 'op'], kickallHash: t.token_hash }) + '</td></tr>';
+  }).join('') || '<tr><td colspan="7" class="empty">' + T('deleg.empty') + '</td></tr>';
 }
 async function revokeDelegation(id, name) {
   confirmAction(T('deleg.revokeConfirm', { name }), async () => {
@@ -1630,7 +2144,8 @@ async function openIssueDelegation() {
       '<label class="chk" style="display:inline-flex;align-items:center;gap:5px;margin-right:14px"><input type="radio" name="di-conc" value="single" checked> ' + T('deleg.concSingle') + '</label>' +
       '<label class="chk" style="display:inline-flex;align-items:center;gap:5px"><input type="radio" name="di-conc" value="multi"> ' + T('deleg.concMulti') + ' ' + ahelp(T('deleg.concMultiHelp', { n: maxSessions })) + '</label>' +
     '</div>' +
-    '<label style="margin-top:10px">' + T('common.remark') + '</label><input id="di-label" style="width:100%" placeholder="' + T('deleg.labelPh') + '">' +
+    // M3-T6 naming triplet: target name = the token's local label; my name prefills the link's myname word
+    nameTriplet('di', {}, { remark: false }),
     lifecycleFieldsHtml('di', '', ''),
     [
       {label: T('common.cancel'), kind: 'ghost', fn: closeModal},
@@ -1654,9 +2169,11 @@ async function openIssueDelegation() {
         }
         const adminScope = trust === 'admin' ? ((document.querySelector('input[name="di-scope"]:checked') || {}).value || 'full') : '';
         const life = lifecycleFieldsVal('di');
+        const names = nameTripletVal('di');
         try {
           const d = await api('POST', '/api/v1/admin/delegation/tokens', {
-            label: $('di-label').value.trim(),
+            label: names.target,
+            my_name: names.myname,
             group_ids: groupIds,
             regs,
             mode,
@@ -1677,6 +2194,7 @@ async function openIssueDelegation() {
 
   // primary radio follows the checked disaster set (first checked entry wins by default)
   const primaryBox = $('di-primary');
+  if ($('di-target')) $('di-target').placeholder = T('deleg.labelPh');
   function syncPrimary() {
     const checked = [...document.querySelectorAll('.di-target:checked')].map(c => c.value);
     const keep = checked.includes(primaryBox.dataset.value) ? primaryBox.dataset.value : checked[0];
@@ -1737,7 +2255,8 @@ function connectorFormHtml(c) {
   c = c || {};
   return '<div class="paste-bar"><input id="cf-paste" class="mono" style="width:100%" placeholder="' + T('fanout.pastePh') + '">' +
     '<div class="hint" id="cf-paste-err" style="display:none;color:var(--danger-text)"></div></div>' +
-    '<label>' + T('adm.nameUnique') + '</label><input id="cf-name" style="width:100%" value="' + esc(c.name||'') + '">' +
+    // M3-T6 naming triplet: target name (local) / my name (uploaded to the peer) / remark (local private)
+    nameTriplet('cf', { target: c.name || '', myname: c.my_name || '', remark: c.remark || '' }) +
     '<label>' + T('fanout.upstreamLabel') + '</label><input id="cf-addr" class="mono" style="width:100%" value="' + esc(c.upstream_addr||'') + '" placeholder="peer.example.com:54430">' +
     '<label>' + T('fanout.tokenLabel') + '</label><input id="cf-token" type="password" class="mono" style="width:100%" autocomplete="off" placeholder="' + (c.id ? T('fanout.tokenKeep') : T('fanout.tokenPh')) + '">' +
     '<label>' + T('fanout.sniHostLabel') + '</label><input id="cf-sni" class="mono" style="width:100%" value="' + esc(c.sni_hostname||'') + '">' +
@@ -1755,8 +2274,7 @@ function connectorFormHtml(c) {
       (S.groups.length ? S.groups.map(g =>
         '<label><input type="checkbox" class="cf-push" value="' + esc(g.id) + '" ' + ((c.push_groups||'').split(',').includes(g.id)?'checked':'') + '>' +
         '<span>' + esc(g.name) + '</span>' + (g.adopted_node ? ' ' + srcBadge(g.adopted_node) : '') + '<span class="badge b-info">' + (g.rule_count||0) + '</span></label>'
-      ).join('') : '<div class="empty">' + T('groups.empty') + '</div>') + '</div>' +
-    '<label>' + T('common.remark') + '</label><input id="cf-remark" style="width:100%" value="' + esc(c.remark||'') + '">';
+      ).join('') : '<div class="empty">' + T('groups.empty') + '</div>') + '</div>';
 }
 /* Paste-to-import (federation P1): the shared AgLink parser fills all technical fields from an
    anet://fanout link; on failure the form stays manual with an inline error line. */
@@ -1789,8 +2307,10 @@ function bindConnectorPaste() {
   box.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); fill(); } });
 }
 function connectorFormBody() {
+  const names = nameTripletVal('cf');
   return {
-    name: $('cf-name').value.trim(),
+    name: names.target,
+    my_name: names.myname,
     upstream_addr: $('cf-addr').value.trim(),
     sni_hostname: $('cf-sni').value.trim(),
     insecure: $('cf-insecure').checked,
@@ -1798,7 +2318,7 @@ function connectorFormBody() {
     advertise: $('cf-advertise').value.split('\n').map(s => s.trim()).filter(Boolean),
     group_id: [...document.querySelectorAll('.cf-acl:checked')].map(c => c.value).join(',') || null,
     push_groups: [...document.querySelectorAll('.cf-push:checked')].map(c => c.value),
-    remark: $('cf-remark').value.trim(),
+    remark: names.remark,
   };
 }
 function openCreateConnector(pref) {
@@ -1863,9 +2383,12 @@ async function renderAudit() {
         '<option value="">' + T('audit.allActions') + '</option>' +
         ['admin.login','admin.init','rule.create','rule.update','rule.delete','rule.batch_import',
          'group.create','group.update','group.delete','group.update_rules',
-         'relay_token.create','relay_token.delete','relay_token.expose_control','relay_token.set_group',
+         'relay_token.create','relay_token.delete','relay_token.expose_control','relay_token.set_group','relay_token.set_remark',
          'connector.create','connector.update','connector.delete','connector.enable','connector.disable',
          'federation.adopt','delegation.issue','delegation.revoke',
+         'session.kick','session.kick_token',
+         'device.certify','device.revoke','device.rebind','device.policy',
+         'approval.approve','approval.reject','approval.reject_revoke',
          'admin.console_access','admin.session_via_relay','node.update_settings'].map(a =>
           '<option value="' + a + '" ' + (S.filter.auditAction===a?'selected':'') + '>' + a + '</option>').join('') +
       '</select>' +
@@ -2059,7 +2582,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     if (d.type === 'ag-theme' && (d.theme === 'dark' || d.theme === 'light')) {
       try { localStorage.setItem('ag_theme', d.theme); applyTheme(); } catch(_) {}
     }
-    if (d.type === 'ag-nav' && {dashboard:1,groups:1,rules:1,fanin:1,connectors:1,audit:1,settings:1}[d.view]) {
+    if (d.type === 'ag-nav' && {dashboard:1,groups:1,rules:1,fanin:1,connectors:1,devices:1,approvals:1,audit:1,settings:1}[d.view]) {
       switchView(d.view);
     }
     // Desktop bridge: native open-dialog result (ag-anet-open was requested by an import entry)

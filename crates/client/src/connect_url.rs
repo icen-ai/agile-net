@@ -91,7 +91,7 @@ pub fn connect_url_of(c: &Credential) -> String {
     if !entries.iter().any(|(a, _)| *a == c.addr) {
         entries.insert(0, (c.addr.clone(), c.pinned_fingerprint.clone().unwrap_or_default()));
     }
-    agile_net_core::link::build_delegate_url(
+    let mut url = agile_net_core::link::build_delegate_url(
         &c.addr,
         &c.label,
         &c.token,
@@ -102,7 +102,12 @@ pub fn connect_url_of(c: &Credential) -> String {
         // myname is the importer-side "我的名称" suggestion; re-export keeps whatever the
         // original link carried (Credential.myname, wired by the client form in M4-T6)
         c.myname.as_deref(),
-    )
+    );
+    // M6: a stored non-domain visibility tier re-exports as the link clause (M4-T5 条款卡)
+    if let Some(v) = c.visibility.as_deref().filter(|v| !v.is_empty() && *v != "domain") {
+        url.push_str(&format!("&visibility={v}"));
+    }
+    url
 }
 
 #[cfg(test)]

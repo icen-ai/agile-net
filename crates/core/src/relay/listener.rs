@@ -380,6 +380,8 @@ pub struct RelayListener {
     pending_note_hook: Option<Arc<dyn Fn(String, String) + Send + Sync>>,
     /// Session-close sink (M5 device_session ledger flush)
     session_close_hook: Option<SessionCloseHook>,
+    /// M6 cert-propagation intake (origin node_id of the fan-in session, records)
+    cert_in_hook: Option<Arc<dyn Fn(String, Vec<crate::proto::message::CertRecord>) + Send + Sync>>,
 }
 
 impl RelayListener {
@@ -440,6 +442,7 @@ impl RelayListener {
             device_gate: None,
             pending_note_hook: None,
             session_close_hook: None,
+            cert_in_hook: None,
         }
     }
 
@@ -472,6 +475,15 @@ impl RelayListener {
     /// Session-close sink (M5): fired once per session teardown with the final counters.
     pub fn with_session_close_hook(mut self, hook: SessionCloseHook) -> Self {
         self.session_close_hook = Some(hook);
+        self
+    }
+
+    /// M6 cert-propagation intake: (origin session node_id, records) -> node-layer adoption.
+    pub fn with_cert_in_hook(
+        mut self,
+        hook: Arc<dyn Fn(String, Vec<crate::proto::message::CertRecord>) + Send + Sync>,
+    ) -> Self {
+        self.cert_in_hook = Some(hook);
         self
     }
 
@@ -767,6 +779,34 @@ impl RelayListener {
     /// Snapshot of every live session's device/connection metadata (M3 session tables).
     pub fn session_metas(&self) -> Vec<SessionMeta> {
         self.session_meta.iter().map(|e| e.value().clone()).collect()
+    }
+
+    /// M6 blind relay: forward cert records to every fan-in peer session except the sender
+    /// (dedup/own-origin filtering is the receiver's job; adoption is idempotent).
+    pub async fn push_cert_records(
+        &self,
+        records: &[crate::proto::message::CertRecord],
+        except_node: &str,
+    ) {
+        if records.is_empty() {
+            return;
+        }
+        let msg = crate::proto::message::CtrlMessage::CertPush {
+            records: records.to_vec(),
+        };
+        let Ok(payload) = serde_json::to_vec(&msg) else {
+            return;
+        };
+        let payload = Bytes::from(payload);
+        for p in self.peers.iter() {
+            if p.key() == except_node {
+                continue;
+            }
+            let _ = p
+                .mux
+                .send_frame(Frame::new(FrameType::Ctrl, 0, payload.clone()))
+                .await;
+        }
     }
 
     /// Live session inventory for the M3 session tables: each session's metadata joined with
@@ -1408,6 +1448,13 @@ impl RelayListener {
             }
             C::TokenAck { .. } => {
                 debug!(node = %node_id, "unexpected TokenAck from issuer ignored");
+            }
+            C::CertPush { records } => {
+                // M6 transitive certification: verify + trust-list filtering live in the node
+                // layer (cert_in hook); the core listener stays policy-free
+                if let Some(hook) = &self.cert_in_hook {
+                    hook(node_id.to_string(), records);
+                }
             }
             C::SessionNotice { .. } | C::PendingNote { .. } => {
                 // SessionNotice flows TO the kicked peer; PendingNote flows from a pending

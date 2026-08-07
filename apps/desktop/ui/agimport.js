@@ -20,7 +20,7 @@
      pickQrImage()     -> text | null                     — QR image pick+decode; omit = QR button hidden
      checkFanoutReady()-> { ready:true } | { ready:false, start() -> true | errorString }  (optional)
      applyConnect({ parsed, link })          -> true | errorString
-     applyFanout({ parsed, link }, details)  -> true | errorString
+     applyFanout({ parsed, link }, details)  -> true | errorString   (details: {name, remark, myname})
      onDone(role)      — after a successful import (refresh lists)
      toast(msg, kind)  — host toast
 */
@@ -61,6 +61,7 @@ function open(cfg) {
     needPin: false,
     ready: false,
     err: '',
+    clauseAccepted: false, // M4-T5: visibility clause card acknowledged
   };
 
   /* ---------- DOM skeleton ---------- */
@@ -110,6 +111,8 @@ function open(cfg) {
     if (p.role === 'connect' && p.en) b.push('<span class="badge b-warn">' + T('import.e2e') + '</span>');
     if (p.role === 'connect' && p.en) b.push('<span class="badge ' + (p.emode === 'split' ? 'b-info' : 'b-off') + '">' + (p.emode === 'split' ? T('import.split') : T('import.dedicated')) + '</span>');
     if (p.role === 'connect' && p.eadmin) b.push('<span class="badge b-warn">' + T('import.adminScope') + '</span>');
+    // M4-T5: the topology-visibility clause is surfaced as a badge + a clause card before apply
+    if (p.role === 'connect' && (p.visibility === 'disclose' || p.visibility === 'approve')) b.push('<span class="badge b-warn">' + T('import.visibility.badge') + '</span>');
     if (p.insecure) b.push('<span class="badge b-warn">' + T('import.insecure') + '</span>');
     return '<div class="agimp-badges">' + b.join(' ') + '</div>';
   }
@@ -134,6 +137,8 @@ function open(cfg) {
         ((p.entries || []).length > 1 ? ' <span class="badge b-info">' + T('import.entries', { n: p.entries.length }) + '</span>' : ''));
       h += row(T('import.account'), esc(p.account), true);
       if (p.en) h += row(T('import.e2e'), '<span class="mono">' + esc(p.en) + '</span>');
+      // 我的名称 suggestion from the link (M4-T6): previewed here, saved with the credential
+      if (p.myname) h += row(T('import.myname'), esc(p.myname));
     } else {
       h += row(T('import.target'), '<span class="mono">' + esc(p.addr) + '</span>');
       if (p.sni) h += row('SNI', '<span class="mono">' + esc(p.sni) + '</span>');
@@ -300,6 +305,12 @@ function open(cfg) {
   /* ---------- confirm -> apply (connect) or step 2 (fan-out) ---------- */
   async function advance() {
     if (st.parsed.role === 'connect') {
+      // M4-T5: a topology-visibility clause must be acknowledged before the import proceeds
+      const v = st.parsed.visibility;
+      if ((v === 'disclose' || v === 'approve') && !st.clauseAccepted) {
+        renderClause(v);
+        return;
+      }
       const okBtn = body.querySelector('[data-ok]');
       if (okBtn) okBtn.classList.add('busy');
       const r = await cfg.applyConnect({ parsed: st.parsed, link: st.link });
@@ -312,6 +323,25 @@ function open(cfg) {
     renderDetails();
   }
 
+  /* ---------- clause card (M4-T5): topology-visibility terms, acknowledged once ---------- */
+  function renderClause(v) {
+    st.step = 'clause';
+    body.innerHTML =
+      '<div class="agimp-preview">' +
+        '<div class="agimp-kv">' + badgesHtml(st.parsed) + '</div>' +
+        '<div class="agimp-clause">' +
+          '<div class="agimp-clause-title">' + AgIcon('shield', 15) + '<span>' + T('import.visibility.title') + '</span></div>' +
+          '<div class="agimp-hint" style="margin-top:6px">' + T('import.visibility.' + v) + '</div>' +
+        '</div>' +
+      '</div>' +
+      '<div class="agimp-foot">' +
+        '<button class="ghost" data-back>' + T('import.back') + '</button>' +
+        '<button data-accept>' + T('import.visibility.accept') + '</button>' +
+      '</div>';
+    body.querySelector('[data-back]').onclick = renderInput;
+    body.querySelector('[data-accept]').onclick = () => { st.clauseAccepted = true; advance(); };
+  }
+
   /* ---------- step 2: fan-out details ---------- */
   function renderDetails() {
     st.step = 'details';
@@ -321,6 +351,8 @@ function open(cfg) {
       '<div class="agimp-start" data-startrow style="display:none"></div>' +
       '<div class="agimp-field"><label>' + T('import.nameLabel') + '</label>' +
         '<input data-name maxlength="64" placeholder="' + esc(p.addr) + '"></div>' +
+      '<div class="agimp-field"><label>' + T('import.myname') + '</label>' +
+        '<input data-myname maxlength="64"></div>' +
       '<div class="agimp-field"><label>' + T('import.remarkLabel') + '</label>' +
         '<input data-remark maxlength="256"></div>' +
       '<div class="agimp-err" data-err style="display:none"></div>' +
@@ -332,12 +364,15 @@ function open(cfg) {
     body.querySelector('[data-back]').onclick = renderInput;
     const finish = body.querySelector('[data-finish]');
     const errBox = body.querySelector('[data-err]');
+    // 我的名称 suggestion from the link prefills the upload name (M4-T6)
+    if (p.myname) body.querySelector('[data-myname]').value = p.myname;
     finish.onclick = async () => {
       finish.disabled = true;
       errBox.style.display = 'none';
       const details = {
         name: body.querySelector('[data-name]').value.trim(),
         remark: body.querySelector('[data-remark]').value.trim(),
+        myname: body.querySelector('[data-myname]').value.trim(),
       };
       const r = await cfg.applyFanout({ parsed: st.parsed, link: st.link }, details);
       if (r === true) { close(); if (cfg.onDone) cfg.onDone('fanout'); return; }

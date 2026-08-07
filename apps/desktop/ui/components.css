@@ -307,6 +307,8 @@ html[data-theme="dark"] .badge-beta { color: rgba(255,255,255,.95); }
 .agimp-field label { display: block; font-size: 11px; font-weight: 600; letter-spacing: .03em; color: var(--dim); margin-bottom: 5px; }
 .agimp-field input { width: 100%; height: 34px; padding: 0 10px; border: 1px solid transparent; border-bottom: 2px solid var(--input-border); border-radius: 6px 6px 4px 4px; background: var(--input-bg); color: var(--text); font-size: 12.5px; outline: none; box-sizing: border-box; }
 .agimp-start { margin-top: 10px; display: flex; align-items: center; gap: 8px; padding: 9px 12px; border: 1px solid var(--warn); border-radius: 10px; background: var(--warn-bg); font-size: 12.5px; color: var(--text); }
+.agimp-clause { margin-top: 10px; padding: 10px 12px; border: 1px solid var(--warn); border-radius: 10px; background: var(--warn-bg); }
+.agimp-clause-title { display: flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 600; color: var(--warn-text); }
 .agimp-foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
 @media (prefers-reduced-motion: reduce) { .agimp-ok.ready { animation: none; } .agimp, .agimp-mask { animation: none; } }
 
@@ -337,3 +339,100 @@ html[data-theme="dark"] .badge-beta { color: rgba(255,255,255,.95); }
 .nodebadge .nb-auth svg { width: 10px; height: 10px; }
 .local { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 999px; font-size: 10.5px; font-weight: 600; color: var(--dim2); background: transparent; }
 .local svg { width: 11px; height: 11px; }
+
+/* ================= sess expandable resource rows (session management, node.md M3-T1; prototype badge-preview scenario 8) =================
+   Structure: <div class="res-row"> (click to expand; caret = chevron-right icon rotated via .open)
+        + <div class="sess-wrap"> .sess-toolbar (summary + kick-all) + .sess-head-row + .sess-row *n
+   .sess-row is a CSS grid whose columns come from JS (grid-template-columns via el.style, CSP-safe);
+   cell kinds are composed per page (who/ip/entry/ago/tr/key/token/chans/op). */
+.res-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 11px 14px; border-bottom: 1px solid var(--border); cursor: pointer; transition: background var(--dur-fast); }
+.res-row:hover { background: var(--tbl-row-hover); }
+.res-who { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.res-who .caret { display: inline-flex; color: var(--dim2); flex: none; transition: transform .15s var(--ease, ease); }
+.res-row.open .caret { transform: rotate(90deg); }
+.res-who > div { min-width: 0; }
+.res-sub { font-size: 11.5px; color: var(--dim2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.res-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; flex-shrink: 0; }
+.sess-wrap { background: var(--bg2); border-bottom: 1px solid var(--border); }
+.sess-wrap[hidden] { display: none; }
+.sess-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 7px 14px; border-bottom: 1px solid var(--border); font-size: 11px; color: var(--dim2); }
+.sess-row { display: grid; gap: 10px; align-items: center; padding: 7px 14px; border-bottom: 1px solid var(--row-border); font-size: 12.5px; }
+.sess-row:last-child { border-bottom: none; }
+.sess-head-row { padding: 5px 14px; border-bottom: 1px solid var(--border); }
+.sess-head-row > div { font-size: 11px; color: var(--dim2); font-weight: 500; }
+.sess-who { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.sess-who b { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sess-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); flex: none; }
+.sess-dot.pulse { animation: ag-pulse 2.2s infinite; }
+@keyframes ag-pulse { 0% { box-shadow: 0 0 0 0 var(--ok-bg); } 70% { box-shadow: 0 0 0 6px transparent; } 100% { box-shadow: 0 0 0 0 transparent; } }
+/* traffic cell: cumulative ↑/↓ pair (rate line reserved for live-rate feeds) */
+.tr-col { display: flex; flex-direction: column; gap: 1px; }
+.tr-rate { display: flex; gap: 6px; align-items: center; font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.tr-rate .up { color: var(--ok-text); }
+.tr-rate .dn { color: var(--info-text); }
+.tr-total { font-size: 10.5px; color: var(--dim2); white-space: nowrap; }
+.live-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--ok); flex: none; animation: ag-pulse 2.2s infinite; }
+.sess-row.kicked { opacity: .42; }
+.sess-row.kicked b { text-decoration: line-through; }
+@media (prefers-reduced-motion: reduce) { .sess-dot.pulse, .live-dot { animation: none; } }
+
+/* ================= agkpi KPI card (node.md M3-T7; generalized from the dashboard dstat summary) =================
+   Structure: <div class="agkpi"><div class="agkpi-v">1.2 GB <span class="agkpi-d up">↑ 12%</span></div>
+        <div class="agkpi-k">Label</div></div> — value + delta slot + label; container grid is page-owned. */
+.agkpi { background: var(--panel2); border: 1px solid var(--border2); border-radius: var(--radius); box-shadow: inset 0 1px 0 var(--card-hi), var(--shadow-1); padding: 12px 14px; min-width: 0; }
+.agkpi-v { display: flex; align-items: baseline; gap: 8px; font-size: 18px; font-weight: 600; color: var(--text-strong); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.agkpi-k { margin-top: 2px; font-size: 11px; color: var(--dim2); }
+.agkpi-d { display: inline-flex; align-items: center; gap: 2px; font-size: 10.5px; font-weight: 600; }
+.agkpi-d.up { color: var(--ok-text); }
+.agkpi-d.down { color: var(--danger-text); }
+.agkpi-d.flat { color: var(--dim2); }
+.agkpi-d svg { width: 11px; height: 11px; }
+
+/* ================= agtimeline vertical timeline (node.md M3-T7; merged event feeds) =================
+   Structure: <div class="agtimeline"><div class="agtl-item [ok|warn|danger]"><div class="agtl-time">…</div>
+        <div class="agtl-body">…</div></div>…</div> — left rail via ::before, state dot per item. */
+.agtimeline { position: relative; display: flex; flex-direction: column; gap: 14px; padding-left: 18px; }
+.agtimeline::before { content: ''; position: absolute; left: 5px; top: 6px; bottom: 6px; width: 1px; background: var(--border2); }
+.agtl-item { position: relative; min-width: 0; }
+.agtl-item::before { content: ''; position: absolute; left: -17px; top: 4px; width: 8px; height: 8px; border-radius: 50%; background: var(--panel2); border: 2px solid var(--dim2); }
+.agtl-item.ok::before { border-color: var(--ok); }
+.agtl-item.warn::before { border-color: var(--warn); }
+.agtl-item.danger::before { border-color: var(--danger); }
+.agtl-time { font-size: 11px; color: var(--dim2); font-variant-numeric: tabular-nums; }
+.agtl-body { margin-top: 1px; font-size: 12.5px; color: var(--text); overflow-wrap: anywhere; }
+
+/* ================= agcopy mono copyable field (node.md M3-T7: fingerprint / pubkey / session key) =================
+   Structure: <span class="agcopy" data-act="copy" data-copy="<full>"><span class="agcopy-v">…</span>icon</span>
+   — click copies the full value + toast (JS delegation per end); the visible text may be truncated. */
+.agcopy { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; padding: 2px 7px; border-radius: 6px; background: var(--chip); color: var(--dim); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11.5px; cursor: pointer; transition: background var(--dur-fast), color var(--dur-fast); user-select: none; }
+.agcopy:hover { background: var(--hover); color: var(--text); }
+.agcopy .agcopy-v { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agcopy svg { width: 11px; height: 11px; flex: none; opacity: .7; }
+
+/* ================= agidcard hover identity card (node.md M3-T3; shell JS in agutil.js AgIdCard) =================
+   Fixed-position card over [data-agid] anchors: header (name + state badge) + rows (k/v).
+   z-index 480: above ahelp-tip(450), below agsel-pop(500). Content HTML is supplied per end (esc applied there). */
+.agidcard { position: fixed; z-index: 480; width: 300px; max-width: calc(100vw - 24px); background: var(--panel2); border: 1px solid var(--border); border-radius: 11px; box-shadow: var(--shadow-2); padding: 12px 14px; font-size: 12.5px; animation: agid-in .14s ease both; }
+@keyframes agid-in { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
+.agidcard-h { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-weight: 600; color: var(--text-strong); margin-bottom: 6px; }
+.agidcard-r { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; padding: 2.5px 0; font-size: 12px; }
+.agidcard-r .k { flex-shrink: 0; color: var(--dim2); }
+.agidcard-r .v { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+@media (prefers-reduced-motion: reduce) { .agidcard { animation: none; } }
+
+/* ================= agchart bars / heat (node.md M3-T7 DOM variants; JS in agchart.js) ================= */
+/* bars: <div class="agchart-bars-row"><span class="agchart-bars-l">label</span><span class="agchart-bars-t">
+   <span class="agchart-bars-f"></span></span><span class="agchart-bars-v">1.2K</span></div> — fill width via JS (CSS transition animates) */
+.agchart-bars { display: flex; flex-direction: column; gap: 7px; }
+.agchart-bars-row { display: grid; grid-template-columns: minmax(72px, 9em) 1fr minmax(44px, auto); align-items: center; gap: 10px; font-size: 12px; }
+.agchart-bars-l { color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agchart-bars-t { display: block; height: 10px; border-radius: 999px; background: var(--input-bg); overflow: hidden; }
+.agchart-bars-f { display: block; height: 100%; width: 0; border-radius: 999px; background: var(--accent); transition: width .4s var(--ease, ease); }
+.agchart-bars-v { color: var(--dim2); font-variant-numeric: tabular-nums; text-align: right; }
+.agchart-bars-empty { color: var(--dim2); font-size: 12px; text-align: center; padding: 14px 0; }
+/* heat: JS-built grid (7 day rows × 24 hour cells + tick row); cell = accent bg with inline opacity (0 = track) */
+.agchart-heat-g { display: grid; gap: 2px; padding: 2px; border-radius: 6px; background: var(--input-bg); }
+.agchart-heat-d { font-size: 10.5px; color: var(--dim2); display: flex; align-items: center; padding-right: 4px; }
+.agchart-heat-c { aspect-ratio: 1; min-height: 8px; border-radius: 2px; background: var(--accent); opacity: 0; transition: opacity .3s ease; }
+.agchart-heat-x { font-size: 10px; color: var(--dim2); text-align: center; font-variant-numeric: tabular-nums; }
+@media (prefers-reduced-motion: reduce) { .agchart-bars-f, .agchart-heat-c { transition: none; } }

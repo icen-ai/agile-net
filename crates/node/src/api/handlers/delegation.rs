@@ -94,6 +94,9 @@ pub struct IssueRequest {
     /// link's myname word (node.md M3-T6 naming triplet; link-only, not stored)
     #[serde(default)]
     pub my_name: String,
+    /// Topology-visibility tier (node.md M6): '' = domain (default) | disclose | approve
+    #[serde(default)]
+    pub visibility: String,
 }
 
 fn default_entry_mode() -> String {
@@ -214,6 +217,13 @@ pub async fn issue_token(
             "我的名称最长 64 字符",
         );
     }
+    if !["", "domain", "disclose", "approve"].contains(&req.visibility.as_str()) {
+        return err(
+            StatusCode::BAD_REQUEST,
+            codes::VALIDATION_FAILED,
+            "拓扑可见性档位只能是 domain / disclose / approve",
+        );
+    }
 
     // federation P3 entrust mode: every E2E token automatically carries its opaque entrust word
     // (en_xxx, derived inside issue_token) — routing without rule disclosure; push_groups /
@@ -311,6 +321,23 @@ pub async fn issue_token(
         }
         rec.expires_at = expires_at.clone();
         rec.max_uses = max_uses.filter(|v| *v > 0);
+    }
+
+    // M6 visibility tier: apply right after issuance (the registration sync picks it up)
+    let visibility = req.visibility.trim();
+    if !visibility.is_empty() && visibility != "domain" {
+        let (rec_id, vis) = (rec.id.clone(), visibility.to_string());
+        let applied = state
+            .db_call(move |db| db.set_delegated_token_visibility(&rec_id, &vis))
+            .await;
+        if let Err(e) = applied {
+            return err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                codes::INTERNAL,
+                e.to_string(),
+            );
+        }
+        rec.visibility = visibility.to_string();
     }
 
     // warm the enforcement caches immediately (the group may have been created seconds ago,
@@ -432,7 +459,7 @@ async fn build_share_url(
         })
         .map(|h| h.hint.as_str());
     let emode = (rec.mode == "split").then_some("split");
-    agile_net_core::link::build_delegate_url(
+    let mut url = agile_net_core::link::build_delegate_url(
         &primary,
         &rec.label,
         plaintext,
@@ -442,7 +469,12 @@ async fn build_share_url(
         !rec.admin_scope.is_empty(),
         // M3-T6: the issuer-suggested "my name" prefills the link's myname word
         Some(my_name).filter(|s| !s.is_empty()),
-    )
+    );
+    // M6: a non-domain visibility tier rides the link as an import-time clause (M4-T5 条款卡)
+    if !rec.visibility.is_empty() && rec.visibility != "domain" {
+        url.push_str(&format!("&visibility={}", rec.visibility));
+    }
+    url
 }
 
 /// Render one token for the API (group names resolved, per-upstream state folded in).
@@ -487,6 +519,8 @@ fn token_json(
         .collect();
     let mut v = json!({
         "id": rec.id,
+        // SHA-256 of the token (not a secret; the admin session inventory joins on it, node.md M3-T1)
+        "token_hash": rec.token_hash,
         "token_prefix": rec.token_prefix,
         "label": rec.label,
         "groups": groups,
@@ -495,6 +529,7 @@ fn token_json(
         "entry_mode": rec.entry_mode,
         "concurrency": rec.concurrency,
         "max_sessions": rec.max_sessions,
+        "visibility": rec.visibility,
         "hint_map": serde_json::from_str::<Vec<HintEntry>>(&rec.hint_map).unwrap_or_default(),
         "regs": regs,
         "created_at": rec.created_at,

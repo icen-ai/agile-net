@@ -298,13 +298,70 @@ pub enum CtrlMessage {
         #[serde(default)]
         session_key: String,
     },
-    // M6 reserved op names (do NOT implement before M6; schemas are defined there):
-    // "cert_push" (transitive certification record, origin-signed), "cert_revoke" (signed
-    // revocation propagation), "grant_receipt" (topology visibility receipt).
+    /// Federation cert propagation (M6): origin-signed certification records pushed over the
+    /// federation control plane. Full sync on session start (双向 opt-in), incremental after.
+    /// Middle hops forward blindly; the receiver verifies origin signatures itself.
+    CertPush { records: Vec<CertRecord> },
 }
 
 /// Pending-session appeal cap (server-side enforcement, per session).
 pub const MAX_PENDING_NOTES: u32 = 3;
+
+/// Transitive certification record (node.md M6): a certification made by the ORIGIN node,
+/// signed with the origin's device key (the node identity since M2 — relay certs rotate, the
+/// device key does not). Middle hops forward it blindly; the receiver verifies the origin
+/// signature and applies its own trust list (trusted → adopt; untrusted → reference tier).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CertRecord {
+    /// Certified device fingerprint
+    pub device_fp: String,
+    /// Certified device public key (base64)
+    pub pubkey: String,
+    /// Logical holder on the origin node
+    pub subject: String,
+    pub remark: String,
+    /// Origin node's device fingerprint
+    pub origin_fp: String,
+    /// Origin node's public key (base64) — verification is self-contained
+    pub origin_pubkey: String,
+    /// Origin node's self-declared name (display only)
+    pub origin_name: String,
+    /// Certification time (RFC3339)
+    pub ts: String,
+    /// Revocation record (terminal at the origin)
+    #[serde(default)]
+    pub revoked: bool,
+    /// ed25519 signature (base64) over the canonical bytes (see `cert_sign_bytes`)
+    pub sig: String,
+}
+
+/// Canonical bytes of a cert record for origin signing/verification.
+pub fn cert_sign_bytes(r: &CertRecord) -> Vec<u8> {
+    format!(
+        "anet/cert/v1\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
+        r.device_fp, r.subject, r.remark, r.origin_fp, r.ts, r.revoked, r.pubkey
+    )
+    .into_bytes()
+}
+
+/// Verify a cert record's origin signature (origin_fp must derive from origin_pubkey).
+pub fn cert_record_verify(r: &CertRecord) -> bool {
+    let Some(origin_pk) = crate::util::base64_decode(&r.origin_pubkey) else {
+        return false;
+    };
+    if origin_pk.len() != 32 || crate::device::fp_of(&origin_pk) != r.origin_fp {
+        return false;
+    }
+    let Some(sig) = crate::util::base64_decode(&r.sig) else {
+        return false;
+    };
+    crate::device::DeviceIdentity::verify(&origin_pk, &cert_sign_bytes(r), &sig)
+}
+
+/// Dedup key of a cert record (device + origin + timestamp).
+pub fn cert_record_key(r: &CertRecord) -> String {
+    format!("{}:{}:{}", r.device_fp, r.origin_fp, r.ts)
+}
 
 /// OpenFail frame payload.
 #[derive(Debug, Clone, Serialize, Deserialize)]

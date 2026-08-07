@@ -65,6 +65,7 @@ async function refreshNodes(force) {
   }
   updateOnboarding(nodes);
   updateDashFanin();
+  renderMachineCert(); // settings identity card cert-state list follows the nodes poll (sig-guarded)
 }
 function statusText(s) {
   if (s === 'Connected') return T('st-connected');
@@ -761,6 +762,17 @@ async function importUrl(url, btn) {
   // Shared parser gate (anet://); the Rust parser does the real conversion
   const p = AgLink.parse(url);
   if (p.error || p.role !== 'connect') { toast(T('err-bad-url'), 'err'); return; }
+  // M4-T5: a topology-visibility clause rides the link — the user must acknowledge it first
+  // (DOM modal only; window.confirm is forbidden)
+  if (p.visibility === 'disclose' || p.visibility === 'approve') {
+    const accepted = await askConfirm({
+      title: AgI18n.t('import.visibility.title'),
+      desc: AgI18n.t('import.visibility.' + p.visibility),
+      icon: 'shield',
+      okText: AgI18n.t('import.visibility.accept'),
+    });
+    if (!accepted) return;
+  }
   try {
     const input = await invoke('parse_connect_url', { url });
     if (input.eadmin) toast(AgI18n.t('views.url-admin-note'), 'info');
@@ -905,7 +917,8 @@ async function refreshCreds() {
 function renderCredList(creds, statusMap) {
   const list = $('creds-list');
   if (list.querySelector('.cred-rename-input')) return; // a rename edit is in flight — don't rebuild under it
-  if (list.querySelector('.pnote-input') && list.querySelector('.pnote-input') === document.activeElement) return; // typing an appeal note — don't rebuild under it
+  const ae = document.activeElement;
+  if (ae && ae.classList && ae.classList.contains('pnote-input') && list.contains(ae)) return; // typing an appeal note — don't rebuild under it
   const f = FILTERS.creds;
   const nodeMap = Object.fromEntries((window._nodes || []).map(n => [n.node_id, n]));
   // unsaved active connections (manual connect without saving credential): appended after saved fan-ins, disconnect/manage only
@@ -1306,6 +1319,7 @@ function foOpenModal(c) {
   $('fo-paste').value = '';
   $('fo-paste-err').style.display = 'none';
   $('fo-name').value = c ? c.name : '';
+  $('fo-myname').value = c ? (c.my_name || '') : '';
   $('fo-addr').value = c ? c.upstream_addr : '';
   $('fo-token').value = '';
   $('fo-sni').value = c ? c.sni_hostname : 'cdn.cloudflare.com';
@@ -1358,15 +1372,16 @@ function initUpstreams() {
     const pushGroups = [...document.querySelectorAll('.fo-push:checked')].map(c => c.value);
     const advertise = $('fo-advertise').value.split('\n').map(s => s.trim()).filter(Boolean).join(',');
     const remark = $('fo-remark').value.trim();
+    const myName = $('fo-myname').value.trim();
     if (!addr) { $('fo-err').textContent = AgI18n.t('views.fo-addr-required'); return; }
     if (!FO_EDIT_ID && !token) { $('fo-err').textContent = AgI18n.t('views.fo-token-required'); return; }
     $('fo-err').textContent = '';
     try {
       if (FO_EDIT_ID) {
-        await invoke('update_server_connector', { id: FO_EDIT_ID, name, upstreamAddr: addr, token, sniHostname: sni, insecure, pinnedFingerprint: fp, groupId, pushGroups, advertise, remark });
+        await invoke('update_server_connector', { id: FO_EDIT_ID, name, upstreamAddr: addr, token, sniHostname: sni, insecure, pinnedFingerprint: fp, groupId, pushGroups, advertise, remark, myName });
         toast(AgI18n.t('views.fo-updated'), 'ok');
       } else {
-        await invoke('add_server_connector', { name, upstreamAddr: addr, token, sniHostname: sni, insecure, pinnedFingerprint: fp, groupId, pushGroups, advertise, remark });
+        await invoke('add_server_connector', { name, upstreamAddr: addr, token, sniHostname: sni, insecure, pinnedFingerprint: fp, groupId, pushGroups, advertise, remark, myName });
         toast(AgI18n.t('views.fo-added'), 'ok');
       }
       foCloseModal();
@@ -1747,6 +1762,8 @@ function foFillFields(p) {
   $('fo-sni').value = p.sni || '';
   $('fo-fp').value = p.fp || '';
   $('fo-insecure').checked = !!p.insecure;
+  // 我的名称 suggestion from the link prefills the upload name (M4-T6)
+  if (p.myname) $('fo-myname').value = p.myname;
 }
 
 /* ================= Universal import wizard (blind-plug; titlebar link button) =================
@@ -1823,6 +1840,7 @@ function openUniversalImport() {
           name: details.name, upstreamAddr: parsed.addr, token: parsed.token,
           sniHostname: parsed.sni || 'cdn.cloudflare.com', insecure: !!parsed.insecure,
           pinnedFingerprint: parsed.fp || '', groupId: null, pushGroups: [], advertise: '', remark: details.remark,
+          myName: details.myname || null,
         });
         toast(AgI18n.t('views.fo-added'), 'ok');
         refreshUpstreams();
@@ -1843,6 +1861,8 @@ if (window.AgI18n) AgI18n.onChange(() => {
   refreshCreds();
   refreshCombos(true);
   refreshCustomRules(true);
+  NOTIFY_SIG = null; // notify list + cred-card notice lines re-render in the new language
+  refreshNotify(true);
   if (!HTTP_MODE) { refreshUpstreams(); refreshDelegation(); }
   renderDashFanout();
 });

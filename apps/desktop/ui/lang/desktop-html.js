@@ -11,6 +11,8 @@ AgI18n.register({
   'menu.settings': { zh: '设置', en: 'Settings' },
   'menu.groups': { zh: '权限', en: 'Groups' },
   'menu.audit': { zh: '审计', en: 'Audit' },
+  'menu.devices': { zh: '设备', en: 'Devices' },
+  'menu.approvals': { zh: '审批', en: 'Approvals' },
   'menu.backClient': { zh: '返回客户端', en: 'Back to Client' },
   'menu.collapse': { zh: '收起 / 展开菜单', en: 'Collapse / Expand Menu' },
   'menu.more': { zh: '更多', en: 'More' },

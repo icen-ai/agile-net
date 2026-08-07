@@ -8,6 +8,7 @@ pub mod connectors;
 pub mod delegation;
 pub mod devices;
 pub mod federation;
+pub mod federation_cert;
 pub mod groups;
 pub mod node;
 pub mod relay_tokens;

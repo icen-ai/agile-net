@@ -127,7 +127,13 @@ pub async fn decide_approval(
                                 db.rebind_device(&fp, &new_fp)?;
                                 return Ok(Ok(new_fp));
                             }
-                            // unknown types approve without data-plane side effects (pluggable)
+                            crate::service::approvals::REF_CERT_ADOPT => {
+                                // reference certification adopted (M6): certify with origin lineage
+                                crate::service::cert_relay::adopt_reference(db, &item.id)
+                                    .map_err(agile_net_core::error::Error::Other)?;
+                            }
+                            // unknown types approve without data-plane side effects (pluggable;
+                            // topo_approve takes effect at the next registration sync tick)
                             _ => {}
                         }
                         db.decide_approval(&item.id, true, &decided_by)?;

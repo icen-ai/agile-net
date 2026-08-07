@@ -144,6 +144,8 @@ function buildConnect(f) {
   if (f.emode === 'split') params.push(['emode', 'split']);
   if (f.eadmin) params.push(['eadmin', '1']);
   if (f.myname) params.push(['myname', f.myname]);
+  // topology-visibility clause (M4-T5/M6): .anet payload rebuilds keep the word
+  if (f.visibility) params.push(['visibility', f.visibility]);
   return 'anet://connect?' + qs(params);
 }
 

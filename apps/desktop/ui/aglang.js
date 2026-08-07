@@ -153,7 +153,13 @@ AgI18n.register({
   'identity.certified': { zh: '已认证', en: 'Certified' },
   'identity.pending': { zh: '待认证', en: 'Pending' },
   'identity.noNodes': { zh: '暂无端点连接', en: 'No endpoint connections' },
+  'identity.mynameSaved': { zh: '我的名称已保存，下次连接生效', en: 'My name saved; applies on next connect' },
   'identity.desc': { zh: '本机设备身份：指纹用于钉值与认证，公钥可安全分享；私钥不出本机', en: 'This machine\'s device identity: the fingerprint serves pinning and certification, the public key is safe to share; the private key never leaves this machine' },
+  // ---- naming triplet (node.md M3-T6; nameTriplet helper in agutil.js, both ends) ----
+  'triplet.target': { zh: '目标名称（本地）', en: 'Target Name (Local)' },
+  'triplet.myname': { zh: '我的名称（上送对端）', en: 'My Name (Shown to Peer)' },
+  'triplet.mynameTip': { zh: '握手上送的自声明名称，对端管理面以此展示本机；留空 = 节点 ID', en: 'Self-declared name sent in the handshake and shown on the peer console; blank = node ID' },
+  'triplet.remark': { zh: '备注（本地私密）', en: 'Remark (Local Only)' },
   // ---- source/auth badges (agutil.js badge helpers, both ends) ----
   'badge.srcTip': { zh: '上送自 {name} · 只读自动跟随', en: 'Pushed by {name} · read-only mirror' },
   'badge.authPin': { zh: '已认证 · 指纹钉值', en: 'Verified · pinned fingerprint' },

@@ -51,6 +51,7 @@ impl Database {
             group_id: group_id.map(|g| g.to_string()),
             push_groups: String::new(),
             enabled: true,
+            cert_relay: false,
             remark: remark.to_string(),
             created_at: now.clone(),
             updated_at: now,
@@ -66,7 +67,7 @@ impl Database {
             let mut stmt = conn
                 .prepare(
                     "SELECT c.id, c.name, c.my_name, c.upstream_addr, c.token_enc, c.sni_hostname, c.insecure, c.ca_cert_path, c.pinned_cert_path, c.pinned_fingerprint, c.advertise,
-                            c.group_id, c.enabled, c.remark, c.created_at, c.updated_at, c.push_groups
+                            c.group_id, c.enabled, c.remark, c.created_at, c.updated_at, c.push_groups, c.cert_relay
                      FROM connector c ORDER BY c.created_at DESC",
                 )
                 .map_err(db_err)?;
@@ -91,6 +92,7 @@ impl Database {
                     created_at: r.get(14).map_err(db_err)?,
                     updated_at: r.get(15).map_err(db_err)?,
                     push_groups: r.get(16).map_err(db_err)?,
+                    cert_relay: r.get::<_, i64>(17).map_err(db_err)? != 0,
                 });
             }
             recs
@@ -106,6 +108,7 @@ impl Database {
                 .map(|t| token_prefix_of(&t))
                 .unwrap_or_default();
             items.push(ConnectorView {
+                cert_relay: rec.cert_relay,
                 id: rec.id,
                 name: rec.name,
                 my_name: rec.my_name,
@@ -134,7 +137,7 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn
             .prepare(
-                "SELECT id, name, my_name, upstream_addr, token_enc, sni_hostname, insecure, ca_cert_path, pinned_cert_path, pinned_fingerprint, advertise, group_id, enabled, remark, created_at, updated_at, push_groups
+                "SELECT id, name, my_name, upstream_addr, token_enc, sni_hostname, insecure, ca_cert_path, pinned_cert_path, pinned_fingerprint, advertise, group_id, enabled, remark, created_at, updated_at, push_groups, cert_relay
                  FROM connector WHERE id = ?1",
             )
             .map_err(db_err)?;
@@ -158,9 +161,21 @@ impl Database {
                 created_at: r.get(14).map_err(db_err)?,
                 updated_at: r.get(15).map_err(db_err)?,
                 push_groups: r.get(16).map_err(db_err)?,
+                cert_relay: r.get::<_, i64>(17).map_err(db_err)? != 0,
             }),
             None => None,
         })
+    }
+
+    /// Transitive certification opt-in toggle (node.md M6; the fan-out side of the双向 opt-in).
+    pub fn set_connector_cert_relay(&self, id: &str, on: bool) -> Result<()> {
+        let conn = self.conn();
+        conn.execute(
+            "UPDATE connector SET cert_relay = ?1, updated_at = ?2 WHERE id = ?3",
+            params![on as i64, now_rfc3339(), id],
+        )
+        .map_err(db_err)?;
+        Ok(())
     }
 
     /// Set the pushed policy groups (federation P1; comma-separated local group IDs, empty = no upload).

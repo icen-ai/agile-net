@@ -95,7 +95,8 @@ function switchView(v) {
   if (v === 'subscription') { refreshSubs(); refreshSubStatus(); refreshSubScripts(); SubTraffic.poll(); }
   if (v === 'proxy') { refreshSubs(); refreshGroups(); }
   if (v === 'logs') LogsView.enter();
-  if (v === 'settings') { refreshSysproxy(); refreshSubFeature(); loadSyncConfig(); }
+  if (v === 'notify') refreshNotify(true);
+  if (v === 'settings') { refreshSysproxy(); refreshSubFeature(); loadSyncConfig(); loadMachineIdentity(); }
 }
 function initTitlebar() {
   if (!TAURI || !TAURI.window) return;
@@ -116,6 +117,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   initRules();
   initLogs();
   initAgent();
+  initNotify();
 
   // Browser mode (Web remote panel): local-only cards/toggles hidden via .local-only; show the login modal first when unauthenticated
   if (HTTP_MODE) {
@@ -231,6 +233,15 @@ window.addEventListener('DOMContentLoaded', async () => {
       window._rolesSig = JSON.stringify(e.payload);
       if (window.Hero && Hero.renderMode) Hero.renderMode();
     });
+    // Notification center push (M4-T1): a fresh inbox entry refreshes the badge/list at once
+    // (the float-ball bubble is raised Rust-side by notify_watch; here: toast + node refresh —
+    // a session notice usually flips a node into Blocked/PendingApproval)
+    TAURI.event.listen('ag-notify', (e) => {
+      const n = e.payload || {};
+      refreshNotify(true);
+      refreshNodes(true);
+      if (n.title) toast(String(n.title), n.kind === 'session' ? 'err' : 'info');
+    });
   }
   $('link-paste').onclick = pasteFromClipboard;
   $('link-manual').onclick = () => { switchView('nodes'); $('manual-modal').style.display = 'flex'; };
@@ -255,6 +266,7 @@ window.addEventListener('DOMContentLoaded', async () => {
       pinned_fingerprint: fp || null,
       manage_hosts: $('m-hosts').checked,
       save_credential: $('m-save').checked,
+      myname: $('m-myname').value.trim() || null,
     }, $('btn-connect'));
   };
   $('d-proxy').onchange = toggleProxy;
@@ -281,12 +293,23 @@ window.addEventListener('DOMContentLoaded', async () => {
     if (btn.dataset.act === 'anet') exportCredAnet(key);
     if (btn.dataset.act === 'delcred') deleteCred(key, btn);
     if (btn.dataset.act === 'console') openNodeConsole(btn.dataset.id);
-    if (btn.dataset.act === 'rename') {
-      const row = btn.closest('.node-card');
-      const span = row && row.querySelector('.cred-name');
-      if (span) startCredRename(span);
-    }
+    if (btn.dataset.act === 'edit') openCredEdit(key);
+    if (btn.dataset.act === 'reimport') reimportCred(key);
+    if (btn.dataset.act === 'send-note') sendPendingNote(key, btn);
   });
+  // Appeal note: Enter inside the composer sends (delegation covers the button)
+  $('creds-list').addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter') return;
+    const input = e.target.closest('input[data-note-input]');
+    if (!input) return;
+    e.preventDefault();
+    const btn = $('creds-list').querySelector('button[data-act="send-note"][data-key="' + CSS.escape(input.dataset.noteInput) + '"]');
+    if (btn && !btn.disabled) btn.click();
+  });
+  // Fan-in credential edit modal (M4-T6 triplet form)
+  $('cedit-cancel').onclick = () => { $('cred-edit-modal').style.display = 'none'; CRED_EDIT_KEY = null; };
+  $('cred-edit-modal').onclick = (e) => { if (e.target === $('cred-edit-modal')) { $('cred-edit-modal').style.display = 'none'; CRED_EDIT_KEY = null; } };
+  $('cedit-ok').onclick = credEditSave;
   $('rules-body').addEventListener('change', (e) => {
     const cb = e.target.closest('input[data-rule]');
     if (cb) toggleRule(cb.dataset.node, cb.dataset.rule, !cb.checked);
@@ -334,6 +357,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   refreshCustomRules();
   refreshCombos();
   await refreshCreds();
+  refreshNotify(true); // M4: inbox badge baseline at startup (10s tick keeps it fresh)
 
   // Auto-reconnect saved fan-ins on startup
   if (PREFS.autoreconnect && window._creds) {
@@ -348,7 +372,7 @@ window.addEventListener('DOMContentLoaded', async () => {
 
   /* ---- Main-window poll scheduling: pause the three timers while the window is hidden, resume and refresh immediately when visible (same visibilitychange pattern as tray/float ball) ---- */
   let mainT10 = 0, mainT2 = 0, mainT30 = 0;
-  function mainTick10s() { refreshNodes(); refreshProxy(); refreshSubStatus(); refreshSysproxy(); refreshTun(); renderDashFanout(); refreshCustomRules(); refreshCombos(); Hero.tick10s(); refreshRolesCache(); }
+  function mainTick10s() { refreshNodes(); refreshProxy(); refreshSubStatus(); refreshSysproxy(); refreshTun(); renderDashFanout(); refreshCustomRules(); refreshCombos(); Hero.tick10s(); refreshRolesCache(); refreshNotify(); }
   // 2s poll of subscription kernel traffic + artifact download state (sub_traffic reads an Atomic snapshot, dl_state reads in-memory state — cheap; internal change detection avoids repaints)
   function mainTick2s() { SubTraffic.poll(); pollDl(); }
   // 30s poll of the egress IP probe (results signature-compared, no repaint when unchanged)

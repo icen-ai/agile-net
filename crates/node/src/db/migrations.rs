@@ -220,6 +220,11 @@ const MIGRATIONS: &[(u32, &str, &str)] = &[(
         state        TEXT NOT NULL DEFAULT 'pending' CHECK(state IN ('pending','certified','revoked')),
         certified_by TEXT NOT NULL DEFAULT '',   -- ''=local admin, else origin node id (M6 transitive)
         certified_at TEXT,
+        -- M6 transitive lineage: kept verbatim so middle hops can forward the ORIGINAL
+        -- origin-signed record (blind relay — a middle hop cannot re-sign for the origin)
+        origin_pubkey TEXT NOT NULL DEFAULT '',
+        cert_sig     TEXT NOT NULL DEFAULT '',
+        cert_ts      TEXT NOT NULL DEFAULT '',
         first_seen   TEXT NOT NULL DEFAULT (datetime('now')),
         last_seen    TEXT NOT NULL DEFAULT (datetime('now')),
         bytes_up     INTEGER NOT NULL DEFAULT 0, -- cumulative traffic (B 口径, flushed at session close)
@@ -281,7 +286,8 @@ const MIGRATIONS: &[(u32, &str, &str)] = &[(
         visibility   TEXT NOT NULL DEFAULT 'domain' CHECK(visibility IN ('domain','disclose','approve')),
         origin_sig   TEXT NOT NULL DEFAULT '',   -- origin signature over the record
         state        TEXT NOT NULL DEFAULT 'pending' CHECK(state IN ('pending','confirmed','stopped')),
-        created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+        created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(artifact_ref, holder)
     );
     "#,
 )];

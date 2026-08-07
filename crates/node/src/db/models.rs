@@ -172,6 +172,9 @@ pub struct ConnectorRecord {
     pub push_groups: String,
     pub enabled: bool,
     pub remark: String,
+    /// Transitive certification opt-in (node.md M6): push our cert records to this upstream
+    #[serde(default)]
+    pub cert_relay: bool,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -206,6 +209,9 @@ pub struct ConnectorView {
     pub push_groups: String,
     pub enabled: bool,
     pub remark: String,
+    /// Transitive certification opt-in (node.md M6)
+    #[serde(default)]
+    pub cert_relay: bool,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -243,6 +249,9 @@ pub struct DelegatedTokenRecord {
     pub concurrency: String,
     /// Session cap for the multi tier (snapshot of node_config.delegation_max_sessions at issue time)
     pub max_sessions: i64,
+    /// Topology-visibility tier (node.md M6): domain (default) / disclose / approve
+    #[serde(default = "default_visibility")]
+    pub visibility: String,
     /// Validity window (None = never expires)
     #[serde(default)]
     pub expires_at: Option<String>,
@@ -259,6 +268,10 @@ pub struct DelegatedTokenRecord {
 }
 
 /// Default consumer mode of a delegated token (the 专线 tier).
+fn default_visibility() -> String {
+    "domain".to_string()
+}
+
 fn default_delegated_mode() -> String {
     "dedicated".to_string()
 }
