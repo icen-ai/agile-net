@@ -67,6 +67,10 @@ pub struct DelegationConfig {
     pub admin: Option<DelegationAdmin>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub upstreams: Vec<DelegationUpstream>,
+    /// Certification state of the CALLING device (node.md M3-T2, relay-entry pending channel):
+    /// "active" / "pending" / "denied" -- overlaid by the serving connector from the device gate
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub device_state: String,
 }
 
 /// One named group of the token's vocabulary (split-tier delivery).
@@ -132,6 +136,10 @@ pub trait DelegationHooks: Send + Sync {
     fn device_open_gate(&self, _kid: Option<&str>, _device_fp: &str) -> crate::relay::listener::DeviceGate {
         crate::relay::listener::DeviceGate::Allow
     }
+
+    /// Pending-session appeal forwarded by the relay (PendingNote uplink; fp + session key are
+    /// relay-attested). The issuer files it onto the device's certification approval item.
+    fn pending_note(&self, _device_fp: &str, _session_key: &str, _body: &str) {}
 }
 
 impl From<u8> for ConnectionState {
@@ -627,6 +635,12 @@ impl RelayConnector {
                                 warn!(reason = %reason_code, message = %message, "session notice from upstream");
                                 *notice_slot.lock().unwrap_or_else(|e| e.into_inner()) = Some((reason_code, message));
                             }
+                            Ok(CtrlMessage::PendingNote { body, device_fp, session_key }) => {
+                                // relay-forwarded consumer appeal (fp/session key relay-attested)
+                                if let Some(h) = &hooks {
+                                    h.pending_note(&device_fp, &session_key, &body);
+                                }
+                            }
                             _ => debug!("ignoring unknown/malformed ctrl frame from upstream"),
                         }
                     }
@@ -783,19 +797,20 @@ impl RelayConnector {
             match &open_req.e2e {
                 Some(env) => match hooks.e2e_unwrap(env) {
                     Ok(Some((payload, cipher))) => {
-                        // device certification gate (relay-stamped fp; uniform fail-closed,
-                        // config/admin channels included)
-                        if let Some(rc) = Self::device_gate_reason(hooks, Some(&env.kid), &open_req.device_fp) {
-                            let p = serde_json::to_vec(&crate::proto::message::OpenFailed { reason: rc.into() }).unwrap_or_default();
-                            mux.send_frame(Frame::new(FrameType::OpenFail, req.channel_id, Bytes::from(p))).await?;
-                            return Ok(());
-                        }
                         // split-tier rule delivery: a config-fetch open is answered locally
                         // with the token's effective rule vocabulary — E2E-sealed like any
                         // payload, never dialed; the working key is the authorization (the
                         // rules are the token's own), so no group-ACL gate applies here
                         if payload.target_addr == crate::relay::e2e::DELEGATION_CONFIG_TARGET {
-                            let cfg = hooks.delegation_config(&env.kid).unwrap_or_default();
+                            let mut cfg = hooks.delegation_config(&env.kid).unwrap_or_default();
+                            // overlay the caller certification state (pending surfaces on the
+                            // consumer as awaiting-certification even though opens stay gated)
+                            cfg.device_state = match hooks.device_open_gate(Some(&env.kid), &open_req.device_fp) {
+                                crate::relay::listener::DeviceGate::Allow => "active",
+                                crate::relay::listener::DeviceGate::Pending => "pending",
+                                crate::relay::listener::DeviceGate::Deny => "denied",
+                            }
+                            .to_string();
                             mux.send_frame(Frame::empty(FrameType::OpenOk, req.channel_id))
                                 .await?;
                             let channel = mux.accept_channel(req.channel_id);
@@ -806,6 +821,13 @@ impl RelayConnector {
                             let _ = stream.write_all(&body).await;
                             let _ = stream.shutdown().await;
                             mux.close_channel(req.channel_id);
+                            return Ok(());
+                        }
+                        // device certification gate (relay-stamped fp; fail-closed). The config
+                        // channel above is exempt: a pending device must still pull its state.
+                        if let Some(rc) = Self::device_gate_reason(hooks, Some(&env.kid), &open_req.device_fp) {
+                            let p = serde_json::to_vec(&crate::proto::message::OpenFailed { reason: rc.into() }).unwrap_or_default();
+                            mux.send_frame(Frame::new(FrameType::OpenFail, req.channel_id, Bytes::from(p))).await?;
                             return Ok(());
                         }
                         // delegated admin: bridge to the issuer's loopback admin API (the ticket

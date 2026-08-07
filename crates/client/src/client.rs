@@ -1063,6 +1063,31 @@ fn maybe_spawn_config_fetch(
         };
         // named group matchers (§7.2.1): the seal path fills per-target identities with them
         opener.set_group_map(cfg.groups);
+        // certification state overlay (M3-T2): a relay-entry pending device learns it here
+        // (the config channel is the only issuer-reachable path for a gated consumer)
+        if !cfg.device_state.is_empty()
+            && let Some(mut h) = inner.nodes.get_mut(&node_id)
+        {
+            let was_pending = h.state.device_state == "pending";
+            h.state.device_state = cfg.device_state.clone();
+            let now_pending = cfg.device_state == "pending";
+            if now_pending {
+                h.state.status = NodeStatus::PendingApproval;
+            } else if h.state.status == NodeStatus::PendingApproval {
+                h.state.status = NodeStatus::Connected;
+            }
+            if now_pending && !was_pending {
+                let label = h.state.label.clone();
+                drop(h);
+                inner.notify.load().push(
+                    "approval",
+                    format!("等待 {label} 的管理员认证"),
+                    "设备已登记为待认证；认证通过前数据面保持暂停。".into(),
+                    agile_net_core::proto::message::reason::PENDING_APPROVAL,
+                    &node_id,
+                );
+            }
+        }
         if split {
             if cfg.rules.is_empty() {
                 warn!(node = %node_id, "split-tier config empty — keeping catch-all routes");
@@ -1122,6 +1147,9 @@ struct DelegConfigWire {
     admin: Option<agile_net_core::relay::DelegationAdmin>,
     #[serde(default)]
     upstreams: Vec<agile_net_core::relay::DelegationUpstream>,
+    /// Certification state overlay (node.md M3-T2 relay-entry pending channel)
+    #[serde(default)]
+    device_state: String,
 }
 
 /// Parsed config answer with rules mapped to client rules.
@@ -1131,6 +1159,8 @@ struct DelegConfig {
     groups: Vec<(String, std::sync::Arc<agile_net_core::proxy::router::ProxyRouter>)>,
     admin: Option<agile_net_core::relay::DelegationAdmin>,
     upstreams: Vec<agile_net_core::relay::DelegationUpstream>,
+    /// "active" / "pending" / "denied" (empty = feature off)
+    device_state: String,
 }
 
 /// One config-channel roundtrip: open the reserved target (the opener seals it like any E2E
@@ -1164,6 +1194,7 @@ async fn fetch_deleg_config(opener: &Arc<DelegatedOpener>) -> Result<DelegConfig
                 .collect(),
             admin: wire.admin,
             upstreams: wire.upstreams,
+            device_state: wire.device_state,
         })
     };
     match tokio::time::timeout(std::time::Duration::from_secs(8), fut).await {

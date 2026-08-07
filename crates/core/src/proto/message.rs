@@ -288,8 +288,16 @@ pub enum CtrlMessage {
         message: String,
     },
     /// Consumer -> issuer (pending session only): appeal note attached to the approval item.
-    /// The server counts per session and rejects beyond `MAX_PENDING_NOTES` (≤3).
-    PendingNote { body: String },
+    /// The server counts per session and rejects beyond `MAX_PENDING_NOTES` (≤3). A relay
+    /// forwards the note to the issuer session with `device_fp`/`session_key` filled (the
+    /// consumer itself only ever sends `body`).
+    PendingNote {
+        body: String,
+        #[serde(default)]
+        device_fp: String,
+        #[serde(default)]
+        session_key: String,
+    },
     // M6 reserved op names (do NOT implement before M6; schemas are defined there):
     // "cert_push" (transitive certification record, origin-signed), "cert_revoke" (signed
     // revocation propagation), "grant_receipt" (topology visibility receipt).

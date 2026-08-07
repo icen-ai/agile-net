@@ -1086,9 +1086,16 @@ impl RelayListener {
                 self.clear_auth_failures(&peer_addr.ip());
                 let peer_version = auth_req.version;
                 // handshake v2: push the control-plane endpoint when the downstream token carries the expose flag (old downstreams ignore unknown fields)
-                // device_state (M3-T2): "pending" tells the consumer it is gated until certified
-                let device_state = match &self.device_gate {
-                    Some(g) if g(&device_meta.device_fp) == DeviceGate::Pending => "pending",
+                // device_state (M3-T2): "pending" is only meaningful where certification lives
+                // — the issuer. Relay-transit consumer sessions get "active" here; their issuer
+                // communicates pending state over the E2E config channel instead.
+                let device_state = match (&self.device_gate, &identity) {
+                    (Some(g), AuthIdentity::Delegated(_))
+                        if self.local_delegated.contains_key(&token_hash)
+                            && g(&device_meta.device_fp) == DeviceGate::Pending =>
+                    {
+                        "pending"
+                    }
                     _ => "active",
                 };
                 let auth_ok = match &identity {
@@ -1593,13 +1600,31 @@ impl RelayListener {
                 }
                 payload = ctrl_rx.recv() => {
                     let Some(payload) = payload else { break };
-                    if let Ok(crate::proto::message::CtrlMessage::PendingNote { body }) =
+                    if let Ok(crate::proto::message::CtrlMessage::PendingNote { body, .. }) =
                         serde_json::from_slice::<crate::proto::message::CtrlMessage>(&payload)
                     {
-                        // pending-session appeal uplink: the node layer files it onto the
-                        // approval item (message cap enforced there, ≤3)
-                        if let Some(hook) = &self.pending_note_hook {
-                            hook(session_key.clone(), body);
+                        // pending-session appeal uplink: direct-entry tokens file locally;
+                        // relay-entry notes are forwarded to the issuer session (the device_fp
+                        // + session_key context is filled by THIS relay, never by the consumer)
+                        if self.local_delegated.contains_key(&token_hash) {
+                            if let Some(hook) = &self.pending_note_hook {
+                                hook(session_key.clone(), body);
+                            }
+                        } else if let Some(issuer_id) = self
+                            .delegated
+                            .get(&token_hash)
+                            .map(|e| e.issuer.clone())
+                        {
+                            let fwd = crate::proto::message::CtrlMessage::PendingNote {
+                                body,
+                                device_fp: gate_fp.clone(),
+                                session_key: session_key.clone(),
+                            };
+                            if let Ok(p) = serde_json::to_vec(&fwd)
+                                && let Some(peer) = self.peers.get(&issuer_id)
+                            {
+                                let _ = peer.mux.send_frame(Frame::new(FrameType::Ctrl, 0, Bytes::from(p))).await;
+                            }
                         }
                     }
                 }

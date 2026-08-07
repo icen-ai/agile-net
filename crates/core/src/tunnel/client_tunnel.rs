@@ -155,6 +155,8 @@ impl ClientTunnel {
         };
         let msg = crate::proto::message::CtrlMessage::PendingNote {
             body: body.to_string(),
+            device_fp: String::new(),
+            session_key: String::new(),
         };
         let payload = serde_json::to_vec(&msg).map_err(|e| Error::Protocol(e.to_string()))?;
         mux.send_frame(Frame::new(FrameType::Ctrl, 0, Bytes::from(payload)))

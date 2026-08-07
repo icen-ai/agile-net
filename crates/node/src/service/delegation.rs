@@ -426,6 +426,17 @@ impl agile_net_core::relay::DelegationHooks for DelegationEngine {
         cache.gate()(device_fp)
     }
 
+    /// Pending-session appeal forwarded by a relay: file onto the device's certification
+    /// approval item (created on demand; the DB enforces the ≤3 cap).
+    fn pending_note(&self, device_fp: &str, _session_key: &str, body: &str) {
+        let Some(rt) = self.admin_runtime.load_full() else {
+            return;
+        };
+        if let Some(id) = super::approvals::ensure_device_certify_approval(&rt.db, device_fp) {
+            let _ = rt.db.add_approval_message(&id, "appeal", body);
+        }
+    }
+
     fn group_acl_allows(&self, groups: &[String], target: &str) -> Option<bool> {
         let cache = self.groups.load();
         let mut any_known = false;

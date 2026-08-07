@@ -450,6 +450,13 @@ async fn federation_adopted_group_delegated_grant() {
     );
 
     // ---- A: delegated consumer dials B's own listener (direct entry = TLS already end-to-end) ----
+    // M3-T2: a fresh consumer device is pending (opens gated) until certified; this test grants
+    // and consumes without certification, so allow pending devices on B (gray-flag policy)
+    b.runtime()
+        .device_gate
+        .as_ref()
+        .expect("device gate wired")
+        .set_allow_pending(true);
     let a = AgileNetClient::new();
     let state = a
         .connect(ConnectParams {
