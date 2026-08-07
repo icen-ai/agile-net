@@ -449,6 +449,10 @@ pub fn create_app(state: ApiState) -> Router {
             post(handlers::sessions::kick_token),
         )
         .route(
+            "/api/v1/admin/sessions/kick_fanin",
+            post(handlers::sessions::kick_fanin),
+        )
+        .route(
             "/api/v1/admin/devices",
             get(handlers::devices::list_devices),
         )

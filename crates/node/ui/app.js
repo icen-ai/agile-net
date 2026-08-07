@@ -661,6 +661,7 @@ const ACT_CLICK = {
   'watch-sess': b => toggleSessWrap('watch:' + b.dataset.id),
   'sess-kick': b => kickSession(b.dataset.key, b.dataset.name || ''),
   'sess-kickall': b => kickTokenSessions(b.dataset.hash, b.dataset.name || ''),
+  'sess-kickall-fanin': b => kickFaninSessions(b.dataset.hash, b.dataset.name || ''),
   // devices (M3-T2) + approvals (M3-T4)
   'dev-open': b => {
     S.devFp = b.dataset.fp || '';
@@ -789,7 +790,8 @@ function sessRowHtml(s, cols) {
 /* Inner panel of an expanded block: toolbar (count + optional kick-all) + header row + session rows */
 function sessPanelInner(b) {
   return '<div class="sess-toolbar"><span>' + (b.toolbarText || T('sess.toolbar', { n: b.sessions.length })) + '</span>' +
-      (b.kickallHash && b.sessions.length ? '<button class="danger small" data-act="sess-kickall" data-hash="' + esc(b.kickallHash) + '" data-name="' + esc(b.name || '') + '">' + T('sess.kickAll') + '</button>' : '') + '</div>' +
+      (b.kickallHash && b.sessions.length ? '<button class="danger small" data-act="sess-kickall" data-hash="' + esc(b.kickallHash) + '" data-name="' + esc(b.name || '') + '">' + T('sess.kickAll') + '</button>' : '') +
+      (b.kickallFanin && b.sessions.length ? '<button class="danger small" data-act="sess-kickall-fanin" data-hash="' + esc(b.kickallFanin) + '" data-name="' + esc(b.name || '') + '">' + T('sess.kickAll') + '</button>' : '') + '</div>' +
     '<div class="sess-row sess-head-row" style="grid-template-columns:' + sessGrid(b.cols) + '">' + b.cols.map(c => '<div>' + T('sess.col.' + c) + '</div>').join('') + '</div>' +
     (b.sessions.length ? b.sessions.map(s => sessRowHtml(s, b.cols)).join('') : '<div class="empty">' + T('sess.empty') + '</div>') +
     (b.extra || '');
@@ -818,6 +820,15 @@ function kickSession(key, name) {
     try {
       await api('POST', '/api/v1/admin/sessions/kick', { session_key: key, message: msg });
       toast(T('sess.kicked'), 'ok');
+      reloadSessions();
+    } catch (e) { toast(e.message, 'err'); }
+  });
+}
+function kickFaninSessions(hash, name) {
+  kickModal(T('sess.kickAllTitle'), T('sess.kickAllConfirm', { name: name || hash.slice(0, 12) }), async (msg) => {
+    try {
+      const d = await api('POST', '/api/v1/admin/sessions/kick_fanin', { token_hash: hash, message: msg });
+      toast(T('sess.kickedN', { n: d.kicked || 0 }), 'ok');
       reloadSessions();
     } catch (e) { toast(e.message, 'err'); }
   });
@@ -1829,11 +1840,10 @@ function renderFaninTokens() {
   body.dataset.sig = sig;
   body.innerHTML = items.map(t => {
     const key = 'tok:' + t.id;
-    // M3-T1: fan-in sessions authenticated with this token (per-session kick; no kick-all here —
-    // sessions/kick_token covers delegated tokens only)
+    // M3-T1: fan-in sessions authenticated with this token (per-session kick + kick-all)
     const sessions = SESS.filter(s => s.kind === 'fanin' && s.token_hash === t.token_hash);
     const sessTr = '<tr ' + sessWrapAttrs(key) + '><td colspan="8" style="background:var(--bg2);padding:0">' +
-      sessPanelInner({ name: t.remark || t.token_prefix, sessions, cols: ['who', 'ip', 'chans', 'ago', 'tr', 'key', 'op'] }) + '</td></tr>';
+      sessPanelInner({ name: t.remark || t.token_prefix, sessions, cols: ['who', 'ip', 'chans', 'ago', 'tr', 'key', 'op'], kickallFanin: t.token_hash }) + '</td></tr>';
     return '<tr><td class="mono">' + esc(t.token_prefix) + lifecycleBadge(t) + '</td>' +
     '<td>' + ((t.groups || []).length ? t.groups.map(g => grpChip({ name: g.name, adopted: g.adopted_node })).join(' ') : '<span style="color:var(--dim2)">' + T('adm.noRestrict') + '</span>') + '</td>' +
     '<td class="mono">' + (t.rate_limit_kbps ? esc(t.rate_limit_kbps) + ' KB/s' : '<span style="color:var(--dim2)">' + T('adm.unlimited') + '</span>') + '</td>' +

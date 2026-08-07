@@ -120,3 +120,30 @@ pub async fn kick_token(
     audit(&state, &claims, &ip, "session.kick_token", Some(&req.token_hash), &format!("{n} sessions")).await;
     ok(json!({ "kicked": n }))
 }
+
+/// POST /api/v1/admin/sessions/kick_fanin — force-close the fan-in node session(s) of one
+/// relay token (same toolbar action on the 监听 tab).
+pub async fn kick_fanin(
+    AdminAuth(claims): AdminAuth,
+    State(state): State<ApiState>,
+    ClientIp(ip): ClientIp,
+    Json(req): Json<KickTokenReq>,
+) -> Response {
+    let Some(listener) = &state.runtime.listener else {
+        return err(StatusCode::BAD_REQUEST, codes::BAD_REQUEST, "relay listener not enabled");
+    };
+    let node = listener
+        .disconnect_by_token_hash(&req.token_hash, reason::KICKED, &req.message)
+        .await;
+    let kicked = if node.is_some() { 1 } else { 0 };
+    audit(
+        &state,
+        &claims,
+        &ip,
+        "session.kick_fanin",
+        Some(&req.token_hash),
+        node.as_deref().unwrap_or("offline"),
+    )
+    .await;
+    ok(json!({ "kicked": kicked, "node_id": node }))
+}

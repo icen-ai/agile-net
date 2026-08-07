@@ -55,6 +55,12 @@
 
 请求：`{ "token_hash": "...", "message": "可选" }`
 
+## POST `/api/v1/admin/sessions/kick_fanin`
+
+踢某扇入令牌的在线节点会话（监听页「全部下线」；该端点重连即视新会话）。
+
+请求：`{ "token_hash": "...", "message": "可选" }`
+
 ---
 
 ## GET `/api/v1/admin/devices?state=&q=`
