@@ -172,6 +172,9 @@ struct DelegatedOpener {
     /// Named group matchers from the split-tier config channel (§7.2.1): empty until the
     /// issuer answers; the seal path fills per-target accurate group identities with it.
     group_map: arc_swap::ArcSwap<Vec<(String, std::sync::Arc<agile_net_core::proxy::router::ProxyRouter>)>>,
+    /// Signature of the last applied config answer (rules+groups): the 45s periodic re-pull
+    /// applies only on a real vocabulary change — no pointless matcher/router rebuilds
+    cfg_sig: std::sync::Mutex<Option<String>>,
 }
 
 impl DelegatedOpener {
@@ -184,6 +187,7 @@ impl DelegatedOpener {
             total_down: AtomicU64::new(0),
             current_entry: arc_swap::ArcSwap::from_pointee(String::new()),
             group_map: arc_swap::ArcSwap::from_pointee(Vec::new()),
+            cfg_sig: std::sync::Mutex::new(None),
         })
     }
 
@@ -865,7 +869,7 @@ impl AgileNetClient {
                 .ok_or_else(|| anyhow!("node not connected"))?;
             (h.opener.clone(), h.split)
         };
-        fetch_and_apply_deleg_config(&self.inner, node_id, &opener, split).await
+        fetch_and_apply_deleg_config(&self.inner, node_id, &opener, split, true).await
     }
 
     /// Delegated transit management (full scope): a discovered upstream's current offer —
@@ -948,8 +952,30 @@ fn spawn_delegated_supervisor(
         loop {
             // wait for the live tunnel to die
             if let Some(t) = &live {
+                // split-tier vocabulary follow (45s cadence): re-pull the issuer's config while
+                // connected so group/rule edits on the source node apply without a reconnect.
+                // eadmin combos are excluded here (every pull mints an admin ticket server-side) —
+                // they refresh on console-open/reconnect instead. Change-guarded at apply time.
+                let split_follow = params.en.is_some()
+                    && params.emode.as_deref() == Some("split")
+                    && !params.eadmin;
+                let mut cfg_ticks = 0u32;
                 while t.is_connected() {
                     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    if split_follow {
+                        cfg_ticks += 1;
+                        if cfg_ticks >= 90 {
+                            cfg_ticks = 0;
+                            let (inner2, nid, op) = (inner.clone(), node_id.clone(), opener.clone());
+                            tokio::spawn(async move {
+                                if let Err(e) =
+                                    fetch_and_apply_deleg_config(&inner2, &nid, &op, true, false).await
+                                {
+                                    debug!(node = %nid, error = %e, "periodic delegation config refresh failed");
+                                }
+                            });
+                        }
+                    }
                 }
                 opener.note_tunnel_closed(t).await;
                 if let Some(cur) = opener.current.load_full()
@@ -1099,7 +1125,7 @@ fn maybe_spawn_config_fetch(
     let node_id = node_id.to_string();
     let opener = opener.clone();
     tokio::spawn(async move {
-        if let Err(e) = fetch_and_apply_deleg_config(&inner, &node_id, &opener, split).await {
+        if let Err(e) = fetch_and_apply_deleg_config(&inner, &node_id, &opener, split, true).await {
             warn!(node = %node_id, error = %e, "delegated config fetch failed — keeping catch-all routes");
         }
     });
@@ -1107,15 +1133,31 @@ fn maybe_spawn_config_fetch(
 
 /// Fetch the issuer's config answer and apply it (group matchers / device-state overlay / split
 /// rules / delegated-admin state). Shared by the connect-time spawn and the on-demand refresh.
+/// `full` (connect-time / console-open pulls) also re-applies the admin state (fresh bootstrap
+/// ticket); the 45s periodic pull passes false — a vocabulary-unchanged tick never re-mints tickets.
 async fn fetch_and_apply_deleg_config(
     inner: &Arc<ClientInner>,
     node_id: &str,
     opener: &Arc<DelegatedOpener>,
     split: bool,
+    full: bool,
 ) -> Result<()> {
     let cfg = fetch_deleg_config(opener).await?;
+    // change guard (45s periodic re-pull): apply the vocabulary only when it actually changed —
+    // unchanged answers must not rebuild matchers/routes or re-mint admin state
+    let vocab_changed = {
+        let mut slot = opener.cfg_sig.lock().unwrap();
+        if slot.as_deref() == Some(cfg.sig.as_str()) {
+            false
+        } else {
+            *slot = Some(cfg.sig.clone());
+            true
+        }
+    };
     // named group matchers (§7.2.1): the seal path fills per-target identities with them
-    opener.set_group_map(cfg.groups);
+    if vocab_changed {
+        opener.set_group_map(cfg.groups);
+    }
     // one-time admin notice (reject/decision note, relayed via the config channel): inbox it before
     // the state overlay — the note explains WHY the state changed and is take-on-read at the issuer
     if !cfg.device_notice.is_empty() {
@@ -1166,7 +1208,7 @@ async fn fetch_and_apply_deleg_config(
             );
         }
     }
-    if split {
+    if split && vocab_changed {
         if cfg.rules.is_empty() {
             warn!(node = %node_id, "split-tier config empty — keeping catch-all routes");
         } else {
@@ -1175,10 +1217,11 @@ async fn fetch_and_apply_deleg_config(
                 h.state.rules = cfg.rules.clone();
             }
             inner.rebuild_merged_router();
+            inner.touch_state(); // GUI ag-nodes broadcast: the rules view follows the vocabulary change
             info!(node = %node_id, count = n, "split-tier rules applied");
         }
     }
-    if let Some(admin) = cfg.admin {
+    if (full || vocab_changed) && let Some(admin) = cfg.admin {
         let upstreams: Vec<DelegUpstreamState> = cfg
             .upstreams
             .iter()
@@ -1245,6 +1288,8 @@ struct DelegConfig {
     device_state: String,
     /// One-time admin notice for a non-active device state (empty = none)
     device_notice: String,
+    /// Vocabulary signature (rules + named groups): the periodic re-pull's change guard
+    sig: String,
 }
 
 /// One config-channel roundtrip: open the reserved target (the opener seals it like any E2E
@@ -1260,6 +1305,11 @@ async fn fetch_deleg_config(opener: &Arc<DelegatedOpener>) -> Result<DelegConfig
             .await
             .map_err(|e| anyhow!(e.to_string()))?;
         let wire: DelegConfigWire = serde_json::from_slice(&buf)?;
+        // vocabulary signature for the change guard (computed from the wire, before the mapping moves it)
+        let sig = serde_json::to_string(&serde_json::json!({
+            "rules": wire.rules, "groups": wire.groups,
+        }))
+        .unwrap_or_default();
         Ok(DelegConfig {
             rules: wire
                 .rules
@@ -1280,6 +1330,7 @@ async fn fetch_deleg_config(opener: &Arc<DelegatedOpener>) -> Result<DelegConfig
             upstreams: wire.upstreams,
             device_state: wire.device_state,
             device_notice: wire.device_notice,
+            sig,
         })
     };
     match tokio::time::timeout(std::time::Duration::from_secs(8), fut).await {

@@ -598,6 +598,37 @@ async fn p3_split_tier_rule_delivery() {
         "E2E channel reaches R1 through selective routes"
     );
 
+    // ---- hot follow (no reconnect): an issuer-side rule edit must reach the client via config
+    // re-pull (the production path is the 45s periodic pull; here we drive the same re-pull
+    // directly). Replace the fine group's rule: the new one must arrive AND the old one must go.
+    let rid_hot = c
+        .db()
+        .create_rule("host", "hot-follow.internal", false, "")
+        .expect("rule hot")
+        .id;
+    c.db()
+        .set_group_rules(&gid_fine, &[rid_hot])
+        .expect("rebind fine");
+    c.db().bump_config_version().expect("bump hot");
+    tokio::time::sleep(std::time::Duration::from_millis(2400)).await; // issuer watcher tick is 2s
+    let node_id = a.list_nodes().await[0].node_id.clone();
+    a.refresh_delegation_config(&node_id)
+        .await
+        .expect("config re-pull");
+    let rules2: Vec<String> = a.list_nodes().await[0]
+        .rules
+        .iter()
+        .map(|r| r.value.clone())
+        .collect();
+    assert!(
+        rules2.iter().any(|v| v == "hot-follow.internal"),
+        "new rule followed without reconnect: {rules2:?}"
+    );
+    assert!(
+        !rules2.iter().any(|v| v == "127.0.0.1/32"),
+        "removed rule must leave the vocabulary without reconnect: {rules2:?}"
+    );
+
     a.disconnect_all().await;
     c.stop().await;
     b.stop().await;
