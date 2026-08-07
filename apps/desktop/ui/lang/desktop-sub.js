@@ -41,6 +41,7 @@ AgI18n.register({
   'sub.testing': { zh: '测速中', en: 'Testing' },
   'sub.testingAll': { zh: '测速中…', en: 'Testing…' },
   'sub.testAll': { zh: '全部测速', en: 'Test All' },
+  'sub.testNeedKernel': { zh: '开启订阅代理后可测速', en: 'Start the subscription proxy to test' },
 
   // ---- override script ----
   'sub.tplComment': { zh: 'config 为订阅生成的内核配置对象，修改后返回', en: 'config is the kernel config generated from the subscription; modify and return it' },

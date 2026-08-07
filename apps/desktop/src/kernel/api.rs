@@ -14,7 +14,13 @@ pub struct KernelApi {
 impl KernelApi {
     fn new(secret: String) -> Self {
         Self {
-            client: reqwest::Client::new(),
+            // no_proxy: the controller is hardcoded loopback — reqwest's default system-proxy would
+            // otherwise read the engaged Windows system proxy (our own inbound!) and loop control-plane
+            // calls back into the proxy, breaking every controller call while the system proxy is on.
+            client: reqwest::Client::builder()
+                .no_proxy()
+                .build()
+                .expect("reqwest client init"),
             base: format!("http://127.0.0.1:{MIHOMO_CTRL_PORT}"),
             secret,
         }

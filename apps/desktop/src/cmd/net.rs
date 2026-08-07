@@ -70,6 +70,10 @@ pub(crate) async fn fetch_exit_ip(state: State<'_, AppState>, via_proxy: bool) -
         }
         .map_err(map_err)?;
         builder = builder.proxy(proxy);
+    } else {
+        // Direct probe must be truly direct: reqwest's default system-proxy would silently re-route
+        // it through our own engaged system proxy and report the proxy egress as "direct".
+        builder = builder.no_proxy();
     }
     let client = builder.build().map_err(map_err)?;
 

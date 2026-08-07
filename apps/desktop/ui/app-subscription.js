@@ -302,7 +302,9 @@ function groupCards(group) {
   return [...$('node-grid').querySelectorAll('.snode-card')].filter(c => c.dataset.group === group);
 }
 
-/* Latency-test button state: hidden in HTTP_MODE (CMD_MAP lacks this command) and cached state; disabled + spinner while running (anti double-click, learned from competitor complaints) */
+/* Latency-test button state: hidden in HTTP_MODE (CMD_MAP lacks this command); in cached state (kernel
+   down, read-only snapshot) shown but disabled with a hint — a vanished button reads as a bug, a disabled
+   one explains itself; disabled + spinner while running (anti double-click, learned from competitor complaints) */
 let _testUiKey = '';
 function syncTestUI() {
   const bAll = $('btn-test-all'), bGrp = $('btn-test-group');
@@ -310,11 +312,14 @@ function syncTestUI() {
   const key = [HTTP_MODE, PROXY_CACHED, TEST_ALL_ON, grpBusy].join('|');
   if (key === _testUiKey) return;
   _testUiKey = key;
-  const hide = HTTP_MODE || PROXY_CACHED;
+  const hide = HTTP_MODE;
   bAll.style.display = hide ? 'none' : '';
   bGrp.style.display = hide ? 'none' : '';
-  bGrp.disabled = grpBusy || TEST_ALL_ON;
-  bAll.disabled = TEST_ALL_ON;
+  bGrp.disabled = PROXY_CACHED || grpBusy || TEST_ALL_ON;
+  bAll.disabled = PROXY_CACHED || TEST_ALL_ON;
+  const hint = PROXY_CACHED && !hide ? AgI18n.t('sub.testNeedKernel') : '';
+  bAll.title = hint;
+  bGrp.title = hint;
   bGrp.innerHTML = grpBusy ? '<span class="spinner"></span>' + AgI18n.t('sub.testing') : AgIcon('zap', 13) + AgI18n.t('sub.test');
   bAll.innerHTML = TEST_ALL_ON ? '<span class="spinner"></span>' + AgI18n.t('sub.testingAll') : AgIcon('gauge', 14) + AgI18n.t('sub.testAll');
 }

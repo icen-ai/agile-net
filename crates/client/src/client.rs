@@ -408,16 +408,9 @@ impl ClientInner {
                     _ => {}
                 }
             }
-            // Control-plane implicit routes: manageable upstream API endpoints reachable via this node's tunnel
-            // (Unified ACL: revoked permission loses the management path; conflict slots follow explicit rules, first-connected-wins)
-            if state.admin_console {
-                add_manageable_routes(
-                    &mut new_router,
-                    &state.node_id,
-                    &state.manageable,
-                    &mut seen,
-                );
-            }
+            // NOTE: no implicit routes for manageable upstream APIs — consoles are reached through
+            // per-console loopback forwarders (explicit channel targets), and an advertised
+            // 127.0.0.1 endpoint would otherwise hijack the consumer's whole loopback into the tunnel.
         }
         // Fallback upstream (subscription kernel): traffic matching no rule is forwarded to the loopback upstream proxy
         if let Some(addr) = self.proxy_fallback.load().as_ref() {
@@ -918,36 +911,6 @@ impl Default for AgileNetClient {
 
 // ==================== helpers ====================
 
-/// Merge manageable upstream API endpoints into the router (implicit tunnel routes).
-///
-/// IPs get /32 CIDRs, hostnames get exact hosts; slots follow conflict order (first-connected-wins).
-fn add_manageable_routes(
-    router: &mut ProxyRouter,
-    node_id: &str,
-    manageable: &[ManageableNode],
-    seen: &mut std::collections::HashSet<String>,
-) {
-    for m in manageable {
-        let Some(host) = m
-            .api
-            .rsplit_once(':')
-            .map(|(h, _)| h)
-            .filter(|h| !h.is_empty())
-        else {
-            continue;
-        };
-        let outbound = Outbound::tunnel(node_id.to_string());
-        if let Ok(ip) = host.parse::<std::net::IpAddr>() {
-            let value = format!("{ip}/32");
-            if seen.insert(format!("ip-cidr:{}", value.to_lowercase())) {
-                let _ = router.add_cidr(&value, outbound);
-            }
-        } else if seen.insert(format!("host:{}", host.to_lowercase())) {
-            router.add_host_exact(host, outbound);
-        }
-    }
-}
-
 async fn resolve_addr(host: &str, port: u16) -> Result<SocketAddr> {
     let direct = format!("{host}:{port}");
     if let Ok(a) = direct.parse::<SocketAddr>() {
@@ -1388,64 +1351,6 @@ async fn resolve_host_port(entry: &str) -> Result<SocketAddr> {
 mod tests {
     use super::*;
     use crate::custom_rules::CustomBypassRule;
-
-    fn m(node_name: &str, api: &str) -> ManageableNode {
-        ManageableNode {
-            node_name: node_name.into(),
-            api: api.into(),
-            scope: "rules".into(),
-            via: "deleg".into(),
-        }
-    }
-
-    #[test]
-    fn manageable_routes_ip_and_host() {
-        let mut router = ProxyRouter::new();
-        let mut seen = std::collections::HashSet::new();
-        let list = vec![
-            m("root", "172.28.0.10:59090"),
-            m("ops", "ops.internal:59090"),
-        ];
-        add_manageable_routes(&mut router, "n1@x:1", &list, &mut seen);
-
-        // IP endpoint → /32 CIDR hit
-        assert!(matches!(
-            router.route_target("172.28.0.10:59090"),
-            Outbound::Tunnel { node_id } if node_id == "n1@x:1"
-        ));
-        // Hostname endpoint → exact host hit
-        assert!(matches!(
-            router.route_target("ops.internal:59090"),
-            Outbound::Tunnel { node_id } if node_id == "n1@x:1"
-        ));
-        // Other ports of the same host also hit (host-based routing)
-        assert!(matches!(
-            router.route_target("ops.internal:443"),
-            Outbound::Tunnel { .. }
-        ));
-        // Unrelated targets unaffected (default direct)
-        assert!(matches!(
-            router.route_target("other.net:80"),
-            Outbound::Direct
-        ));
-    }
-
-    #[test]
-    fn manageable_routes_respect_first_wins() {
-        let mut router = ProxyRouter::new();
-        let mut seen = std::collections::HashSet::new();
-        // Explicit rule occupying the slot first (host:ops.internal belongs to another node)
-        seen.insert("host:ops.internal".to_string());
-        router.add_host_exact("ops.internal", Outbound::tunnel("n0@a:1"));
-
-        let list = vec![m("ops", "ops.internal:59090")];
-        add_manageable_routes(&mut router, "n1@x:1", &list, &mut seen);
-        // Implicit routes must not preempt an occupied slot
-        assert!(matches!(
-            router.route_target("ops.internal:59090"),
-            Outbound::Tunnel { node_id } if node_id == "n0@a:1"
-        ));
-    }
 
     // ==================== custom rules engine hot reload ====================
 
