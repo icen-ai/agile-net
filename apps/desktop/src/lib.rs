@@ -404,6 +404,11 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 notify_watch(handle).await;
             });
+            // Engine node-state fan-out: `ag-nodes` on every status/capability change (instant repaint)
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                nodes_watch(handle).await;
+            });
             // Restore float ball (was enabled at last exit; desktop only, mobile create returns unsupported)
             if roles::RoleSettings::load().float_ball {
                 let _ = create_float_ball(app.handle());

@@ -27,6 +27,18 @@ pub(crate) async fn notify_watch(app: tauri::AppHandle) {
     }
 }
 
+/// Node-state change forwarder: engine touches (connect/reconnect/blocked/admin-capable/pause)
+/// arrive as `ag-nodes` so the fan-in list + title-bar admin entry repaint instantly
+/// (the 10s AgPulse is now only the fallback, same contract as ag-roles/ag-notify).
+pub(crate) async fn nodes_watch(app: tauri::AppHandle) {
+    use tauri::Emitter;
+    let notify = app.state::<AppState>().client.state_notify();
+    loop {
+        notify.notified().await;
+        let _ = app.emit("ag-nodes", ());
+    }
+}
+
 /// Connect to a node
 #[tauri::command]
 pub(crate) async fn connect_node(state: State<'_, AppState>, input: ConnectInput) -> Result<NodeState, String> {

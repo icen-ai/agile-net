@@ -242,6 +242,9 @@ window.addEventListener('DOMContentLoaded', async () => {
       refreshNodes(true);
       if (n.title) toast(String(n.title), n.kind === 'session' ? 'err' : 'info');
     });
+    // Engine node-state push: connect/reconnect/blocked/admin-capability flips repaint the fan-in
+    // list and the title-bar admin entry instantly (the 10s AgPulse remains as the fallback)
+    TAURI.event.listen('ag-nodes', () => { refreshNodes(); });
   }
   $('link-paste').onclick = pasteFromClipboard;
   $('link-manual').onclick = () => { switchView('nodes'); $('manual-modal').style.display = 'flex'; };

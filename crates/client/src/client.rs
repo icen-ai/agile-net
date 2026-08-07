@@ -329,6 +329,9 @@ struct ClientInner {
     /// Delegated admin state pulled over the E2E config channel: node_id -> current
     /// bootstrap ticket + transit-management offers (full scope). Session-scoped, refetched per session.
     deleg_admin: DashMap<String, DelegAdminState>,
+    /// Node-state change feed (Notify; touches coalesce into one wakeup): the desktop shell forwards
+    /// it as a Tauri event so status/admin-capability changes repaint instantly, not at the next poll
+    state_touch: Arc<tokio::sync::Notify>,
     /// Connection log (docs/todo/conn-log.md; engine-owned, injected into the proxy inbound on start)
     conn_log: Arc<agile_net_core::proxy::conlog::ConnLog>,
     /// Notification center (node.md M4-T1): session notices / rejections / approval states
@@ -355,6 +358,11 @@ struct DelegUpstreamState {
 }
 
 impl ClientInner {
+    /// Signal a node-state change (status / capability / membership); touches coalesce into one wakeup.
+    fn touch_state(&self) {
+        self.state_touch.notify_one();
+    }
+
     /// Merge route rules from all connected nodes.
     ///
     /// Conflict semantics (deterministic): by connection order, **first-connected-wins** —
@@ -472,6 +480,7 @@ impl AgileNetClient {
                 inbound_join: tokio::sync::Mutex::new(None),
                 openers: Arc::new(DashMap::new()),
                 deleg_admin: DashMap::new(),
+                state_touch: Arc::new(tokio::sync::Notify::new()),
                 hosts_manager: HostsManager::new(),
                 proxy_stats: Arc::new(arc_swap::ArcSwapOption::from_pointee(None)),
                 paused_rules: DashMap::new(),
@@ -624,6 +633,7 @@ impl AgileNetClient {
             split: params.emode.as_deref() == Some("split"),
         };
         self.inner.nodes.insert(node_id.clone(), handle);
+        self.inner.touch_state();
         self.inner
             .node_order
             .lock()
@@ -654,6 +664,7 @@ impl AgileNetClient {
                 .unwrap_or_else(|e| e.into_inner())
                 .retain(|id| id != node_id);
             self.inner.rebuild_merged_router();
+            self.inner.touch_state();
             info!(node = %node_id, "node disconnected");
         }
     }
@@ -741,6 +752,7 @@ impl AgileNetClient {
             set.remove(rule_key);
         }
         self.inner.rebuild_merged_router();
+        self.inner.touch_state();
     }
 
     /// List of currently paused rule keys of a node.
@@ -762,6 +774,7 @@ impl AgileNetClient {
                 .insert(node_id.to_string(), keys.into_iter().collect());
         }
         self.inner.rebuild_merged_router();
+        self.inner.touch_state();
     }
 
     /// Start the local proxy inbound (127.0.0.1).
@@ -828,6 +841,12 @@ impl AgileNetClient {
     /// Data plane channel opener of a node (for the console loopback forwarder).
     pub fn opener(&self, node_id: &str) -> Option<Arc<dyn ChannelOpener>> {
         self.inner.openers.get(node_id).map(|r| r.value().clone())
+    }
+
+    /// Node-state change feed: receivers wake on every status/capability/membership change
+    /// (latest-wins coalescing). The desktop shell forwards it as a Tauri event for instant repaints.
+    pub fn state_notify(&self) -> Arc<tokio::sync::Notify> {
+        self.inner.state_touch.clone()
     }
 
     /// Delegated admin console: the issuer's current bootstrap ticket + API port of a
@@ -1014,6 +1033,7 @@ fn spawn_delegated_supervisor(
                         };
                         n.state.current_entry = entry.clone();
                     }
+                    inner.touch_state();
                     info!(node = %node_id, entry = %entry, pending, "delegated entry connected");
                     live = Some(t);
                     // split tier: refetch the rule vocabulary on the fresh session
@@ -1078,6 +1098,7 @@ fn block_node(inner: &ClientInner, node_id: &str, rc: &str, msg: &str) {
         rc,
         node_id,
     );
+    inner.touch_state();
     info!(node = %node_id, reason = %rc, "node blocked (terminal session notice)");
 }
 
@@ -1093,6 +1114,7 @@ fn set_delegated_status(
             n.state.current_entry = entry.to_string();
         }
     }
+    inner.touch_state();
 }
 
 /// Delegated config channel: when the credential has an entrust word and either the split
@@ -1202,6 +1224,7 @@ async fn fetch_and_apply_deleg_config(
         }
         info!(node = %node_id, upstreams = upstreams.len(), "delegated admin capability pulled");
     }
+    inner.touch_state();
     Ok(())
 }
 
