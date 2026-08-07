@@ -33,7 +33,15 @@ tauri-plugin-single-instance = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
-reqwest = { version = "0.12", features = ["json", "socks", "stream"] }
+# 跨平台基础件（曾误挂 cfg(windows)，Linux/macOS/Android 构建全炸）
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1"
+uuid = { version = "1", features = ["v4"] }
+# default-features 关：默认的 default-tls 会拉 native-tls→openssl-sys，Android 交叉编译无 OpenSSL 可链；
+# 统一 rustls（全仓标准）。system-proxy 显式保留——订阅拉取/内核下载/sync 需要读系统代理
+#（loopback/控制面客户端一律 .no_proxy()，见 AGENTS.md 地雷区第 6 条）
+reqwest = { version = "0.12", default-features = false, features = ["json", "socks", "stream", "rustls-tls", "system-proxy", "charset", "http2"] }
 futures-util = "0.3"
 sha2 = "0.10"
 # 设置同步：PBKDF2/AES-256-GCM/HMAC（SigV4）复用主 workspace 同版本 ring，无新下载
@@ -42,7 +50,8 @@ base64 = "0.22"
 flate2 = "1"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 # 订阅脚本沙箱（嵌入式 QuickJS，无外部运行时）与配置管线（YAML ↔ JSON）
-rquickjs = { version = "0.12", default-features = false, features = ["std"] }
+# rquickjs 无 Android 预置绑定（0.12.2 最新仍未发），且订阅内核本身是桌面能力（Android 无 sidecar）
+# ——Android 端整体剔除该依赖，sub_script 走 cfg 直通实现
 serde_yaml = "0.9"
 
 # AI 助手 API Key 存 OS 凭据管理器（与 crates/client 同一 keyring 方案；Android 等平台回退 0600 文件）
@@ -51,6 +60,9 @@ keyring = { version = "3", default-features = false, features = [
     "windows-native",
     "apple-native",
 ] }
+
+[target.'cfg(not(target_os = "android"))'.dependencies]
+rquickjs = { version = "0.12", default-features = false, features = ["std"] }
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.10"
@@ -67,7 +79,3 @@ windows-sys = { version = "0.59", features = [
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-anyhow = "1"
-uuid = { version = "1", features = ["v4"] }

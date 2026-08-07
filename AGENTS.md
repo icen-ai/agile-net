@@ -153,6 +153,11 @@ docker compose -f .docker/docker-compose.chain.yaml up -d
 # 发布（全自动）：打 tag 推送即全平台构建并挂载 GitHub Release，无需本地构建
 git tag vX.Y.Z && git push origin vX.Y.Z   # 产物矩阵与签名现状见 docs/release.md
 
+# 本地构建（用户说「构建」默认指这个）：三产物归集 .build/（gitignored）——
+# setup.exe（本机 cargo tauri build）+ apk（便携 Android SDK 首跑自动引导进
+# .build/android-sdk，不污染系统）+ anet-svc musl 静态链（.docker/Dockerfile.build）
+scripts/build-local.sh            # 全建；--gui / --apk / --musl 单选；BUILD_APK_ABIS 控制 ABI
+
 # Tauri 桌面/Android（独立 workspace）
 cargo check --manifest-path apps/desktop/Cargo.toml
 ```

@@ -6,17 +6,21 @@
 //! - Fault tolerance: script exception / missing main / non-object return → skip that script and continue,
 //!   auditing `gui.sub_script_error` (script name + error summary, never the full script body)
 
-use crate::roles::{self, SubScript};
+use crate::roles::SubScript;
 
 /// Per-script execution time limit (interrupt handler fires when reached)
+#[cfg(not(target_os = "android"))]
 const SCRIPT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 /// Sandbox memory limit
+#[cfg(not(target_os = "android"))]
 const MEMORY_LIMIT: usize = 32 * 1024 * 1024;
 /// Sandbox stack limit
+#[cfg(not(target_os = "android"))]
 const STACK_LIMIT: usize = 1024 * 1024;
 
 /// Build the one-shot eval program: user code + trailing wrapper (fetch and call main, JSON in/out, return type check).
 /// config is injected as a JS string literal (restored via JSON.parse); the result is retrieved via JSON.stringify.
+#[cfg(not(target_os = "android"))]
 fn build_program(code: &str, cfg_json: &str) -> String {
     let cfg_lit = serde_json::to_string(cfg_json).unwrap_or_else(|_| "\"{}\"".into());
     format!(
@@ -25,6 +29,7 @@ fn build_program(code: &str, cfg_json: &str) -> String {
 }
 
 /// Error summary: first line, truncated (for audit / dynamic-island display; never the full script body)
+#[cfg(not(target_os = "android"))]
 fn summarize(err: &str) -> String {
     let first = err.lines().next().unwrap_or(err).trim();
     const MAX: usize = 200;
@@ -39,6 +44,7 @@ fn summarize(err: &str) -> String {
 
 /// Run a single script in a one-shot QuickJS sandbox: eval user code, then call main(config) and return
 /// the new config. Any failure (syntax/runtime/timeout/missing main/non-object return) is an Err.
+#[cfg(not(target_os = "android"))]
 pub fn run_script(code: &str, cfg: &serde_json::Value) -> Result<serde_json::Value, String> {
     let cfg_json = serde_json::to_string(cfg).map_err(|e| e.to_string())?;
     let rt = rquickjs::Runtime::new().map_err(|e| format!("脚本引擎初始化失败: {e}"))?;
@@ -62,9 +68,17 @@ pub fn run_script(code: &str, cfg: &serde_json::Value) -> Result<serde_json::Val
     serde_json::from_str(&out).map_err(|e| format!("脚本返回结果无法解析: {e}"))
 }
 
+/// Android stub: rquickjs ships no android bindings and the subscription kernel itself is a desktop
+/// capability (no sidecar on Android) — the script engine is compiled out on this platform.
+#[cfg(target_os = "android")]
+pub fn run_script(_code: &str, _cfg: &serde_json::Value) -> Result<serde_json::Value, String> {
+    Err("覆写脚本在 Android 端不可用（订阅内核为桌面端能力）".into())
+}
+
 /// Run the enabled script chain (Vec order) on YAML config text. Any script failure: skip it, audit
 /// gui.sub_script_error (script name + summary), and continue with the rest.
 /// Returns (final YAML, failure summaries [(script name, error)]); returns input verbatim when no script is enabled or config parsing fails.
+#[cfg(not(target_os = "android"))]
 pub fn apply_scripts(yaml: &str, scripts: &[SubScript]) -> (String, Vec<(String, String)>) {
     let mut fails = Vec::new();
     if !scripts.iter().any(|s| s.enabled) {
@@ -78,7 +92,7 @@ pub fn apply_scripts(yaml: &str, scripts: &[SubScript]) -> (String, Vec<(String,
         match run_script(&sc.code, &cfg) {
             Ok(v) => cfg = v,
             Err(e) => {
-                roles::audit(
+                crate::roles::audit(
                     "gui.sub_script_error",
                     serde_json::json!({"name": sc.name, "error": e}),
                 );
@@ -90,6 +104,12 @@ pub fn apply_scripts(yaml: &str, scripts: &[SubScript]) -> (String, Vec<(String,
         Ok(out) => (out, fails),
         Err(_) => (yaml.to_string(), fails),
     }
+}
+
+/// Android: no engine — pass the config through verbatim (the kernel cannot run on Android anyway).
+#[cfg(target_os = "android")]
+pub fn apply_scripts(yaml: &str, _scripts: &[SubScript]) -> (String, Vec<(String, String)>) {
+    (yaml.to_string(), Vec::new())
 }
 
 /// Test run: execute a code snippet against the given YAML config (errors not skipped); returns the new config.

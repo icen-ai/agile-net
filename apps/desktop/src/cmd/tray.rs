@@ -1,19 +1,25 @@
 //! Split from lib.rs: system tray and tray popup (pure move, zero logic change)
 
+#[cfg(desktop)]
 use crate::{subscription, AppState};
 use tauri::Manager;
 
 // ==================== Tray icons (zap on / zap-off off, black/white adapting to system theme) ====================
 
 /// Tray icons (64px transparent PNG; dark=black glyph for light taskbar, light=white glyph for dark taskbar)
+#[cfg(desktop)]
 const TRAY_ZAP_DARK: &[u8] = include_bytes!("../../icons/tray-zap-dark.png");
+#[cfg(desktop)]
 const TRAY_ZAP_LIGHT: &[u8] = include_bytes!("../../icons/tray-zap-light.png");
+#[cfg(desktop)]
 const TRAY_ZAP_OFF_DARK: &[u8] = include_bytes!("../../icons/tray-zap-off-dark.png");
+#[cfg(desktop)]
 const TRAY_ZAP_OFF_LIGHT: &[u8] = include_bytes!("../../icons/tray-zap-off-light.png");
 
 /// The tray icon to use under the current system theme.
 /// macOS uses a template icon (icon_as_template): the system auto-inverts per menu bar appearance, so always pick the black version;
 /// Windows/Linux pick black/white manually from the system theme tracked by the main window.
+#[cfg(desktop)]
 pub(crate) fn tray_icon(app: &tauri::AppHandle, proxy_on: bool) -> tauri::image::Image<'static> {
     #[cfg(target_os = "macos")]
     let dark_taskbar = false;
@@ -34,15 +40,21 @@ pub(crate) fn tray_icon(app: &tauri::AppHandle, proxy_on: bool) -> tauri::image:
 
 /// Refresh tray icon: proxy running=zap / stopped=zap-off, black/white follows system theme.
 pub(crate) fn refresh_tray_icon(app: &tauri::AppHandle) {
-    let Some(tray) = app.tray_by_id("anet-tray") else {
-        return;
-    };
-    let proxy_on = app.state::<AppState>().client.proxy_port() > 0;
-    let _ = tray.set_icon(Some(tray_icon(app, proxy_on)));
+    #[cfg(not(desktop))]
+    let _ = app;
+    #[cfg(desktop)]
+    {
+        let Some(tray) = app.tray_by_id("anet-tray") else {
+            return;
+        };
+        let proxy_on = app.state::<AppState>().client.proxy_port() > 0;
+        let _ = tray.set_icon(Some(tray_icon(app, proxy_on)));
+    }
 }
 
 /// Tray tooltip live speed (1s): shows ↑/↓ when the kernel is running with traffic, otherwise falls back to static text;
 /// platform differences tolerated (set_tooltip failures are silent, no panic).
+#[cfg(desktop)]
 pub(crate) async fn tray_speed_watch(app: tauri::AppHandle) {
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
@@ -64,7 +76,12 @@ pub(crate) async fn tray_speed_watch(app: tauri::AppHandle) {
     }
 }
 
+/// Mobile: no system tray — stub keeps the call sites cfg-free.
+#[cfg(not(desktop))]
+pub(crate) async fn tray_speed_watch(_app: tauri::AppHandle) {}
+
 /// Build the system tray (left-click/double-click opens the main window, right-click pops the menu panel; no native OS menu)
+#[cfg(desktop)]
 pub(crate) fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 
@@ -99,9 +116,16 @@ pub(crate) fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Err
     Ok(())
 }
 
+/// Mobile: no system tray — stub keeps the call sites cfg-free.
+#[cfg(not(desktop))]
+pub(crate) fn setup_tray(_app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+    Ok(())
+}
+
 /// Show and focus the main window (shared by tray left-click and tray panel)
 pub(crate) fn show_main_window(app: &tauri::AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
+        #[cfg(desktop)]
         let _ = w.unminimize();
         let _ = w.show();
         let _ = w.set_focus();
@@ -123,6 +147,7 @@ pub(crate) fn clamp_popup(ex: f64, ey: f64, w: f64, h: f64, area: (f64, f64, f64
 /// Desired tray popup position: popup bottom 8px above the anchor, horizontally centered; when space above
 /// is insufficient (y beyond the work area top margin) flip to 8px below the anchor; finally clamp into the work area.
 /// Correct with multi-monitor and taskbars on any edge (including the macOS top menu bar).
+#[cfg(desktop)]
 pub(crate) fn tray_popup_position(anchor: (f64, f64), size: (f64, f64), area: (f64, f64, f64, f64)) -> (i32, i32) {
     let (w, h) = size;
     let mut y = anchor.1 - h - 8.0;
@@ -182,6 +207,7 @@ pub(crate) fn arm_blur_close(window: &tauri::WebviewWindow, close: bool) {
 /// Show/hide the tray panel (lazily created; auto-hides on blur).
 /// Physical coordinates throughout: the anchor comes from the tray event (physical), the work area is physical too;
 /// the builder sets no position — after build, set_position in physical coords → show → set_focus, eliminating first-click flicker.
+#[cfg(desktop)]
 pub(crate) fn toggle_tray_popup(app: &tauri::AppHandle, anchor: tauri::PhysicalPosition<f64>) {
     // Tray events run on the main thread: getters like work_area_at/monitor_from_point/is_visible are
     // channel-blocking (waiting on the event loop), so calling them on the main thread self-deadlocks — move everything to a worker thread.
@@ -190,6 +216,7 @@ pub(crate) fn toggle_tray_popup(app: &tauri::AppHandle, anchor: tauri::PhysicalP
         toggle_tray_popup_inner(&app, anchor);
     });
 }
+#[cfg(desktop)]
 pub(crate) fn toggle_tray_popup_inner(app: &tauri::AppHandle, anchor: tauri::PhysicalPosition<f64>) {
     const W: f64 = 292.0;
     const H: f64 = 420.0;
@@ -206,7 +233,7 @@ pub(crate) fn toggle_tray_popup_inner(app: &tauri::AppHandle, anchor: tauri::Phy
         let _ = w.set_focus();
         return;
     }
-    let Ok(window) = tauri::WebviewWindowBuilder::new(
+    let builder = tauri::WebviewWindowBuilder::new(
         app,
         "tray-popup",
         tauri::WebviewUrl::App("tray.html".into()),
@@ -214,12 +241,13 @@ pub(crate) fn toggle_tray_popup_inner(app: &tauri::AppHandle, anchor: tauri::Phy
     .title("AgileNet")
     .inner_size(W, H)
     .resizable(false)
-    .decorations(false)
-    .always_on_top(true)
-    .skip_taskbar(true)
-    .visible(false) // position first, then show — no top-left flicker
-    .build()
-    else {
+    .visible(false); // position first, then show — no top-left flicker
+    #[cfg(desktop)]
+    let builder = builder
+        .decorations(false)
+        .always_on_top(true)
+        .skip_taskbar(true);
+    let Ok(window) = builder.build() else {
         return;
     };
     arm_blur_close(&window, false);

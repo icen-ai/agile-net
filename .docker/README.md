@@ -1,5 +1,14 @@
 # AgileNet Docker 部署测试
 
+## 本地构建镜像（Dockerfile.build）
+
+anet-svc musl 静态链产物的容器化构建（麒麟 V10 / 统信 UOS 等老 glibc 发行版用）：
+
+```bash
+docker build -f .docker/Dockerfile.build --target export --output type=local,dest=.build .
+# 产物：.build/anet-svc-linux-x64-musl（scripts/build-local.sh --musl 已封装此命令 + sha256）
+```
+
 ## 深度链路测试（docker-compose.test.yaml）
 
 四层嵌套网络 + 四级节点链，验证长上下游链路与任意组合接入：

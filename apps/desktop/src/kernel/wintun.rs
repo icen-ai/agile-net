@@ -2,8 +2,10 @@
 
 use std::path::PathBuf;
 
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 use crate::roles;
 
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 use super::manager::NEED_DOWNLOAD_PREFIX;
 use super::store::kernel_dir;
 
@@ -37,6 +39,7 @@ pub fn wintun_dll_path() -> PathBuf {
 
 /// Local candidate reuse: Clash-family clients commonly bundle the same official wintun.dll version
 /// (download-free when wireguard.com is unreachable on restricted networks); reuse only on SHA-256 pin match, else ignore.
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 fn wintun_local_candidates() -> Vec<PathBuf> {
     let mut v = Vec::new();
     let home = std::env::var("USERPROFILE")
@@ -56,6 +59,7 @@ fn wintun_local_candidates() -> Vec<PathBuf> {
 }
 
 /// Reuse an existing local official wintun.dll (SHA-256 pin verified); returns true on hit.
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 fn reuse_local_wintun(dll: &PathBuf) -> Result<bool, String> {
     use sha2::Digest;
     for cand in wintun_local_candidates() {

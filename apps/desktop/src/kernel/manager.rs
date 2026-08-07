@@ -92,6 +92,7 @@ mod job_tests {
 
 /// JOBOBJECT_EXTENDED_LIMIT_INFORMATION (not covered by windows-sys 0.59; hand-rolled per SDK layout;
 /// KILL_ON_JOB_CLOSE empirically requires the Extended class — Basic fails with ERROR_INVALID_PARAMETER)
+#[cfg(windows)]
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct IoCounters {
@@ -102,6 +103,7 @@ struct IoCounters {
     write_bytes: u64,
     other_bytes: u64,
 }
+#[cfg(windows)]
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct JobObjectExtendedLimitInformation {

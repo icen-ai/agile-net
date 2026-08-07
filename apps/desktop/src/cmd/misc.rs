@@ -869,7 +869,8 @@ pub(crate) async fn uninstall_app(
         }
     }
 
-    // Mandatory on uninstall: remove login autostart
+    // Mandatory on uninstall: remove login autostart (desktop-only plugin)
+    #[cfg(desktop)]
     {
         use tauri_plugin_autostart::ManagerExt;
         let _ = app.autolaunch().disable();

@@ -18,6 +18,7 @@ pub(crate) fn normalize_window_geometry(window: &tauri::WebviewWindow) {
             height: h,
         }));
     }
+    #[cfg(desktop)]
     let _ = window.center();
 }
 
@@ -80,20 +81,21 @@ pub(crate) fn float_notify_inner(app: &tauri::AppHandle, text: String) {
     const W: f64 = 220.0;
     const H: f64 = 96.0;
     // Opaque card (the bubble is a card, no transparent needed; the same-window resize approach was abandoned after Windows transparency failures)
-    let Ok(window) = tauri::WebviewWindowBuilder::new(
+    let builder = tauri::WebviewWindowBuilder::new(
         app,
         "float-bubble",
         tauri::WebviewUrl::App("float-bubble.html".into()),
     )
     .title("AgileNet")
     .inner_size(W, H)
-    .decorations(false)
-    .always_on_top(true)
-    .skip_taskbar(true)
     .resizable(false)
-    .visible(false) // position first, then show
-    .build()
-    else {
+    .visible(false); // position first, then show
+    #[cfg(desktop)]
+    let builder = builder
+        .decorations(false)
+        .always_on_top(true)
+        .skip_taskbar(true);
+    let Ok(window) = builder.build() else {
         return;
     };
     // Position: 10px left of the ball, vertically centered with it, clamped into the ball's work area
@@ -238,20 +240,21 @@ pub(crate) async fn float_open_menu_impl(app: &tauri::AppHandle) -> Result<(), S
         let _ = w.set_focus();
         return Ok(());
     }
-    let window = tauri::WebviewWindowBuilder::new(
+    let builder = tauri::WebviewWindowBuilder::new(
         app,
         "float-menu",
         tauri::WebviewUrl::App("float-menu.html".into()),
     )
     .title("AgileNet")
     .inner_size(W, H)
-    .decorations(false)
-    .always_on_top(true)
-    .skip_taskbar(true)
     .resizable(false)
-    .visible(false) // position first, then show
-    .build()
-    .map_err(map_err)?;
+    .visible(false); // position first, then show
+    #[cfg(desktop)]
+    let builder = builder
+        .decorations(false)
+        .always_on_top(true)
+        .skip_taskbar(true);
+    let window = builder.build().map_err(map_err)?;
     crate::arm_blur_close(&window, true);
     if let Some(p) = position(app) {
         let _ = window.set_position(p);

@@ -33,6 +33,7 @@ fn open_payloads_from_argv(app: &tauri::AppHandle, argv: &[String]) {
     }
     if hit {
         if let Some(w) = app.get_webview_window("main") {
+            #[cfg(desktop)]
             let _ = w.unminimize();
             let _ = w.show();
             let _ = w.set_focus();
@@ -185,22 +186,22 @@ pub fn run() {
         .with(agile_net_node::logs::LogBufferLayer::new(app_log_buf.clone()))
         .init();
 
-    let mut builder = tauri::Builder::default();
+    let builder = tauri::Builder::default();
     // Single instance must register first: deep links / file-association launches on Windows
     // reach the running instance as argv; forwarded to the frontend as open payloads (desktop only)
     #[cfg(desktop)]
-    {
-        builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
-            open_payloads_from_argv(app, &argv);
-        }));
-    }
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+        open_payloads_from_argv(app, &argv);
+    }));
+    // Autostart is a desktop-only plugin (mobile has no login-item concept)
+    #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_autostart::init(
+        tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+        None,
+    ));
     let app = builder
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_autostart::init(
-            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
-            None,
-        ))
         .manage(AppState::new(app_log_buf))
         .invoke_handler(tauri::generate_handler![
             connect_node,

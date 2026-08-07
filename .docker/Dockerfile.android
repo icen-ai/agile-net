@@ -1,0 +1,56 @@
+# AgileNet Android apk 构建镜像：Windows 未开「开发者模式」时的零系统改动路径
+#（cargo-mobile2 在 Windows 上强制 symlink jniLibs，无特权即失败；Linux 容器无此限制）。
+# 用法（仓库根，产物落 .build/apk-out/）：
+#   docker build -f .docker/Dockerfile.android --target export --output type=local,dest=.build/apk-out .
+# 通常不直接调用——scripts/build-local.sh --apk 已封装（本机可 symlink 时优先原生构建）。
+
+FROM eclipse-temurin:17-jdk-jammy AS builder
+WORKDIR /src
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      curl unzip build-essential pkg-config ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Rust 工具链 + Android target（本地默认仅 aarch64，全量四 ABI 走 CI release.yml）
+ENV RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo
+ENV PATH=/usr/local/cargo/bin:$PATH
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable \
+    && rustup target add aarch64-linux-android
+
+# crates.io 国内稀疏镜像（构建环境网络受限）
+RUN printf '%s\n' \
+    '[source.crates-io]' \
+    'replace-with = "aliyun-sparse"' \
+    '[source.aliyun-sparse]' \
+    'registry = "sparse+https://mirrors.aliyun.com/crates.io-index/"' \
+    > /usr/local/cargo/config.toml
+
+# Android SDK/NDK（tauri 2.11 模板 compileSdk=36）
+ENV ANDROID_HOME=/opt/android-sdk
+RUN mkdir -p $ANDROID_HOME/cmdline-tools \
+    && curl -fL -o /tmp/cmdtools.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip \
+    && unzip -q /tmp/cmdtools.zip -d $ANDROID_HOME/cmdline-tools \
+    && mv $ANDROID_HOME/cmdline-tools/cmdline-tools $ANDROID_HOME/cmdline-tools/latest \
+    && rm /tmp/cmdtools.zip \
+    && (yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses >/dev/null 2>&1 || true) \
+    && $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
+       "platform-tools" "platforms;android-36" "build-tools;36.0.0" "ndk;27.0.12077973"
+ENV NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973
+ENV ANDROID_NDK_HOME=$NDK_HOME
+
+# tauri-cli（编译约 10 分钟，层缓存一次摊销）
+RUN cargo install tauri-cli --version "^2" --locked
+
+# 桌面 crate 以 ../../crates 相对路径引用主 workspace，布局必须保持
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+COPY apps/desktop ./apps/desktop
+
+RUN cd apps/desktop \
+    && cargo tauri android init \
+    && cargo tauri android build --apk --debug --target aarch64
+
+# 仅导出 apk（--output type=local 把本阶段根文件系统落到 dest）
+FROM scratch AS export
+COPY --from=builder /src/apps/desktop/gen/android/app/build/outputs/apk/ /apk/

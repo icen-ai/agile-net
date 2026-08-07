@@ -4,7 +4,9 @@
 //! - Windows: HKCU Internet Settings (ProxyEnable/ProxyServer) + InternetSetOption for immediate effect
 //! - macOS: networksetup sets web/secure/socks proxies per network service, snapshot restores per service
 
-use serde::{Deserialize, Serialize};
+#[cfg(any(windows, target_os = "macos"))]
+use serde::Deserialize;
+use serde::Serialize;
 use std::path::PathBuf;
 
 use crate::roles;
@@ -27,6 +29,7 @@ fn snapshot_path() -> PathBuf {
 }
 
 /// Snapshot of the system proxy taken before enabling management (restored on disable).
+#[cfg(any(windows, target_os = "macos"))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Snapshot {
     /// Windows: previous ProxyServer (None when it was disabled)
@@ -36,6 +39,7 @@ struct Snapshot {
     services: Vec<ServiceSnapshot>,
 }
 
+#[cfg(any(windows, target_os = "macos"))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ServiceSnapshot {
     service: String,

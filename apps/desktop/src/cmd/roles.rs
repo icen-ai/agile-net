@@ -10,23 +10,38 @@ use serde::Serialize;
 use std::sync::Arc;
 use tauri::{Emitter, Manager, State};
 
-/// Enable/disable autostart on boot
+/// Enable/disable autostart on boot (desktop-only capability)
 #[tauri::command]
 pub(crate) fn set_autostart(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
-    use tauri_plugin_autostart::ManagerExt;
-    let manager = app.autolaunch();
-    if enabled {
-        manager.enable().map_err(map_err)
-    } else {
-        manager.disable().map_err(map_err)
+    #[cfg(desktop)]
+    {
+        use tauri_plugin_autostart::ManagerExt;
+        let manager = app.autolaunch();
+        if enabled {
+            return manager.enable().map_err(map_err);
+        }
+        return manager.disable().map_err(map_err);
+    }
+    #[cfg(not(desktop))]
+    {
+        let _ = (app, enabled);
+        Err("开机自启为桌面端能力".into())
     }
 }
 
-/// Query autostart-on-boot status
+/// Query autostart-on-boot status (mobile: always false)
 #[tauri::command]
 pub(crate) fn get_autostart(app: tauri::AppHandle) -> Result<bool, String> {
-    use tauri_plugin_autostart::ManagerExt;
-    app.autolaunch().is_enabled().map_err(map_err)
+    #[cfg(desktop)]
+    {
+        use tauri_plugin_autostart::ManagerExt;
+        return app.autolaunch().is_enabled().map_err(map_err);
+    }
+    #[cfg(not(desktop))]
+    {
+        let _ = app;
+        Ok(false)
+    }
 }
 
 // ==================== Three role toggles (client / server / web remote) ====================

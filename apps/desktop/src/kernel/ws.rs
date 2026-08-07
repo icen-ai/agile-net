@@ -287,6 +287,7 @@ fn b64_encode(data: &[u8]) -> String {
 }
 
 /// Rate formatting (B/KB/MB adaptive, base 1024; shared by tray tooltip and frontend display)
+#[cfg(desktop)]
 pub fn format_rate(bytes: u64) -> String {
     if bytes >= 1 << 20 {
         format!("{:.1} MB", bytes as f64 / 1048576.0)

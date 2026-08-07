@@ -1,0 +1,45 @@
+# AgileNet 本地构建镜像：anet-svc musl 静态链产物（麒麟 V10 / 统信 UOS 等老 glibc 发行版用）
+# 用法（仓库根，产物落到 .build/anet-svc-linux-x64-musl）：
+#   docker build -f .docker/Dockerfile.build --target export --output type=local,dest=.build .
+# 通常不直接调用——scripts/build-local.sh --musl 已封装。
+
+FROM rust:1-bookworm AS builder
+WORKDIR /src
+
+# crates.io 国内稀疏镜像（构建环境网络受限）
+RUN printf '%s\n' \
+    '[source.crates-io]' \
+    'replace-with = "aliyun-sparse"' \
+    '[source.aliyun-sparse]' \
+    'registry = "sparse+https://mirrors.aliyun.com/crates.io-index/"' \
+    > /usr/local/cargo/config.toml
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends musl-tools \
+    && rm -rf /var/lib/apt/lists/* \
+    && rustup target add x86_64-unknown-linux-musl
+
+# 先拷贝清单，利用依赖层缓存
+COPY Cargo.toml Cargo.lock ./
+COPY crates/core/Cargo.toml crates/core/Cargo.toml
+COPY crates/node/Cargo.toml crates/node/Cargo.toml
+COPY crates/client/Cargo.toml crates/client/Cargo.toml
+
+# 占位源码预编译依赖（加速后续源码变更的重构）
+RUN mkdir -p crates/core/src crates/node/src crates/client/src \
+    && echo 'fn main(){}' > crates/core/src/lib.rs \
+    && echo 'fn main(){}' > crates/node/src/main.rs \
+    && echo 'fn main(){}' > crates/node/src/lib.rs \
+    && echo 'fn main(){}' > crates/client/src/lib.rs \
+    && cargo build --release -p agile-net-node --target x86_64-unknown-linux-musl || true
+
+# 真实源码构建（管理端/客户端 SPA 与共享前端资产经 include_str! 引用：tokens.css、
+# components.css、aglink.js 等共享层在 apps/desktop/ui/，客户端 SPA 在 crates/client/ui/）
+COPY crates ./crates
+COPY apps/desktop/ui ./apps/desktop/ui
+RUN touch crates/core/src/lib.rs crates/node/src/lib.rs crates/client/src/lib.rs \
+    && cargo build --release -p agile-net-node --target x86_64-unknown-linux-musl
+
+# 仅导出最终二进制（--output type=local 把本阶段根文件系统落到 dest）
+FROM scratch AS export
+COPY --from=builder /src/target/x86_64-unknown-linux-musl/release/anet-svc /anet-svc-linux-x64-musl

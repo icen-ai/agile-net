@@ -28,6 +28,9 @@ dist/
 .env
 .build/
 
+# Tauri Android scaffold (cargo tauri android init 生成，含本机 SDK 路径与 gradle 缓存)
+apps/desktop/gen/
+
 # Cindy worktrees (agent tooling, never commit)
 .cindy-worktrees/
 

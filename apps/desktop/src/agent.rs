@@ -22,7 +22,9 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 /// Key storage: OS keyring on Windows/macOS (same keyring scheme as crates/client credentials),
 /// 0600 file fallback elsewhere (Android).
+#[cfg(any(windows, target_os = "macos"))]
 const KEY_SERVICE: &str = "ai.icen.agilenet.gui";
+#[cfg(any(windows, target_os = "macos"))]
 const KEY_USER: &str = "llm-api-key";
 /// Tool execution timeout (defense against a hung probe stalling the whole turn)
 const TOOL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
