@@ -310,6 +310,9 @@ struct ClientInner {
     shared_router: Arc<ArcSwap<ProxyRouter>>,
     proxy_port: ArcSwap<u16>,
     inbound_shutdown_tx: tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    /// Inbound accept-loop task handle: stop_proxy awaits it so "stopped" means the listener and
+    /// every accepted connection are really gone (the port is immediately reusable afterwards)
+    inbound_join: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
     openers: Arc<DashMap<String, Arc<dyn ChannelOpener>>>,
     hosts_manager: HostsManager,
     /// Proxy inbound stats (available after the proxy starts)
@@ -463,6 +466,7 @@ impl AgileNetClient {
                 shared_router: Arc::new(ArcSwap::from_pointee(ProxyRouter::new())),
                 proxy_port: ArcSwap::from_pointee(0),
                 inbound_shutdown_tx: tokio::sync::Mutex::new(None),
+                inbound_join: tokio::sync::Mutex::new(None),
                 openers: Arc::new(DashMap::new()),
                 deleg_admin: DashMap::new(),
                 hosts_manager: HostsManager::new(),
@@ -786,12 +790,20 @@ impl AgileNetClient {
 
         let inbound = Arc::new(inbound);
         self.inner.proxy_stats.store(Some(inbound.stats()));
-        tokio::spawn(async move {
-            tokio::select! {
-                _ = inbound.start_on(bound) => {},
-                _ = rx => {},
-            }
+        let inner = self.inner.clone();
+        let handle = tokio::spawn(async move {
+            let _ = inbound
+                .start_on_with_shutdown(bound, async move {
+                    let _ = rx.await;
+                })
+                .await;
+            // The loop is gone (shutdown or accept failure): clear the advertised state so status
+            // polling never reports a dead listener as running
+            inner.proxy_stats.store(None);
+            inner.proxy_port.store(Arc::new(0));
+            inner.inbound_shutdown_tx.lock().await.take();
         });
+        *self.inner.inbound_join.lock().await = Some(handle);
 
         Ok(())
     }
@@ -799,6 +811,11 @@ impl AgileNetClient {
     pub async fn stop_proxy(&self) {
         if let Some(tx) = self.inner.inbound_shutdown_tx.lock().await.take() {
             let _ = tx.send(());
+        }
+        if let Some(handle) = self.inner.inbound_join.lock().await.take() {
+            // Wait until the accept loop and all accepted connections have actually died (bounded —
+            // a pathologically stuck task must never hang a user-facing toggle)
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(3), handle).await;
         }
         self.inner.proxy_stats.store(None);
         self.inner.proxy_port.store(Arc::new(0));

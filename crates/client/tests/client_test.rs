@@ -60,6 +60,76 @@ async fn proxy_engine_start_stop() {
     client.stop_proxy().await;
 }
 
+/// stop_proxy must kill every accepted connection and free the listen port immediately.
+/// Regression: accepted connections used to be detached tasks that outlived "stop", keeping their
+/// local port occupied — on Windows the next bind then failed with EADDRINUSE (os error 10048),
+/// so the proxy toggle got stuck "impossible to turn back on" until the stale tunnels drained.
+#[tokio::test]
+async fn stop_proxy_kills_lingering_connections_and_frees_port() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    /// The peer must observe the connection closed (EOF/reset), not silently kept alive
+    async fn assert_closed(s: &mut tokio::net::TcpStream, what: &str) {
+        let mut buf = [0u8; 8];
+        match tokio::time::timeout(std::time::Duration::from_secs(2), s.read(&mut buf)).await {
+            Ok(Ok(0)) | Ok(Err(_)) => {}
+            Ok(Ok(n)) => panic!("{what} still readable {n} bytes after stop_proxy"),
+            Err(_) => panic!("{what} still alive 2s after stop_proxy"),
+        }
+    }
+
+    let client = AgileNetClient::new();
+    client.start_proxy(0).await.unwrap();
+    let port = client.proxy_port();
+
+    // Local echo target (the tunnel rides the direct arm: loopback hits the LAN preset bypass)
+    let echo = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let echo_port = echo.local_addr().unwrap().port();
+    let echo_task = tokio::spawn(async move {
+        if let Ok((mut s, _)) = echo.accept().await {
+            let mut buf = [0u8; 64];
+            let _ = s.read(&mut buf).await; // first payload
+            let _ = s.write_all(b"pong").await;
+            let _ = s.read(&mut buf).await; // park until killed
+        }
+    });
+
+    // Fully-established tunnel through the proxy (SOCKS5 CONNECT 127.0.0.1:echo_port)
+    let mut tunnel = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    tunnel.write_all(&[0x05, 0x01, 0x00]).await.unwrap();
+    let mut buf = [0u8; 2];
+    tunnel.read_exact(&mut buf).await.unwrap();
+    assert_eq!(buf, [0x05, 0x00]);
+    let mut req = vec![0x05, 0x01, 0x00, 0x01, 127, 0, 0, 1];
+    req.extend_from_slice(&echo_port.to_be_bytes());
+    tunnel.write_all(&req).await.unwrap();
+    let mut resp = [0u8; 10];
+    tunnel.read_exact(&mut resp).await.unwrap();
+    assert_eq!(resp[1], 0x00, "SOCKS5 connect must succeed");
+    tunnel.write_all(b"ping").await.unwrap();
+    let mut pong = [0u8; 4];
+    tunnel.read_exact(&mut pong).await.unwrap();
+    assert_eq!(&pong, b"pong", "tunnel must be pumping before stop");
+
+    // Plus a bare accepted connection parked mid-handshake (never completes one)
+    let mut parked = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    parked.write_all(&[0x05]).await.unwrap(); // partial greeting: the handler waits for more
+
+    client.stop_proxy().await;
+
+    assert_closed(&mut tunnel, "established tunnel").await;
+    assert_closed(&mut parked, "parked connection").await;
+
+    // The port must be reusable immediately (the Windows EADDRINUSE regression)
+    client
+        .start_proxy(port)
+        .await
+        .expect("immediate rebind on the same port must succeed");
+    assert_eq!(client.proxy_port(), port);
+    client.stop_proxy().await;
+    echo_task.abort();
+}
+
 /// Hosts management: write and clean up the BEGIN/END block
 #[test]
 fn hosts_manager_apply_and_cleanup() {

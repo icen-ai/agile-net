@@ -60,18 +60,17 @@ pub(crate) async fn emit_settings(app: &tauri::AppHandle, state: &State<'_, AppS
 
 /// Toggle A: client role. Disabling disconnects all nodes and stops the local proxy.
 #[tauri::command]
-pub(crate) async fn set_client_role(state: State<'_, AppState>, enabled: bool) -> Result<(), String> {
+pub(crate) async fn set_client_role(app: tauri::AppHandle, state: State<'_, AppState>, enabled: bool) -> Result<(), String> {
     if !enabled {
         state.client.disconnect_all().await;
-        state.client.stop_proxy().await;
+        // Stop through the shared inner so a managed system proxy (preference on / locked) is
+        // restored too — it must never keep pointing at the now-dead port
+        super::proxy::stop_proxy_inner(&app, &state).await?;
     }
     let mut roles = state.roles.lock().await;
     roles.client = enabled;
     roles.save()?;
     drop(roles);
-    if !enabled {
-        crate::report_client_proxy(&state).await;
-    }
     roles::audit("gui.role_toggle", serde_json::json!({"role": "client", "on": enabled}));
     Ok(())
 }

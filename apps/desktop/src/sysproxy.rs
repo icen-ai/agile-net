@@ -315,7 +315,12 @@ pub fn inspect(managed: bool, expected: &str) -> Result<SysProxyStatus, String> 
 }
 
 /// Reclaim: rewrite the system proxy to the expected value.
+/// Snapshot first when none exists (lock/TUN patrols can reclaim without a prior engage — the
+/// pre-management system state must still be restorable on a later disengage instead of being lost).
 pub fn reclaim(server: &str) -> Result<(), String> {
+    if !snapshot_path().exists() {
+        imp::take_snapshot()?;
+    }
     imp::set(server)?;
     roles::audit("gui.sysproxy_reclaim", serde_json::json!({"server": server}));
     Ok(())

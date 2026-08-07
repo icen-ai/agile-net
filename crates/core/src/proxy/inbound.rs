@@ -148,6 +148,20 @@ impl ProxyInbound {
 
     /// Serve on an already-bound TcpListener (when the caller needs the concrete port up front).
     pub async fn start_on(&self, listener: TcpListener) -> Result<()> {
+        self.start_on_with_shutdown(listener, std::future::pending())
+            .await
+    }
+
+    /// Serve until `shutdown` resolves, then force-close every accepted connection and wait for the
+    /// connection tasks to die before returning. A lingering accepted socket keeps its local port
+    /// occupied (on Windows the next bind then fails with EADDRINUSE), and a tunnel that outlives
+    /// "stop" keeps relaying traffic the user asked to cut — so off must mean off, immediately.
+    /// Dropping this future mid-flight still kills the tasks (JoinSet aborts on drop), just unawaited.
+    pub async fn start_on_with_shutdown(
+        &self,
+        listener: TcpListener,
+        shutdown: impl std::future::Future<Output = ()> + Send,
+    ) -> Result<()> {
         // security note: unauthenticated exposure on non-loopback is an open-proxy risk
         if self.auth.is_none() && !self.listen_addr.ip().is_loopback() {
             warn!(
@@ -158,57 +172,79 @@ impl ProxyInbound {
 
         info!(addr = %self.listen_addr, "proxy inbound started (SOCKS5/HTTP auto-detect)");
 
+        // Accepted-connection tasks are tracked (not detached): shutdown aborts them and the drain
+        // waits for the sockets to actually close, so the listen port is reusable right after return.
+        let mut tasks = tokio::task::JoinSet::new();
+        tokio::pin!(shutdown);
         loop {
-            let (stream, client_addr) = listener.accept().await?;
-
-            let active = self
-                .stats
-                .active_connections
-                .fetch_add(1, Ordering::Relaxed)
-                + 1;
-            if active > MAX_INBOUND_CONNECTIONS as u64 {
-                self.stats
-                    .active_connections
-                    .fetch_sub(1, Ordering::Relaxed);
-                warn!(client = %client_addr, "inbound connection limit reached, dropping");
-                drop(stream);
-                continue;
-            }
-            self.stats.total_connections.fetch_add(1, Ordering::Relaxed);
-
-            let this = InboundCtx {
-                listen_addr: self.listen_addr,
-                router: self.router.clone(),
-                openers: self.openers.clone(),
-                default_opener: self.default_opener.clone(),
-                auth: self.auth.clone(),
-                stats: self.stats.clone(),
-                transit: self.transit.clone(),
-                conlog: self.conlog.clone(),
-            };
-
-            tokio::spawn(async move {
-                let _guard = ActiveGuard(this.stats.clone());
-                // Connection-log kill switch (强制打断): the guard registers the sender on begin;
-                // firing it unwinds the task, and the guard's Drop finalizes the row as Closed.
-                // Sender dropped without registration (log disabled/detached) must NOT resolve the race —
-                // pend forever in that case, otherwise the connection would be cut right after the decision.
-                let (kill_tx, kill_rx) = tokio::sync::oneshot::channel::<()>();
-                let kill = async move {
-                    match kill_rx.await {
-                        Ok(()) => (),
-                        Err(_) => std::future::pending::<()>().await,
-                    }
-                };
-                tokio::select! {
-                    r = handle_connection(stream, client_addr, this, kill_tx) => {
-                        if let Err(e) = r {
-                            debug!(client = %client_addr, error = %e, "proxy connection handled with error");
+            tokio::select! {
+                accepted = listener.accept() => {
+                    let (stream, client_addr) = match accepted {
+                        Ok(v) => v,
+                        Err(e) => {
+                            tasks.abort_all();
+                            while tasks.join_next().await.is_some() {}
+                            return Err(e.into());
                         }
+                    };
+
+                    let active = self
+                        .stats
+                        .active_connections
+                        .fetch_add(1, Ordering::Relaxed)
+                        + 1;
+                    if active > MAX_INBOUND_CONNECTIONS as u64 {
+                        self.stats
+                            .active_connections
+                            .fetch_sub(1, Ordering::Relaxed);
+                        warn!(client = %client_addr, "inbound connection limit reached, dropping");
+                        drop(stream);
+                        continue;
                     }
-                    _ = kill => {},
+                    self.stats.total_connections.fetch_add(1, Ordering::Relaxed);
+
+                    let this = InboundCtx {
+                        listen_addr: self.listen_addr,
+                        router: self.router.clone(),
+                        openers: self.openers.clone(),
+                        default_opener: self.default_opener.clone(),
+                        auth: self.auth.clone(),
+                        stats: self.stats.clone(),
+                        transit: self.transit.clone(),
+                        conlog: self.conlog.clone(),
+                    };
+
+                    tasks.spawn(async move {
+                        let _guard = ActiveGuard(this.stats.clone());
+                        // Connection-log kill switch (强制打断): the guard registers the sender on begin;
+                        // firing it unwinds the task, and the guard's Drop finalizes the row as Closed.
+                        // Sender dropped without registration (log disabled/detached) must NOT resolve the race —
+                        // pend forever in that case, otherwise the connection would be cut right after the decision.
+                        let (kill_tx, kill_rx) = tokio::sync::oneshot::channel::<()>();
+                        let kill = async move {
+                            match kill_rx.await {
+                                Ok(()) => (),
+                                Err(_) => std::future::pending::<()>().await,
+                            }
+                        };
+                        tokio::select! {
+                            r = handle_connection(stream, client_addr, this, kill_tx) => {
+                                if let Err(e) = r {
+                                    debug!(client = %client_addr, error = %e, "proxy connection handled with error");
+                                }
+                            }
+                            _ = kill => {},
+                        }
+                    });
                 }
-            });
+                // Reap finished connection tasks so the tracked set does not grow unbounded
+                _ = tasks.join_next(), if !tasks.is_empty() => {}
+                _ = &mut shutdown => {
+                    tasks.abort_all();
+                    while tasks.join_next().await.is_some() {}
+                    return Ok(());
+                }
+            }
         }
     }
 }
