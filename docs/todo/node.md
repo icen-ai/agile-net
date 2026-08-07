@@ -56,12 +56,12 @@
 
 ### 任务清单
 
-- [ ] **M1-T1 DB 基线**：`group` 表 `UNIQUE(name)` 改为**两个部分唯一索引**——`UNIQUE(name) WHERE adopted_node IS NULL` + `UNIQUE(name, adopted_node) WHERE adopted_node IS NOT NULL`
+- [x] **M1-T1 DB 基线**：`group` 表 `UNIQUE(name)` 改为**两个部分唯一索引**——`UNIQUE(name) WHERE adopted_node IS NULL` + `UNIQUE(name, adopted_node) WHERE adopted_node IS NOT NULL`
   - ⚠️ SQLite 的 UNIQUE 视 NULL 为互不相等，单一 `UNIQUE(name, adopted_node)` 会放过多条本机同名组，必须用部分索引（改动：`crates/node/src/db/migrations.rs` 基线）
-- [ ] **M1-T2** `service::federation::adopt_name` 删 `@node` 拼接，直接用源 `name`；联邦握手 `PushedGroupMsg.name` 传纯组名（顺带治掉后缀叠加 bug）
-- [ ] **M1-T3** `apps/desktop/ui/icons.js` 新增 `badge-check`；沉淀共享渲染 helper `srcBadge(node, title)` / `nodeBadge(node, auth)`（联邦蓝 `--info` / 成功绿 `--ok`，tooltip 分 `pin`/`tls`）
-- [ ] **M1-T4** 全部组选择器/列表接入 `srcBadge`（管理端签发页、桌面端列表）；桌面 `list_embedded_groups` 补 `adopted_node` 字段
-- [ ] **M1-T5** 扇出连接表对端节点列接入 `nodeBadge`（认证状态取自 TLS 校验结果：`pinned_fingerprint` > `pinned_cert` > `ca` > `insecure`）
+- [x] **M1-T2** `service::federation::adopt_name` 删 `@node` 拼接，直接用源 `name`；联邦握手 `PushedGroupMsg.name` 传纯组名（顺带治掉后缀叠加 bug）
+- [x] **M1-T3** `apps/desktop/ui/icons.js` 新增 `badge-check`；沉淀共享渲染 helper `srcBadge(node, title)` / `nodeBadge(node, auth)`（联邦蓝 `--info` / 成功绿 `--ok`，tooltip 分 `pin`/`tls`）
+- [x] **M1-T4** 全部组选择器/列表接入 `srcBadge`（管理端签发页、桌面端列表）；桌面 `list_embedded_groups` 补 `adopted_node` 字段
+- [x] **M1-T5** 扇出连接表对端节点列接入 `nodeBadge`（认证状态取自 TLS 校验结果：`pinned_fingerprint` > `pinned_cert` > `ca` > `insecure`）
 
 ### 验收标准
 
@@ -77,17 +77,17 @@
 
 ### 任务清单
 
-- [ ] **M2-T1 core 设备密钥模块**（`crates/core`）：`ring` ed25519 生成/签名/验签；`node_id = sha256(pubkey)` 派生；公钥导出 OpenSSH `authorized_keys` 格式文本（仅展示）
-- [ ] **M2-T2 client 私钥存储**（`crates/client/credential.rs`）：首启生成，keyring 优先（Windows 凭据管理器 / macOS 钥匙串 / Android Keystore / iOS Keychain）、0600 文件兜底
-- [ ] **M2-T3 握手挑战验签**：listener 在 Ctrl 握手帧下发随机 nonce，设备签名回传；验签失败拒连；`node_id` 与公钥绑定校验（防自报冒名）
-- [ ] **M2-T4 协议帧字段（一次成型）**：
+- [x] **M2-T1 core 设备密钥模块**（`crates/core`）：`ring` ed25519 生成/签名/验签；`node_id = sha256(pubkey)` 派生；公钥导出 OpenSSH `authorized_keys` 格式文本（仅展示）
+- [x] **M2-T2 client 私钥存储**（`crates/client/credential.rs`）：首启生成，keyring 优先（Windows 凭据管理器 / macOS 钥匙串 / Android Keystore / iOS Keychain）、0600 文件兜底
+- [x] **M2-T3 握手挑战验签**：listener 在 Ctrl 握手帧下发随机 nonce，设备签名回传；验签失败拒连；`node_id` 与公钥绑定校验（防自报冒名）
+- [x] **M2-T4 协议帧字段（一次成型）**：
   - `AuthRequest` / token_register 加 `my_name`（自声明，不参与认证判断）、设备公钥 + 签名
   - 吊销/关闭/拒绝帧加 `reason_code` + 可选一次性附言（E2E 档随信封加密）
   - 握手拒绝响应支持原因带回（离线告知通道）
   - pending 会话附言上行帧（≤3 条，服务端计数执法）
   - 标准 reason_code 表：`revoked_by_admin` / `device_replaced` / `device_revoked` / `token_expired` / `kicked` / `pending_approval` / …
-- [ ] **M2-T5 链接格式**：`core::link` + `aglink.js` 同步加可选 `myname` 词（与 `d:` label 并存：label = 目标名称建议，myname = 我的名称）
-- [ ] **M2-T6 DB 基线新表**（详见 §5 汇总，随基线一次建完）：`device_registry` / `approval` / `approval_message`
+- [x] **M2-T5 链接格式**：`core::link` + `aglink.js` 同步加可选 `myname` 词（与 `d:` label 并存：label = 目标名称建议，myname = 我的名称）
+- [x] **M2-T6 DB 基线新表**（详见 §5 汇总，随基线一次建完）：`device_registry` / `approval` / `approval_message`
 
 ### 验收标准
 
