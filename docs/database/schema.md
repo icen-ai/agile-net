@@ -82,7 +82,7 @@ CREATE INDEX idx_rule_type ON rule(type);
 ```sql
 CREATE TABLE "group" (
     id           TEXT PRIMARY KEY,            -- UUIDv4
-    name         TEXT NOT NULL UNIQUE,
+    name         TEXT NOT NULL,               -- 命名主权：纯源组名，不带 @node 后缀
     remark       TEXT NOT NULL DEFAULT '',
     e2e_required INTEGER NOT NULL DEFAULT 0,  -- E2E 强制组（仅可挂委托令牌）
     adopted_node TEXT NOT NULL DEFAULT '',    -- 采纳血缘：来源端点 node_id（空 = 本地手工组）
@@ -90,10 +90,15 @@ CREATE TABLE "group" (
     created_at   TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- 命名主权（node.md M1）：唯一性分两层（部分唯一索引；SQLite NULL 互不相等，故用 '' 谓词）
+CREATE UNIQUE INDEX idx_group_name_local   ON "group"(name) WHERE adopted_node = '';
+CREATE UNIQUE INDEX idx_group_name_adopted ON "group"(name, adopted_node) WHERE adopted_node != '';
 ```
 
 `e2e_required` 组仅可挂委托令牌（扇入令牌/扇出连接写入口统一拦截，fail-closed）；
-采纳组（adopted_node 非空）为只读活镜像，漂移写跟随源规则/E2E 标记。
+采纳组（adopted_node 非空）为只读活镜像，漂移写跟随源规则/E2E 标记；
+本机组与采纳组可同名共存，来源差异走 UI 徽章（srcBadge），不进名字。
 
 ### group_rule — 权限组与规则多对多关联
 
@@ -145,6 +150,7 @@ CREATE TABLE delegated_token (
     entry_mode   TEXT NOT NULL DEFAULT 'relay' CHECK(entry_mode IN ('direct','relay')),
     concurrency  TEXT NOT NULL DEFAULT 'single' CHECK(concurrency IN ('single','multi')),
     max_sessions INTEGER NOT NULL DEFAULT 8,  -- 签发时 node_config.delegation_max_sessions 快照
+    visibility   TEXT NOT NULL DEFAULT 'domain' CHECK(visibility IN ('domain','disclose','approve')), -- 拓扑可见性档（M6）
     expires_at   TEXT,
     max_uses     INTEGER,
     used_count   INTEGER NOT NULL DEFAULT 0,
@@ -183,11 +189,97 @@ CREATE TABLE connector (
     pinned_cert_path   TEXT NOT NULL DEFAULT '',
     pinned_fingerprint TEXT NOT NULL DEFAULT '',
     push_groups        TEXT NOT NULL DEFAULT '',-- 策略上送组（逗号分隔组名）
+    cert_relay         INTEGER NOT NULL DEFAULT 0, -- 传递认证开关（M6，双向 opt-in）
+    my_name            TEXT NOT NULL DEFAULT '',   -- 我的名称（上送对端，M3-T6 三字段）
     created_at         TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at         TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE INDEX idx_connector_group ON connector(group_id);
+```
+
+### device_registry — 设备注册表（node.md M2/M3）
+
+```sql
+CREATE TABLE device_registry (
+    id           TEXT PRIMARY KEY,
+    device_fp    TEXT NOT NULL UNIQUE,        -- sha256(设备 ed25519 公钥)，握手验签派生
+    pubkey       TEXT NOT NULL,               -- 公钥 base64（OpenSSH 导出仅展示）
+    token_hash   TEXT NOT NULL DEFAULT '',    -- 最近会话所用凭据
+    subject      TEXT NOT NULL DEFAULT '',    -- 逻辑持有者（认证时绑定；加绑=多设备同 holder）
+    my_name      TEXT NOT NULL DEFAULT '',    -- 设备自声明名（装饰性）
+    remark       TEXT NOT NULL DEFAULT '',    -- 认证备注（胶囊标题）
+    state        TEXT NOT NULL DEFAULT 'pending' CHECK(state IN ('pending','certified','revoked')),
+    certified_by TEXT NOT NULL DEFAULT '',    -- ''=本机管理员；否则来源节点（M6 传递认证）
+    certified_at TEXT,
+    first_seen   TEXT NOT NULL DEFAULT (datetime('now')),
+    last_seen    TEXT NOT NULL DEFAULT (datetime('now')),
+    bytes_up     INTEGER NOT NULL DEFAULT 0,  -- 累计流量（会话断开 flush 折叠）
+    bytes_down   INTEGER NOT NULL DEFAULT 0
+);
+```
+
+状态机：pending（默认待认证）→ certified / revoked（终态，永不复用）。换机 =
+`rebind_device`（认证新+迁移持有者/备注/累计流量+吊销旧，旧机踢断带 device_replaced）。
+门控：pending 设备默认拒开等审批（`device_pending_policy=block`），可切换放行插灰旗；
+relay 入口消费者由签发者 connector 侧执法（relay 盖 device_fp 戳）。
+
+### approval / approval_message — 审批中心（node.md M3-T4）
+
+```sql
+CREATE TABLE approval (
+    id          TEXT PRIMARY KEY,
+    type        TEXT NOT NULL,                -- device_certify/device_rebind/ref_cert_adopt/topo_approve
+    state       TEXT NOT NULL DEFAULT 'pending' CHECK(state IN ('pending','approved','rejected')),
+    object_ref  TEXT NOT NULL DEFAULT '',     -- device_fp / token id / cert hash
+    requester   TEXT NOT NULL DEFAULT '',
+    detail      TEXT NOT NULL DEFAULT '',     -- 类型载荷 JSON
+    decided_by  TEXT NOT NULL DEFAULT '',
+    decided_at  TEXT,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE approval_message (
+    id          TEXT PRIMARY KEY,
+    approval_id TEXT NOT NULL REFERENCES approval(id) ON DELETE CASCADE,
+    direction   TEXT NOT NULL CHECK(direction IN ('appeal','notice')), -- 申请人附言 ≤3 / 操作告知单发
+    body        TEXT NOT NULL,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+```
+
+### device_session — 设备会话流量台账（node.md M5）
+
+```sql
+CREATE TABLE device_session (
+    id           TEXT PRIMARY KEY,
+    device_fp    TEXT NOT NULL,
+    token_hash   TEXT NOT NULL DEFAULT '',
+    entry        TEXT NOT NULL DEFAULT '',    -- fanin / direct / relay
+    ip           TEXT NOT NULL DEFAULT '',
+    started_at   TEXT NOT NULL,
+    ended_at     TEXT NOT NULL DEFAULT (datetime('now')),
+    bytes_in     INTEGER NOT NULL DEFAULT 0,
+    bytes_out    INTEGER NOT NULL DEFAULT 0,
+    close_reason TEXT NOT NULL DEFAULT ''     -- M2 reason_code（被踢会话可见"被管理员断开"）
+);
+```
+
+会话断开 flush 一行；流量时序/会话历史/7×24 活跃热力一张表三吃。
+
+### grant_receipt — 拓扑可见性回执（node.md M6，预留）
+
+```sql
+CREATE TABLE grant_receipt (
+    id           TEXT PRIMARY KEY,
+    artifact_ref TEXT NOT NULL,               -- token_hash / group id / cert hash
+    holder       TEXT NOT NULL,               -- 持有者 node_id/device_fp
+    lineage      TEXT NOT NULL DEFAULT '[]',  -- 血缘段 JSON
+    visibility   TEXT NOT NULL DEFAULT 'domain' CHECK(visibility IN ('domain','disclose','approve')),
+    origin_sig   TEXT NOT NULL DEFAULT '',    -- 起源签名
+    state        TEXT NOT NULL DEFAULT 'pending' CHECK(state IN ('pending','confirmed','stopped')),
+    created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
 ```
 
 ### node_config — 节点配置（KV 存储）
@@ -279,6 +371,9 @@ CREATE INDEX idx_audit_time ON audit_log(created_at);
 | `delegation.issue` | 签发委托令牌（不记明文） |
 | `delegation.revoke` | 吊销委托令牌（签发端/中继端均落） |
 | `delegation.register` | 扇出会话注册委托令牌（中继端，issuer + label） |
+| `device.certify` / `device.revoke` / `device.rebind` / `device.policy` | 设备认证/吊销/换绑/策略 |
+| `approval.approve` / `approval.reject` / `approval.reject_revoke` | 审批裁决 |
+| `session.kick` / `session.kick_token` | 会话踢下线 |
 
 严禁记录任何密码/Token 明文与密文。
 
@@ -326,6 +421,9 @@ conn.execute_batch("PRAGMA busy_timeout = 5000;")?;     // 等锁 5s
 | connector | 1-10 | 扇出对端数 |
 | audit_log | 持续增长 | 90 天清理 |
 | node_traffic_log | 持续增长 | 24h * (对端+connector+途径对) / 小时，30 天清理 |
+| device_registry | 1-1000 | 每设备一行 |
+| device_session | 持续增长 | 每会话一行（定期清理建议 30 天） |
+| approval* | 1-500 | 审批事件 |
 | node_config | 10-30 | KV |
 
 SQLite 完全胜任，无需 PostgreSQL。

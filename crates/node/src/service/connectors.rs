@@ -326,7 +326,13 @@ impl ConnectorManager {
             tls_builder,
         )?
         .with_device(self.device.clone())
-        .with_my_name(self.node_id.clone())
+        // M3-T6: the issuer-assigned self-declared name rides the DB column; empty keeps the
+        // clean node_id (never the `name#connector` suffix, which stays on node_id only)
+        .with_my_name(if rec.my_name.is_empty() {
+            self.node_id.clone()
+        } else {
+            rec.my_name.clone()
+        })
         .with_advertise(parse_advertise(&rec.advertise))
         .with_acl(self.acl.handle(rec.group_id.as_deref(), &self.db))
         .with_delegation_hooks(self.delegation.clone());
@@ -799,6 +805,7 @@ mod tests {
         ConnectorRecord {
             id: "c1".into(),
             name: "c1".into(),
+            my_name: String::new(),
             upstream_addr: "127.0.0.1:54430".into(),
             token_enc: String::new(),
             sni_hostname: String::new(),

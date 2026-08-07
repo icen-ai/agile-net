@@ -53,6 +53,7 @@
     <button id="btn-agimport" class="tb-icon" title="导入链接 / 凭据" data-i18n-title="import.head"><i data-ic="link" data-sz="16"></i></button>
     <button id="btn-admin" class="tb-icon disabled" title="管理端点" data-i18n-title="menu.admin"><i data-ic="fingerprint" data-sz="16"></i></button>
     <button id="btn-agent" class="tb-icon" title="网络助手" data-i18n-title="agent.title"><i data-ic="sparkles" data-sz="16"></i></button>
+    <button id="btn-notify" class="tb-icon" title="通知" data-i18n-title="menu.notify"><i data-ic="bell" data-sz="16"></i><span class="tb-badge" id="notify-badge" hidden></span></button>
     <span class="tb-spacer"></span>
   </div>
   <!-- Admin console entry (local server always first, rest sorted by name; icon grayed when no manageable endpoints) -->
@@ -92,6 +93,7 @@
       <div class="nav-item sub-feature" data-view="proxy" style="display:none"><i data-ic="earth"></i><span class="nav-label" data-i18n="term.node">节点</span></div>
       <div class="nav-sep"></div>
       <div class="nav-item" data-view="logs"><i data-ic="scroll-text"></i><span class="nav-label" data-i18n="term.logs">日志</span></div>
+      <div class="nav-item" data-view="notify"><i data-ic="bell"></i><span class="nav-label" data-i18n="menu.notify">通知</span><span class="nav-badge" id="nav-notify-badge" hidden></span></div>
       <div class="nav-item" data-view="settings"><i data-ic="settings"></i><span class="nav-label" data-i18n="menu.settings">设置</span></div>
     </div>
     <!-- Sidebar footer status: subscription kernel live rates (shows 「未运行」 when not running) + proxy status small text; driven by 2s polling, all writes via change detection -->
@@ -667,6 +669,21 @@
     </section>
 
     <!-- Settings (sections: General → Connection → Subscription Kernel → System → Sync & Backup → About & Uninstall; element ids unchanged, JS bindings unaffected) -->
+    <!-- Notifications (node.md M4-T1: local inbox — session notices / revocations / approvals) -->
+    <section class="view" id="view-notify" hidden>
+      <div class="page-title"><i data-ic="bell" data-sz="19"></i><span data-i18n="menu.notify">通知</span></div>
+      <div class="page-desc" data-i18n="notify.desc">会话通知、吊销告知与审批状态（本机收件箱，重启保留）</div>
+      <div class="card">
+        <h3><i data-ic="bell"></i><span data-i18n="notify.title">通知</span>
+          <span class="h3-tools">
+            <button class="ghost small" id="btn-notify-read-all" data-i18n="notify.markAll">全部已读</button>
+            <button class="ghost small" id="btn-notify-clear" data-i18n="common.clear">清空</button>
+          </span>
+        </h3>
+        <div id="notify-list"><div class="empty" data-i18n="notify.empty">暂无通知</div></div>
+      </div>
+    </section>
+
     <section class="view" id="view-settings" hidden>
       <div class="page-title"><i data-ic="settings" data-sz="19"></i><span data-i18n="menu.settings">设置</span></div>
       <div class="page-desc" data-i18n="settings.desc">通用、连接、订阅内核与系统项（角色开关：扇入/远程在首页，服务端在扇出页）</div>
@@ -711,6 +728,20 @@
           <label class="chk"><input type="checkbox" id="s-autoproxy" checked> <span data-i18n="settings.autoProxy">连接扇入后自动启动本地代理</span></label>
           <label class="chk"><input type="checkbox" id="s-autoreconnect" checked> <span data-i18n="settings.autoReconnect">自动重连已保存的扇入</span></label>
         </div>
+      </div>
+
+      <!-- Machine identity (node.md M4-T4): device fingerprint + OpenSSH public key (safe to share) + self-declared name -->
+      <div class="card" id="machine-card">
+        <h3><i data-ic="fingerprint"></i><span data-i18n="identity.title">本机身份</span> <span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip" data-i18n="identity.desc">本机设备身份：指纹用于钉值与认证，公钥可安全分享；私钥不出本机</span></span></h3>
+        <div class="kv"><span class="k" data-i18n="identity.fp">设备指纹</span><span class="kv-v"><span class="mono id-val" id="machine-fp">-</span><button class="ghost small icon-btn" id="btn-machine-fp-copy" data-i18n-title="common.copy" title="复制"><i data-ic="copy" data-sz="13"></i></button></span></div>
+        <div class="kv"><span class="k" data-i18n="identity.pubkey">OpenSSH 公钥</span><span class="kv-v"><span class="mono id-val" id="machine-pub">-</span><button class="ghost small icon-btn" id="btn-machine-pub-copy" data-i18n-title="common.copy" title="复制"><i data-ic="copy" data-sz="13"></i></button></span></div>
+        <div class="row" style="margin-top:10px;flex-wrap:nowrap;align-items:flex-end">
+          <div class="grow"><label data-i18n="identity.myname">我的名称</label><input id="machine-myname" maxlength="64" data-i18n-ph="fanin.mynamePh" placeholder="可空，自声明名称"></div>
+          <button id="btn-machine-myname-save" class="small" style="flex-shrink:0" data-i18n="common.save">保存</button>
+        </div>
+        <div class="hint" style="margin-top:4px" data-i18n="identity.mynameTip">上送给签发者的自声明名称；写入全部已保存凭据，下次连接生效</div>
+        <label style="margin-top:12px" data-i18n="identity.certState">端点认证状态</label>
+        <div id="machine-cert-list"><div class="hint" data-i18n="identity.noNodes">暂无端点连接</div></div>
       </div>
 
       <!-- Subscription kernel: install kernel → activate feature (sidebar gains 「订阅/节点」) -->
@@ -916,8 +947,9 @@
       <input id="m-token" class="mono" type="password" placeholder="psk_..." autocomplete="off">
       <div class="grid2">
         <div><label data-i18n="fanin.fpLabel">证书指纹（可选，推荐）</label><input id="m-fp" class="mono" placeholder="SHA-256 hex"></div>
-        <div><label data-i18n="fanin.nameLabel">备注名</label><input id="m-name" maxlength="128"></div>
+        <div><label data-i18n="fanin.nameLabel">目标名称（本地显示）</label><input id="m-name" maxlength="128"></div>
       </div>
+      <div><label data-i18n="fanin.mynameLabel">我的名称（上送对端）</label><input id="m-myname" maxlength="64" data-i18n-ph="fanin.mynamePh" placeholder="可空，自声明名称"></div>
       <div class="row" style="margin-top:10px">
         <label class="chk"><input type="checkbox" id="m-hosts"> <span data-i18n="fanin.manageHosts">管理系统 hosts</span></label>
         <label class="chk"><input type="checkbox" id="m-save" checked> <span data-i18n="fanin.saveCred">保存凭据</span></label>
@@ -926,6 +958,30 @@
         <button class="ghost" id="btn-manual-cancel" data-i18n="common.cancel">取消</button>
         <button id="btn-connect" data-i18n="common.connect">连接</button>
       </div>
+    </div>
+  </div>
+</div>
+
+<!-- Fan-in credential edit (M4-T6 naming triplet: local name | uploaded my name; remark merges into name) -->
+<div class="modal-mask" id="cred-edit-modal" style="display:none">
+  <div class="modal sub-modal">
+    <div class="sm-head">
+      <span class="sm-logo"><i data-ic="pencil" data-sz="20"></i></span>
+      <div>
+        <h3 data-i18n="views.cred-edit">编辑扇入</h3>
+        <div class="hint" data-i18n="views.myname-tip">自声明名称，下次连接时上送对端</div>
+      </div>
+    </div>
+    <div class="sm-body">
+      <label data-i18n="fanin.nameLabel">目标名称（本地显示）</label>
+      <input id="cedit-name" maxlength="32">
+      <label data-i18n="fanin.mynameLabel">我的名称（上送对端）</label>
+      <input id="cedit-myname" maxlength="64" data-i18n-ph="fanin.mynamePh" placeholder="可空，自声明名称">
+      <div class="hint sm-err" id="cedit-err"></div>
+    </div>
+    <div class="row" style="justify-content:flex-end">
+      <button id="cedit-cancel" class="ghost" data-i18n="common.cancel">取消</button>
+      <button id="cedit-ok" data-i18n="common.save">保存</button>
     </div>
   </div>
 </div>
@@ -1147,6 +1203,8 @@
       </div>
       <label data-i18n="fanout.nameLabel">名称（可空，留空 = 取目标地址）</label>
       <input id="fo-name" placeholder="例如：分公司跳板机" data-i18n-ph="fanout.namePh">
+      <label data-i18n="fanout.mynameLabel">我的名称（上送对端，可空）</label>
+      <input id="fo-myname" maxlength="64" data-i18n-ph="fanin.mynamePh" placeholder="可空，自声明名称">
       <label data-i18n="fanout.addrLabel">目标地址</label>
       <input id="fo-addr" class="mono" placeholder="root.example.com:54430">
       <label>Relay Token <span class="hint inline" id="fo-token-hint" style="display:none" data-i18n="fanout.tokenKeep">留空 = 保留原 Token</span></label>

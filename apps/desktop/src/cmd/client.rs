@@ -2,7 +2,30 @@
 
 use crate::{map_err, roles, AppState, ConnectInput};
 use agile_net_client::{ConnectParams, Credential, NodeState};
-use tauri::State;
+use tauri::{Manager, State};
+
+/// Notification center fan-out (node.md M4-T1): every fresh inbox entry is broadcast to all
+/// windows as `ag-notify` (tray / float-ball are separate JS contexts — a Tauri event is the
+/// only instant channel) and mirrored to the float-ball bubble (gated by the bubble toggle).
+/// mark_all_read/clear never bump the channel, so every wakeup carries a fresh unread entry.
+pub(crate) async fn notify_watch(app: tauri::AppHandle) {
+    use tauri::Emitter;
+    let center = app.state::<AppState>().client.notifications();
+    let mut rx = center.subscribe();
+    let mut last_id = String::new();
+    while rx.recv().await.is_ok() {
+        let Some(n) = center.list().into_iter().next() else {
+            continue;
+        };
+        // Burst pushes share one newest entry across wakeups; emit each notification once
+        if n.id == last_id {
+            continue;
+        }
+        last_id = n.id.clone();
+        let _ = app.emit("ag-notify", &n);
+        crate::float_notify(&app, &n.title);
+    }
+}
 
 /// Connect to a node
 #[tauri::command]
@@ -44,6 +67,8 @@ pub(crate) async fn connect_node(state: State<'_, AppState>, input: ConnectInput
                         emode: input.emode,
                         eadmin: input.eadmin,
                         myname: input.myname,
+                        // Topology-visibility clause accepted at import (M4-T5); kept for display
+                        visibility: input.visibility,
                     },
                 )
                 .await;
@@ -164,4 +189,127 @@ pub(crate) async fn rename_credential(
 #[tauri::command]
 pub(crate) fn parse_connect_url(url: String) -> Result<ConnectInput, String> {
     agile_net_client::parse_connect_url(&url)
+}
+
+// ==================== Notification center (node.md M4-T1) ====================
+
+/// Inbox list + unread count (titlebar bell badge / notify view data source)
+#[tauri::command]
+pub(crate) async fn list_notifications(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    let center = state.client.notifications();
+    Ok(serde_json::json!({
+        "items": center.list(),
+        "unread": center.unread_count(),
+    }))
+}
+
+/// Mark every inbox entry read (badge clears)
+#[tauri::command]
+pub(crate) async fn notifications_read_all(state: State<'_, AppState>) -> Result<(), String> {
+    state.client.notifications().mark_all_read();
+    Ok(())
+}
+
+/// Clear the whole inbox (UI confirms first)
+#[tauri::command]
+pub(crate) async fn clear_notifications(state: State<'_, AppState>) -> Result<(), String> {
+    state.client.notifications().clear();
+    Ok(())
+}
+
+/// Pending-session appeal (M4-T3): upload one note to the issuer over the pending node's live
+/// session control plane (issuer caps at 3 per session; the UI shows the composer only in
+/// PendingApproval)
+#[tauri::command]
+pub(crate) async fn send_pending_note(
+    state: State<'_, AppState>,
+    node_id: String,
+    body: String,
+) -> Result<(), String> {
+    let body = body.trim();
+    if body.is_empty() || body.chars().count() > 512 {
+        return Err("附言不能为空且不超过 512 字".into());
+    }
+    state.client.send_pending_note(&node_id, body).await.map_err(map_err)
+}
+
+// ==================== Machine identity card (node.md M4-T4) ====================
+
+/// Machine identity view: device fingerprint + OpenSSH public key line + current self-declared
+/// display name (first non-empty credential myname)
+#[tauri::command]
+pub(crate) async fn get_machine_identity(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    let id = tokio::task::spawn_blocking(agile_net_core::device::DeviceIdentity::machine)
+        .await
+        .map_err(map_err)?
+        .map_err(map_err)?;
+    let fp = id.device_fp();
+    let mut myname = String::new();
+    if let Some(store) = state.creds.as_ref() {
+        for key in store.keys().await {
+            let m = store
+                .get(&key)
+                .await
+                .and_then(|c| c.myname)
+                .map(|m| m.trim().to_string())
+                .filter(|m| !m.is_empty());
+            if let Some(m) = m {
+                myname = m;
+                break;
+            }
+        }
+    }
+    Ok(serde_json::json!({
+        "device_fp": fp,
+        "openssh_pubkey": id.openssh_pubkey(&format!("anet-{}", &fp[..12])),
+        "myname": myname,
+    }))
+}
+
+/// Edit the self-declared display name ("我的名称") across every saved credential; live
+/// sessions keep their handshake name — the new value rides the next connect.
+#[tauri::command]
+pub(crate) async fn set_machine_myname(state: State<'_, AppState>, name: String) -> Result<usize, String> {
+    let name = name.trim().to_string();
+    if name.chars().count() > 64 {
+        return Err("我的名称最长 64 字".into());
+    }
+    let Some(store) = state.creds.as_ref() else {
+        return Err("凭据存储不可用".into());
+    };
+    let mut updated = 0usize;
+    for key in store.keys().await {
+        if let Some(mut cred) = store.get(&key).await {
+            cred.myname = if name.is_empty() { None } else { Some(name.clone()) };
+            store.save(&key, &cred).await;
+            updated += 1;
+        }
+    }
+    roles::audit("gui.machine_myname", serde_json::json!({"name": name, "updated": updated}));
+    Ok(updated)
+}
+
+/// Per-credential 我的名称 edit (M4-T6 naming triplet; empty clears, ≤64 chars)
+#[tauri::command]
+pub(crate) async fn set_credential_myname(
+    state: State<'_, AppState>,
+    key: String,
+    myname: Option<String>,
+) -> Result<(), String> {
+    let Some(store) = state.creds.as_ref() else {
+        return Err("凭据存储不可用".into());
+    };
+    let Some(mut cred) = store.get(&key).await else {
+        return Err("凭据不存在".into());
+    };
+    let myname = myname.map(|n| n.trim().to_string()).filter(|n| !n.is_empty());
+    if let Some(n) = &myname {
+        if n.chars().count() > 64 {
+            return Err("我的名称最长 64 字".into());
+        }
+    }
+    cred.myname = myname;
+    store.save(&key, &cred).await;
+    roles::audit("gui.cred_myname", serde_json::json!({"key": key, "myname": cred.myname}));
+    Ok(())
 }

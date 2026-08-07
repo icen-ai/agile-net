@@ -830,6 +830,27 @@ impl AgileNetClient {
         let u = s.upstreams.iter().find(|u| u.node_name == upstream)?;
         Some((u.ticket.clone(), u.api_host.clone(), u.api_port, u.scope.clone()))
     }
+
+    /// Pending-session appeal (node.md M4-T3): upload one note to the issuer over the live
+    /// session's control plane. The issuer caps these at `MAX_PENDING_NOTES` per session;
+    /// meaningful only while the node rests in PendingApproval. Errors when the node is
+    /// unknown or has no live tunnel.
+    pub async fn send_pending_note(&self, node_id: &str, body: &str) -> Result<()> {
+        let opener = self
+            .inner
+            .nodes
+            .get(node_id)
+            .map(|r| r.opener.clone())
+            .ok_or_else(|| anyhow!("node not found"))?;
+        let tunnel = opener
+            .current
+            .load_full()
+            .ok_or_else(|| anyhow!("node has no live session"))?;
+        tunnel
+            .send_pending_note(body)
+            .await
+            .map_err(|e| anyhow!(e.to_string()))
+    }
 }
 
 impl Default for AgileNetClient {

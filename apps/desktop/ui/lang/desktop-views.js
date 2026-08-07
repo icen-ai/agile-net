@@ -162,6 +162,21 @@ AgI18n.register({
   'dt.life-expired': { zh: '已过期', en: 'Expired' },
   'dt.life-exhausted': { zh: '已用尽', en: 'Exhausted' },
   'fanin.fpInvalid': { zh: '证书指纹须为 64 位十六进制（SHA-256）', en: 'Fingerprint must be 64 hex chars (SHA-256)' },
+  // ---- M4: node card terminal/pending states + appeal notes + credential edit ----
+  'views.st-blocked': { zh: '已阻断', en: 'Blocked' },
+  'views.st-pending': { zh: '等待认证', en: 'Awaiting Approval' },
+  'views.pending-tip': { zh: '设备已登记为待认证，认证通过前数据面暂停', en: 'Device registered as pending; the data plane stays paused until certified' },
+  'views.reimport': { zh: '重新导入', en: 'Re-import' },
+  'views.reimport-title': { zh: '重新导入扇入', en: 'Re-import Fan-in' },
+  'views.reimport-desc': { zh: '将删除该凭据并打开导入向导，请向签发者索取新的接入链接。', en: 'This deletes the credential and opens the import wizard — ask the issuer for a new connect link.' },
+  'views.note-ph': { zh: '向签发者附加说明（每次会话最多 3 条）', en: 'Attach a note for the issuer (max 3 per session)' },
+  'views.note-send': { zh: '发送', en: 'Send' },
+  'views.note-sent': { zh: '附言已发送', en: 'Note sent' },
+  'views.note-limit': { zh: '本会话附言已达上限（3 条）', en: 'Session note limit reached (3)' },
+  'views.unread-notice': { zh: '有未读通知', en: 'Unread notice' },
+  'views.cred-edit': { zh: '编辑扇入', en: 'Edit Fan-in' },
+  'views.cred-saved': { zh: '扇入已保存', en: 'Fan-in saved' },
+  'views.myname-tip': { zh: '自声明名称，下次连接时上送对端', en: 'Self-declared name, uploaded to the endpoint on the next connect' },
 
   // ================= settings.* (app-settings.js) =================
   // ---- role switches: server ----

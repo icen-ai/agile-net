@@ -74,3 +74,4 @@ Node   ──────── TLS ──────────> Node (Relay 
 | 扇出管理 | [connectors.md](connectors.md) | connector CRUD + 启停 + 对端收敛 + 策略上送 |
 | 统一签发 | [delegation.md](delegation.md) | 委托令牌签发/吊销 + 入口/信任/路由/并发四维度 |
 | 节点状态 | [node.md](node.md) | 状态查询 + 流量统计 + WebSocket 事件 |
+| 设备/会话/审批 | [devices.md](devices.md) | 设备注册表（认证状态机）+ 会话清单/踢断 + 审批中心 + 设备流量 |

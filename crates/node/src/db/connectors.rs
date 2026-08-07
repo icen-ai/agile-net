@@ -14,6 +14,7 @@ impl Database {
     pub fn create_connector(
         &self,
         name: &str,
+        my_name: &str,
         upstream_addr: &str,
         token_plain: &str,
         sni_hostname: &str,
@@ -30,14 +31,15 @@ impl Database {
         let id = uuid::Uuid::new_v4().to_string();
         let now = now_rfc3339();
         conn.execute(
-            "INSERT INTO connector (id, name, upstream_addr, token_enc, sni_hostname, insecure, ca_cert_path, pinned_cert_path, pinned_fingerprint, advertise, group_id, enabled, remark, created_at, updated_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,1,?12,?13,?13)",
-            params![id, name, upstream_addr, token_enc, sni_hostname, insecure as i32, ca_cert_path, pinned_cert_path, pinned_fingerprint, advertise, group_id, remark, now],
+            "INSERT INTO connector (id, name, my_name, upstream_addr, token_enc, sni_hostname, insecure, ca_cert_path, pinned_cert_path, pinned_fingerprint, advertise, group_id, enabled, remark, created_at, updated_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,1,?13,?14,?14)",
+            params![id, name, my_name, upstream_addr, token_enc, sni_hostname, insecure as i32, ca_cert_path, pinned_cert_path, pinned_fingerprint, advertise, group_id, remark, now],
         )
         .map_err(db_err)?;
         Ok(ConnectorRecord {
             id,
             name: name.to_string(),
+            my_name: my_name.to_string(),
             upstream_addr: upstream_addr.to_string(),
             token_enc,
             sni_hostname: sni_hostname.to_string(),
@@ -63,7 +65,7 @@ impl Database {
             let conn = self.conn();
             let mut stmt = conn
                 .prepare(
-                    "SELECT c.id, c.name, c.upstream_addr, c.token_enc, c.sni_hostname, c.insecure, c.ca_cert_path, c.pinned_cert_path, c.pinned_fingerprint, c.advertise,
+                    "SELECT c.id, c.name, c.my_name, c.upstream_addr, c.token_enc, c.sni_hostname, c.insecure, c.ca_cert_path, c.pinned_cert_path, c.pinned_fingerprint, c.advertise,
                             c.group_id, c.enabled, c.remark, c.created_at, c.updated_at, c.push_groups
                      FROM connector c ORDER BY c.created_at DESC",
                 )
@@ -74,20 +76,21 @@ impl Database {
                 recs.push(ConnectorRecord {
                     id: r.get(0).map_err(db_err)?,
                     name: r.get(1).map_err(db_err)?,
-                    upstream_addr: r.get(2).map_err(db_err)?,
-                    token_enc: r.get(3).map_err(db_err)?,
-                    sni_hostname: r.get(4).map_err(db_err)?,
-                    insecure: r.get::<_, i32>(5).map_err(db_err)? != 0,
-                    ca_cert_path: r.get(6).map_err(db_err)?,
-                    pinned_cert_path: r.get(7).map_err(db_err)?,
-                    pinned_fingerprint: r.get(8).map_err(db_err)?,
-                    advertise: r.get(9).map_err(db_err)?,
-                    group_id: r.get(10).map_err(db_err)?,
-                    enabled: r.get::<_, i32>(11).map_err(db_err)? != 0,
-                    remark: r.get(12).map_err(db_err)?,
-                    created_at: r.get(13).map_err(db_err)?,
-                    updated_at: r.get(14).map_err(db_err)?,
-                    push_groups: r.get(15).map_err(db_err)?,
+                    my_name: r.get(2).map_err(db_err)?,
+                    upstream_addr: r.get(3).map_err(db_err)?,
+                    token_enc: r.get(4).map_err(db_err)?,
+                    sni_hostname: r.get(5).map_err(db_err)?,
+                    insecure: r.get::<_, i32>(6).map_err(db_err)? != 0,
+                    ca_cert_path: r.get(7).map_err(db_err)?,
+                    pinned_cert_path: r.get(8).map_err(db_err)?,
+                    pinned_fingerprint: r.get(9).map_err(db_err)?,
+                    advertise: r.get(10).map_err(db_err)?,
+                    group_id: r.get(11).map_err(db_err)?,
+                    enabled: r.get::<_, i32>(12).map_err(db_err)? != 0,
+                    remark: r.get(13).map_err(db_err)?,
+                    created_at: r.get(14).map_err(db_err)?,
+                    updated_at: r.get(15).map_err(db_err)?,
+                    push_groups: r.get(16).map_err(db_err)?,
                 });
             }
             recs
@@ -105,6 +108,7 @@ impl Database {
             items.push(ConnectorView {
                 id: rec.id,
                 name: rec.name,
+                my_name: rec.my_name,
                 upstream_addr: rec.upstream_addr,
                 token_prefix,
                 sni_hostname: rec.sni_hostname,
@@ -130,7 +134,7 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn
             .prepare(
-                "SELECT id, name, upstream_addr, token_enc, sni_hostname, insecure, ca_cert_path, pinned_cert_path, pinned_fingerprint, advertise, group_id, enabled, remark, created_at, updated_at, push_groups
+                "SELECT id, name, my_name, upstream_addr, token_enc, sni_hostname, insecure, ca_cert_path, pinned_cert_path, pinned_fingerprint, advertise, group_id, enabled, remark, created_at, updated_at, push_groups
                  FROM connector WHERE id = ?1",
             )
             .map_err(db_err)?;
@@ -139,20 +143,21 @@ impl Database {
             Some(r) => Some(ConnectorRecord {
                 id: r.get(0).map_err(db_err)?,
                 name: r.get(1).map_err(db_err)?,
-                upstream_addr: r.get(2).map_err(db_err)?,
-                token_enc: r.get(3).map_err(db_err)?,
-                sni_hostname: r.get(4).map_err(db_err)?,
-                insecure: r.get::<_, i32>(5).map_err(db_err)? != 0,
-                ca_cert_path: r.get(6).map_err(db_err)?,
-                pinned_cert_path: r.get(7).map_err(db_err)?,
-                pinned_fingerprint: r.get(8).map_err(db_err)?,
-                advertise: r.get(9).map_err(db_err)?,
-                group_id: r.get(10).map_err(db_err)?,
-                enabled: r.get::<_, i32>(11).map_err(db_err)? != 0,
-                remark: r.get(12).map_err(db_err)?,
-                created_at: r.get(13).map_err(db_err)?,
-                updated_at: r.get(14).map_err(db_err)?,
-                push_groups: r.get(15).map_err(db_err)?,
+                my_name: r.get(2).map_err(db_err)?,
+                upstream_addr: r.get(3).map_err(db_err)?,
+                token_enc: r.get(4).map_err(db_err)?,
+                sni_hostname: r.get(5).map_err(db_err)?,
+                insecure: r.get::<_, i32>(6).map_err(db_err)? != 0,
+                ca_cert_path: r.get(7).map_err(db_err)?,
+                pinned_cert_path: r.get(8).map_err(db_err)?,
+                pinned_fingerprint: r.get(9).map_err(db_err)?,
+                advertise: r.get(10).map_err(db_err)?,
+                group_id: r.get(11).map_err(db_err)?,
+                enabled: r.get::<_, i32>(12).map_err(db_err)? != 0,
+                remark: r.get(13).map_err(db_err)?,
+                created_at: r.get(14).map_err(db_err)?,
+                updated_at: r.get(15).map_err(db_err)?,
+                push_groups: r.get(16).map_err(db_err)?,
             }),
             None => None,
         })
@@ -183,6 +188,7 @@ impl Database {
         &self,
         id: &str,
         name: &str,
+        my_name: &str,
         upstream_addr: &str,
         token_plain: Option<&str>,
         sni_hostname: &str,
@@ -204,10 +210,10 @@ impl Database {
         };
         let conn = self.conn();
         conn.execute(
-            "UPDATE connector SET name = ?1, upstream_addr = ?2, token_enc = ?3, sni_hostname = ?4,
-                    insecure = ?5, ca_cert_path = ?6, pinned_cert_path = ?7, pinned_fingerprint = ?8, advertise = ?9, group_id = ?10, remark = ?11, updated_at = ?12
-             WHERE id = ?13",
-            params![name, upstream_addr, token_enc, sni_hostname, insecure as i32, ca_cert_path, pinned_cert_path, pinned_fingerprint, advertise, group_id, remark, now_rfc3339(), id],
+            "UPDATE connector SET name = ?1, my_name = ?2, upstream_addr = ?3, token_enc = ?4, sni_hostname = ?5,
+                    insecure = ?6, ca_cert_path = ?7, pinned_cert_path = ?8, pinned_fingerprint = ?9, advertise = ?10, group_id = ?11, remark = ?12, updated_at = ?13
+             WHERE id = ?14",
+            params![name, my_name, upstream_addr, token_enc, sni_hostname, insecure as i32, ca_cert_path, pinned_cert_path, pinned_fingerprint, advertise, group_id, remark, now_rfc3339(), id],
         )
         .map_err(db_err)?;
         Ok(())
@@ -259,6 +265,7 @@ impl Database {
         drop(conn);
         self.create_connector(
             name,
+            "",
             upstream_addr,
             token_plain,
             sni_hostname,
@@ -450,6 +457,7 @@ mod tests {
         let rec = db
             .create_connector(
                 "site-a",
+                "机房 A 机",
                 "1.2.3.4:54430",
                 token,
                 "a.example.com",
@@ -463,6 +471,7 @@ mod tests {
             )
             .expect("create connector");
         assert!(rec.enabled);
+        assert_eq!(rec.my_name, "机房 A 机");
         assert_eq!(rec.group_id.as_deref(), Some(gid.as_str()));
         assert_eq!(rec.ca_cert_path, "/etc/anet/ca.pem");
         assert_eq!(rec.pinned_cert_path, "");
@@ -490,11 +499,13 @@ mod tests {
         let json = serde_json::to_string(v).unwrap();
         assert!(!json.contains(token));
         assert!(!json.contains("token_enc"));
+        assert_eq!(v.my_name, "机房 A 机");
 
         // update: token None = keep existing token; all other fields change
         db.update_connector(
             &rec.id,
             "site-a2",
+            "",
             "5.6.7.8:54430",
             None,
             "",
@@ -509,6 +520,7 @@ mod tests {
         .expect("update keep token");
         let got = db.get_connector(&rec.id).unwrap().unwrap();
         assert_eq!(got.name, "site-a2");
+        assert_eq!(got.my_name, "");
         assert!(got.insecure);
         assert_eq!(got.ca_cert_path, "");
         assert_eq!(got.pinned_cert_path, "/etc/anet/pinned.pem");
@@ -521,6 +533,7 @@ mod tests {
         db.update_connector(
             &rec.id,
             "site-a2",
+            "",
             "5.6.7.8:54430",
             Some(token2),
             "",

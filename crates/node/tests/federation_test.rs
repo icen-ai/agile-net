@@ -102,6 +102,7 @@ async fn federation_push_pool_adopt_grant() {
         .db()
         .create_connector(
             "b-rendezvous",
+            "",
             &format!("127.0.0.1:{relay_port}"),
             psk,
             "fed.test",
@@ -373,6 +374,7 @@ async fn federation_adopted_group_delegated_grant() {
         .db()
         .create_connector(
             "b-rendezvous",
+            "",
             &format!("127.0.0.1:{relay_port}"),
             psk,
             "fed.test",

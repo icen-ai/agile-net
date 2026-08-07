@@ -8,6 +8,7 @@ use axum::{
     http::StatusCode,
     response::Response,
 };
+use chrono::{Datelike, Timelike};
 use serde::Deserialize;
 use serde_json::json;
 
@@ -268,6 +269,110 @@ pub async fn rebind_device(
         }
         Err(e) => err(StatusCode::BAD_REQUEST, codes::VALIDATION_FAILED, e.to_string()),
     }
+}
+
+#[derive(Deserialize)]
+pub struct TrafficQuery {
+    #[serde(default)]
+    range: Option<String>,
+}
+
+/// Parse a ledger timestamp ("%Y-%m-%d %H:%M:%S", UTC) to epoch seconds.
+fn ledger_ts(s: &str) -> Option<i64> {
+    chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
+        .ok()
+        .map(|d| d.and_utc().timestamp())
+}
+
+/// GET /api/v1/admin/devices/{fp}/traffic?range=24h|7d|30d — bucketed up/down series (M5-T4).
+pub async fn device_traffic(
+    AdminAuth(_): AdminAuth,
+    State(state): State<ApiState>,
+    Path(fp): Path<String>,
+    Query(q): Query<TrafficQuery>,
+) -> Response {
+    let range = q.range.as_deref().unwrap_or("24h");
+    let (days, bucket_secs) = match range {
+        "7d" => (7, 3600i64),
+        "30d" => (30, 86400),
+        _ => (1, 300),
+    };
+    let now = chrono::Utc::now().timestamp();
+    let since = (chrono::Utc::now() - chrono::Duration::days(days)).format("%Y-%m-%d %H:%M:%S").to_string();
+    let rows = state
+        .db_call({
+            let fp = fp.clone();
+            move |db| db.device_traffic_rows(&fp, &since)
+        })
+        .await
+        .unwrap_or_default();
+    // bucket in Rust: ts/bucket_secs floored, up = received from device (bytes_in)
+    let mut buckets: std::collections::BTreeMap<i64, (i64, i64)> = std::collections::BTreeMap::new();
+    for (ts, bin, bout) in rows {
+        let Some(t) = ledger_ts(&ts) else { continue };
+        let b = t / bucket_secs * bucket_secs;
+        let e = buckets.entry(b).or_default();
+        e.0 += bin;
+        e.1 += bout;
+    }
+    let series: Vec<serde_json::Value> = buckets
+        .into_iter()
+        .map(|(t, (up, down))| json!({ "ts": t, "up": up, "down": down }))
+        .collect();
+    ok(json!({ "range": range, "bucket_secs": bucket_secs, "series": series }))
+}
+
+/// GET /api/v1/admin/devices/{fp}/activity — 7x24 activity heatmap (session count + bytes per
+/// weekday/hour cell, last 30 days; M5 profile-page heat + M6 anomaly heuristics data source).
+pub async fn device_activity(AdminAuth(_): AdminAuth, State(state): State<ApiState>, Path(fp): Path<String>) -> Response {
+    let since = (chrono::Utc::now() - chrono::Duration::days(30)).format("%Y-%m-%d %H:%M:%S").to_string();
+    let rows = state
+        .db_call({
+            let fp = fp.clone();
+            move |db| db.device_traffic_rows(&fp, &since)
+        })
+        .await
+        .unwrap_or_default();
+    let mut cells = vec![vec![(0i64, 0i64); 24]; 7];
+    for (ts, bin, bout) in rows {
+        let Some(t) = ledger_ts(&ts) else { continue };
+        let dt = chrono::DateTime::from_timestamp(t, 0).unwrap_or_default();
+        let wd = dt.weekday().num_days_from_sunday() as usize;
+        let hr = dt.hour() as usize;
+        cells[wd][hr].0 += 1;
+        cells[wd][hr].1 += bin + bout;
+    }
+    let cells: Vec<serde_json::Value> = cells
+        .into_iter()
+        .enumerate()
+        .map(|(wd, hours)| json!({ "weekday": wd, "hours": hours.iter().map(|(n, b)| json!({ "sessions": n, "bytes": b })).collect::<Vec<_>>() }))
+        .collect();
+    ok(json!({ "days": 30, "cells": cells }))
+}
+
+/// GET /api/v1/admin/devices/{fp}/sessions — closed-session history (entry/IP/duration/bytes/
+/// close_reason; the "被管理员断开" visibility of the session tab).
+pub async fn device_sessions(AdminAuth(_): AdminAuth, State(state): State<ApiState>, Path(fp): Path<String>) -> Response {
+    let rows = state
+        .db_call(move |db| db.device_sessions(&fp, 200))
+        .await
+        .unwrap_or_default();
+    let items: Vec<serde_json::Value> = rows
+        .into_iter()
+        .map(|r| {
+            json!({
+                "id": r.id,
+                "entry": r.entry,
+                "ip": r.ip,
+                "started_at": r.started_at,
+                "ended_at": r.ended_at,
+                "bytes_up": r.bytes_in,
+                "bytes_down": r.bytes_out,
+                "close_reason": r.close_reason,
+            })
+        })
+        .collect();
+    ok(json!({ "items": items }))
 }
 
 /// GET /api/v1/admin/devices/policy — the pending-device data-plane policy.

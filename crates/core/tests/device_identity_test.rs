@@ -201,6 +201,92 @@ async fn stale_node_session_gets_takeover_notice() {
 }
 
 #[tokio::test]
+async fn session_close_flushes_ledger_record() {
+    // close hook collects flush records
+    let records = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let rec_clone = records.clone();
+    let hook: agile_net_core::relay::listener::SessionCloseHook =
+        Arc::new(move |rec| rec_clone.lock().unwrap().push(rec));
+
+    let addr = get_free_addr();
+    let registry: agile_net_core::relay::listener::DelegatedRegistry =
+        Arc::new(dashmap::DashMap::new());
+    let token_hash = agile_net_core::util::sha256_hex(b"flush-token");
+    registry.insert(
+        token_hash.clone(),
+        agile_net_core::relay::listener::DelegatedToken {
+            issuer: "self".into(),
+            label: "flush-tok".into(),
+            groups: vec![],
+            acl_rules: vec!["127.0.0.0/8".into()],
+            hint_map: vec![],
+            concurrency: Concurrency::Multi,
+            max_sessions: 4,
+        },
+    );
+    let listener = RelayListener::new(addr, "node-psk").unwrap();
+    let listener = Arc::new(
+        listener
+            .with_local_delegated_registry(registry)
+            .with_session_close_hook(hook),
+    );
+    let l = listener.clone();
+    tokio::spawn(async move {
+        let _ = l.start().await;
+    });
+    tokio::time::sleep(Duration::from_millis(60)).await;
+
+    // consumer connects (kind=Client), then is kicked with a reason
+    let consumer_id = DeviceIdentity::ephemeral();
+    let tls = TlsConfigBuilder::new()
+        .allow_self_signed(true)
+        .build_client()
+        .unwrap();
+    let connector = tokio_rustls::TlsConnector::from(tls);
+    let tcp = TcpStream::connect(addr).await.unwrap();
+    let server_name =
+        rustls::pki_types::ServerName::try_from("cdn.cloudflare.com".to_string()).unwrap();
+    let mut stream = connector.connect(server_name, tcp).await.unwrap();
+    let mut auth = AuthRequest {
+        node_id: "flush-consumer".into(),
+        token: "flush-token".into(),
+        kind: AuthKind::Client,
+        advertise: vec![],
+        groups: vec![],
+        version: PROTOCOL_VERSION,
+        my_name: String::new(),
+        device_pubkey: String::new(),
+        device_sig: String::new(),
+    };
+    let challenge = agile_net_core::device::session_challenge(stream.get_ref().1).unwrap();
+    auth.attach_device_proof(&challenge, &consumer_id);
+    Frame::new(FrameType::Auth, 0, Bytes::from(serde_json::to_vec(&auth).unwrap()))
+        .write_to(&mut stream)
+        .await
+        .unwrap();
+    let res = Frame::read_from(&mut stream).await.unwrap();
+    assert_eq!(res.frame_type, FrameType::AuthOk);
+    let (mux, _r) = MuxSession::start(stream, 2, SessionEvents::default(), true, None);
+    tokio::time::sleep(Duration::from_millis(80)).await;
+
+    // kick the token's sessions with a reason → the flush must carry it
+    listener
+        .disconnect_delegated_token(&token_hash, reason::REVOKED_BY_ADMIN, "测试回收")
+        .await;
+    tokio::time::sleep(Duration::from_millis(120)).await;
+
+    let recs = records.lock().unwrap();
+    assert_eq!(recs.len(), 1, "exactly one flush record per session");
+    let rec = &recs[0];
+    assert_eq!(rec.device_fp, consumer_id.device_fp());
+    assert_eq!(rec.entry, "direct");
+    assert_eq!(rec.close_reason, reason::REVOKED_BY_ADMIN);
+    assert_eq!(rec.session_key, format!("delegated:{token_hash}:flush-consumer"));
+    drop(recs);
+    mux.shutdown();
+}
+
+#[tokio::test]
 async fn device_gate_blocks_pending_and_rejects_revoked() {
     // gate state machine for the test: 0=pending 1=certified 2=revoked
     let gate_state = Arc::new(std::sync::atomic::AtomicU8::new(0));

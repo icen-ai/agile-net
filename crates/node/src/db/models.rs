@@ -144,6 +144,9 @@ pub struct ConnectorRecord {
     pub id: String,
     /// Peer display name (for admin list / audit)
     pub name: String,
+    /// Self-declared name uploaded to the peer in AuthRequest.my_name (empty = node_id; node.md M3-T6)
+    #[serde(default)]
+    pub my_name: String,
     pub upstream_addr: String,
     /// Fan-out token ciphertext (`v1:nonce_b64:ct_b64`, see docs/todo/peer-acl.md §5)
     #[serde(skip_serializing, default)]
@@ -178,6 +181,9 @@ pub struct ConnectorRecord {
 pub struct ConnectorView {
     pub id: String,
     pub name: String,
+    /// Self-declared name uploaded to the peer (empty = node_id; node.md M3-T6)
+    #[serde(default)]
+    pub my_name: String,
     pub upstream_addr: String,
     /// Token prefix for identification only (not a full credential)
     pub token_prefix: String,

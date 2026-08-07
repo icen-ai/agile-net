@@ -273,7 +273,7 @@ mod tests {
     use crate::db::sha256_hex;
 
     fn mk_connector(db: &Database, name: &str) -> String {
-        db.create_connector(name, "1.2.3.4:54430", "psk_x", "", true, "", "", "", "", None, "")
+        db.create_connector(name, "", "1.2.3.4:54430", "psk_x", "", true, "", "", "", "", None, "")
             .expect("create connector")
             .id
     }

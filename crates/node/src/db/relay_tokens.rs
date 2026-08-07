@@ -59,6 +59,17 @@ impl Database {
         Ok(())
     }
 
+    /// Set the local display name (remark doubles as the issuer-assigned peer name, M3-T6).
+    pub fn set_relay_token_remark(&self, id: &str, remark: &str) -> Result<()> {
+        let conn = self.conn();
+        conn.execute(
+            "UPDATE relay_token SET remark = ?1 WHERE id = ?2",
+            params![remark, id],
+        )
+        .map_err(db_err)?;
+        Ok(())
+    }
+
     /// Set the bandwidth quota of a relay token (KB/s; None = unlimited).
     /// Invalid-value defense: `<= 0` normalizes to NULL (same backstop as create).
     pub fn set_relay_token_rate_limit(&self, id: &str, rate_limit_kbps: Option<i64>) -> Result<()> {

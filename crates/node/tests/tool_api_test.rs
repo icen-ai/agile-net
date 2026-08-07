@@ -119,6 +119,7 @@ async fn setup_tunnel_app() -> (Router, Database, String, String) {
     let rec = db
         .create_connector(
             "up1",
+            "",
             &relay_addr.to_string(),
             token,
             "localhost",
@@ -237,6 +238,7 @@ async fn bandwidth_api_no_connected_peer() {
     // connector exists but has no runtime handle (not connected): named resolution fails
     db.create_connector(
         "down1",
+        "",
         "127.0.0.1:1",
         "psk_x",
         "localhost",

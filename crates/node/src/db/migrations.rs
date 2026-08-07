@@ -129,6 +129,7 @@ const MIGRATIONS: &[(u32, &str, &str)] = &[(
     CREATE TABLE connector (
         id                 TEXT PRIMARY KEY,
         name               TEXT NOT NULL UNIQUE,
+        my_name            TEXT NOT NULL DEFAULT '', -- self-declared name uploaded to the peer at auth (empty = node_id)
         upstream_addr      TEXT NOT NULL,
         token_enc          TEXT NOT NULL,
         sni_hostname       TEXT NOT NULL DEFAULT '',
@@ -396,6 +397,7 @@ mod tests {
             "pinned_cert_path",
             "pinned_fingerprint",
             "push_groups",
+            "my_name",
         ] {
             assert!(
                 column_names(&db, "connector").contains(&col.to_string()),

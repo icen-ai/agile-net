@@ -32,4 +32,14 @@ AgI18n.register({
   'cl.exportConfirm': { zh: '导出含明文令牌的接入链接？', en: 'Export the connect link with the token plaintext?' },
   'cl.delCred': { zh: '删除该凭据？', en: 'Delete this credential?' },
   'cl.copied': { zh: '已复制', en: 'Copied' },
+
+  // ---- M4: pending/blocked node states + appeal notes ----
+  'cl.pending': { zh: '等待认证', en: 'Awaiting Approval' },
+  'cl.blocked': { zh: '已阻断', en: 'Blocked' },
+  'cl.pendingTip': { zh: '认证通过前数据面暂停', en: 'Data plane paused until certified' },
+  'cl.notePh': { zh: '向签发者附加说明（每次会话最多 3 条）', en: 'Attach a note for the issuer (max 3 per session)' },
+  'cl.noteSend': { zh: '发送', en: 'Send' },
+  'cl.noteSent': { zh: '附言已发送', en: 'Note sent' },
+  'cl.noteLimit': { zh: '本会话附言已达上限（3 条）', en: 'Session note limit reached (3)' },
+  'cl.saved': { zh: '已保存', en: 'Saved' },
 });

@@ -468,6 +468,159 @@ function mount(el, kind, cfg) {
   return inst;
 }
 
+/* ================= bars / heat (node.md M3-T7; DOM-based variants, signature-guarded) =================
+   Both build their skeleton through the DOM API (no inline style attributes, desktop-CSP safe),
+   rewrite nothing while the data signature is unchanged, and animate via CSS transitions. */
+
+/* AgChart.bars(el, { items: [{label, value, color?}], max?, fmtV?, empty? }) — horizontal bars.
+   Row skeleton rebuilds only when the row count changes; value/width updates ride the CSS width transition. */
+function Bars(el) {
+  this.el = el;
+  this.sig = '';
+  this.rows = [];
+  el.classList.add('agchart', 'agchart-bars');
+}
+Bars.prototype.update = function (cfg) {
+  cfg = cfg || {};
+  var items = Array.isArray(cfg.items) ? cfg.items : [];
+  var sig = JSON.stringify(items.map(function (it) { return [it.label, +it.value || 0, it.color || '']; }));
+  if (sig === this.sig) return;
+  this.sig = sig;
+  var el = this.el;
+  if (this.rows.length !== items.length) {
+    el.textContent = '';
+    this.rows = items.map(function () {
+      var row = document.createElement('div');
+      row.className = 'agchart-bars-row';
+      var l = document.createElement('span');
+      l.className = 'agchart-bars-l';
+      var track = document.createElement('span');
+      track.className = 'agchart-bars-t';
+      var fill = document.createElement('span');
+      fill.className = 'agchart-bars-f';
+      track.appendChild(fill);
+      var v = document.createElement('span');
+      v.className = 'agchart-bars-v';
+      row.appendChild(l);
+      row.appendChild(track);
+      row.appendChild(v);
+      el.appendChild(row);
+      return { l: l, f: fill, v: v };
+    });
+  }
+  if (!items.length) {
+    var em = document.createElement('div');
+    em.className = 'agchart-bars-empty';
+    em.textContent = cfg.empty || '暂无数据';
+    el.appendChild(em);
+    return;
+  }
+  var max = +cfg.max || 0;
+  items.forEach(function (it) { var x = +it.value || 0; if (x > max) max = x; });
+  if (!(max > 0)) max = 1;
+  var fmtV = cfg.fmtV || defaultFmt;
+  this.rows.forEach(function (r, i) {
+    var it = items[i];
+    var val = +it.value || 0;
+    var label = String(it.label == null ? '' : it.label);
+    if (r.l.textContent !== label) { r.l.textContent = label; r.l.title = label; }
+    r.f.style.width = (val / max * 100) + '%';
+    r.f.style.background = it.color || '';
+    r.v.textContent = fmtV(val);
+  });
+};
+Bars.prototype.destroy = function () {
+  this.el.textContent = '';
+  this.el.classList.remove('agchart', 'agchart-bars');
+  if (this.el.__agbars === this) this.el.__agbars = null;
+};
+
+/* AgChart.heat(el, { values, max?, fmtV?, days?, hours?, empty? }) — 7×24 activity heat grid.
+   values: flat 168 (day-major: day*24+hour) or a 7×24 nested array. Cell intensity = inline
+   opacity over the token accent color (zero cells stay on the container track color). */
+function normHeat(values) {
+  var out = [];
+  if (!Array.isArray(values)) values = [];
+  if (values.length && Array.isArray(values[0])) {
+    for (var d = 0; d < 7; d++) {
+      var row = values[d] || [];
+      for (var h = 0; h < 24; h++) out.push(+row[h] || 0);
+    }
+  } else {
+    for (var i = 0; i < 168; i++) out.push(+values[i] || 0);
+  }
+  return out;
+}
+function Heat(el) {
+  this.el = el;
+  this.sig = '';
+  this.cells = [];
+  el.classList.add('agchart', 'agchart-heat');
+}
+Heat.prototype._build = function (days, hours) {
+  var el = this.el;
+  el.textContent = '';
+  this.cells = [];
+  var g = document.createElement('div');
+  g.className = 'agchart-heat-g';
+  g.style.gridTemplateColumns = 'auto repeat(' + hours.length + ', 1fr)';
+  for (var d = 0; d < days.length; d++) {
+    var dl = document.createElement('span');
+    dl.className = 'agchart-heat-d';
+    dl.textContent = days[d];
+    g.appendChild(dl);
+    for (var h = 0; h < hours.length; h++) {
+      var c = document.createElement('span');
+      c.className = 'agchart-heat-c';
+      g.appendChild(c);
+      this.cells.push(c);
+    }
+  }
+  // hour tick row: labels only at the marked columns (default 0/6/12/18)
+  g.appendChild(document.createElement('span'));
+  var marked = {};
+  (hours.marks || [0, 6, 12, 18]).forEach(function (m) { marked[m] = true; });
+  for (var t = 0; t < hours.length; t++) {
+    var x = document.createElement('span');
+    x.className = 'agchart-heat-x';
+    x.textContent = marked[t] ? String(hours[t]) : '';
+    g.appendChild(x);
+  }
+  el.appendChild(g);
+};
+Heat.prototype.update = function (cfg) {
+  cfg = cfg || {};
+  var vals = normHeat(cfg.values);
+  var days = Array.isArray(cfg.days) && cfg.days.length === 7 ? cfg.days : ['一', '二', '三', '四', '五', '六', '日'];
+  var hours = Array.isArray(cfg.hours) && cfg.hours.length === 24 ? cfg.hours : [];
+  if (!hours.length) { for (var i = 0; i < 24; i++) hours.push(i); }
+  if (cfg.hourMarks) hours.marks = cfg.hourMarks;
+  var max = +cfg.max || 0;
+  vals.forEach(function (v) { if (v > max) max = v; });
+  if (!(max > 0)) max = 1;
+  var fmtV = cfg.fmtV || defaultFmt;
+  var sig = JSON.stringify(vals) + '|' + max + '|' + days.join(',') + '|' + hours.join(',');
+  if (sig === this.sig) return;
+  this.sig = sig;
+  this._build(days, hours);
+  var empty = vals.every(function (v) { return v === 0; });
+  for (var k = 0; k < this.cells.length; k++) {
+    var v = vals[k];
+    var c = this.cells[k];
+    if (empty || v <= 0) {
+      c.style.opacity = '0';
+    } else {
+      c.style.opacity = String(Math.min(1, 0.12 + 0.88 * v / max));
+    }
+    c.title = days[Math.floor(k / 24)] + ' ' + hours[k % 24] + ':00 — ' + fmtV(v);
+  }
+};
+Heat.prototype.destroy = function () {
+  this.el.textContent = '';
+  this.el.classList.remove('agchart', 'agchart-heat');
+  if (this.el.__agheat === this) this.el.__agheat = null;
+};
+
 window.AgChart = {
   sparkline: function (el, series, opts) {
     opts = opts || {};
@@ -475,6 +628,20 @@ window.AgChart = {
   },
   line: function (el, cfg) {
     return mount(el, 'line', cfg || {});
+  },
+  bars: function (el, cfg) {
+    if (!el) return null;
+    var inst = el.__agbars;
+    if (!inst) { inst = new Bars(el); el.__agbars = inst; }
+    inst.update(cfg);
+    return inst;
+  },
+  heat: function (el, cfg) {
+    if (!el) return null;
+    var inst = el.__agheat;
+    if (!inst) { inst = new Heat(el); el.__agheat = inst; }
+    inst.update(cfg);
+    return inst;
   },
 };
 })();

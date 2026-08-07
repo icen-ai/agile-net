@@ -179,6 +179,7 @@ async fn p3_e2e_blind_relay_and_fail_close() {
         .db()
         .create_connector(
             "b-rendezvous",
+            "",
             &format!("127.0.0.1:{relay_port}"),
             psk,
             "fed.test",
@@ -445,6 +446,7 @@ async fn p3_split_tier_rule_delivery() {
         .db()
         .create_connector(
             "b-rendezvous",
+            "",
             &format!("127.0.0.1:{relay_port}"),
             psk,
             "fed.test",
@@ -648,6 +650,7 @@ async fn p3_delegated_admin_and_transit_management() {
         .db()
         .create_connector(
             "b-rendezvous",
+            "",
             &format!("127.0.0.1:{relay_port}"),
             psk,
             "fed.test",
@@ -895,6 +898,7 @@ async fn p3_entrust_zero_disclosure() {
         .db()
         .create_connector(
             "b-rendezvous",
+            "",
             &format!("127.0.0.1:{relay_port}"),
             psk,
             "fed.test",

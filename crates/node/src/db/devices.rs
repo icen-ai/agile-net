@@ -452,9 +452,32 @@ impl Database {
         Ok(())
     }
 
-    /// Session history of one device (newest first, capped).
-    pub fn device_sessions(&self, device_fp: &str, limit: u32) -> Result<Vec<DeviceSessionRow>> {
+    /// Raw session rows since a cutoff (RFC3339/datetime), oldest first — the device traffic
+    /// series / activity heatmap aggregate these in Rust (M5).
+    pub fn device_traffic_rows(
+        &self,
+        device_fp: &str,
+        since: &str,
+    ) -> Result<Vec<(String, i64, i64)>> {
         let conn = self.conn();
+        let mut stmt = conn
+            .prepare(
+                "SELECT started_at, bytes_in, bytes_out FROM device_session
+                 WHERE device_fp = ?1 AND started_at >= ?2 ORDER BY started_at",
+            )
+            .map_err(db_err)?;
+        let rows = stmt
+            .query_map(params![device_fp, since], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?))
+            })
+            .map_err(db_err)?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(db_err)?;
+        Ok(rows)
+    }
+
+    /// Session history of one device (newest first, capped).
+    pub fn device_sessions(&self, device_fp: &str, limit: u32) -> Result<Vec<DeviceSessionRow>> {        let conn = self.conn();
         let mut stmt = conn
             .prepare(
                 "SELECT id, device_fp, token_hash, entry, ip, started_at, ended_at, bytes_in, bytes_out, close_reason

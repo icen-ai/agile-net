@@ -200,6 +200,7 @@ async fn boot_resource_owner(
             .db()
             .create_connector(
                 name,
+                "",
                 &format!("127.0.0.1:{port}"),
                 psk,
                 "fed.test",

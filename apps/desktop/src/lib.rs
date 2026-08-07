@@ -103,7 +103,9 @@ impl AppState {
             listen: String::new(),
         })));
         Self {
-            client: AgileNetClient::new(),
+            // Persistent notification inbox (~/.anet/notifications.json) — session notices /
+            // rejections / approval states survive restarts (node.md M4-T1)
+            client: AgileNetClient::new().with_persistent_notifications(),
             creds: Arc::new(CredentialStore::open_default().ok().map(Arc::new)),
             web_api: Arc::new(tokio::sync::Mutex::new(None)),
             roles: Arc::new(tokio::sync::Mutex::new(roles)),
@@ -176,6 +178,13 @@ pub fn run() {
             proxy_power,
             proxy_power_toggle,
             parse_connect_url,
+            list_notifications,
+            notifications_read_all,
+            clear_notifications,
+            send_pending_note,
+            get_machine_identity,
+            set_machine_myname,
+            set_credential_myname,
             open_url,
             tray_show_main,
             tray_quit,
@@ -347,6 +356,12 @@ pub fn run() {
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 tray_speed_watch(handle).await;
+            });
+            // Notification center fan-out (M4-T1): new inbox entries broadcast as `ag-notify`
+            // to every window + float-ball bubble
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                notify_watch(handle).await;
             });
             // Restore float ball (was enabled at last exit; desktop only, mobile create returns unsupported)
             if roles::RoleSettings::load().float_ball {

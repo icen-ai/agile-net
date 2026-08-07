@@ -63,6 +63,15 @@ function connAuthTier(c) {
   return 'tls';
 }
 
+/* Session-notice reason code → bilingual fallback text (node.md M4: reason.* keys in aglang.js).
+   Unknown/absent codes degrade to the raw code (or the generic unknown label). */
+function reasonText(rc) {
+  const key = 'reason.' + String(rc || '');
+  const t = AgI18n.t(key);
+  if (t !== key) return t;
+  return rc ? String(rc) : AgI18n.t('reason.unknown');
+}
+
 window.$ = $;
 window.esc = esc;
 window.ahelp = ahelp;
@@ -71,4 +80,5 @@ window.nodeBadge = nodeBadge;
 window.grpChip = grpChip;
 window.localTag = localTag;
 window.connAuthTier = connAuthTier;
+window.reasonText = reasonText;
 })();

@@ -22,6 +22,9 @@ use serde_json::json;
 #[derive(Deserialize)]
 pub struct CreateConnectorRequest {
     pub name: String,
+    /// Self-declared name uploaded to the peer in AuthRequest.my_name (empty = node_id)
+    #[serde(default)]
+    pub my_name: String,
     pub upstream_addr: String,
     /// Fan-out token (issued by the peer; stored encrypted, never echoed in responses)
     pub token: String,
@@ -62,12 +65,16 @@ fn normalize_fingerprint(fp: &str) -> Result<String, String> {
 
 fn validate_connector_input(
     name: &str,
+    my_name: &str,
     upstream_addr: &str,
     advertise: &[String],
     remark: &str,
 ) -> Result<(), String> {
     if name.is_empty() || name.len() > 64 {
         return Err("name must be 1-64 characters".into());
+    }
+    if my_name.chars().count() > 64 {
+        return Err("my_name too long (max 64)".into());
     }
     if upstream_addr.is_empty() || upstream_addr.len() > 253 {
         return Err("upstream_addr must be 1-253 characters".into());
@@ -212,8 +219,9 @@ pub async fn create_connector(
     Json(req): Json<CreateConnectorRequest>,
 ) -> Response {
     let name = req.name.trim();
+    let my_name = req.my_name.trim();
     if let Err(msg) =
-        validate_connector_input(name, &req.upstream_addr, &req.advertise, &req.remark)
+        validate_connector_input(name, my_name, &req.upstream_addr, &req.advertise, &req.remark)
     {
         return err(StatusCode::BAD_REQUEST, codes::VALIDATION_FAILED, msg);
     }
@@ -258,6 +266,7 @@ pub async fn create_connector(
     };
     let params = (
         name.to_string(),
+        my_name.to_string(),
         req.upstream_addr.clone(),
         req.token.clone(),
         req.sni_hostname.clone(),
@@ -273,6 +282,7 @@ pub async fn create_connector(
         .db_call(move |db| {
             let (
                 name,
+                my_name,
                 upstream_addr,
                 token,
                 sni_hostname,
@@ -285,6 +295,7 @@ pub async fn create_connector(
             ) = params;
             db.create_connector(
                 &name,
+                &my_name,
                 &upstream_addr,
                 &token,
                 &sni_hostname,
@@ -348,6 +359,9 @@ pub async fn create_connector(
 #[derive(Deserialize)]
 pub struct UpdateConnectorRequest {
     pub name: String,
+    /// Self-declared name uploaded to the peer (PUT full-replace: empty string = back to node_id)
+    #[serde(default)]
+    pub my_name: String,
     pub upstream_addr: String,
     /// Empty/null = keep the current token (token is never echoed, only resettable to a new value)
     #[serde(default)]
@@ -395,8 +409,9 @@ pub async fn update_connector(
         );
     }
     let name = req.name.trim();
+    let my_name = req.my_name.trim();
     if let Err(msg) =
-        validate_connector_input(name, &req.upstream_addr, &req.advertise, &req.remark)
+        validate_connector_input(name, my_name, &req.upstream_addr, &req.advertise, &req.remark)
     {
         return err(StatusCode::BAD_REQUEST, codes::VALIDATION_FAILED, msg);
     }
@@ -449,6 +464,7 @@ pub async fn update_connector(
     let params = (
         id.clone(),
         name.to_string(),
+        my_name.to_string(),
         req.upstream_addr.clone(),
         token_reset.map(str::to_string),
         req.sni_hostname.clone(),
@@ -465,6 +481,7 @@ pub async fn update_connector(
             let (
                 id,
                 name,
+                my_name,
                 upstream_addr,
                 token_reset,
                 sni_hostname,
@@ -478,6 +495,7 @@ pub async fn update_connector(
             db.update_connector(
                 &id,
                 &name,
+                &my_name,
                 &upstream_addr,
                 token_reset.as_deref(),
                 &sni_hostname,

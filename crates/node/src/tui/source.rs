@@ -581,6 +581,7 @@ mod tests {
             .unwrap();
         db.create_connector(
             "peer-a",
+            "",
             "127.0.0.1:54430",
             "psk_secret",
             "",

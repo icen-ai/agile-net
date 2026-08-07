@@ -246,6 +246,29 @@ pub enum DeviceGate {
 /// Device-gate hook injected by the node layer (device_registry state cache).
 pub type DeviceGateHook = Arc<dyn Fn(&str) -> DeviceGate + Send + Sync>;
 
+/// One closed session's flush record (node.md M5: fired exactly once per session teardown --
+/// natural close, kick and shutdown all funnel through the serve-loop cleanup).
+#[derive(Debug, Clone)]
+pub struct SessionCloseRecord {
+    pub session_id: String,
+    pub session_key: String,
+    pub device_fp: String,
+    pub token_hash: String,
+    pub peer_ip: String,
+    /// "fanin" / "direct" / "relay" (session-start classification)
+    pub entry: String,
+    pub connected_at: std::time::Instant,
+    /// peer -> us
+    pub bytes_in: u64,
+    /// us -> peer
+    pub bytes_out: u64,
+    /// M2 reason_code set by the closer (empty = natural close)
+    pub close_reason: String,
+}
+
+/// Session-close sink (node layer flushes device_session + folds cumulative counters).
+pub type SessionCloseHook = Arc<dyn Fn(SessionCloseRecord) + Send + Sync>;
+
 /// Connected node session
 pub struct PeerSession {
     pub node_id: String,
@@ -286,6 +309,8 @@ pub struct SessionMeta {
     pub pubkey: String,
     /// Credential the session authenticated with (token sha256)
     pub token_hash: String,
+    /// Entry class: "fanin" (node peer) / "direct" (local registry token) / "relay" (transit)
+    pub entry: String,
     /// Peer's self-declared display name (decorative)
     pub my_name: String,
     /// Remote IP of the TLS connection
@@ -353,6 +378,8 @@ pub struct RelayListener {
     device_gate: Option<DeviceGateHook>,
     /// Pending-session appeal sink (PendingNote ctrl uplink; node layer files approval messages)
     pending_note_hook: Option<Arc<dyn Fn(String, String) + Send + Sync>>,
+    /// Session-close sink (M5 device_session ledger flush)
+    session_close_hook: Option<SessionCloseHook>,
 }
 
 impl RelayListener {
@@ -412,6 +439,7 @@ impl RelayListener {
             rate_limit_provider: None,
             device_gate: None,
             pending_note_hook: None,
+            session_close_hook: None,
         }
     }
 
@@ -438,6 +466,12 @@ impl RelayListener {
     /// Pending-session appeal sink (PendingNote ctrl uplink: (session_key, body)).
     pub fn with_pending_note_hook(mut self, hook: Arc<dyn Fn(String, String) + Send + Sync>) -> Self {
         self.pending_note_hook = Some(hook);
+        self
+    }
+
+    /// Session-close sink (M5): fired once per session teardown with the final counters.
+    pub fn with_session_close_hook(mut self, hook: SessionCloseHook) -> Self {
+        self.session_close_hook = Some(hook);
         self
     }
 
@@ -520,7 +554,6 @@ impl RelayListener {
     pub async fn disconnect_peer(&self, node_id: &str, reason_code: &str, message: &str) -> bool {
         if let Some((_, peer)) = self.peers.remove(node_id) {
             Self::notify_and_shutdown(&peer.mux, reason_code, message).await;
-            self.session_meta.retain(|_, m| m.session_key != node_id);
             self.set_peer_routes(node_id, Vec::new());
             self.peer_groups.remove(node_id);
             let _ = self.events.send(PeerEvent::NodeDisconnected {
@@ -655,6 +688,7 @@ impl RelayListener {
     /// is flushed first so the peer reliably sees WHY the session died (M4 client notification).
     async fn notify_and_shutdown(mux: &Arc<MuxSession>, reason_code: &str, message: &str) {
         if !reason_code.is_empty() {
+            mux.set_close_reason(reason_code);
             let notice = crate::proto::message::CtrlMessage::SessionNotice {
                 reason_code: reason_code.to_string(),
                 message: message.to_string(),
@@ -672,7 +706,8 @@ impl RelayListener {
         let Some((_, sessions)) = self.clients.remove(session_key) else {
             return 0;
         };
-        self.session_meta.retain(|_, m| m.session_key != session_key);
+        // session_meta intentionally survives: the serve-loop cleanup flushes the ledger
+        // record (M5) and removes it -- stripping it here would lose the close reason
         let count = sessions.len();
         for (_, mux) in sessions {
             Self::notify_and_shutdown(&mux, reason_code, message).await;
@@ -1193,6 +1228,7 @@ impl RelayListener {
                 device_fp: device_meta.device_fp.clone(),
                 pubkey: device_meta.pubkey.clone(),
                 token_hash: token_hash.clone(),
+                entry: "fanin".to_string(),
                 my_name: device_meta.my_name.clone(),
                 peer_ip: peer_addr.ip().to_string(),
                 connected_at: Instant::now(),
@@ -1256,9 +1292,28 @@ impl RelayListener {
 
         let _ = reader_handle.await;
 
+        // M5: flush the session ledger record exactly once (kicks and natural closes both end
+        // here -- the reason rides the mux close-reason slot)
+        if let Some((_, meta)) = self.session_meta.remove(&session_id)
+            && let Some(hook) = &self.session_close_hook
+        {
+            let (out, inn) = mux.traffic();
+            hook(SessionCloseRecord {
+                session_id: meta.session_id,
+                session_key: meta.session_key,
+                device_fp: meta.device_fp,
+                token_hash: meta.token_hash,
+                peer_ip: meta.peer_ip,
+                entry: meta.entry,
+                connected_at: meta.connected_at,
+                bytes_in: inn,
+                bytes_out: out,
+                close_reason: mux.close_reason().unwrap_or_default(),
+            });
+        }
+
         // cleanup ONLY if the registry still points at this session — a kicked stale session's
         // exit path must not strip the fresh session's routes / pushed groups / registrations
-        self.session_meta.remove(&session_id);
         if self
             .peers
             .remove_if(&node_id, |_, p| Arc::ptr_eq(&p.mux, &mux))
@@ -1552,6 +1607,11 @@ impl RelayListener {
 
         let session_id = new_session_id();
         let gate_fp = device_meta.device_fp.clone();
+        let entry_class = if self.local_delegated.contains_key(&token_hash) {
+            "direct"
+        } else {
+            "relay"
+        };
         self.clients
             .entry(session_key.clone())
             .or_default()
@@ -1564,6 +1624,7 @@ impl RelayListener {
                 device_fp: device_meta.device_fp,
                 pubkey: device_meta.pubkey,
                 token_hash: token_hash.clone(),
+                entry: entry_class.to_string(),
                 my_name: device_meta.my_name,
                 peer_ip: peer_addr.ip().to_string(),
                 connected_at: Instant::now(),
@@ -1632,8 +1693,26 @@ impl RelayListener {
         }
 
         let _ = reader_handle.await;
+        // M5: flush the session ledger record exactly once (kicks and natural closes both end
+        // here -- the reason rides the mux close-reason slot)
+        if let Some((_, meta)) = self.session_meta.remove(&session_id)
+            && let Some(hook) = &self.session_close_hook
+        {
+            let (out, inn) = mux.traffic();
+            hook(SessionCloseRecord {
+                session_id: meta.session_id,
+                session_key: meta.session_key,
+                device_fp: meta.device_fp,
+                token_hash: meta.token_hash,
+                peer_ip: meta.peer_ip,
+                entry: meta.entry,
+                connected_at: meta.connected_at,
+                bytes_in: inn,
+                bytes_out: out,
+                close_reason: mux.close_reason().unwrap_or_default(),
+            });
+        }
         // remove this session from the session table (may already have been cleared by disconnect_client)
-        self.session_meta.remove(&session_id);
         if let Some(mut sessions) = self.clients.get_mut(&session_key) {
             sessions.retain(|(_, m)| !Arc::ptr_eq(m, &mux));
             let empty = sessions.is_empty();

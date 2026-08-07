@@ -283,6 +283,8 @@ pub(crate) async fn ensure_console_forwarder(
 pub struct ServerConnectorView {
     pub id: String,
     pub name: String,
+    /// Self-declared name uploaded to the peer (empty = node_id; edit form echoes it)
+    pub my_name: String,
     pub upstream_addr: String,
     pub token_prefix: String,
     pub sni_hostname: String,
@@ -380,6 +382,7 @@ pub(crate) async fn list_server_connectors(
             ServerConnectorView {
                 id: v.id.clone(),
                 name: v.name,
+                my_name: v.my_name,
                 upstream_addr: v.upstream_addr,
                 token_prefix: v.token_prefix,
                 sni_hostname: v.sni_hostname,
@@ -418,6 +421,8 @@ struct ConnectorForm {
     /// Policy upload (federation P1): local group IDs pushed upstream at auth; add: None = no upload; update: None = keep
     push_groups: Option<Vec<String>>,
     name: Option<String>,
+    /// Self-declared name uploaded to the peer in AuthRequest.my_name (M4-T6; empty = node_id)
+    my_name: Option<String>,
     advertise: Option<String>,
     remark: Option<String>,
 }
@@ -462,6 +467,7 @@ pub(crate) async fn add_server_connector(
     group_id: Option<String>,
     push_groups: Option<Vec<String>>,
     name: Option<String>,
+    my_name: Option<String>,
     advertise: Option<String>,
     remark: Option<String>,
 ) -> Result<(), String> {
@@ -474,6 +480,7 @@ pub(crate) async fn add_server_connector(
         group_id,
         push_groups,
         name,
+        my_name,
         advertise,
         remark,
     };
@@ -496,6 +503,10 @@ async fn add_server_connector_inner(
         .unwrap_or_else(|| addr.to_string());
     let advertise = form.advertise.unwrap_or_default().trim().to_string();
     let remark = form.remark.unwrap_or_default().trim().to_string();
+    let my_name = form.my_name.unwrap_or_default().trim().to_string();
+    if my_name.chars().count() > 64 {
+        return Err("我的名称最长 64 字".into());
+    }
     let group_id = form.group_id.filter(|g| !g.trim().is_empty());
     let db = roles::open_embedded_db()?;
     validate_group(&db, group_id.as_deref())?;
@@ -510,6 +521,7 @@ async fn add_server_connector_inner(
     let rec = db
         .create_connector(
             &name,
+            &my_name,
             addr,
             form.token.trim(),
             form.sni_hostname.trim(),
@@ -547,6 +559,7 @@ pub(crate) async fn update_server_connector(
     group_id: Option<String>,
     push_groups: Option<Vec<String>>,
     name: Option<String>,
+    my_name: Option<String>,
     advertise: Option<String>,
     remark: Option<String>,
 ) -> Result<(), String> {
@@ -559,6 +572,7 @@ pub(crate) async fn update_server_connector(
         group_id,
         push_groups,
         name,
+        my_name,
         advertise,
         remark,
     };
@@ -609,9 +623,18 @@ async fn update_server_connector_inner(
         .remark
         .map(|r| r.trim().to_string())
         .unwrap_or_else(|| old.remark.clone());
+    // my_name tri-state like remark: None = keep, Some = replace (empty = back to node_id)
+    let my_name = form
+        .my_name
+        .map(|m| m.trim().to_string())
+        .unwrap_or_else(|| old.my_name.clone());
+    if my_name.chars().count() > 64 {
+        return Err("我的名称最长 64 字".into());
+    }
     db.update_connector(
         id,
         &name,
+        &my_name,
         addr,
         token_reset.as_deref(),
         form.sni_hostname.trim(),

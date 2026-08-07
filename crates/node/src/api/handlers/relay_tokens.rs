@@ -20,6 +20,10 @@ use serde_json::json;
 pub struct CreateTokenRequest {
     #[serde(default)]
     pub remark: String,
+    /// Suggested self-declared name for the consuming peer, prefilled into the share link's
+    /// myname word (node.md M3-T6 naming triplet; link-only, not stored)
+    #[serde(default)]
+    pub my_name: String,
     /// Allow this fan-in relay to manage the node (default off)
     #[serde(default)]
     pub expose_control: bool,
@@ -64,6 +68,13 @@ pub async fn create_token(
             StatusCode::BAD_REQUEST,
             codes::VALIDATION_FAILED,
             "remark too long (max 256)",
+        );
+    }
+    if req.my_name.chars().count() > 64 {
+        return err(
+            StatusCode::BAD_REQUEST,
+            codes::VALIDATION_FAILED,
+            "my_name too long (max 64)",
         );
     }
     if !valid_scope(&req.control_scope) {
@@ -233,7 +244,8 @@ pub async fn create_token(
                 &token,
                 &sni,
                 state.runtime.cert_fingerprint.as_deref(),
-                None,
+                // M3-T6: the issuer-suggested "my name" rides the link's myname word
+                Some(req.my_name.trim()).filter(|s| !s.is_empty()),
             );
             let (_, relay_port) = state.public_tunnel_endpoint().await;
             let public = state.declared_relay_addr().await;
@@ -267,6 +279,10 @@ pub struct UpdateTokenRequest {
     pub expose_control: bool,
     #[serde(default = "default_scope")]
     pub control_scope: String,
+    /// Local display name of the consuming peer (tri-state: absent = unchanged, string = set;
+    /// this is the issuer-assigned name shown in fan-in lists)
+    #[serde(default)]
+    pub remark: Option<String>,
     /// ACL group change tri-state: absent = unchanged, null = unrestricted, string = mount to that group.
     /// (serde maps an explicit null on Option to None too; deserialize_some distinguishes absent from cleared)
     #[serde(default, deserialize_with = "deserialize_some")]
@@ -406,6 +422,32 @@ pub async fn update_token(
             ),
         )
         .await;
+    }
+
+    // Local display name (remark) change: absent = unchanged
+    if let Some(remark) = &req.remark {
+        let remark = remark.trim();
+        if remark.len() > 256 {
+            return err(
+                StatusCode::BAD_REQUEST,
+                codes::VALIDATION_FAILED,
+                "remark too long (max 256)",
+            );
+        }
+        if remark != existing.remark {
+            let (tid, r) = (id.clone(), remark.to_string());
+            if let Err(e) = state
+                .db_call(move |db| db.set_relay_token_remark(&tid, &r))
+                .await
+            {
+                return err(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    codes::INTERNAL,
+                    e.to_string(),
+                );
+            }
+            audit(&state, &claims, &ip, "relay_token.set_remark", Some(&id), remark).await;
+        }
     }
 
     // ACL group change: kick sessions by token hash after the DB write; online peers reconnect under the new group (takes effect at once)

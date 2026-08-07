@@ -28,6 +28,7 @@ async fn connector_manager_upsert_remove_lifecycle() {
     let rec = db
         .create_connector(
             "site-a",
+            "",
             "127.0.0.1:1",
             "psk_test-token",
             "",
@@ -75,10 +76,10 @@ async fn connector_manager_upsert_remove_lifecycle() {
 async fn connector_manager_start_all_skips_disabled() {
     let db = Database::in_memory().unwrap();
     let a = db
-        .create_connector("a", "127.0.0.1:1", "psk_a", "", true, "", "", "", "", None, "")
+        .create_connector("a", "", "127.0.0.1:1", "psk_a", "", true, "", "", "", "", None, "")
         .unwrap();
     let b = db
-        .create_connector("b", "127.0.0.1:2", "psk_b", "", true, "", "", "", "", None, "")
+        .create_connector("b", "", "127.0.0.1:2", "psk_b", "", true, "", "", "", "", None, "")
         .unwrap();
     db.set_connector_enabled(&b.id, false).unwrap();
 

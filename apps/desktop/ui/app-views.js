@@ -70,12 +70,17 @@ function statusText(s) {
   if (s === 'Connected') return T('st-connected');
   if (s === 'Connecting') return T('st-connecting');
   if (s === 'Reconnecting') return T('st-reconnecting');
+  if (s === 'PendingApproval') return AgI18n.t('views.st-pending');
+  if (s === 'Blocked') return AgI18n.t('views.st-blocked');
   return T('st-disconnected');
 }
 function statusBadgeHtml(s) {
   if (s === 'Connected') return '<span class="badge b-ok">' + T('st-connected') + '</span>';
   if (s === 'Connecting') return '<span class="badge b-warn"><span class="pulse"></span>' + T('st-connecting') + '</span>';
   if (s === 'Reconnecting') return '<span class="badge b-warn"><span class="pulse"></span>' + T('st-reconnecting') + '</span>';
+  // M4: certified-pending (amber, gated) / terminal block (red, reason in the card body)
+  if (s === 'PendingApproval') return '<span class="badge b-warn">' + AgI18n.t('views.st-pending') + '</span>';
+  if (s === 'Blocked') return '<span class="badge b-off">' + AgI18n.t('views.st-blocked') + '</span>';
   return '<span class="badge b-off">' + T('st-disconnected') + '</span>';
 }
 
@@ -900,12 +905,14 @@ async function refreshCreds() {
 function renderCredList(creds, statusMap) {
   const list = $('creds-list');
   if (list.querySelector('.cred-rename-input')) return; // a rename edit is in flight — don't rebuild under it
+  if (list.querySelector('.pnote-input') && list.querySelector('.pnote-input') === document.activeElement) return; // typing an appeal note — don't rebuild under it
   const f = FILTERS.creds;
   const nodeMap = Object.fromEntries((window._nodes || []).map(n => [n.node_id, n]));
   // unsaved active connections (manual connect without saving credential): appended after saved fan-ins, disconnect/manage only
   const savedKeys = new Set(creds.map(([k]) => k));
   const unsaved = (window._nodes || []).filter(n => !savedKeys.has(n.node_id));
-  const live = (st) => st === 'Connected' || st === 'Connecting' || st === 'Reconnecting';
+  const live = (st) => st === 'Connected' || st === 'Connecting' || st === 'Reconnecting' || st === 'PendingApproval';
+  const unreadNodes = window._notifyUnreadNodes || new Set();
   const match = (name, label, addr, st) => !f ||
     name.toLowerCase().includes(f) || (label || '').toLowerCase().includes(f) ||
     addr.toLowerCase().includes(f) || (st ? statusText(st) : AgI18n.t('common.disconnected')).includes(f);
@@ -914,7 +921,7 @@ function renderCredList(creds, statusMap) {
     || (c.name && match(c.name, c.label, c.addr, statusMap[key])));
   const shownUnsaved = unsaved.filter(n => match(n.node_name, n.label, n.addr, n.status));
   // web.md §3.2: signature guard — identical inputs skip the full DOM rebuild (10s poll stability)
-  const sig = JSON.stringify([creds, statusMap, f, window._nodes || []]);
+  const sig = JSON.stringify([creds, statusMap, f, window._nodes || [], [...unreadNodes], window._pnoteCount || {}]);
   if (list.dataset.sig === sig) return;
   list.dataset.sig = sig;
   if (!shownCreds.length && !shownUnsaved.length) {
@@ -925,9 +932,12 @@ function renderCredList(creds, statusMap) {
     const st = statusMap[key];
     const n = nodeMap[key];
     const badge = st ? statusBadgeHtml(st) : '<span class="badge b-gray">' + AgI18n.t('common.disconnected') + '</span>';
-    const mainBtn = st === 'Connected'
-      ? '<button class="ghost small" data-act="disconnect" data-key="' + esc(key) + '">' + AgI18n.t('views.disconnect') + '</button>'
-      : '<button class="small" data-act="reconnect" data-key="' + esc(key) + '">' + AgI18n.t(st ? 'views.reconnect' : 'views.connect') + '</button>';
+    // M4-T2: Blocked is terminal — the action is re-import guidance, not a doomed reconnect
+    const mainBtn = st === 'Blocked'
+      ? '<button class="small" data-act="reimport" data-key="' + esc(key) + '">' + AgI18n.t('views.reimport') + '</button>'
+      : st === 'Connected'
+        ? '<button class="ghost small" data-act="disconnect" data-key="' + esc(key) + '">' + AgI18n.t('views.disconnect') + '</button>'
+        : '<button class="small" data-act="reconnect" data-key="' + esc(key) + '">' + AgI18n.t(st ? 'views.reconnect' : 'views.connect') + '</button>';
     const epName = (c.name && c.name.trim()) || (key.includes('@') ? key.slice(0, key.indexOf('@')) : key);
     // E2E tier badge: 专线 (whole machine) vs 分流 (rule delivery); the entrust word (en_xxx)
     // marks the E2E tier. split silently degrades to catch-all when the config pull failed —
@@ -943,11 +953,32 @@ function renderCredList(creds, statusMap) {
     const addrLine = (n && n.current_entry && st === 'Connected')
       ? esc(n.current_entry) + ' · <span class="dim">' + AgI18n.t('views.delegated-set', { n: (c.entries || []).length || 1 }) + '</span>'
       : esc(c.addr);
+    // M4-T2: terminal block — mapped reason + the issuer's one-time notice (their own words)
+    const blockLine = (st === 'Blocked' && n)
+      ? '<div class="addr"><span class="badge b-off">' + esc(reasonText(n.block_reason)) + '</span>' +
+        (n.block_message ? ' <span class="dim">' + esc(n.block_message) + '</span>' : '') + '</div>'
+      : '';
+    // M4-T2: unread inbox notice on an idle/down card (kick/notice arrived while not watching)
+    const unreadLine = (!live(st) && st !== 'Blocked' && unreadNodes.has(key))
+      ? '<div class="addr"><span class="badge b-info">' + AgI18n.t('views.unread-notice') + '</span></div>'
+      : '';
+    // M4-T3: pending certification — amber state + appeal composer (≤3 notes per session, local count)
+    let pendLine = '';
+    if (st === 'PendingApproval') {
+      const cnt = ((window._pnoteCount || {})[key]) || 0;
+      const capped = cnt >= 3;
+      pendLine = '<div class="addr dim">' + AgI18n.t('views.pending-tip') + '</div>' +
+        '<div class="pnote"><input class="pnote-input" maxlength="512" data-note-input="' + esc(key) + '"' +
+        (capped ? ' disabled placeholder="' + esc(AgI18n.t('views.note-limit')) + '"' : ' placeholder="' + esc(AgI18n.t('views.note-ph')) + '"') + '>' +
+        '<span class="pnote-count">' + cnt + '/3</span>' +
+        '<button class="ghost small" data-act="send-note" data-key="' + esc(key) + '"' + (capped ? ' disabled' : '') + '>' + AgI18n.t('views.note-send') + '</button></div>';
+    }
     return '<div class="node-card' + (live(st) ? '' : ' down') + '"><div class="info">' +
       '<div class="name"><span class="cred-name" data-rename="' + esc(key) + '" title="' + AgI18n.t('fanin.rename') + '">' + esc(epName) + '</span> ' + badge + tierBadge + '</div>' +
       '<div class="addr mono">' + addrLine + (c.insecure ? ' · <span class="badge b-warn">insecure</span>' : '') + '</div>' +
+      blockLine + unreadLine + pendLine +
       '</div><div class="card-actions">' +
-      '<button class="ghost small icon-btn" title="' + AgI18n.t('fanin.rename') + '" data-act="rename" data-key="' + esc(key) + '">' + AgIcon('pencil', 13) + '</button>' +
+      '<button class="ghost small icon-btn" title="' + AgI18n.t('common.edit') + '" data-act="edit" data-key="' + esc(key) + '">' + AgIcon('pencil', 13) + '</button>' +
       (n && n.admin_console && st === 'Connected' && !HTTP_MODE
         ? '<button class="ghost small" data-act="console" data-id="' + esc(key) + '">' + AgIcon('monitor', 13) + ' ' + AgI18n.t('views.manage') + '</button>' : '') +
       mainBtn +
@@ -959,6 +990,11 @@ function renderCredList(creds, statusMap) {
     '<div class="node-card' + (live(n.status) ? '' : ' down') + '"><div class="info">' +
     '<div class="name">' + esc(n.node_name) + ' ' + statusBadgeHtml(n.status) + ' <span class="badge b-gray">' + AgI18n.t('views.unsaved') + '</span></div>' +
     '<div class="addr mono">' + esc(n.addr) + '</div>' +
+    (n.status === 'Blocked'
+      ? '<div class="addr"><span class="badge b-off">' + esc(reasonText(n.block_reason)) + '</span>' +
+        (n.block_message ? ' <span class="dim">' + esc(n.block_message) + '</span>' : '') + '</div>'
+      : '') +
+    (n.status === 'PendingApproval' ? '<div class="addr dim">' + AgI18n.t('views.pending-tip') + '</div>' : '') +
     '</div><div class="card-actions">' +
     (n.admin_console && n.status === 'Connected' && !HTTP_MODE
       ? '<button class="ghost small" data-act="console" data-id="' + esc(n.node_id) + '">' + AgIcon('monitor', 13) + ' ' + AgI18n.t('views.manage') + '</button>' : '') +
@@ -974,6 +1010,8 @@ async function reconnectSaved(key, btn) {
     manage_hosts: false, save_credential: true,
     // keep the failover set and E2E fields on reconnect
     entries: c.entries || [], entry_fps: c.entry_fps || [], en: c.en || null, emode: c.emode || null, eadmin: !!c.eadmin,
+    // M4: naming triplet (myname) + accepted visibility clause ride the reconnect too
+    myname: c.myname || null, visibility: c.visibility || null,
   }, btn || null);
 }
 async function exportCred(key) {
@@ -1036,6 +1074,156 @@ function startCredRename(span) {
   });
   input.addEventListener('blur', cancel);
 }
+
+/* ================= Notification center (node.md M4-T1: titlebar bell + sidebar 通知 page) =================
+   Data: list_notifications → {items, unread} (persistent local inbox; engine pushes session
+   notices / rejections / approval states). New entries also arrive instantly via the Tauri
+   `ag-notify` broadcast (notify_watch); the 10s tick is the polling fallback. */
+let NOTIFY_SIG = null;
+let NOTIFY_ITEMS = [];
+
+function fmtNotifyTs(ts) {
+  return String(ts || '').replace('T', ' ').replace(/(\.\d+)?(Z|\+00:00)$/, '');
+}
+
+async function refreshNotify(force) {
+  let data;
+  try { data = await invoke('list_notifications'); } catch (e) { return; }
+  const unread = data.unread || 0;
+  const items = data.items || [];
+  // unread badges (titlebar bell + sidebar item) — cheap change-detected writes
+  const txt = unread > 99 ? '99+' : String(unread);
+  ['notify-badge', 'nav-notify-badge'].forEach(id => {
+    const el = $(id);
+    if (!el) return;
+    el.hidden = unread === 0;
+    if (el.textContent !== txt) el.textContent = txt;
+  });
+  // unread node-bound notices also surface on disconnected fan-in cards (M4-T2)
+  window._notifyUnreadNodes = new Set(items.filter(n => !n.read && n.node_id).map(n => n.node_id));
+  const sig = JSON.stringify([items, unread]);
+  if (!force && sig === NOTIFY_SIG) return;
+  NOTIFY_SIG = sig;
+  NOTIFY_ITEMS = items;
+  renderNotifyList(items);
+  renderCredList(window._credsRaw || [], window._nodeStatus || {});
+}
+
+function renderNotifyList(items) {
+  const list = $('notify-list');
+  if (!list) return;
+  if (!items.length) {
+    list.innerHTML = '<div class="empty">' + AgI18n.t('notify.empty') + '</div>';
+    return;
+  }
+  list.innerHTML = items.map(n => {
+    const ic = n.kind === 'approval' ? 'badge-check' : n.kind === 'session' ? 'triangle-alert' : 'info';
+    const kindLabel = AgI18n.t(n.kind === 'approval' ? 'notify.kindApproval' : n.kind === 'session' ? 'notify.kindSession' : 'notify.kindSystem');
+    const rc = n.reason_code
+      ? '<span class="badge ' + (n.kind === 'session' ? 'b-off' : 'b-warn') + '">' + esc(reasonText(n.reason_code)) + '</span>'
+      : '';
+    return '<div class="ntf' + (n.read ? '' : ' unread') + '"' + (n.node_id ? ' data-nid="' + esc(n.node_id) + '"' : '') + '>' +
+      '<span class="ntf-ic">' + AgIcon(ic, 15) + '</span>' +
+      '<div class="ntf-main">' +
+      '<div class="ntf-title">' + esc(n.title) + ' ' + rc + '</div>' +
+      (n.body && n.body !== n.title && n.body !== n.reason_code ? '<div class="ntf-body">' + esc(n.body) + '</div>' : '') +
+      '<div class="ntf-meta dim">' + esc(kindLabel) + ' · ' + esc(fmtNotifyTs(n.ts)) + '</div>' +
+      '</div></div>';
+  }).join('');
+}
+
+function initNotify() {
+  $('btn-notify').onclick = () => switchView('notify');
+  $('btn-notify-read-all').onclick = async () => {
+    try { await invoke('notifications_read_all'); } catch (e) { toast(friendlyError(e), 'err'); }
+    refreshNotify(true);
+  };
+  $('btn-notify-clear').onclick = async () => {
+    const ok = await askConfirm({ title: AgI18n.t('common.clear'), desc: AgI18n.t('notify.clearConfirm'), icon: 'trash-2', danger: true, okText: AgI18n.t('common.clear') });
+    if (!ok) return;
+    try { await invoke('clear_notifications'); } catch (e) { toast(friendlyError(e), 'err'); }
+    refreshNotify(true);
+  };
+  // Clicking a node-bound entry jumps to its fan-in card
+  $('notify-list').addEventListener('click', (e) => {
+    const row = e.target.closest('.ntf[data-nid]');
+    if (row) switchView('nodes');
+  });
+}
+
+/* M4-T2: Blocked card guidance — delete the dead credential, then land in the import wizard */
+async function reimportCred(key) {
+  const ok = await askConfirm({
+    title: AgI18n.t('views.reimport-title'),
+    desc: AgI18n.t('views.reimport-desc'),
+    icon: 'refresh-cw',
+    danger: true,
+    okText: AgI18n.t('views.reimport'),
+  });
+  if (!ok) return;
+  try { await invoke('delete_credential', { key }); } catch (e) { toast(friendlyError(e), 'err'); return; }
+  refreshCreds();
+  refreshNotify(true);
+  openUniversalImport();
+}
+
+/* M4-T3: appeal note to the issuer over the pending session (≤3 per session, locally counted) */
+async function sendPendingNote(key, btn) {
+  window._pnoteCount = window._pnoteCount || {};
+  const cnt = window._pnoteCount[key] || 0;
+  if (cnt >= 3) { toast(AgI18n.t('views.note-limit'), 'err'); return; }
+  const input = $('creds-list').querySelector('input[data-note-input="' + CSS.escape(key) + '"]');
+  const body = input ? input.value.trim() : '';
+  if (!body) return;
+  btn.disabled = true;
+  try {
+    await invoke('send_pending_note', { nodeId: key, body });
+    window._pnoteCount[key] = cnt + 1;
+    toast(AgI18n.t('views.note-sent'), 'ok');
+    renderCredList(window._credsRaw || [], window._nodeStatus || {});
+  } catch (e) {
+    toast(friendlyError(e), 'err');
+    btn.disabled = false;
+  }
+}
+
+/* M4-T6: fan-in credential edit modal — 目标名称 (local alias) | 我的名称 (uploaded myname);
+   remark semantics merge into the name field (no separate column). */
+let CRED_EDIT_KEY = null;
+function openCredEdit(key) {
+  const c = (window._creds || {})[key];
+  if (!c) return;
+  CRED_EDIT_KEY = key;
+  const derived = key.includes('@') ? key.slice(0, key.indexOf('@')) : key;
+  $('cedit-name').value = (c.name && c.name.trim()) || derived;
+  $('cedit-name').dataset.derived = derived;
+  $('cedit-myname').value = c.myname || '';
+  $('cedit-err').textContent = '';
+  $('cred-edit-modal').style.display = 'flex';
+  $('cedit-name').focus();
+}
+async function credEditSave() {
+  const key = CRED_EDIT_KEY;
+  if (!key) return;
+  const name = $('cedit-name').value.trim();
+  const myname = $('cedit-myname').value.trim();
+  const btn = $('cedit-ok');
+  btn.disabled = true;
+  try {
+    // empty or equal-to-derived clears the local alias (same semantics as inline rename)
+    await invoke('rename_credential', { key, name: name && name !== $('cedit-name').dataset.derived ? name : null });
+    await invoke('set_credential_myname', { key, myname: myname || null });
+    $('cred-edit-modal').style.display = 'none';
+    CRED_EDIT_KEY = null;
+    toast(AgI18n.t('views.cred-saved'), 'ok');
+    refreshCreds();
+  } catch (e) {
+    $('cedit-err').textContent = friendlyError(e);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 
 /* ================= Fan-out connections (embedded node DB managed, changes hot-applied) ================= */
 let FO_EDIT_ID = null;

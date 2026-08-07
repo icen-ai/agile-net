@@ -318,6 +318,29 @@ impl NodeServer {
                     .with_local_delegated_registry(local_delegated_registry)
                     .with_device_gate(gate.gate())
                     .with_pending_note_hook(note_hook)
+                    .with_session_close_hook({
+                        // M5: one ledger row per closed session + cumulative fold (device-perspective
+                        // up = bytes_in received from the device)
+                        let db_flush = db.clone();
+                        Arc::new(move |rec: agile_net_core::relay::listener::SessionCloseRecord| {
+                            let started = chrono::DateTime::<chrono::Utc>::from(
+                                std::time::SystemTime::now() - rec.connected_at.elapsed(),
+                            )
+                            .format("%Y-%m-%d %H:%M:%S")
+                            .to_string();
+                            let _ = db_flush.flush_device_session(
+                                &rec.device_fp,
+                                &rec.token_hash,
+                                &rec.entry,
+                                &rec.peer_ip,
+                                &started,
+                                rec.bytes_in,
+                                rec.bytes_out,
+                                &rec.close_reason,
+                            );
+                        })
+                            as Arc<dyn Fn(agile_net_core::relay::listener::SessionCloseRecord) + Send + Sync>
+                    })
                     .with_session_rate_limit(move |id, hash| {
                         rate_limit::token_rate_limit_bps(id, hash, &db_rl)
                     });

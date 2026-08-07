@@ -4,7 +4,8 @@
 
    Currently collected: ag-select unified custom dropdown (.agsel-*; native select kept as data/logic carrier)
              ag-tabs horizontal tab bar (.agtabs/.agtab; in-page section switching, optional right-side tool slot)
-             agchart charts (.agchart*; JS in sibling agchart.js, first shared JS component, served via same mechanism)
+             agchart charts (.agchart*; JS in sibling agchart.js, first shared JS component, served via same mechanism;
+             line/sparkline SVG + bars/heat DOM variants)
              ahelp inline help (.ahelp/.ahelp-tip; badge-question-mark + pure CSS hover tip card;
              each end's JS has an ahelp(text) helper; static HTML can hand-write the same span structure)
              agedit inline edit (.agedit-*; value [Edit] ↔ input [Save]; each end's JS has bindInlineEdit)
@@ -20,6 +21,11 @@
              lat latency badge (.lat-good/.lat-mid/.lat-bad/.lat-na)
              ev-list event center list (.ev-row > .ev-time + pill + .ev-detail)
              bnav bottom nav (shown only ≤720px; takes over the horizontal nav hidden at the same breakpoint in style.css)
+             sess expandable resource rows (.res-row/.sess-*; session management, node.md M3-T1 prototype scenario 8)
+             agkpi KPI card (.agkpi-v value + .agkpi-k label + .agkpi-d delta slot, node.md M3-T7)
+             agtimeline vertical timeline (.agtl-item + state modifiers, node.md M3-T7)
+             agcopy mono copyable field (fingerprint/pubkey/session key; click-to-copy, JS wires data-act per end)
+             agidcard hover identity card (device name/fingerprint/pubkey/auth/online; JS shell in agutil.js AgIdCard)
    Glass degradation: all backdrop-filter components write the -webkit- pair, with html.no-blur solid-color fallback rules. */
 
 /* --- agchart charts (JS in shared agchart.js; this layer holds legend/tooltip/grid/empty-state styles) --- */

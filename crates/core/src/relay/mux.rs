@@ -312,6 +312,9 @@ pub struct MuxSession {
     /// Data-plane traffic counters (Data frame payload bytes)
     bytes_out: Arc<AtomicU64>,
     bytes_in: Arc<AtomicU64>,
+    /// Why this session was force-closed (M2 reason_code, set by the closer before shutdown;
+    /// flushed into the device_session ledger at teardown — M5)
+    close_reason: Arc<arc_swap::ArcSwapOption<String>>,
 }
 
 impl MuxSession {
@@ -459,6 +462,7 @@ impl MuxSession {
             flow_control,
             bytes_out,
             bytes_in,
+            close_reason: Arc::new(arc_swap::ArcSwapOption::from_pointee(None)),
         });
 
         (session, reader_handle)
@@ -563,6 +567,17 @@ impl MuxSession {
         self.reader_abort.abort();
         self.channels.clear();
         self.open_waiters.clear();
+    }
+
+    /// Set the close reason (M2 reason_code) BEFORE shutdown — the listener flushes it into the
+    /// device_session ledger at teardown (M5).
+    pub fn set_close_reason(&self, reason: &str) {
+        self.close_reason.store(Some(Arc::new(reason.to_string())));
+    }
+
+    /// The close reason set by the closer (None/empty = natural close).
+    pub fn close_reason(&self) -> Option<String> {
+        self.close_reason.load_full().map(|s| (*s).clone())
     }
 
     pub fn channel_count(&self) -> usize {

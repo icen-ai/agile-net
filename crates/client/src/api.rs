@@ -120,6 +120,7 @@ where
         // ---- Nodes ----
         .route("/nodes", get(list_nodes).post(connect_node))
         .route("/nodes/disconnect", post(disconnect_node))
+        .route("/nodes/pending-note", post(send_pending_note))
         .route(
             "/nodes/paused-rules",
             get(get_paused_rules).put(set_paused_rules),
@@ -129,6 +130,11 @@ where
         .route("/credentials", get(list_credentials))
         .route("/credentials", delete(delete_credential))
         .route("/credentials/export", get(export_credential))
+        .route("/credentials/rename", post(rename_credential))
+        .route("/credentials/myname", post(set_credential_myname))
+        // ---- Machine identity (node.md M4-T4: device card on the client plane) ----
+        .route("/identity", get(machine_identity))
+        .route("/identity/myname", post(set_machine_myname))
         // ---- Proxy ----
         .route("/proxy/start", post(start_proxy))
         .route("/proxy/stop", post(stop_proxy))
@@ -639,6 +645,104 @@ async fn clear_notifications(State(state): State<ClientApiState>) -> Response {
     ok(serde_json::json!({ "cleared": true }))
 }
 
+// ---- pending-session appeals (M4-T3) ----
+
+#[derive(Deserialize)]
+struct PendingNoteReq {
+    node_id: String,
+    body: String,
+}
+
+/// Upload one appeal note to the issuer over the pending session's control plane (the issuer
+/// caps these at MAX_PENDING_NOTES=3 per session; the UI only offers this in PendingApproval).
+async fn send_pending_note(
+    State(state): State<ClientApiState>,
+    Json(req): Json<PendingNoteReq>,
+) -> Response {
+    let body = req.body.trim();
+    if body.is_empty() || body.chars().count() > 512 {
+        return err(
+            StatusCode::BAD_REQUEST,
+            codes::VALIDATION_FAILED,
+            "附言不能为空且不超过 512 字",
+        );
+    }
+    match state.client.send_pending_note(&req.node_id, body).await {
+        Ok(()) => ok(serde_json::json!({ "sent": true })),
+        Err(e) => err(StatusCode::BAD_REQUEST, codes::BAD_REQUEST, e.to_string()),
+    }
+}
+
+// ---- machine identity (M4-T4) ----
+
+/// Machine identity view: the loaded/created machine identity plus the current self-declared
+/// display name (first non-empty credential myname; the card edits it across all credentials).
+async fn machine_identity(State(state): State<ClientApiState>) -> Response {
+    let id = match tokio::task::spawn_blocking(agile_net_core::device::DeviceIdentity::machine)
+        .await
+    {
+        Ok(Ok(id)) => id,
+        Ok(Err(e)) => {
+            return err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                codes::INTERNAL,
+                e.to_string(),
+            )
+        }
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, codes::INTERNAL, e.to_string()),
+    };
+    let fp = id.device_fp();
+    let mut myname = String::new();
+    if let Some(store) = &state.creds {
+        for key in store.keys().await {
+            if let Some(c) = store.get(&key).await
+                && let Some(m) = c.myname.as_deref().map(str::trim).filter(|m| !m.is_empty())
+            {
+                myname = m.to_string();
+                break;
+            }
+        }
+    }
+    ok(serde_json::json!({
+        "device_fp": fp,
+        "openssh_pubkey": id.openssh_pubkey(&format!("anet-{}", &fp[..12])),
+        "myname": myname,
+    }))
+}
+
+#[derive(Deserialize)]
+struct MynameReq {
+    name: String,
+}
+
+/// Edit the self-declared display name ("我的名称") across every saved credential; live
+/// sessions keep their handshake name — the new value rides the next connect.
+async fn set_machine_myname(
+    State(state): State<ClientApiState>,
+    Json(req): Json<MynameReq>,
+) -> Response {
+    let name = req.name.trim().to_string();
+    if name.chars().count() > 64 {
+        return err(
+            StatusCode::BAD_REQUEST,
+            codes::VALIDATION_FAILED,
+            "我的名称最长 64 字",
+        );
+    }
+    let Some(store) = &state.creds else {
+        return err(StatusCode::BAD_REQUEST, codes::BAD_REQUEST, "凭据存储不可用");
+    };
+    let mut updated = 0usize;
+    for key in store.keys().await {
+        if let Some(mut cred) = store.get(&key).await {
+            cred.myname = if name.is_empty() { None } else { Some(name.clone()) };
+            store.save(&key, &cred).await;
+            updated += 1;
+        }
+    }
+    ok(serde_json::json!({ "updated": updated }))
+}
+
 async fn list_nodes(State(state): State<ClientApiState>) -> Response {
     let mut nodes: Vec<NodeState> = state.client.list_nodes().await;
     for n in &mut nodes {
@@ -712,6 +816,68 @@ async fn delete_credential(
         store.remove(&q.key).await;
     }
     ok(serde_json::json!({ "deleted": true }))
+}
+
+#[derive(Deserialize)]
+struct RenameReq {
+    key: String,
+    name: Option<String>,
+}
+
+/// User-assigned display alias (M4-T6 naming triplet, local name field); empty clears it back
+/// to the node-id-derived name. The store key (node_id) never changes.
+async fn rename_credential(State(state): State<ClientApiState>, Json(req): Json<RenameReq>) -> Response {
+    let Some(store) = &state.creds else {
+        return err(StatusCode::BAD_REQUEST, codes::BAD_REQUEST, "凭据存储不可用");
+    };
+    let Some(mut cred) = store.get(&req.key).await else {
+        return err(StatusCode::NOT_FOUND, codes::NOT_FOUND, "凭据不存在或已删除");
+    };
+    let name = req.name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty());
+    if let Some(n) = &name
+        && n.chars().count() > 32
+    {
+        return err(
+            StatusCode::BAD_REQUEST,
+            codes::VALIDATION_FAILED,
+            "名字最长 32 字",
+        );
+    }
+    cred.name = name;
+    store.save(&req.key, &cred).await;
+    ok(serde_json::json!({ "renamed": true }))
+}
+
+#[derive(Deserialize)]
+struct CredMynameReq {
+    key: String,
+    myname: Option<String>,
+}
+
+/// Self-declared display name uploaded to the issuer on the next connect (M4-T6 我的名称).
+async fn set_credential_myname(
+    State(state): State<ClientApiState>,
+    Json(req): Json<CredMynameReq>,
+) -> Response {
+    let Some(store) = &state.creds else {
+        return err(StatusCode::BAD_REQUEST, codes::BAD_REQUEST, "凭据存储不可用");
+    };
+    let Some(mut cred) = store.get(&req.key).await else {
+        return err(StatusCode::NOT_FOUND, codes::NOT_FOUND, "凭据不存在或已删除");
+    };
+    let myname = req.myname.map(|n| n.trim().to_string()).filter(|n| !n.is_empty());
+    if let Some(n) = &myname
+        && n.chars().count() > 64
+    {
+        return err(
+            StatusCode::BAD_REQUEST,
+            codes::VALIDATION_FAILED,
+            "我的名称最长 64 字",
+        );
+    }
+    cred.myname = myname;
+    store.save(&req.key, &cred).await;
+    ok(serde_json::json!({ "updated": true }))
 }
 
 #[derive(Deserialize)]

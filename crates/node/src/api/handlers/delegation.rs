@@ -90,6 +90,10 @@ pub struct IssueRequest {
     /// Token lifecycle (optional): max data-plane opens (0/absent = unlimited)
     #[serde(default)]
     pub max_uses: Option<i64>,
+    /// Suggested self-declared name for the consumer device, prefilled into the generated
+    /// link's myname word (node.md M3-T6 naming triplet; link-only, not stored)
+    #[serde(default)]
+    pub my_name: String,
 }
 
 fn default_entry_mode() -> String {
@@ -201,6 +205,13 @@ pub async fn issue_token(
             StatusCode::BAD_REQUEST,
             codes::VALIDATION_FAILED,
             "用量上限必须为正整数",
+        );
+    }
+    if req.my_name.chars().count() > 64 {
+        return err(
+            StatusCode::BAD_REQUEST,
+            codes::VALIDATION_FAILED,
+            "我的名称最长 64 字符",
         );
     }
 
@@ -330,7 +341,7 @@ pub async fn issue_token(
         .await
         .unwrap_or_default();
     let states: HashMap<(String, String), String> = HashMap::new();
-    let share_url = build_share_url(&state, &rec, &connectors, &plaintext).await;
+    let share_url = build_share_url(&state, &rec, &connectors, &plaintext, req.my_name.trim()).await;
     let groups_all = state
         .db_call(|db| db.list_groups(1, 10000, None).map(|(g, _)| g))
         .await
@@ -379,6 +390,7 @@ async fn build_share_url(
     rec: &DelegatedTokenRecord,
     connectors: &[crate::db::models::ConnectorView],
     plaintext: &str,
+    my_name: &str,
 ) -> String {
     let entries: Vec<(String, String)> = if rec.entry_mode == "direct" {
         let (_, relay_port) = state.public_tunnel_endpoint().await;
@@ -428,7 +440,8 @@ async fn build_share_url(
         en,
         emode,
         !rec.admin_scope.is_empty(),
-        None,
+        // M3-T6: the issuer-suggested "my name" prefills the link's myname word
+        Some(my_name).filter(|s| !s.is_empty()),
     )
 }
 
