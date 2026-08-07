@@ -101,15 +101,15 @@
 
 ### 任务清单
 
-- [ ] **M3-T1 三页签可展开资源行**（监听 | 连接 | 签发）：资源行显示名称/前缀/在线数 `online/cap`/状态徽章/E2E 标；展开为逐设备/逐会话表（设备名+认证标、IP、入口、时长、流量、会话 key、所属令牌）；操作 = 单设备踢下线 + 工具栏全部踢下线
+- [x] **M3-T1 三页签可展开资源行**（监听 | 连接 | 签发）：资源行显示名称/前缀/在线数 `online/cap`/状态徽章/E2E 标；展开为逐设备/逐会话表（设备名+认证标、IP、入口、时长、流量、会话 key、所属令牌）；操作 = 单设备踢下线 + 工具栏全部踢下线
   - API：逐令牌在线会话聚合查询（listener 会话级数据按 `session_key`/token 聚合暴露）；踢下线复用 conlog kill / relay 会话关闭下沉逐会话粒度
-- [ ] **M3-T2 人工认证状态机**：设备行认证按钮 + 备注弹窗；换机场景 UI 提示「疑似『X』换机」一键三连（认证新 + 迁移备注 + 吊销旧）；吊销列表命中再来 → 拒连 + 红色告警
+- [x] **M3-T2 人工认证状态机**：设备行认证按钮 + 备注弹窗；换机场景 UI 提示「疑似『X』换机」一键三连（认证新 + 迁移备注 + 吊销旧）；吊销列表命中再来 → 拒连 + 红色告警
   - 认证前数据面策略（签发档位）：默认「未认证拒开等审批」/ 可选「放行插灰旗」
-- [ ] **M3-T3 hover 身份卡共享组件**（沉淀 `components.css`，两端复用）：六行结构（标题/节点名称/指纹/公钥可复制/认证信息/情况区按上下文切换）
-- [ ] **M3-T4 审批中心**：可插拔事件注册表；首批类型 = 设备认证申请 / 换机审批（locked 签发）/ 参考认证采纳；审批项内联附言展示；动作三件套 + `record_audit_log`；WS `approval.new` + 菜单角标
-- [ ] **M3-T5 设备画像页**：列表（在线/离线/待认证/已吊销 + 筛选搜索）+ 详情页（Hero + KPI 条 + ag-tabs 五页签），设计规格见下「设备画像设计规格」
-- [ ] **M3-T6 命名三字段服务端表单**：connector / listener / relay token / 签发委托表单接共享三字段组件；签发者「我的名称」预填进生成链接
-- [ ] **M3-T7 共享组件与图标批次**：`AgChart.bars`（横向条形图）/ `AgChart.heat`（7×24 热力格）/ `.agkpi`（KPI 卡，首页 dstat 摘要泛化：值+标签+环比箭头）/ `.agtimeline`（垂直时间线）/ `.agcopy`（mono 可复制字段，指纹/公钥/会话 key 通用）；icons.js 新增 `fingerprint` `key-round` `monitor-smartphone` `stamp` `ban` `history` `route` `timer` `calendar-days` `trending-up` `bell` `triangle-alert`
+- [x] **M3-T3 hover 身份卡共享组件**（沉淀 `components.css`，两端复用）：六行结构（标题/节点名称/指纹/公钥可复制/认证信息/情况区按上下文切换）
+- [x] **M3-T4 审批中心**：可插拔事件注册表；首批类型 = 设备认证申请 / 换机审批（locked 签发）/ 参考认证采纳；审批项内联附言展示；动作三件套 + `record_audit_log`；WS `approval.new` + 菜单角标
+- [x] **M3-T5 设备画像页**：列表（在线/离线/待认证/已吊销 + 筛选搜索）+ 详情页（Hero + KPI 条 + ag-tabs 五页签），设计规格见下「设备画像设计规格」
+- [x] **M3-T6 命名三字段服务端表单**：connector / listener / relay token / 签发委托表单接共享三字段组件；签发者「我的名称」预填进生成链接
+- [x] **M3-T7 共享组件与图标批次**：`AgChart.bars`（横向条形图）/ `AgChart.heat`（7×24 热力格）/ `.agkpi`（KPI 卡，首页 dstat 摘要泛化：值+标签+环比箭头）/ `.agtimeline`（垂直时间线）/ `.agcopy`（mono 可复制字段，指纹/公钥/会话 key 通用）；icons.js 新增 `fingerprint` `key-round` `monitor-smartphone` `stamp` `ban` `history` `route` `timer` `calendar-days` `trending-up` `bell` `triangle-alert`
 
 ### 设备画像设计规格（M3-T5）
 
@@ -149,12 +149,12 @@ GET    /devices/{fp}/activity        7×24 活跃热力聚合
 
 ### 任务清单
 
-- [ ] **M4-T1 通知中心**：标题栏通知 icon + 未读角标（anet-gui 主窗 / 客户端 SPA 一致）+ 侧栏「通知」菜单；本地持久收件箱；点击跳上下文
-- [ ] **M4-T2 吊销告知渲染**：有附言显示管理员原话 + reason_code；无附言显示标准原因码文案；离线重连握手拒绝带回的消费
-- [ ] **M4-T3 审批中状态**：pending 显示「等待 C 审批」（停止无限重连转圈，低频保活探测）；附言输入入口（≤3 条，本地计数提示）
-- [ ] **M4-T4 本机身份卡**：查看/复制本机指纹 + 公钥（OpenSSH 格式）；我的认证状态/签发者备注名回显
-- [ ] **M4-T5 条款明示**：导入带 `visibility=disclose/approve` 条款链接时弹条款卡确认
-- [ ] **M4-T6 命名三字段客户端表单**：凭据表单三字段（目标名称 = 链接建议值可改）；导入向导提示填「我的名称」
+- [x] **M4-T1 通知中心**：标题栏通知 icon + 未读角标（anet-gui 主窗 / 客户端 SPA 一致）+ 侧栏「通知」菜单；本地持久收件箱；点击跳上下文
+- [x] **M4-T2 吊销告知渲染**：有附言显示管理员原话 + reason_code；无附言显示标准原因码文案；离线重连握手拒绝带回的消费
+- [x] **M4-T3 审批中状态**：pending 显示「等待 C 审批」（停止无限重连转圈，低频保活探测）；附言输入入口（≤3 条，本地计数提示）
+- [x] **M4-T4 本机身份卡**：查看/复制本机指纹 + 公钥（OpenSSH 格式）；我的认证状态/签发者备注名回显
+- [x] **M4-T5 条款明示**：导入带 `visibility=disclose/approve` 条款链接时弹条款卡确认
+- [x] **M4-T6 命名三字段客户端表单**：凭据表单三字段（目标名称 = 链接建议值可改）；导入向导提示填「我的名称」
 
 ### 验收标准
 
@@ -168,10 +168,10 @@ GET    /devices/{fp}/activity        7×24 活跃热力聚合
 
 ### 任务清单
 
-- [ ] **M5-T1 DB 基线**：新表 `device_session`（会话断开 flush 一行：device_fp, token, entry, ip, start, end, bytes_in/out, close_reason）——流量时序/会话历史/活跃热力**一张表三吃**；`node_traffic_log` 保持节点级 rollup 不动
-- [ ] **M5-T2 断开 flush hook**：会话断开把 `MuxSession.bytes_in/out` + 会话元信息落盘 `device_session`（close_reason 取自 M2 reason_code）
-- [ ] **M5-T3 会话级实时速率**：dstat 采样管线下沉会话级（1-2s 增量 EWMA）或 WS 推累计值前端算差值
-- [ ] **M5-T4 前端双值渲染**：会话行/设备页流量列「实时速率 + 累计」双值；设备画像流量区图表（agchart）
+- [x] **M5-T1 DB 基线**：新表 `device_session`（会话断开 flush 一行：device_fp, token, entry, ip, start, end, bytes_in/out, close_reason）——流量时序/会话历史/活跃热力**一张表三吃**；`node_traffic_log` 保持节点级 rollup 不动
+- [x] **M5-T2 断开 flush hook**：会话断开把 `MuxSession.bytes_in/out` + 会话元信息落盘 `device_session`（close_reason 取自 M2 reason_code）
+- [x] **M5-T3 会话级实时速率**：dstat 采样管线下沉会话级（1-2s 增量 EWMA）或 WS 推累计值前端算差值
+- [x] **M5-T4 前端双值渲染**：会话行/设备页流量列「实时速率 + 累计」双值；设备画像流量区图表（agchart）
 
 ### 验收标准
 
@@ -183,10 +183,10 @@ GET    /devices/{fp}/activity        7×24 活跃热力聚合
 
 ### 任务清单
 
-- [ ] **M6-T1 认证传播消息**（联邦 Ctrl 通道，push_groups 同机制）：记录带起源节点 relay 证书签名；中间跳盲转 + 哈希去重；认证/吊销事件增量推送 + 新会话全量同步
-- [ ] **M6-T2 传递认证开关与名单**：connector/listener 各加「传递认证」开关（默认关，双向 opt-in 生效）；节点级「认证信任名单」配置；名单外 → 参考认证档（灰标 + 一键采纳）；本地优先 + 本地独立吊销 + 吊销传播；hover 卡加「认证来源：X·节点名（经 Y 转发）」行
-- [ ] **M6-T3 visibility 三档**：`delegated_token` / 组上送 / 认证传播共用 `visibility=domain|disclose|approve` 字段；`grant_receipt` 表 + 回执分级（域主体聚合计数 / 逐持有者全图 / 逐持有者 + 待审批）；回执抗扣压（严格档未确认分支停更）
-- [ ] **M6-T4 拓扑视图**：C 端持有图渲染 + 待审批队列；消费端条款明示回执侧；用量异常启发式旗标（conlog + dstat 画像，只作线索）
+- [x] **M6-T1 认证传播消息**（联邦 Ctrl 通道，push_groups 同机制）：记录带起源节点 relay 证书签名；中间跳盲转 + 哈希去重；认证/吊销事件增量推送 + 新会话全量同步
+- [x] **M6-T2 传递认证开关与名单**：connector/listener 各加「传递认证」开关（默认关，双向 opt-in 生效）；节点级「认证信任名单」配置；名单外 → 参考认证档（灰标 + 一键采纳）；本地优先 + 本地独立吊销 + 吊销传播；hover 卡加「认证来源：X·节点名（经 Y 转发）」行
+- [x] **M6-T3 visibility 三档**：`delegated_token` / 组上送 / 认证传播共用 `visibility=domain|disclose|approve` 字段；`grant_receipt` 表 + 回执分级（域主体聚合计数 / 逐持有者全图 / 逐持有者 + 待审批）；回执抗扣压（严格档未确认分支停更）
+- [x] **M6-T4 拓扑视图**：C 端持有图渲染 + 待审批队列；消费端条款明示回执侧；用量异常启发式旗标（conlog + dstat 画像，只作线索）
 
 ### 验收标准
 

@@ -211,6 +211,14 @@ async fn approval_center_flow() {
     )
     .await;
     assert_eq!(status, StatusCode::CONFLICT);
+
+    // one-time offline notice (M4-T2): delivered once, then gone
+    db.revoke_device_with_notice(&fp2, "违规设备，封禁").unwrap();
+    assert_eq!(
+        db.take_device_notice(&fp2).unwrap().as_deref(),
+        Some("违规设备，封禁")
+    );
+    assert_eq!(db.take_device_notice(&fp2).unwrap(), None);
 }
 
 #[tokio::test]

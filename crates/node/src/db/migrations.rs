@@ -220,6 +220,9 @@ const MIGRATIONS: &[(u32, &str, &str)] = &[(
         state        TEXT NOT NULL DEFAULT 'pending' CHECK(state IN ('pending','certified','revoked')),
         certified_by TEXT NOT NULL DEFAULT '',   -- ''=local admin, else origin node id (M6 transitive)
         certified_at TEXT,
+        -- one-time offline notice (M4-T2 双通道): set at revoke, delivered once in the next
+        -- AuthFail and cleared (随操作定稿不可追改)
+        notice       TEXT NOT NULL DEFAULT '',
         -- M6 transitive lineage: kept verbatim so middle hops can forward the ORIGINAL
         -- origin-signed record (blind relay — a middle hop cannot re-sign for the origin)
         origin_pubkey TEXT NOT NULL DEFAULT '',

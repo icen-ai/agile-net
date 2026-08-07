@@ -267,17 +267,45 @@ impl Database {
     }
 
     /// Revoke a device (terminal state, never reusable). Live sessions are kicked by the caller.
-    pub fn revoke_device(&self, device_fp: &str) -> Result<()> {        let conn = self.conn();
+    pub fn revoke_device(&self, device_fp: &str) -> Result<()> {
+        self.revoke_device_with_notice(device_fp, "")
+    }
+
+    /// Revoke with the one-time offline notice attached (M4-T2 双通道: stored on the row,
+    /// delivered once in the next AuthFail, then cleared — 随操作定稿不可追改).
+    pub fn revoke_device_with_notice(&self, device_fp: &str, notice: &str) -> Result<()> {
+        let conn = self.conn();
         let n = conn
             .execute(
-                "UPDATE device_registry SET state = 'revoked' WHERE device_fp = ?1",
-                params![device_fp],
+                "UPDATE device_registry SET state = 'revoked', notice = ?2 WHERE device_fp = ?1",
+                params![device_fp, notice],
             )
             .map_err(db_err)?;
         if n == 0 {
             return Err(Error::NotFound(format!("device {device_fp} not found")));
         }
         Ok(())
+    }
+
+    /// Take-and-clear the one-time offline notice (delivered once in the AuthFail path).
+    pub fn take_device_notice(&self, device_fp: &str) -> Result<Option<String>> {
+        let conn = self.conn();
+        let notice: Option<String> = conn
+            .query_row(
+                "SELECT notice FROM device_registry WHERE device_fp = ?1",
+                params![device_fp],
+                |r| r.get(0),
+            )
+            .ok()
+            .filter(|s: &String| !s.is_empty());
+        if notice.is_some() {
+            conn.execute(
+                "UPDATE device_registry SET notice = '' WHERE device_fp = ?1",
+                params![device_fp],
+            )
+            .map_err(db_err)?;
+        }
+        Ok(notice)
     }
 
     /// Rebind (换机): move the holder identity (subject + remark) and cumulative traffic from

@@ -423,7 +423,7 @@ impl agile_net_core::relay::DelegationHooks for DelegationEngine {
         let Some(cache) = self.device_gate.load_full() else {
             return agile_net_core::relay::listener::DeviceGate::Allow;
         };
-        cache.gate()(device_fp)
+        cache.gate()(device_fp).0
     }
 
     /// Pending-session appeal forwarded by a relay: file onto the device's certification

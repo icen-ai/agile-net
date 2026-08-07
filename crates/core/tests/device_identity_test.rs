@@ -292,11 +292,12 @@ async fn device_gate_blocks_pending_and_rejects_revoked() {
     let gate_state = Arc::new(std::sync::atomic::AtomicU8::new(0));
     let gs = gate_state.clone();
     let gate: agile_net_core::relay::listener::DeviceGateHook = Arc::new(move |_fp| {
-        match gs.load(std::sync::atomic::Ordering::Relaxed) {
+        let d = match gs.load(std::sync::atomic::Ordering::Relaxed) {
             1 => agile_net_core::relay::listener::DeviceGate::Allow,
             2 => agile_net_core::relay::listener::DeviceGate::Deny,
             _ => agile_net_core::relay::listener::DeviceGate::Pending,
-        }
+        };
+        (d, None)
     });
 
     let addr = get_free_addr();

@@ -244,7 +244,7 @@ pub enum DeviceGate {
 }
 
 /// Device-gate hook injected by the node layer (device_registry state cache).
-pub type DeviceGateHook = Arc<dyn Fn(&str) -> DeviceGate + Send + Sync>;
+pub type DeviceGateHook = Arc<dyn Fn(&str) -> (DeviceGate, Option<String>) + Send + Sync>;
 
 /// One closed session's flush record (node.md M5: fired exactly once per session teardown --
 /// natural close, kick and shutdown all funnel through the serve-loop cleanup).
@@ -1126,8 +1126,11 @@ impl RelayListener {
 
         // Device gate at auth (M3-T2): a revoked device is rejected outright (device_revoked);
         // a pending device authenticates and is gated per-Open by the issuer's policy instead.
-        if let Some(gate) = &self.device_gate
-            && gate(&device_meta.device_fp) == DeviceGate::Deny
+        let gate_denied = self
+            .device_gate
+            .as_ref()
+            .map(|g| g(&device_meta.device_fp));
+        if let Some((DeviceGate::Deny, notice)) = gate_denied
         {
             warn!(peer = %peer_addr, node_id = %auth_req.node_id, device = %device_meta.device_fp, "auth rejected: device revoked");
             let _ = self.events.send(PeerEvent::AuthRejected {
@@ -1138,7 +1141,8 @@ impl RelayListener {
             });
             let fail = FailReason {
                 reason_code: reason::DEVICE_REVOKED.into(),
-                message: String::new(),
+                // one-time offline notice (M4-T2): delivered once, cleared on read
+                message: notice.unwrap_or_default(),
             };
             let payload = serde_json::to_vec(&fail).unwrap_or_default();
             let _ = Frame::new(FrameType::AuthFail, 0, Bytes::from(payload))
@@ -1167,7 +1171,7 @@ impl RelayListener {
                 let device_state = match (&self.device_gate, &identity) {
                     (Some(g), AuthIdentity::Delegated(_))
                         if self.local_delegated.contains_key(&token_hash)
-                            && g(&device_meta.device_fp) == DeviceGate::Pending =>
+                            && g(&device_meta.device_fp).0 == DeviceGate::Pending =>
                     {
                         "pending"
                     }
@@ -1801,7 +1805,7 @@ impl RelayListener {
         if self.local_delegated.contains_key(&token_hash)
             && let Some(gate) = &self.device_gate
         {
-            let decision = gate(&device_fp);
+            let (decision, _) = gate(&device_fp);
             if decision != DeviceGate::Allow {
                 let rc = if decision == DeviceGate::Deny {
                     reason::DEVICE_REVOKED
