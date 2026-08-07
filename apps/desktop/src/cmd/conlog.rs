@@ -51,7 +51,9 @@ fn to_filter(
     keyword: Option<String>,
     outbound: Option<String>,
     row_state: Option<String>,
+    hit: Option<String>,
     source: Option<String>,
+    sort: Option<String>,
     from_ms: Option<i64>,
     to_ms: Option<i64>,
     offset: Option<usize>,
@@ -61,7 +63,9 @@ fn to_filter(
         keyword,
         outbound,
         state: row_state,
+        hit,
         source,
+        sort,
         from_ms,
         to_ms,
         offset: offset.unwrap_or(0),
@@ -71,7 +75,9 @@ fn to_filter(
 
 /// Aggregated per-target page (primary 连接记录 view; 50-row pages driven by the frontend's offset/limit).
 /// `row_state` = active|closed|failed (target semantics: has-live / none-live / has-failures);
-/// `source` = all|tun_relay (default hides TunRelay).
+/// `outbound`/`row_state`/`hit` accept comma-separated OR sets (header funnels are multi-select);
+/// `hit` = HitLayer snake_case set; `source` = all|tun_relay (default hides TunRelay);
+/// `sort` = "last|conns|target:asc|desc" (live targets always pin first).
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn conlog_hosts(
@@ -79,13 +85,15 @@ pub(crate) async fn conlog_hosts(
     keyword: Option<String>,
     outbound: Option<String>,
     row_state: Option<String>,
+    hit: Option<String>,
     source: Option<String>,
+    sort: Option<String>,
     from_ms: Option<i64>,
     to_ms: Option<i64>,
     offset: Option<usize>,
     limit: Option<usize>,
 ) -> Result<HostQueryOut, String> {
-    let f = to_filter(keyword, outbound, row_state, source, from_ms, to_ms, offset, limit);
+    let f = to_filter(keyword, outbound, row_state, hit, source, sort, from_ms, to_ms, offset, limit);
     Ok(log_of(&state).query_hosts(&f))
 }
 
@@ -103,7 +111,7 @@ pub(crate) async fn conlog_query(
     offset: Option<usize>,
     limit: Option<usize>,
 ) -> Result<QueryOut, String> {
-    let f = to_filter(keyword, outbound, row_state, source, from_ms, to_ms, offset, limit);
+    let f = to_filter(keyword, outbound, row_state, None, source, None, from_ms, to_ms, offset, limit);
     Ok(log_of(&state).query(&f))
 }
 

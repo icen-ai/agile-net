@@ -79,6 +79,7 @@ AgI18n.register({
   'logs.cl.enable': { zh: '记录连接', en: 'Record Connections' },
   'logs.cl.tip': { zh: '连接记录等同浏览历史：仅存本机（conn-log.jsonl），默认关闭；开启后直连 / 隧道 / 订阅连接全量收录', en: 'Connection records are browsing history: stored locally only (conn-log.jsonl), off by default; when on, direct / tunnel / subscription connections are all recorded' },
   'logs.cl.kwPh': { zh: '搜索域名 / IP', en: 'Search host / IP' },
+  'logs.cl.colHint': { zh: '列头：点击排序 · 悬停漏斗筛选 · 右缘拖拽调宽', en: 'Headers: click to sort · hover for filters · drag the right edge to resize' },
   'logs.cl.allOut': { zh: '全部出口', en: 'All Egress' },
   'logs.cl.allState': { zh: '全部状态', en: 'All States' },
   'logs.cl.allTime': { zh: '全部时间', en: 'All Time' },

@@ -50,7 +50,7 @@ async function refreshNodes(force) {
   let nodes = [];
   try {
     nodes = await invoke('list_nodes');
-  } catch (e) { toast(friendlyError(e), 'err'); updateOnboarding([]); return; }
+  } catch (e) { toast(friendlyError(e), 'err'); updateOnboarding([]); return false; }
   window._nodes = nodes;
   window._nodeStatus = Object.fromEntries(nodes.map(n => [n.node_id, n.status]));
   trackFaninTraffic(nodes);
@@ -66,6 +66,7 @@ async function refreshNodes(force) {
   updateOnboarding(nodes);
   updateDashFanin();
   renderMachineCert(); // settings identity card cert-state list follows the nodes poll (sig-guarded)
+  return true;
 }
 function statusText(s) {
   if (s === 'Connected') return T('st-connected');
@@ -118,20 +119,23 @@ function renderMergedRules(nodes) {
   const pausedMap = window._paused || {};
   const custom = window._custom || { bypass: [], hosts: [] };
   const hit = (...xs) => !f || xs.some(x => x && String(x).toLowerCase().includes(f));
-  const rows = [];
-  // custom bypass (highest engine priority, listed first)
+  const rows = []; // {html, type, val, via, src} — sort keys ride along for the header click-sort
+  // custom bypass (highest engine priority, listed first by default)
   if (tf === 'all' || tf === 'bypass') {
     for (const r of custom.bypass) {
       const way = r.via_subscription ? AgI18n.t('views.rule-via-sub') : AgI18n.t('views.rule-direct');
       if (!hit(r.pattern, AgI18n.t('views.rule-bypass'), way, AgI18n.t('views.src-custom'), AgI18n.t('views.src-preset'))) continue;
       const src = r.source === 'preset' ? AgI18n.t('views.src-preset') : AgI18n.t('views.src-custom');
-      rows.push('<tr class="' + (r.enabled ? '' : 'rule-paused') + '">' +
-        '<td><span class="badge b-ok">' + AgI18n.t('views.rule-bypass') + '</span></td>' +
-        '<td class="mono">' + esc(r.pattern) + '</td>' +
-        '<td>' + way + '</td>' +
-        '<td class="dim">' + src + '</td>' +
-        '<td><label class="switch"><input type="checkbox" data-cr="' + esc(r.id) + '"' + (r.enabled ? ' checked' : '') + '><span class="slider"></span></label></td>' +
-        '<td><button class="danger small icon-btn" title="' + AgI18n.t('views.del-bypass-title') + '" data-crdel="' + esc(r.id) + '">' + AgIcon('trash-2', 13) + '</button></td></tr>');
+      rows.push({
+        type: 'bypass', val: r.pattern, via: r.via_subscription ? 'sub' : 'direct', src,
+        html: '<tr class="' + (r.enabled ? '' : 'rule-paused') + '">' +
+          '<td><span class="badge b-ok">' + AgI18n.t('views.rule-bypass') + '</span></td>' +
+          '<td class="mono">' + esc(r.pattern) + '</td>' +
+          '<td>' + way + '</td>' +
+          '<td class="dim">' + src + '</td>' +
+          '<td><label class="switch"><input type="checkbox" data-cr="' + esc(r.id) + '"' + (r.enabled ? ' checked' : '') + '><span class="slider"></span></label></td>' +
+          '<td><button class="danger small icon-btn" title="' + AgI18n.t('views.del-bypass-title') + '" data-crdel="' + esc(r.id) + '">' + AgIcon('trash-2', 13) + '</button></td></tr>',
+      });
     }
   }
   // hosts mapping (user-created can be toggled/deleted; system entries read-only, no actions shown)
@@ -140,16 +144,19 @@ function renderMergedRules(nodes) {
       const sys = r.source === 'system';
       const src = sys ? AgI18n.t('views.src-system-hosts') : AgI18n.t('views.src-custom');
       if (!hit(r.hostname, r.ip, AgI18n.t('views.rule-map'), src)) continue;
-      rows.push('<tr class="' + (r.enabled ? '' : 'rule-paused') + '">' +
-        '<td><span class="badge b-gray">' + AgI18n.t('views.rule-map') + '</span></td>' +
-        '<td class="mono">' + esc(r.hostname) + '</td>' +
-        '<td class="mono">→ ' + esc(r.ip) + '</td>' +
-        '<td class="dim">' + src + '</td>' +
-        (sys
-          ? '<td><span class="dim">' + AgI18n.t('views.readonly') + '</span></td><td></td>'
-          : '<td><label class="switch"><input type="checkbox" data-cr="' + esc(r.id) + '"' + (r.enabled ? ' checked' : '') + '><span class="slider"></span></label></td>' +
-            '<td><button class="danger small icon-btn" title="' + AgI18n.t('views.del-map-title') + '" data-crdel="' + esc(r.id) + '">' + AgIcon('trash-2', 13) + '</button></td>') +
-        '</tr>');
+      rows.push({
+        type: 'map', val: r.hostname, via: r.ip, src,
+        html: '<tr class="' + (r.enabled ? '' : 'rule-paused') + '">' +
+          '<td><span class="badge b-gray">' + AgI18n.t('views.rule-map') + '</span></td>' +
+          '<td class="mono">' + esc(r.hostname) + '</td>' +
+          '<td class="mono">→ ' + esc(r.ip) + '</td>' +
+          '<td class="dim">' + src + '</td>' +
+          (sys
+            ? '<td><span class="dim">' + AgI18n.t('views.readonly') + '</span></td><td></td>'
+            : '<td><label class="switch"><input type="checkbox" data-cr="' + esc(r.id) + '"' + (r.enabled ? ' checked' : '') + '><span class="slider"></span></label></td>' +
+              '<td><button class="danger small icon-btn" title="' + AgI18n.t('views.del-map-title') + '" data-crdel="' + esc(r.id) + '">' + AgIcon('trash-2', 13) + '</button></td>') +
+          '</tr>',
+      });
     }
   }
   // endpoint-pulled (source is the endpoint name; toggle uses existing pause semantics)
@@ -163,16 +170,28 @@ function renderMergedRules(nodes) {
         const key = ruleKey(r);
         if (!hit(r.value, r.type, nname + ' ' + n.node_name)) continue;
         const paused = pset.has(key);
-        rows.push('<tr class="' + (paused ? 'rule-paused' : '') + '"><td><span class="rdot ' + dot + '"></span><span class="badge b-ok">' + esc(r.type) + '</span></td>' +
-          '<td class="mono">' + esc(r.value) + '</td>' +
-          '<td class="dim">—</td>' +
-          '<td class="dim">' + esc(nname) + '</td>' +
-          '<td><label class="switch"><input type="checkbox" data-node="' + esc(n.node_id) + '" data-rule="' + esc(key) + '"' + (paused ? '' : ' checked') + '><span class="slider"></span></label></td>' +
-          '<td></td></tr>');
+        rows.push({
+          type: r.type, val: r.value, via: '', src: nname,
+          html: '<tr class="' + (paused ? 'rule-paused' : '') + '"><td><span class="rdot ' + dot + '"></span><span class="badge b-ok">' + esc(r.type) + '</span></td>' +
+            '<td class="mono">' + esc(r.value) + '</td>' +
+            '<td class="dim">—</td>' +
+            '<td class="dim">' + esc(nname) + '</td>' +
+            '<td><label class="switch"><input type="checkbox" data-node="' + esc(n.node_id) + '" data-rule="' + esc(key) + '"' + (paused ? '' : ' checked') + '><span class="slider"></span></label></td>' +
+            '<td></td></tr>',
+        });
       }
     }
   }
-  $('rules-body').innerHTML = rows.join('') || '<tr><td colspan="6" class="empty">' + ((f || tf !== 'all') ? AgI18n.t('views.no-match') : T('no-rules')) + '</td></tr>';
+  // header click-sort (AgTbl, persisted); default order encodes engine priority: bypass → hosts → pulled
+  const st = AgTbl.sortState('rules');
+  if (st) {
+    const get = { type: r => r.type, val: r => r.val, via: r => r.via, src: r => String(r.src) }[st.id];
+    if (get) rows.sort((a, b) => {
+      const c = String(get(a)).toLowerCase().localeCompare(String(get(b)).toLowerCase());
+      return st.dir === 'asc' ? c : -c;
+    });
+  }
+  $('rules-body').innerHTML = rows.map(r => r.html).join('') || '<tr><td colspan="6" class="empty">' + ((f || tf !== 'all') ? AgI18n.t('views.no-match') : T('no-rules')) + '</td></tr>';
 }
 async function toggleRule(nodeId, key, paused) {
   try {
@@ -1281,10 +1300,10 @@ async function refreshUpstreams() {
   foLoadGroups();
   try {
     FO_ITEMS = await invoke('list_server_connectors');
-  } catch (e) { $('fo-list').innerHTML = '<div class="empty">' + AgI18n.t('views.load-failed') + '</div>'; return; }
+  } catch (e) { $('fo-list').innerHTML = '<div class="empty">' + AgI18n.t('views.load-failed') + '</div>'; return false; }
   if (!FO_ITEMS.length) {
     $('fo-list').innerHTML = '<div class="empty">' + AgI18n.t('views.fo-empty') + '</div>';
-    return;
+    return true;
   }
   $('fo-list').innerHTML = FO_ITEMS.map(c =>
     '<div class="node-card"><div class="info">' +
@@ -1306,6 +1325,7 @@ async function refreshUpstreams() {
     '<button class="danger small" data-fo-del="' + esc(c.id) + '">' + AgI18n.t('common.delete') + '</button>' +
     '</div></div>'
   ).join('');
+  return true;
 }
 
 /* ---- New/edit fan-out modal (fields aligned with admin console 「新建扇出」; advertise one per line, comma-joined on save) ---- */
@@ -1339,7 +1359,6 @@ function foCloseModal() { $('fo-modal').style.display = 'none'; FO_EDIT_ID = nul
 
 function initUpstreams() {
   agTabsBind($('fo-tabs'), (key) => { if (key === 'issue') refreshDelegation(); });
-  $('btn-fo-refresh').onclick = refreshUpstreams;
   $('btn-fo-add').onclick = () => foOpenModal(null);
   $('fo-cancel').onclick = foCloseModal;
   // Paste-to-import (federation P1): the shared AgLink parser fills all technical fields from an
@@ -1431,9 +1450,9 @@ function dtBadges(t) {
 }
 
 async function refreshDelegation() {
-  if (HTTP_MODE) return; // fan-out is a desktop-local capability
+  if (HTTP_MODE) return false; // fan-out is a desktop-local capability
   const list = $('dt-list');
-  if (!list) return;
+  if (!list) return false;
   let items;
   try {
     items = await invoke('list_delegated_tokens');
@@ -1441,13 +1460,13 @@ async function refreshDelegation() {
     // typically "server role not running" — an actionable empty state, not an error toast
     const msg = friendlyError(e);
     if (list.dataset.sig !== msg) { list.dataset.sig = msg; list.innerHTML = '<div class="empty">' + esc(msg) + '</div>'; }
-    return;
+    return false;
   }
   DT_ITEMS = items;
   const sig = JSON.stringify(items);
-  if (list.dataset.sig === sig) return; // signature guard: no repaint when unchanged
+  if (list.dataset.sig === sig) return true; // signature guard: no repaint when unchanged
   list.dataset.sig = sig;
-  if (!items.length) { list.innerHTML = '<div class="empty">' + AgI18n.t('dt.empty') + '</div>'; return; }
+  if (!items.length) { list.innerHTML = '<div class="empty">' + AgI18n.t('dt.empty') + '</div>'; return true; }
   list.innerHTML = items.map(t => {
     const groups = (t.groups || []).map(g => grpChip({ name: g.name, adopted: g.adopted_node, e2e: g.e2e_required })).join(' ');
     const regs = (t.regs || []).map(r =>
@@ -1461,6 +1480,7 @@ async function refreshDelegation() {
       '<button class="danger small icon-btn" title="' + AgI18n.t('dt.revokeTitle') + '" data-dt-revoke="' + esc(t.id) + '">' + AgIcon('trash-2', 13) + '</button>' +
       '</div></div>';
   }).join('');
+  return true;
 }
 
 function dtEligibleGroups() {
@@ -1590,7 +1610,6 @@ function dtShowIssued(t) {
 }
 
 function initDelegation() {
-  $('btn-dt-refresh').onclick = refreshDelegation;
   $('btn-dt-add').onclick = dtOpenModal;
   $('dt-cancel').onclick = dtCloseModal;
   $('dt-modal').onclick = (e) => { if (e.target === $('dt-modal')) dtCloseModal(); };

@@ -333,7 +333,7 @@
       <div data-agpanel="conn" hidden>
         <div class="card">
           <h3><i data-ic="git-fork"></i><span data-i18n="fanout.connList">扇出连接</span>
-            <span class="h3-tools"><button class="ghost small icon-btn" id="btn-fo-refresh" title="刷新" data-i18n-title="common.refresh"><i data-ic="refresh-cw" data-sz="13"></i></button></span>
+            <span class="h3-tools"><span id="pulse-fanout"></span></span>
           </h3>
           <div class="row" style="margin-bottom:12px;justify-content:flex-end">
             <button id="btn-fo-add" class="small"><i data-ic="plus" data-sz="13"></i> <span data-i18n="fanout.addConn">添加扇出连接</span></button>
@@ -346,7 +346,7 @@
       <div data-agpanel="issue" hidden>
         <div class="card">
           <h3><i data-ic="file-key"></i><span data-i18n="fanout.issuedList">已签发令牌</span>
-            <span class="h3-tools"><button class="ghost small icon-btn" id="btn-dt-refresh" title="刷新" data-i18n-title="common.refresh"><i data-ic="refresh-cw" data-sz="13"></i></button></span>
+            <span class="h3-tools"><span id="pulse-deleg"></span></span>
           </h3>
           <div class="row" style="margin-bottom:12px;justify-content:flex-end">
             <button id="btn-dt-add" class="small"><i data-ic="plus" data-sz="13"></i> <span data-i18n="fanout.issue">签发委托令牌</span></button>
@@ -378,7 +378,7 @@
       <div class="card" id="creds-card">
         <h3><i data-ic="orbit"></i><span data-i18n="fanin.list">扇入列表</span>
           <span class="h3-tools">
-            <button class="ghost small icon-btn" id="btn-refresh" title="刷新" data-i18n-title="common.refresh"><i data-ic="refresh-cw" data-sz="13"></i></button>
+            <span id="pulse-nodes"></span>
             <button class="ghost small icon-btn search-toggle" data-search="creds" title="搜索" data-i18n-title="common.search"><i data-ic="search" data-sz="13"></i></button>
           </span>
         </h3>
@@ -418,7 +418,7 @@
           </div>
           <div class="list-search" id="search-rules" hidden><input placeholder="搜索类型 / 匹配值 / 来源" data-i18n-ph="rules.searchPh"></div>
           <div class="table-scroll">
-            <table><thead><tr><th data-i18n="rules.colType">类型</th><th data-i18n="rules.colMatch">匹配值</th><th data-i18n="rules.colVia">方式</th><th data-i18n="rules.colSource">来源</th><th data-i18n="common.enable">启用</th><th data-i18n="common.action">操作</th></tr></thead><tbody id="rules-body"></tbody></table>
+            <table id="rules-table"><thead><tr><th data-i18n="rules.colType">类型</th><th data-i18n="rules.colMatch">匹配值</th><th data-i18n="rules.colVia">方式</th><th data-i18n="rules.colSource">来源</th><th data-i18n="common.enable">启用</th><th data-i18n="common.action">操作</th></tr></thead><tbody id="rules-body"></tbody></table>
           </div>
         </div>
       </div>
@@ -548,23 +548,12 @@
             <span class="dim" id="cl-stats" style="font-size:12px"></span>
             <span class="rl-tools">
               <span class="hint" id="cl-tun-hint" style="display:none;margin:0" data-i18n="logs.cl.tunHint">TUN 模式：UDP 与内核直连流量不入库</span>
+              <span id="pulse-logconn"></span>
               <button id="btn-cl-clear" class="ghost small" data-i18n="common.clear">清空</button>
             </span>
           </div>
           <div class="rl-toolbar" style="margin-top:-4px">
-            <input id="cl-kw" style="flex:1;min-width:140px" data-i18n-ph="logs.cl.kwPh" placeholder="搜索域名 / IP">
-            <select id="cl-outbound" class="small" style="width:104px">
-              <option value="" data-i18n="logs.cl.allOut">全部出口</option>
-              <option value="direct" data-i18n="logs.out.direct">直连</option>
-              <option value="tunnel" data-i18n="logs.cl.tunnelOpt">隧道</option>
-              <option value="forward" data-i18n="term.subscription">订阅</option>
-            </select>
-            <select id="cl-state" class="small" style="width:104px">
-              <option value="" data-i18n="logs.cl.allState">全部状态</option>
-              <option value="active" data-i18n="logs.conn.live">活跃</option>
-              <option value="closed" data-i18n="logs.conn.closed">关闭</option>
-              <option value="failed" data-i18n="logs.cl.failed">失败</option>
-            </select>
+            <span class="dim" style="font-size:11px" data-i18n="logs.cl.colHint">列头：点击排序 · 悬停漏斗筛选 · 右缘拖拽调宽</span>
             <select id="cl-time" class="small" style="width:110px">
               <option value="" data-i18n="logs.cl.allTime">全部时间</option>
               <option value="1h" data-i18n="logs.cl.1h">近 1 小时</option>
@@ -576,7 +565,7 @@
             <label class="chk" style="margin:0"><input type="checkbox" id="cl-tun"><span data-i18n="logs.cl.tunRelay">含 TUN 回转</span></label>
           </div>
           <div class="table-scroll">
-            <table class="tbl tbl-dense">
+            <table class="tbl tbl-dense" id="lg-conn-table">
               <thead><tr>
                 <th data-i18n="logs.colTarget">目标</th>
                 <th style="width:13%" data-i18n="logs.colExit">出口</th>
@@ -611,7 +600,7 @@
               <option value="warning">warning</option>
               <option value="error">error</option>
             </select>
-            <span class="rl-tools"><button id="btn-lg-clear" class="ghost small" data-i18n="common.clear">清空</button></span>
+            <span class="rl-tools"><span id="pulse-logview"></span><button id="btn-lg-clear" class="ghost small" data-i18n="common.clear">清空</button></span>
           </div>
           <div class="logv" id="lg-log-view" style="height:calc(100vh - 320px);min-height:200px"></div>
         </div>
@@ -622,10 +611,10 @@
         <div class="card">
           <div class="rl-toolbar">
             <span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip" data-i18n="logs.hitsTip">规则命中按次数降序（top 100）；「清空」同时重置实时日志缓冲</span></span>
-            <span class="rl-tools"><button id="btn-hits-clear" class="ghost small" data-i18n="common.clear">清空</button></span>
+            <span class="rl-tools"><span id="pulse-loghits"></span><button id="btn-hits-clear" class="ghost small" data-i18n="common.clear">清空</button></span>
           </div>
           <div class="table-scroll">
-            <table class="tbl tbl-dense">
+            <table class="tbl tbl-dense" id="lg-hits-table">
               <thead><tr>
                 <th style="width:18%" data-i18n="term.rule">规则</th>
                 <th style="width:26%" data-i18n="logs.colPayload">载荷</th>
@@ -651,7 +640,7 @@
         <div class="card">
           <div class="rl-toolbar">
             <span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip" data-i18n="logs.evTip">来自本机操作与系统事件审计，新 → 旧</span></span>
-            <span class="rl-tools"><button id="btn-ev-refresh" class="ghost small"><i data-ic="refresh-cw" data-sz="13"></i> <span data-i18n="common.refresh">刷新</span></button></span>
+            <span class="rl-tools"><span id="pulse-logev"></span></span>
           </div>
           <div class="ev-list" id="lg-ev-list"></div>
           <div class="rl-toolbar" style="margin:10px 0 0">
@@ -1437,6 +1426,7 @@
 <script src="agchart.js"></script>
 <script src="agi18n.js"></script>
 <script src="aglang.js"></script>
+<script src="agtbl.js"></script>
 <script src="lang/desktop-html.js"></script>
 <script src="lang/desktop-views.js"></script>
 <script src="lang/desktop-sub.js"></script>

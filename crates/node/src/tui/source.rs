@@ -550,6 +550,11 @@ mod tests {
     fn tmp_db(name: &str) -> String {
         let dir = std::env::temp_dir().join(format!("anet-tui-src-{}-{name}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
+        // PIDs recycle across cargo runs — a stale file from an earlier process would fail the
+        // first insert with UNIQUE constraint errors; start from a clean slate (hermetic tests)
+        for suffix in ["t.db", "t.db-shm", "t.db-wal"] {
+            let _ = std::fs::remove_file(dir.join(suffix));
+        }
         dir.join("t.db").to_string_lossy().to_string()
     }
 

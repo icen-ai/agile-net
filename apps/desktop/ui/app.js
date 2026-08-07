@@ -277,7 +277,6 @@ window.addEventListener('DOMContentLoaded', async () => {
     const card = e.target.closest('[data-goto]');
     if (card) switchView(card.dataset.goto);
   });
-  $('btn-refresh').onclick = () => { refreshNodes(true); refreshCreds(); refreshProxy(); };
 
   // Event delegation for list actions (CSP forbids inline onclick)
   $('creds-list').addEventListener('click', (e) => {
@@ -372,7 +371,8 @@ window.addEventListener('DOMContentLoaded', async () => {
 
   /* ---- Main-window poll scheduling: pause the three timers while the window is hidden, resume and refresh immediately when visible (same visibilitychange pattern as tray/float ball) ---- */
   let mainT10 = 0, mainT2 = 0, mainT30 = 0;
-  function mainTick10s() { refreshNodes(); refreshProxy(); refreshSubStatus(); refreshSysproxy(); refreshTun(); renderDashFanout(); refreshCustomRules(); refreshCombos(); Hero.tick10s(); refreshRolesCache(); refreshNotify(); }
+  // refreshNodes rides its own AgPulse (扇入列表 header: updated-time + interval select), not this bundle
+  function mainTick10s() { refreshProxy(); refreshSubStatus(); refreshSysproxy(); refreshTun(); renderDashFanout(); refreshCustomRules(); refreshCombos(); Hero.tick10s(); refreshRolesCache(); refreshNotify(); }
   // 2s poll of subscription kernel traffic + artifact download state (sub_traffic reads an Atomic snapshot, dl_state reads in-memory state — cheap; internal change detection avoids repaints)
   function mainTick2s() { SubTraffic.poll(); pollDl(); }
   // 30s poll of the egress IP probe (results signature-compared, no repaint when unchanged)
@@ -390,4 +390,21 @@ window.addEventListener('DOMContentLoaded', async () => {
   }
   document.addEventListener('visibilitychange', () => { document.hidden ? stopMainLoops() : startMainLoops(true); });
   startMainLoops(false); // Startup already refreshed everything one round above; just arm the timers here
+
+  /* Per-list auto-refresh pulses (updated-time hint + interval select; no manual refresh buttons —
+     the selectable intervals are the rate floor/ceiling, so refresh abuse cannot hammer the engine/DB).
+     These run with the same cadence policy as the main loops (ticks skip while hidden). */
+  AgPulse.mount($('pulse-nodes'), { key: 'nodes', defMs: 10000, options: [5000, 10000, 30000], onTick: () => refreshNodes() });
+  AgPulse.mount($('pulse-fanout'), { key: 'fanout', defMs: 10000, options: [5000, 10000, 30000], onTick: () => refreshUpstreams() });
+  AgPulse.mount($('pulse-deleg'), { key: 'deleg', defMs: 10000, options: [5000, 10000, 30000], onTick: () => refreshDelegation() });
+  AgPulse.setActive('nodes', true);
+  AgPulse.setActive('fanout', true);
+  AgPulse.setActive('deleg', true);
+  // Rules table: implicit column resize + header click-sort (类型/匹配值/方式/来源; the default order
+  // encodes engine priority: bypass → hosts → pulled)
+  AgTbl.attach($('rules-table'), {
+    key: 'rules',
+    sort: { 0: 'type', 1: 'val', 2: 'via', 3: 'src' },
+    onSort: () => renderMergedRules(window._nodes || []),
+  });
 });

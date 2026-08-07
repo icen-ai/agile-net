@@ -436,3 +436,43 @@ html[data-theme="dark"] .badge-beta { color: rgba(255,255,255,.95); }
 .agchart-heat-c { aspect-ratio: 1; min-height: 8px; border-radius: 2px; background: var(--accent); opacity: 0; transition: opacity .3s ease; }
 .agchart-heat-x { font-size: 10px; color: var(--dim2); text-align: center; font-variant-numeric: tabular-nums; }
 @media (prefers-reduced-motion: reduce) { .agchart-bars-f, .agchart-heat-c { transition: none; } }
+
+/* ================= Global scroll behavior: scrollbars hidden, scrolling itself untouched =================
+   (wheel / trackpad / keyboard all keep working; table-scroll areas keep their overflow) */
+* { scrollbar-width: none; -ms-overflow-style: none; }
+*::-webkit-scrollbar { width: 0; height: 0; display: none; }
+
+/* ================= AgTbl: implicit table-header controls (sort / resize / filter) — zero permanent chrome =================
+   Click a sortable header: cycles asc → desc → off; an arrow glyph appears only while active.
+   Column resize: hover within the header's right-edge grip shows a hairline; drag to width (persisted per table).
+   Column filter: a funnel glyph fades in on header hover; an active filter is a tiny accent dot.
+   NOTE: th keeps its sticky position from .tbl (position:sticky is a positioned ancestor for the absolute children);
+   overflow:hidden clips anything outside the cell, so the grip lives inside the right edge. */
+.tbl th { user-select: none; }
+.tbl th.th-sortable { cursor: pointer; }
+.tbl th .th-dir { font-size: 9px; margin-left: 3px; color: var(--accent); vertical-align: 1px; }
+.tbl th.th-on { color: var(--accent); }
+.tbl th .th-grip { position: absolute; top: 0; right: 0; width: 7px; height: 100%; cursor: col-resize; z-index: 2; }
+.tbl th .th-grip::after { content: ''; position: absolute; top: 20%; right: 1px; width: 2px; height: 60%; border-radius: 1px; background: transparent; transition: background .15s; }
+.tbl th .th-grip:hover::after, .tbl th.th-resizing .th-grip::after { background: var(--accent); }
+.tbl th.th-resizing { user-select: none; }
+.tbl th .th-f { position: absolute; right: 9px; top: 50%; transform: translateY(-50%); opacity: 0; transition: opacity .15s; color: var(--dim2); cursor: pointer; display: inline-flex; align-items: center; }
+.tbl th:hover .th-f { opacity: .8; }
+.tbl th .th-f:hover { color: var(--accent); opacity: 1; }
+.tbl th .th-f.on { opacity: 1; color: var(--accent); }
+.tbl th .th-f.on::after { content: ''; position: absolute; right: -1px; top: 0; width: 4px; height: 4px; border-radius: 50%; background: var(--accent); }
+/* Filter popover (position: fixed by JS near the header) */
+.th-pop { position: fixed; z-index: 90; min-width: 180px; max-width: 260px; background: var(--card); border: 1px solid var(--card-border); border-radius: 10px; box-shadow: 0 8px 30px rgba(15, 23, 42, .14); padding: 10px; }
+.th-pop input[type="text"] { width: 100%; font-size: 12px; padding: 6px 9px; }
+.th-pop .th-pop-vals { max-height: 180px; overflow-y: auto; margin-top: 6px; display: flex; flex-direction: column; gap: 2px; }
+.th-pop .th-pop-v { display: flex; align-items: center; gap: 7px; font-size: 12px; padding: 4px 6px; border-radius: 6px; cursor: pointer; }
+.th-pop .th-pop-v:hover { background: var(--input-bg); }
+.th-pop .th-pop-v input { margin: 0; }
+.th-pop .th-pop-acts { display: flex; justify-content: flex-end; gap: 6px; margin-top: 8px; }
+
+/* ================= AgPulse: auto-refresh status (last-updated time + interval select; no manual refresh button) ================= */
+.agpulse { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--dim2); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.agpulse .ap-t { letter-spacing: .2px; }
+.agpulse select.agp-iv { font-size: 11px; padding: 1px 4px; border: 1px solid transparent; background: transparent; color: var(--dim2); border-radius: 6px; cursor: pointer; }
+.agpulse select.agp-iv:hover { border-color: var(--card-border); color: var(--dim); }
+.agpulse select.agp-iv:focus { border-color: var(--accent); color: var(--text); outline: none; }

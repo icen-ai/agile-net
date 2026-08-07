@@ -177,6 +177,60 @@ const AgIdCard = (() => {
   return { attach, hide };
 })();
 
+/* ---- AgPulse: auto-refresh status widget (last-updated time + interval select; NO manual refresh
+   button anywhere). Intervals persist per key (localStorage); the offered options are the rate floor
+   and ceiling — abuse-proof by construction. Ticks skip while the document is hidden (same policy as
+   the main loops). The poll fn may return false on failure: the timestamp then keeps the last good pull. */
+const AgPulse = (() => {
+  const reg = new Map(); // key → { key, fn, ms, timer, active, timeEl }
+  const pad = (n) => String(n).padStart(2, '0');
+  function now() { const d = new Date(); return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds()); }
+  function mount(el, opts) {
+    const key = opts.key;
+    const saved = parseInt(localStorage.getItem('agpulse-ms-' + key) || '', 10);
+    const ms = opts.options.includes(saved) ? saved : opts.defMs;
+    const wrap = document.createElement('span');
+    wrap.className = 'agpulse';
+    wrap.innerHTML = '<span class="ap-t" title="' + AgI18n.t('pulse.updatedTip') + '">' + AgI18n.t('pulse.updated') + ' --:--:--</span>';
+    const sel = document.createElement('select');
+    sel.className = 'agp-iv';
+    sel.title = AgI18n.t('pulse.intervalTip');
+    sel.innerHTML = opts.options.map(m =>
+      '<option value="' + m + '"' + (m === ms ? ' selected' : '') + '>' + (m / 1000) + 's</option>').join('');
+    wrap.appendChild(sel);
+    el.appendChild(wrap);
+    const rec = { key, fn: opts.onTick, ms, timer: null, active: false, timeEl: wrap.firstChild };
+    reg.set(key, rec);
+    sel.addEventListener('change', () => {
+      rec.ms = parseInt(sel.value, 10);
+      localStorage.setItem('agpulse-ms-' + key, String(rec.ms));
+      if (rec.active) { stop(rec); start(rec); tick(key); } // a new cadence applies immediately
+    });
+    return key;
+  }
+  function start(rec) { rec.timer = setInterval(() => tick(rec.key), rec.ms); }
+  function stop(rec) { if (rec.timer) { clearInterval(rec.timer); rec.timer = null; } }
+  async function tick(key) {
+    const rec = reg.get(key);
+    if (!rec || !rec.active || document.hidden) return;
+    let ok;
+    try { ok = await rec.fn(); } catch (e) { ok = false; }
+    if (ok !== false) beat(key);
+  }
+  function setActive(key, on) {
+    const rec = reg.get(key);
+    if (!rec) return;
+    if (on && !rec.active) { rec.active = true; stop(rec); start(rec); tick(key); }
+    else if (!on && rec.active) { rec.active = false; stop(rec); }
+  }
+  /* Stamp the updated time without polling (user-action-driven refreshes call their fn directly) */
+  function beat(key) {
+    const rec = reg.get(key);
+    if (rec) rec.timeEl.textContent = AgI18n.t('pulse.updated') + ' ' + now();
+  }
+  return { mount, tick, setActive, beat };
+})();
+
 window.$ = $;
 window.esc = esc;
 window.ahelp = ahelp;
@@ -189,4 +243,5 @@ window.reasonText = reasonText;
 window.nameTriplet = nameTriplet;
 window.nameTripletVal = nameTripletVal;
 window.AgIdCard = AgIdCard;
+window.AgPulse = AgPulse;
 })();

@@ -3,11 +3,15 @@
 
 /* ================= Logs view =================
    连接记录 tab: anet local-proxy inbound full ingestion, PER-TARGET aggregated (host:port one row;
-   live rates from 1s cumulative deltas; session totals + persisted historical baseline in the row detail).
+   live rates from per-poll cumulative deltas; session totals + persisted historical baseline in the row detail).
    Recording default off; 50-row pages; kernel-independent (docs/todo/conn-log.md).
-   实时日志: mihomo kernel logs when the kernel runs, anet's own app log ring (app_logs) when it's off —
-   mihomo only owns the subscription mechanism. 命中追踪 stays kernel-sourced; 事件中心 is the local audit log.
-   Poll only while this page is open (records/logs 1s, hits 2s, events 10s); all renders signature-compared. */
+   实时日志: mihomo kernel logs when the kernel runs, anet's own app log ring (app_logs) when it's off.
+   命中追踪 stays kernel-sourced; 事件中心 is the local audit log.
+   Polling is AgPulse-driven per tab (updated-time hint + interval select, NO manual refresh button;
+   timers run only while this page is open, ticks skip while the window is hidden).
+   Tables render through AgTbl.sync: row nodes persist across polls (no wholesale innerHTML rebuild →
+   no flicker; hover/expansion survive), changed rows patch in place. Header chrome (AgTbl.attach):
+   implicit column resize / sort / filter — near-invisible until interaction. */
 
 /* ---- Log line rendering (level normalization + keyword mark.logv-hl highlight; esc first then highlight, the replacement string is escaped text too) ---- */
 function canonLevel(level) {
@@ -31,46 +35,27 @@ const PAGE = 50;
 
 const LogsView = {
   tab: 'conn',
-  timer: null, tick: 0,
   kernelOff: false, // kernel-sourced tabs idle when the kernel is down (one final pull lands the empty state)
-  cl: { statSig: '', sig: '', page: 0, prev: {}, expanded: null, items: [] }, // prev: key → {up,down,t} for 1s rate deltas
-  hitsSig: '', hitsAll: [], hitsPage: 0,
-  evSig: '', evAll: [], evPage: 0,
+  cl: { statSig: '', page: 0, prev: {}, expanded: null, items: [] }, // prev: key → {up,down,t} for per-poll rate deltas
+  hitsAll: [], hitsPage: 0,
+  evAll: [], evPage: 0,
   entries: [],      // live log cache (data source for full re-render on filter change)
   logCursor: null,  // last rendered {time,level,payload} (incremental cursor; losing it = buffer rotation → full redraw)
   follow: true,     // auto scroll to bottom (pauses when the user scrolls up, resumes at bottom)
-  enter() {
-    this.stop();
-    this.tick = 0;
-    this.pollNow();
-    this.timer = setInterval(() => this.onTick(), 1000);
+  pulseKey(tab) { return { conn: 'logconn', log: 'logview', hits: 'loghits', ev: 'logev' }[tab || this.tab]; },
+  enter() { AgPulse.setActive(this.pulseKey(), true); },   // setActive ticks immediately (covers the entry pull)
+  stop() { ['logconn', 'logview', 'loghits', 'logev'].forEach(k => AgPulse.setActive(k, false)); },
+  switchTab(key) {
+    AgPulse.setActive(this.pulseKey(), false);
+    this.tab = key;
+    AgPulse.setActive(this.pulseKey(), true);
   },
-  stop() { if (this.timer) { clearInterval(this.timer); this.timer = null; } },
-  onTick() {
-    this.tick++;
-    // Window hidden: skip this IPC round (timer keeps idling lightly, resumes on its own when visible again)
-    if (document.hidden) return;
-    // Connection records are anet-side: kernel-independent, poll every second
-    if (this.tab === 'conn') { this.pollConns(); return; }
-    if (this.tab === 'ev') { if (this.tick % 10 === 0) this.pollEvents(); return; } // events are low frequency: 10s (local event log, no kernel dependency)
-    // Live logs: kernel source while it runs, anet app log ring otherwise — always poll
-    if (this.tab === 'log') { this.pollLogs(); return; }
-    // Hits are kernel-only: idle when the kernel is down (one settling pull lands the empty state)
-    let settling = false;
-    if (!window._subRunning) {
-      if (this.kernelOff) return;
-      this.kernelOff = true; settling = true;
-    } else this.kernelOff = false;
-    if (this.tab === 'hits') { if (settling || this.tick % 2 === 0) this.pollHits(); }
-  },
-  pollNow() {
-    if (this.tab === 'log') this.pollLogs();
-    else if (this.tab === 'hits') this.pollHits();
-    else if (this.tab === 'ev') this.pollEvents();
-    else this.pollConns();
-  },
+  pollNow() { AgPulse.tick(this.pulseKey()); },
 
-  /* ---- Connection records (per-target aggregated; conlog_status toolbar + conlog_hosts page, 1s) ---- */
+  /* ---- Connection records (per-target aggregated; conlog_status toolbar + conlog_hosts page) ----
+     All per-column affordances live in the header (AgTbl): 目标 text search, 出口/命中/状态 enum
+     funnels, 目标/连接/最近 click-sort (server-side; live targets always pin first). The rate columns
+     are deliberately NOT sortable — they are client-side deltas and would misorder a server-paged set. */
   clFilter() {
     const time = $('cl-time').value;
     let fromMs = null, toMs = null;
@@ -80,17 +65,24 @@ const LogsView = {
       fromMs = $('cl-from').value ? new Date($('cl-from').value).getTime() : null;
       toMs = $('cl-to').value ? new Date($('cl-to').value).getTime() : null;
     }
+    const st = AgTbl.sortState('conn');
+    const csv = (i) => {
+      const v = AgTbl.filterGet('conn', i);
+      return (Array.isArray(v) && v.length) ? v.join(',') : null;
+    };
     return {
-      keyword: ($('cl-kw').value || '').trim() || null,
-      outbound: $('cl-outbound').value || null,
-      rowState: $('cl-state').value || null,
+      keyword: (AgTbl.filterGet('conn', 0) || '').trim() || null,
+      outbound: csv(1),
+      hit: csv(2),
+      rowState: csv(7),
       source: $('cl-tun').checked ? 'all' : null,
+      sort: st ? st.id + ':' + st.dir : null, // live targets pin first regardless (backend)
       fromMs, toMs,
       offset: this.cl.page * PAGE, limit: PAGE,
     };
   },
   async pollConns() {
-    if (HTTP_MODE) return;
+    if (HTTP_MODE) return false;
     // TUN hint follows the role cache (UDP / kernel-direct traffic bypasses the anet inbound under TUN)
     const tunOn = !!(window._rolesCache && window._rolesCache.tun_mode);
     const tunHint = $('cl-tun-hint');
@@ -103,10 +95,10 @@ const LogsView = {
         if ($('cl-enable').checked !== st.enabled) $('cl-enable').checked = st.enabled;
         setText('cl-stats', AgI18n.t('logs.cl.stats', { down: fmtBytes(st.down), up: fmtBytes(st.up), n: st.hosts, a: st.active }));
       }
-    } catch (e) { return; }
+    } catch (e) { return false; }
     let v;
-    try { v = await invoke('conlog_hosts', this.clFilter()); } catch (e) { return; }
-    // live per-target rates: session-cumulative deltas over the 1s poll cadence
+    try { v = await invoke('conlog_hosts', this.clFilter()); } catch (e) { return false; }
+    // live per-target rates: session-cumulative deltas over the poll cadence
     const now = Date.now();
     for (const r of v.items) {
       const p = this.cl.prev[r.key];
@@ -116,63 +108,71 @@ const LogsView = {
       this.cl.prev[r.key] = { up: r.sess_up, down: r.sess_down, t: now };
     }
     this.cl.items = v.items;
-    const sig = JSON.stringify(v);
-    if (sig === this.cl.sig) { this.restoreClDetail(); return; }
-    this.cl.sig = sig;
     const body = $('lg-conn-body');
     if (!v.items.length) {
       body.innerHTML = '<tr><td colspan="8" class="empty">' + AgI18n.t('logs.cl.empty') + '</td></tr>';
     } else {
-      body.innerHTML = v.items.map(clRowHtml).join('');
+      // keyed reconcile: rows persist, changed cells patch in place — no flicker
+      AgTbl.sync(body, v.items, { key: r => r.key, html: clRowHtml, patch: patchClRow });
     }
     const pages = Math.max(1, Math.ceil(v.total / PAGE));
     setText('cl-page-info', AgI18n.t('logs.cl.pageInfo', { p: Math.min(this.cl.page + 1, pages), pages, n: v.total }));
     $('cl-prev').disabled = this.cl.page <= 0;
     $('cl-next').disabled = this.cl.page + 1 >= pages;
-    this.restoreClDetail();
+    await this.restoreClDetail();
+    return true;
   },
 
-  /* Row detail expand (click; only one open at a time, re-inserted on every redraw = live refresh).
-     Covers what the table hides: historical / this-session cumulative bytes, first/last seen, conn/fail
-     counts, source — plus the last few per-connection rows from the ring layer. */
+  /* Row detail expand (click; only one open at a time). Content-signature guarded: the detail node is
+     re-written only when its HTML actually changes, and it travels with its anchor row through syncs. */
   async toggleClDetail(key) {
     const body = $('lg-conn-body');
     const old = body.querySelector('.conn-detail-row');
-    if (old) old.remove();
-    if (this.cl.expanded === key) { this.cl.expanded = null; return; }
+    if (this.cl.expanded === key) {
+      this.cl.expanded = null;
+      if (old) old.remove();
+      return;
+    }
     this.cl.expanded = key;
     await this.restoreClDetail();
   },
   async restoreClDetail() {
-    const key = this.cl.expanded;
-    if (!key) return;
     const body = $('lg-conn-body');
     const old = body.querySelector('.conn-detail-row');
-    if (old) old.remove();
+    const key = this.cl.expanded;
+    if (!key) { if (old) old.remove(); return; }
     const rec = this.cl.items.find((r) => r.key === key);
-    if (!rec) { this.cl.expanded = null; return; }
     let anchor = null;
     body.querySelectorAll('tr[data-key]').forEach((tr) => { if (tr.dataset.key === key) anchor = tr; });
-    if (!anchor) { this.cl.expanded = null; return; }
+    if (!rec || !anchor) { this.cl.expanded = null; if (old) old.remove(); return; }
     let recent = [];
     try {
       const q = await invoke('conlog_query', { keyword: rec.host, source: 'all', limit: 5 });
       recent = q.items || [];
     } catch (e) { /* keep the summary even if the ring query fails */ }
-    anchor.insertAdjacentHTML('afterend', clDetailRowHtml(rec, recent));
+    const html = clDetailRowHtml(rec, recent);
+    if (old && old._agsig === html && old.previousElementSibling === anchor) return; // nothing changed
+    if (old) old.remove();
+    const t = document.createElement('template');
+    t.innerHTML = html.trim();
+    const row = t.content.firstElementChild;
+    row._agsig = html;
+    row._agAfter = anchor; // AgTbl.sync moves the detail together with its anchor row
+    anchor.insertAdjacentElement('afterend', row);
   },
 
-  /* ---- Live logs (1s; kernel source while running, anet app ring otherwise; incremental append) ---- */
+  /* ---- Live logs (kernel source while running, anet app ring otherwise; incremental append) ---- */
   async pollLogs() {
-    if (HTTP_MODE) return;
+    if (HTTP_MODE) return false;
     let logs;
     if (window._subRunning) {
-      try { logs = await invoke('sub_logs'); } catch (e) { return; }
+      try { logs = await invoke('sub_logs'); } catch (e) { return false; }
     } else {
-      try { logs = await invoke('app_logs', { limit: 500 }); } catch (e) { return; }
+      try { logs = await invoke('app_logs', { limit: 500 }); } catch (e) { return false; }
     }
     this.entries = logs || [];
     this.renderLogs(false);
+    return true;
   },
   renderLogs(forceFull) {
     const view = $('lg-log-view');
@@ -213,19 +213,51 @@ const LogsView = {
     if (this.follow) view.scrollTop = view.scrollHeight;
   },
 
-  /* ---- Hit tracking (2s; 50-row client-side pages, wholesale redraw on signature compare) ---- */
+  /* ---- Hit tracking (kernel-only; idle when the kernel is down, one settling pull lands the empty state) ---- */
+  async tickHits() {
+    if (!window._subRunning) {
+      if (this.kernelOff) return false;
+      this.kernelOff = true;
+      this.hitsAll = [];
+      this.renderHits();
+      return true;
+    }
+    this.kernelOff = false;
+    return this.pollHits();
+  },
   async pollHits() {
-    if (HTTP_MODE) return;
+    if (HTTP_MODE) return false;
     let hits;
-    try { hits = await invoke('sub_rule_hits'); } catch (e) { return; }
-    const sig = JSON.stringify(hits);
-    if (sig === this.hitsSig) return;
-    this.hitsSig = sig;
+    try { hits = await invoke('sub_rule_hits'); } catch (e) { return false; }
     this.hitsAll = hits || [];
     this.renderHits();
+    return true;
   },
   renderHits() {
-    const all = this.hitsAll;
+    let all = this.hitsAll;
+    // implicit per-column text filters (header funnels: rule / payload / last target)
+    const fq = [0, 1, 3].map(i => AgTbl.filterGet('hits', i).toLowerCase());
+    if (fq.some(Boolean)) {
+      all = all.filter(h =>
+        (!fq[0] || (h.rule || '').toLowerCase().includes(fq[0])) &&
+        (!fq[1] || (h.payload || '').toLowerCase().includes(fq[1])) &&
+        (!fq[3] || (h.last_host || '').toLowerCase().includes(fq[3])));
+    }
+    // implicit header sort (default stays backend order: count desc)
+    const st = AgTbl.sortState('hits');
+    if (st) {
+      const get = {
+        rule: h => h.rule || '', payload: h => h.payload || '', count: h => h.count || 0,
+        host: h => h.last_host || '', seen: h => h.last_seen || 0,
+      }[st.id];
+      if (get) {
+        all = all.slice().sort((a, b) => {
+          const va = get(a), vb = get(b);
+          const c = typeof va === 'number' ? va - vb : String(va).localeCompare(String(vb));
+          return st.dir === 'asc' ? c : -c;
+        });
+      }
+    }
     const body = $('lg-hits-body');
     if (!all.length) {
       body.innerHTML = '<tr><td colspan="5" class="empty">' + AgI18n.t('logs.empty.hits') + '</td></tr>';
@@ -236,27 +268,23 @@ const LogsView = {
     }
     const pages = Math.max(1, Math.ceil(all.length / PAGE));
     this.hitsPage = Math.min(this.hitsPage, pages - 1);
-    body.innerHTML = all.slice(this.hitsPage * PAGE, this.hitsPage * PAGE + PAGE).map(h =>
-      '<tr><td class="mono">' + esc(h.rule || '—') + '</td>' +
-      '<td class="mono">' + esc(h.payload || '—') + '</td>' +
-      '<td class="mono">' + h.count + '</td>' +
-      '<td class="mono">' + esc(h.last_host || '—') + '</td>' +
-      '<td class="dim">' + esc(fmtAgo(h.last_seen)) + '</td></tr>').join('');
+    AgTbl.sync(body, all.slice(this.hitsPage * PAGE, this.hitsPage * PAGE + PAGE), {
+      key: h => (h.rule || '') + '|' + (h.payload || ''),
+      html: hitRowHtml,
+    });
     setText('hits-page-info', AgI18n.t('logs.cl.pageInfo', { p: this.hitsPage + 1, pages, n: all.length }));
     $('btn-hits-prev').disabled = this.hitsPage <= 0;
     $('btn-hits-next').disabled = this.hitsPage + 1 >= pages;
   },
 
-  /* ---- Event center (one pull on tab entry + onTick 10s + manual refresh; 50-row client-side pages over the latest 200) ---- */
+  /* ---- Event center (local audit log, 50-row client-side pages over the latest 200) ---- */
   async pollEvents() {
-    if (HTTP_MODE) return;
+    if (HTTP_MODE) return false;
     let evs;
-    try { evs = await invoke('recent_events', { limit: 200 }); } catch (e) { return; }
-    const sig = JSON.stringify(evs);
-    if (sig === this.evSig) return;
-    this.evSig = sig;
+    try { evs = await invoke('recent_events', { limit: 200 }); } catch (e) { return false; }
     this.evAll = evs || [];
     this.renderEvents();
+    return true;
   },
   renderEvents() {
     const all = this.evAll;
@@ -272,7 +300,10 @@ const LogsView = {
     }
     const pages = Math.max(1, Math.ceil(all.length / PAGE));
     this.evPage = Math.min(this.evPage, pages - 1);
-    list.innerHTML = all.slice(this.evPage * PAGE, this.evPage * PAGE + PAGE).map(evRowHtml).join('');
+    AgTbl.sync(list, all.slice(this.evPage * PAGE, this.evPage * PAGE + PAGE), {
+      key: e => e.ts + '|' + e.kind + '|' + e.detail,
+      html: evRowHtml,
+    });
     setText('ev-page-info', AgI18n.t('logs.cl.pageInfo', { p: this.evPage + 1, pages, n: all.length }));
     $('btn-ev-prev').disabled = this.evPage <= 0;
     $('btn-ev-next').disabled = this.evPage + 1 >= pages;
@@ -311,8 +342,9 @@ function evRowHtml(e) {
 }
 
 /* ---- Aggregated target row (per host:port) ----
-   Live rows get the 3px accent bar and live rates; inactive rows dimmed. */
-function clRowHtml(r) {
+   Cell fragments are shared between clRowHtml (row creation) and patchClRow (in-place update),
+   so a live row never gets re-created just because its rates moved. */
+function clCells(r) {
   const live = r.active > 0;
   const d = new Date(r.last_ms);
   const pad = (n) => String(n).padStart(2, '0');
@@ -324,20 +356,63 @@ function clRowHtml(r) {
     : kind === 'forward'
       ? '<span class="pill pill-warn">' + AgI18n.t('logs.out.forward') + '</span>'
       : '<span class="pill pill-ok">' + esc(AgI18n.t('logs.out.tunnel', { node: r.outbound.node })) + '</span>';
-  const statePill = live
+  const stateHtml = live
     ? '<span class="pill pill-ok">' + AgI18n.t('logs.conn.live') + '</span>'
     : r.fails > 0
       ? '<span class="pill pill-danger">' + AgI18n.t('logs.cl.failed') + '·' + r.fails + '</span>'
       : '<span class="pill pill-dim">' + AgI18n.t('logs.conn.closed') + '</span>';
-  return '<tr data-key="' + esc(r.key) + '" data-host="' + esc(r.host) + '" data-port="' + r.port + '" data-live="' + (live ? '1' : '') + '" style="cursor:pointer"' + (live ? '' : ' class="dim"') + '>' +
-    '<td class="mono" title="' + esc(r.key) + '"' + (live ? ' style="box-shadow:inset 3px 0 0 var(--accent)"' : '') + '>' + esc(r.host) + '<span class="dim">:' + r.port + '</span>' + tun + '</td>' +
-    '<td>' + outHtml + '</td>' +
-    '<td class="dim">' + esc(AgI18n.t('logs.hit.' + r.hit)) + '</td>' +
-    '<td class="mono">' + (live ? fmtBytes(Math.round(r.down_rate)) + '/s' : '—') + '</td>' +
-    '<td class="mono">' + (live ? fmtBytes(Math.round(r.up_rate)) + '/s' : '—') + '</td>' +
-    '<td class="mono">' + r.conns + '</td>' +
-    '<td class="mono dim">' + last + '</td>' +
-    '<td>' + statePill + '</td></tr>';
+  return {
+    live,
+    cells: [
+      { html: esc(r.host) + '<span class="dim">:' + r.port + '</span>' + tun, title: r.key },
+      { html: outHtml },
+      { html: esc(AgI18n.t('logs.hit.' + r.hit)) },
+      { html: live ? fmtBytes(Math.round(r.down_rate)) + '/s' : '—' },
+      { html: live ? fmtBytes(Math.round(r.up_rate)) + '/s' : '—' },
+      { html: String(r.conns) },
+      { html: last },
+      { html: stateHtml },
+    ],
+  };
+}
+function clRowHtml(r) {
+  const c = clCells(r);
+  return '<tr data-key="' + esc(r.key) + '" data-host="' + esc(r.host) + '" data-port="' + r.port + '" data-live="' + (c.live ? '1' : '') + '" style="cursor:pointer"' + (c.live ? '' : ' class="dim"') + '>' +
+    '<td class="mono" title="' + esc(r.key) + '"' + (c.live ? ' style="box-shadow:inset 3px 0 0 var(--accent)"' : '') + '>' + c.cells[0].html + '</td>' +
+    '<td>' + c.cells[1].html + '</td>' +
+    '<td class="dim">' + c.cells[2].html + '</td>' +
+    '<td class="mono">' + c.cells[3].html + '</td>' +
+    '<td class="mono">' + c.cells[4].html + '</td>' +
+    '<td class="mono">' + c.cells[5].html + '</td>' +
+    '<td class="mono dim">' + c.cells[6].html + '</td>' +
+    '<td>' + c.cells[7].html + '</td></tr>';
+}
+/* In-place cell update (AgTbl.sync patch): only differing cells are written — the row node, its hover
+   state and the accent bar survive; nothing visibly flickers at the 1s cadence. */
+function patchClRow(tr, r) {
+  const c = clCells(r);
+  const cells = tr.cells;
+  if (cells.length !== 8) return false;
+  for (let i = 0; i < 8; i++) {
+    if (cells[i].innerHTML !== c.cells[i].html) cells[i].innerHTML = c.cells[i].html;
+  }
+  const title = c.cells[0].title;
+  if (cells[0].title !== title) cells[0].title = title;
+  const bar = c.live ? 'inset 3px 0 0 var(--accent)' : '';
+  if (cells[0].style.boxShadow !== bar) cells[0].style.boxShadow = bar;
+  tr.classList.toggle('dim', !c.live);
+  const lv = c.live ? '1' : '';
+  if (tr.dataset.live !== lv) tr.dataset.live = lv;
+  return true;
+}
+
+/* Hit row (rule / payload / count / last target / last time) */
+function hitRowHtml(h) {
+  return '<tr><td class="mono">' + esc(h.rule || '—') + '</td>' +
+    '<td class="mono">' + esc(h.payload || '—') + '</td>' +
+    '<td class="mono">' + h.count + '</td>' +
+    '<td class="mono">' + esc(h.last_host || '—') + '</td>' +
+    '<td class="dim">' + esc(fmtAgo(h.last_seen)) + '</td></tr>';
 }
 
 /* Row detail (click expand): cumulative bytes (history / this session), first/last seen, conn & fail counts,
@@ -383,7 +458,51 @@ async function addRuleForHost(host, target) {
 }
 
 function initLogs() {
-  agTabsBind($('lg-tabs'), (key) => { LogsView.tab = key; LogsView.tick = 0; LogsView.pollNow(); });
+  /* Per-tab auto-refresh pulses (updated-time hint + interval select; no manual refresh buttons).
+     Timers are activated only while the logs page is open and the tab is current (LogsView.enter/stop/switchTab). */
+  AgPulse.mount($('pulse-logconn'), { key: 'logconn', defMs: 1000, options: [1000, 2000, 5000, 10000], onTick: () => LogsView.pollConns() });
+  AgPulse.mount($('pulse-logview'), { key: 'logview', defMs: 1000, options: [1000, 2000, 5000], onTick: () => LogsView.pollLogs() });
+  AgPulse.mount($('pulse-loghits'), { key: 'loghits', defMs: 2000, options: [2000, 5000, 10000], onTick: () => LogsView.tickHits() });
+  AgPulse.mount($('pulse-logev'), { key: 'logev', defMs: 10000, options: [5000, 10000, 30000], onTick: () => LogsView.pollEvents() });
+
+  /* Implicit header chrome: resize on both tables. conn: server-side sort (目标/连接/最近) + funnels
+     (目标 text / 出口·命中·状态 enum multi-select) — the toolbar below keeps only the non-column-bound
+     controls (time range, TUN inclusion). hits: client-side sort on all columns + text funnels
+     (规则/载荷/最近目标). */
+  AgTbl.attach($('lg-conn-table'), {
+    key: 'conn',
+    sort: { 0: 'target', 5: 'conns', 6: 'last' },
+    filter: {
+      0: { label: 'logs.colTarget' },
+      1: { label: 'logs.colExit', type: 'enum', options: [
+        { v: 'direct', label: 'logs.out.direct' },
+        { v: 'tunnel', label: 'logs.cl.tunnelOpt' },
+        { v: 'forward', label: 'term.subscription' },
+      ] },
+      2: { label: 'logs.cl.colHit', type: 'enum', options: [
+        { v: 'user_bypass', label: 'logs.hit.user_bypass' },
+        { v: 'explicit_route', label: 'logs.hit.explicit_route' },
+        { v: 'preset_bypass', label: 'logs.hit.preset_bypass' },
+        { v: 'default', label: 'logs.hit.default' },
+      ] },
+      7: { label: 'logs.cl.colState', type: 'enum', options: [
+        { v: 'active', label: 'logs.conn.live' },
+        { v: 'closed', label: 'logs.conn.closed' },
+        { v: 'failed', label: 'logs.cl.failed' },
+      ] },
+    },
+    onSort: () => { LogsView.cl.page = 0; LogsView.pollNow(); },
+    onFilter: () => { LogsView.cl.page = 0; LogsView.pollNow(); },
+  });
+  AgTbl.attach($('lg-hits-table'), {
+    key: 'hits',
+    sort: { 0: 'rule', 1: 'payload', 2: 'count', 3: 'host', 4: 'seen' },
+    filter: { 0: { label: 'term.rule' }, 1: { label: 'logs.colPayload' }, 3: { label: 'logs.colLastTarget' } },
+    onSort: () => LogsView.renderHits(),
+    onFilter: () => { LogsView.hitsPage = 0; LogsView.renderHits(); },
+  });
+
+  agTabsBind($('lg-tabs'), (key) => LogsView.switchTab(key));
   // Log stream follow: scrolling up pauses auto scroll-to-bottom, back at bottom resumes
   const view = $('lg-log-view');
   view.addEventListener('scroll', () => {
@@ -406,15 +525,12 @@ function initLogs() {
   $('btn-hits-clear').onclick = async () => {
     try {
       await invoke('sub_clear_logs');
-      LogsView.hitsSig = '';
-      LogsView.pollHits();
+      LogsView.pollNow();
       toast(AgI18n.t('logs.hitsCleared'), 'ok');
     } catch (err) { toast(friendlyError(err), 'err'); }
   };
   $('btn-hits-prev').onclick = () => { if (LogsView.hitsPage > 0) { LogsView.hitsPage--; LogsView.renderHits(); } };
   $('btn-hits-next').onclick = () => { if ((LogsView.hitsPage + 1) * PAGE < LogsView.hitsAll.length) { LogsView.hitsPage++; LogsView.renderHits(); } };
-  // Event center: manual refresh (clear signature to force re-pull) + 50-row pages
-  $('btn-ev-refresh').onclick = () => { LogsView.evSig = ''; LogsView.pollEvents(); };
   $('btn-ev-prev').onclick = () => { if (LogsView.evPage > 0) { LogsView.evPage--; LogsView.renderEvents(); } };
   $('btn-ev-next').onclick = () => { if ((LogsView.evPage + 1) * PAGE < LogsView.evAll.length) { LogsView.evPage++; LogsView.renderEvents(); } };
 
@@ -431,24 +547,22 @@ function initLogs() {
       toast(friendlyError(err), 'err');
     }
     e.target.disabled = false;
-    LogsView.cl.statSig = ''; LogsView.cl.sig = '';
-    LogsView.pollConns();
+    LogsView.cl.statSig = '';
+    LogsView.pollNow();
   };
   // One-click clear (DOM modal; deletes the on-disk snapshot too)
   $('btn-cl-clear').onclick = async () => {
     if (!(await askConfirm({ title: AgI18n.t('logs.cl.clearTitle'), desc: AgI18n.t('logs.cl.clearConfirm'), icon: 'trash-2', danger: true }))) return;
     try {
       await invoke('conlog_clear');
-      LogsView.cl.sig = ''; LogsView.cl.statSig = ''; LogsView.cl.page = 0; LogsView.cl.prev = {};
-      LogsView.pollConns();
+      LogsView.cl.statSig = ''; LogsView.cl.page = 0; LogsView.cl.prev = {};
+      LogsView.pollNow();
       toast(AgI18n.t('logs.cl.cleared'), 'ok');
     } catch (err) { toast(friendlyError(err), 'err'); }
   };
-  // Filters: any change returns to page 1 and refetches
-  const clRefetch = () => { LogsView.cl.page = 0; LogsView.pollConns(); };
-  $('cl-kw').addEventListener('input', clRefetch);
-  $('cl-outbound').onchange = clRefetch;
-  $('cl-state').onchange = clRefetch;
+  // Filters: any change returns to page 1 and refetches (time range + TUN inclusion; the per-column
+  // filters live in the table header funnels now)
+  const clRefetch = () => { LogsView.cl.page = 0; LogsView.pollNow(); };
   $('cl-time').onchange = () => {
     const custom = $('cl-time').value === 'custom';
     $('cl-from').hidden = $('cl-to').hidden = !custom;
@@ -457,8 +571,8 @@ function initLogs() {
   $('cl-from').onchange = clRefetch;
   $('cl-to').onchange = clRefetch;
   $('cl-tun').onchange = clRefetch;
-  $('cl-prev').onclick = () => { if (LogsView.cl.page > 0) { LogsView.cl.page--; LogsView.pollConns(); } };
-  $('cl-next').onclick = () => { LogsView.cl.page++; LogsView.pollConns(); };
+  $('cl-prev').onclick = () => { if (LogsView.cl.page > 0) { LogsView.cl.page--; LogsView.pollNow(); } };
+  $('cl-next').onclick = () => { LogsView.cl.page++; LogsView.pollNow(); };
   // Click a target row to expand/collapse the detail (cumulative bytes, first/last seen, recent connections)
   $('lg-conn-body').addEventListener('click', (e) => {
     if (e.target.closest('.conn-detail-row')) { e.stopPropagation(); return; }
@@ -479,7 +593,7 @@ function initLogs() {
         try {
           const n = await invoke('conlog_kill_target', { host, port });
           toast(AgI18n.t('logs.cl.killedN', { n }), 'ok');
-          LogsView.pollConns();
+          LogsView.pollNow();
         } catch (err) { toast(friendlyError(err), 'err'); }
       } });
     }
@@ -492,8 +606,13 @@ function initLogs() {
   });
 }
 
-/* Language switch: clear signatures to force re-pull and redraw (all renders are signature-compared; locale entry changes must break the signature) */
+/* Language switch: row HTML embeds translated pills while AgTbl.sync signatures are data-only —
+   drop the rendered rows so the next pull re-renders in the new language (pulse tick does the pull) */
 AgI18n.onChange(() => {
-  LogsView.cl.sig = LogsView.cl.statSig = LogsView.hitsSig = LogsView.evSig = '';
-  if (LogsView.timer) LogsView.pollNow();
+  LogsView.cl.statSig = '';
+  $('lg-conn-body').innerHTML = '';
+  $('lg-hits-body').innerHTML = '';
+  $('lg-ev-list').innerHTML = '';
+  LogsView.renderLogs(true);
+  LogsView.pollNow();
 });

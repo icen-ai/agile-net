@@ -101,16 +101,23 @@ pub struct ActiveCounters {
 }
 
 /// Query filter (all fields optional; offset/limit drive the 50-row pages).
+/// `outbound` / `state` / `hit` accept comma-separated multi-values (OR) — the header funnel
+/// popovers are multi-select by design.
 #[derive(Default, Debug)]
 pub struct ConnFilter {
     /// Case-insensitive substring on host (and mapped_to)
     pub keyword: Option<String>,
-    /// "direct" | "tunnel" | "forward"
+    /// "direct" | "tunnel" | "forward" (comma-separated OR set)
     pub outbound: Option<String>,
-    /// per-conn query: "active"|"closed"|"failed"; per-target query: active = has live conns, closed = none, failed = has failures
+    /// per-conn query: "active"|"closed"|"failed"; per-target query: active = has live conns, closed = none, failed = has failures (comma-separated OR set)
     pub state: Option<String>,
+    /// HitLayer snake_case set (user_bypass / explicit_route / preset_bypass / default; comma-separated OR)
+    pub hit: Option<String>,
     /// TunRelay rows are hidden unless source=Some("tun_relay")/"all" is requested
     pub source: Option<String>,
+    /// Per-target sort "col:dir" (col = last|conns|target, dir = asc|desc; default last:desc).
+    /// Live targets always pin to the top regardless (operator attention first).
+    pub sort: Option<String>,
     pub from_ms: Option<i64>,
     pub to_ms: Option<i64>,
     pub offset: usize,
@@ -480,7 +487,7 @@ impl ConnLog {
                     OutboundKind::Tunnel { .. } => "tunnel",
                     OutboundKind::Forward => "forward",
                 };
-                if o != kind {
+                if !o.split(',').any(|x| x == kind) {
                     return false;
                 }
             }
@@ -490,7 +497,7 @@ impl ConnLog {
                     RecState::Closed => "closed",
                     RecState::Failed { .. } => "failed",
                 };
-                if s != st {
+                if !s.split(',').any(|x| x == st) {
                     return false;
                 }
             }
@@ -547,7 +554,23 @@ impl ConnLog {
                 }
             })
             .collect();
-        rows.sort_by(|a, b| b.last_ms.cmp(&a.last_ms));
+        rows.sort_by(|a, b| {
+            // Live targets pin to the top (operator attention); the chosen column sorts within each tier
+            let (col, desc) = f
+                .sort
+                .as_deref()
+                .and_then(|s| s.split_once(':'))
+                .map(|(c, d)| (c, d != "asc"))
+                .unwrap_or(("last", true));
+            (b.active > 0).cmp(&(a.active > 0)).then_with(|| {
+                let ord = match col {
+                    "conns" => a.conns.cmp(&b.conns),
+                    "target" => a.host.to_lowercase().cmp(&b.host.to_lowercase()).then(a.port.cmp(&b.port)),
+                    _ => a.last_ms.cmp(&b.last_ms),
+                };
+                if desc { ord.reverse() } else { ord }
+            })
+        });
         let matches = |r: &&HostStat| {
             if !want_tun && r.source == Source::TunRelay {
                 return false;
@@ -561,18 +584,30 @@ impl ConnLog {
                     OutboundKind::Tunnel { .. } => "tunnel",
                     OutboundKind::Forward => "forward",
                 };
-                if o != kind {
+                if !o.split(',').any(|x| x == kind) {
                     return false;
                 }
             }
             if let Some(s) = &f.state {
-                let ok = match s.as_str() {
+                // OR over the comma-separated set (unknown values match nothing — fail-closed)
+                let ok = s.split(',').any(|x| match x {
                     "active" => r.active > 0,
                     "closed" => r.active == 0,
                     "failed" => r.fails > 0,
-                    _ => true,
-                };
+                    _ => false,
+                });
                 if !ok {
+                    return false;
+                }
+            }
+            if let Some(h) = &f.hit {
+                let layer = match r.hit {
+                    HitLayer::UserBypass => "user_bypass",
+                    HitLayer::ExplicitRoute => "explicit_route",
+                    HitLayer::PresetBypass => "preset_bypass",
+                    HitLayer::Default => "default",
+                };
+                if !h.split(',').any(|x| x == layer) {
                     return false;
                 }
             }
@@ -797,6 +832,35 @@ mod tests {
         let failed = l.query_hosts(&ConnFilter { state: Some("failed".into()), limit: 50, ..Default::default() });
         assert_eq!(failed.total, 1);
         l.end(h3.id);
+    }
+
+    #[test]
+    fn live_targets_pin_first_and_sort_param() {
+        let l = log();
+        l.set_enabled(true);
+        // three connections to zeta.com (one stays live), one to alpha.com (closed)
+        let z1 = begin_one(&l, "zeta.com");
+        let z2 = begin_one(&l, "zeta.com");
+        let z3 = begin_one(&l, "zeta.com");
+        let a1 = begin_one(&l, "alpha.com");
+        l.end(a1.id);
+        l.end(z2.id);
+        l.end(z3.id);
+        // alpha.com wears the newest timestamp — plain recency order would lead with it
+        l.agg_of("zeta.com", 443).unwrap().last_ms.store(1_000, Ordering::Relaxed);
+        l.agg_of("alpha.com", 443).unwrap().last_ms.store(9_999_999, Ordering::Relaxed);
+        let out = l.query_hosts(&ConnFilter { limit: 50, ..Default::default() });
+        assert_eq!(out.items[0].host, "zeta.com", "live targets pin above more-recent closed ones");
+        // all closed now: the chosen column sorts within the tier
+        l.end(z1.id);
+        l.agg_of("zeta.com", 443).unwrap().last_ms.store(1_000, Ordering::Relaxed);
+        l.agg_of("alpha.com", 443).unwrap().last_ms.store(9_999_999, Ordering::Relaxed);
+        let recent = l.query_hosts(&ConnFilter { limit: 50, ..Default::default() });
+        assert_eq!(recent.items[0].host, "alpha.com");
+        let by_conns = l.query_hosts(&ConnFilter { sort: Some("conns:desc".into()), limit: 50, ..Default::default() });
+        assert_eq!(by_conns.items[0].host, "zeta.com");
+        let by_target = l.query_hosts(&ConnFilter { sort: Some("target:asc".into()), limit: 50, ..Default::default() });
+        assert_eq!(by_target.items[0].host, "alpha.com");
     }
 
     #[test]

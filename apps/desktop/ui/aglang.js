@@ -60,6 +60,11 @@ AgI18n.register({
   'common.createdAt': { zh: '创建时间', en: 'Created' },
   'common.updatedAt': { zh: '更新时间', en: 'Updated' },
   'common.never': { zh: '从未', en: 'Never' },
+  // ---- table implicit controls (AgTbl) + auto-refresh widget (AgPulse) ----
+  'tbl.filter': { zh: '筛选', en: 'Filter' },
+  'pulse.updated': { zh: '更新', en: 'Updated' },
+  'pulse.updatedTip': { zh: '上次数据刷新时间', en: 'Last data refresh time' },
+  'pulse.intervalTip': { zh: '自动刷新间隔（无手动刷新，防滥用下限）', en: 'Auto-refresh interval (no manual refresh; rate-limited by design)' },
   // ---- shared domain terms ----
   'term.endpoint': { zh: '端点', en: 'Endpoint' },
   'term.fanout': { zh: '扇出', en: 'Fan-out' },
