@@ -776,31 +776,18 @@ async function openNodeConsole(nodeId) {
 
 /* ================= Phone QR sync (desktop → phone scan) ================= */
 async function openPhoneQr() {
-  // gather selectable configs: fan-in credentials + fan-out connectors
-  const [credsR, connsR] = await Promise.allSettled([
-    invoke('list_credentials'),
-    invoke('list_server_connectors'),
-  ]);
-  const credItems = (credsR.status === 'fulfilled' ? credsR.value : []).map(([key, c]) => ({
-    kind: 'connect', label: c.name || c.label || key.split('@')[0],
-    url: AgLink.buildConnect({
-      addr: c.addr, account: 'd:' + (c.label || ''), password: c.token,
-      fp: c.pinned_fingerprint, insecure: c.insecure,
-      entries: c.entries, entry_fps: c.entry_fps || c.entries?.map(() => ''),
-      en: c.en, emode: c.emode, eadmin: c.eadmin, myname: c.myname,
-    }),
+  // gather selectable fan-in credentials; the URL is built by the Rust export_credential
+  // command (connect_url_of) which correctly handles the full failover set + fingerprints.
+  // Fan-out connectors are excluded: the plaintext token is a reversible-storage exception
+  // that is deliberately never exposed over IPC (only token_prefix is visible).
+  let creds = [];
+  try { creds = await invoke('list_credentials'); } catch (e) {}
+  if (!creds.length) { toast(AgI18n.t('phone.noConfig'), 'err'); return; }
+  const items = creds.map(([key, c]) => ({
+    key, label: c.name || c.label || key.split('@')[0],
   }));
-  const connItems = (connsR.status === 'fulfilled' ? connsR.value : []).map(c => ({
-    kind: 'fanout', label: c.name || c.upstream_addr,
-    url: AgLink.buildFanout({
-      addr: c.upstream_addr, token: c.token_plain || '', sni: c.sni_hostname,
-      fp: c.pinned_fingerprint, insecure: c.insecure, myname: c.my_name,
-    }),
-  }));
-  const items = [...credItems, ...connItems];
-  if (!items.length) { toast(AgI18n.t('phone.noConfig'), 'err'); return; }
   // build modal: config selector + QR display area
-  const opts = items.map((it, i) => '<option value="' + i + '">' + esc(it.label) + ' (' + (it.kind === 'connect' ? AgI18n.t('term.fanin') : AgI18n.t('term.fanout')) + ')</option>').join('');
+  const opts = items.map((it, i) => '<option value="' + i + '">' + esc(it.label) + '</option>').join('');
   openModal(AgI18n.t('phone.title'),
     '<select id="qr-sel" style="width:100%">' + opts + '</select>' +
     '<div id="qr-display" style="text-align:center;margin-top:14px;min-height:280px;display:flex;align-items:center;justify-content:center"></div>' +
@@ -813,7 +800,9 @@ async function openPhoneQr() {
     const display = $('qr-display');
     display.innerHTML = '<span class="dim">' + AgI18n.t('common.loading') + '</span>';
     try {
-      const b64 = await invoke('qr_generate', { url: item.url });
+      // Rust export_credential builds the full anet://connect URL (entries + fps + en + emode + ...)
+      const url = await invoke('export_credential', { key: item.key });
+      const b64 = await invoke('qr_generate', { url });
       display.innerHTML = '<img src="data:image/png;base64,' + b64 + '" style="max-width:280px;width:100%;border-radius:10px;border:1px solid var(--border)">';
     } catch (e) { display.innerHTML = '<span class="err">' + esc(friendlyError(e)) + '</span>'; }
   };
