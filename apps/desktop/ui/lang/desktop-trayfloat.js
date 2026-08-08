@@ -12,6 +12,7 @@ AgI18n.register({
   'tray.stopProxy': { zh: '停止代理', en: 'Stop Proxy' },
   'tray.tunLockTip': { zh: 'TUN 模式下出站固定为规则', en: 'Outbound is fixed to Rule under TUN' },
   'tray.outMode': { zh: '出站模式', en: 'Outbound' },
+  'tray.proxyMode': { zh: '代理模式', en: 'Proxy Mode' },
   // outbound three-segment: rule reuses term.rule; global/direct shared by tray and float-ball menu
   'tray.outGlobal': { zh: '全局', en: 'Global' },
   'tray.outDirect': { zh: '直连', en: 'Direct' },

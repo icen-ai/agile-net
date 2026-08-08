@@ -851,8 +851,7 @@ async function refreshProxy() {
       text = T('proxy-stopped');
     }
     Island.setStatus(mode, text, degraded);
-    // sidebar footer proxy status row (same data source as Dynamic Island)
-    setText('sf-status', st.running ? AgI18n.t('views.sf-proxy-running', { addr: '127.0.0.1:' + st.port }) : AgI18n.t('views.proxy-off-state'));
+    // sidebar footer: rates only (status text removed — Dynamic Island is the primary status surface)
     // dashboard proxy card: switch state / status badge / listen address (inline-edit does its own change detection)
     if ($('d-proxy').checked !== st.running) $('d-proxy').checked = st.running;
     setHtml('d-proxy-badge', st.running ? '<span class="badge b-ok">' + AgI18n.t('common.running') + '</span>' : '<span class="badge b-gray">' + AgI18n.t('views.not-started') + '</span>');
@@ -1166,7 +1165,24 @@ function renderNotifyList(items) {
   }).join('');
 }
 
+/* Notify view lifecycle: the "活动" (event center) tab moved here from logs; its pulse
+   'logev' is mounted here and activated only when the tab is current + the view is visible. */
+const NotifyView = {
+  tab: 'inbox',
+  enter() {
+    if (this.tab === 'ev') AgPulse.setActive('logev', true);
+  },
+  switchTab(key) {
+    if (this.tab === 'ev') AgPulse.setActive('logev', false);
+    this.tab = key;
+    if (key === 'ev') AgPulse.setActive('logev', true);
+  },
+};
+
 function initNotify() {
+  // Event center pulse (moved from logs view)
+  AgPulse.mount($('pulse-logev'), { key: 'logev', defMs: 10000, options: [5000, 10000, 30000], onTick: () => LogsView.pollEvents() });
+  agTabsBind($('nv-tabs'), (key) => NotifyView.switchTab(key));
   $('btn-notify').onclick = () => switchView('notify');
   $('btn-notify-read-all').onclick = async () => {
     try { await invoke('notifications_read_all'); } catch (e) { toast(friendlyError(e), 'err'); }

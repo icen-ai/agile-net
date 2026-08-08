@@ -131,6 +131,7 @@ AgI18n.register({
   'hero.modeSysProxy': { zh: '系统代理', en: 'System Proxy' },
   'hero.modeLocalProxy': { zh: '本地代理', en: 'Local Proxy' },
   'hero.modeTun': { zh: 'TUN · {mode}', en: 'TUN · {mode}' },
+  'hero.roleWeb': { zh: '远程面', en: 'Web Panel' },
 
   // ---- beginner checklist (labels kept 6-char symmetric in zh) ----
   'hero.ob1Label': { zh: '激活订阅功能', en: 'Activate Subscription' },

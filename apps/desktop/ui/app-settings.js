@@ -158,6 +158,7 @@ async function refreshRolesCache() {
   window._rolesSig = sig;
   window._rolesCache = settings;
   if (window.Hero && Hero.renderMode) Hero.renderMode();
+  if (window.Hero && Hero.renderRoles) Hero.renderRoles();
 }
 async function initRoles() {
   let settings = { client: true, server: false, web: false, web_listen: '127.0.0.1:59291' };

@@ -142,8 +142,26 @@ const Hero = {
   async tick10s() {
     await this.pollPower();
     this.pollConns();
+    this.renderRoles();
     Onboarding.refresh();
     syncDashOff(); // re-sync card off-states (programmatic .checked reverts by toggle handlers don't fire change)
+  },
+  /* Role overview bar: 4 compact role indicators (client/server/subscription/web) that jump to the toggle on click */
+  _rolesSig: '',
+  renderRoles() {
+    if (HTTP_MODE) return;
+    const r = window._rolesCache || {};
+    const sig = JSON.stringify([r.client, r.server, r.subscription, r.web, r.subscription_feature, AgI18n.lang]);
+    if (sig === this._rolesSig) return;
+    this._rolesSig = sig;
+    const bar = $('hero-roles'); if (!bar) return;
+    const item = (on, label, view) => '<button class="role-pill' + (on ? ' on' : '') + '" data-goto="' + view + '">' +
+      '<span class="role-dot' + (on ? ' on' : '') + '"></span>' + esc(label) + '</button>';
+    bar.innerHTML =
+      item(!!r.client, AgI18n.t('term.fanin'), 'connect') +
+      item(!!r.server, AgI18n.t('term.fanout'), 'upstreams') +
+      (r.subscription_feature ? item(!!r.subscription, AgI18n.t('term.subscription'), 'subscription') : '') +
+      item(!!r.web, AgI18n.t('hero.roleWeb'), 'connect');
   },
 };
 function initHero() {
@@ -154,7 +172,7 @@ function initHero() {
   syncDashOff();
   /* i18n: force re-render of this domain on language switch (signatures cleared so change detection won't block old-language text) */
   AgI18n.onChange(() => {
-    Hero._powerSig = ''; NetProbe._sig = ''; Onboarding._sig = '';
+    Hero._powerSig = ''; Hero._rolesSig = ''; NetProbe._sig = ''; Onboarding._sig = '';
     Hero.pollPower(); Hero.onTraffic(); NetProbe.render(); Onboarding.refresh();
   });
   Hero.onTraffic();  // first-frame empty state / rate readings

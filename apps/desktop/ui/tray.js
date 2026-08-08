@@ -19,8 +19,9 @@ function esc(s) {
 const S = {
   running: false, port: 0,          // local proxy
   mode: 'rule', tun: false,         // outbound mode / TUN lock
-  kernel: false,                    // subscription kernel
-  sigStatus: '', sigMode: '', sigGroups: '', sigConns: '',
+  pmode: 'system',                  // proxy mode: system | local | tun
+  kernel: false,                    // subscription kernel running
+  sigStatus: '', sigMode: '', sigPMode: '', sigGroups: '', sigConns: '',
   openGroup: null, lastGroups: null,  // expanded proxy group (name; only one open at a time) and last group data
   openConns: false,                   // connection summary expanded state (collapsed by default, click header to expand)
   downSig: '', upSig: '',
@@ -68,18 +69,20 @@ function setSpeed(kind, bps) {
 
 /* ---------------- Slow polling (3s): status / mode / proxy groups / connections ---------------- */
 async function slowTick() {
-  const [stR, roleR, kR, gR, cR] = await Promise.allSettled([
+  const [stR, roleR, kR, gR, cR, pmR] = await Promise.allSettled([
     invoke('proxy_status'),
     invoke('get_role_settings'),
     invoke('subscription_status'),
     invoke('proxy_groups'),
     invoke('sub_connections'), // new backend command; rejects until landed, empty state fallback
+    invoke('proxy_mode_get'),
   ]);
   if (stR.status === 'fulfilled' && stR.value) renderStatus(!!stR.value.running, +stR.value.port || 0);
   if (roleR.status === 'fulfilled' && roleR.value) {
     renderMode(roleR.value.sub_mode || 'rule', !!roleR.value.tun_mode);
   }
-  if (kR.status === 'fulfilled' && kR.value) S.kernel = !!kR.value.running;
+  if (pmR.status === 'fulfilled' && typeof pmR.value === 'string') renderPMode(pmR.value);
+  if (kR.status === 'fulfilled' && kR.value) { S.kernel = !!kR.value.running; renderSub(); }
   if (gR.status === 'fulfilled') renderGroups(gR.value);
   if (cR.status === 'fulfilled') renderConns(cR.value);
   else renderConns(null);
@@ -107,6 +110,21 @@ function renderMode(mode, tun) {
   seg.classList.toggle('off', tun); // outbound pinned to rule under TUN (backend rejects switching too)
   seg.title = tun ? AgI18n.t('tray.tunLockTip') : '';
   seg.querySelectorAll('button').forEach(b => b.classList.toggle('cur', b.dataset.mode === mode));
+}
+
+/* Proxy mode (system/local/tun) segmented control — aligns tray with float-menu */
+function renderPMode(pm) {
+  const sig = pm;
+  if (sig === S.sigPMode) return;
+  S.sigPMode = sig;
+  S.pmode = pm;
+  $('tp-pmode').querySelectorAll('button').forEach(b => b.classList.toggle('cur', b.dataset.pmode === pm));
+}
+
+/* Subscription kernel toggle label */
+function renderSub() {
+  const label = $('tp-sub-label');
+  if (label) label.textContent = AgI18n.t(S.kernel ? 'float.subStop' : 'float.subStart');
 }
 
 /* Proxy groups: Selector groups only; collapsed by default rendering just the group-name row, click .grp-name to expand
@@ -214,6 +232,15 @@ window.addEventListener('DOMContentLoaded', () => {
     slowTick();
   });
 
+  // proxy mode switching (system/local/tun — aligns tray with float-menu)
+  $('tp-pmode').addEventListener('click', async (e) => {
+    const b = e.target.closest('button[data-pmode]');
+    if (!b || b.dataset.pmode === S.pmode) return;
+    renderPMode(b.dataset.pmode);
+    try { await invoke('proxy_mode_set', { mode: b.dataset.pmode }); } catch (err) {}
+    slowTick();
+  });
+
   // proxy groups: group-name row expand/collapse (one group at a time, immediate re-render); node row select_proxy (event delegation)
   $('tp-groups').addEventListener('click', async (e) => {
     const head = e.target.closest('.grp-name');
@@ -244,6 +271,19 @@ window.addEventListener('DOMContentLoaded', () => {
       const st = await invoke('proxy_status');
       if (st && st.running) await invoke('stop_proxy');
       else await invoke('start_proxy', { port: 57890 });
+    } catch (err) {}
+    btn.disabled = false;
+    slowTick();
+  });
+  // subscription kernel toggle (aligns tray with float-menu)
+  $('tp-sub').addEventListener('click', async () => {
+    const btn = $('tp-sub');
+    btn.disabled = true;
+    try {
+      const on = !S.kernel;
+      const st = await invoke('set_subscription_role', { on, enabled: on });
+      S.kernel = st && typeof st.running === 'boolean' ? st.running : on;
+      renderSub();
     } catch (err) {}
     btn.disabled = false;
     slowTick();

@@ -104,7 +104,6 @@
         <span class="down" id="sf-down" style="display:none">0 B/s</span>
         <span id="sf-idle">未运行</span>
       </div>
-      <div class="hint" id="sf-status" style="margin-top:0">代理已停止</div>
     </div>
     <div id="nav-admin" style="display:none">
       <div class="nav-item" id="nav-admin-back"><i data-ic="user"></i><span class="nav-label" data-i18n="menu.backClient">返回客户端</span></div>
@@ -170,6 +169,9 @@
           <div class="hint" id="hero-power-hint" style="margin-top:0;display:none;text-align:center;font-size:10px;max-width:120px"></div>
         </div>
       </div>
+
+      <!-- Role overview bar: compact status of the 4 roles (click a role to jump to its toggle) -->
+      <div class="role-bar" id="hero-roles"></div>
 
       <!-- Onboarding checklist (makes first-success path explicit: activate subscription → add subscription → enable local proxy → egress probe success;
            all four steps done → fade out after 5s and record ag_ob_done; 「不再显示」 records ag_ob_dismissed; any flag set → don't render) -->
@@ -536,7 +538,6 @@
           <button class="agtab active" data-agtab="conn" data-i18n="logs.tabConn">实时连接</button>
           <button class="agtab" data-agtab="log" data-i18n="logs.tabLog">实时日志</button>
           <button class="agtab" data-agtab="hits" data-i18n="logs.tabHits">命中追踪</button>
-          <button class="agtab" data-agtab="ev" data-i18n="term.events">事件</button>
         </div>
       </div>
 
@@ -636,8 +637,36 @@
           </div>
         </div>
       </div>
+    </section>
 
-      <!-- Event center: audit of local operations and system events (fetch on tab entry + 10s polling + manual refresh, new → old) -->
+    <!-- Admin console: embedded iframe (local server / remote endpoints / manageable fan-outs), navigation driven via postMessage -->
+    <section class="view admin-view" id="view-admin" hidden>
+      <iframe id="admin-frame" title="管理端" data-i18n-title="admin.frameTitle"></iframe>
+    </section>
+
+    <!-- Settings (sections: General → Connection → Subscription Kernel → System → Sync & Backup → About & Uninstall; element ids unchanged, JS bindings unaffected) -->
+    <!-- Notifications (node.md M4-T1: local inbox — session notices / revocations / approvals; + activity audit tab) -->
+    <section class="view" id="view-notify" hidden>
+      <div class="page-title"><i data-ic="bell" data-sz="19"></i><span data-i18n="menu.notify">通知</span></div>
+      <div class="page-desc" data-i18n="notify.desc">会话通知、吊销告知与审批状态（本机收件箱，重启保留）</div>
+      <div class="agtabs" id="nv-tabs">
+        <div class="agtabs-pill">
+          <button class="agtab active" data-agtab="inbox" data-i18n="notify.tabInbox">收件箱</button>
+          <button class="agtab" data-agtab="ev" data-i18n="notify.tabActivity">活动</button>
+        </div>
+      </div>
+      <div data-agpanel="inbox">
+        <div class="card">
+          <h3><i data-ic="bell"></i><span data-i18n="notify.title">通知</span>
+            <span class="h3-tools">
+              <button class="ghost small" id="btn-notify-read-all" data-i18n="notify.markAll">全部已读</button>
+              <button class="ghost small" id="btn-notify-clear" data-i18n="common.clear">清空</button>
+            </span>
+          </h3>
+          <div id="notify-list"><div class="empty" data-i18n="notify.empty">暂无通知</div></div>
+        </div>
+      </div>
+      <!-- Event center: audit of local operations and system events (moved from logs; 10s polling + manual refresh, new → old) -->
       <div data-agpanel="ev" hidden>
         <div class="card">
           <div class="rl-toolbar">
@@ -653,27 +682,6 @@
             </span>
           </div>
         </div>
-      </div>
-    </section>
-
-    <!-- Admin console: embedded iframe (local server / remote endpoints / manageable fan-outs), navigation driven via postMessage -->
-    <section class="view admin-view" id="view-admin" hidden>
-      <iframe id="admin-frame" title="管理端" data-i18n-title="admin.frameTitle"></iframe>
-    </section>
-
-    <!-- Settings (sections: General → Connection → Subscription Kernel → System → Sync & Backup → About & Uninstall; element ids unchanged, JS bindings unaffected) -->
-    <!-- Notifications (node.md M4-T1: local inbox — session notices / revocations / approvals) -->
-    <section class="view" id="view-notify" hidden>
-      <div class="page-title"><i data-ic="bell" data-sz="19"></i><span data-i18n="menu.notify">通知</span></div>
-      <div class="page-desc" data-i18n="notify.desc">会话通知、吊销告知与审批状态（本机收件箱，重启保留）</div>
-      <div class="card">
-        <h3><i data-ic="bell"></i><span data-i18n="notify.title">通知</span>
-          <span class="h3-tools">
-            <button class="ghost small" id="btn-notify-read-all" data-i18n="notify.markAll">全部已读</button>
-            <button class="ghost small" id="btn-notify-clear" data-i18n="common.clear">清空</button>
-          </span>
-        </h3>
-        <div id="notify-list"><div class="empty" data-i18n="notify.empty">暂无通知</div></div>
       </div>
     </section>
 

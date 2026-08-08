@@ -42,9 +42,9 @@ const LogsView = {
   entries: [],      // live log cache (data source for full re-render on filter change)
   logCursor: null,  // last rendered {time,level,payload} (incremental cursor; losing it = buffer rotation → full redraw)
   follow: true,     // auto scroll to bottom (pauses when the user scrolls up, resumes at bottom)
-  pulseKey(tab) { return { conn: 'logconn', log: 'logview', hits: 'loghits', ev: 'logev' }[tab || this.tab]; },
+  pulseKey(tab) { return { conn: 'logconn', log: 'logview', hits: 'loghits' }[tab || this.tab]; },
   enter() { AgPulse.setActive(this.pulseKey(), true); },   // setActive ticks immediately (covers the entry pull)
-  stop() { ['logconn', 'logview', 'loghits', 'logev'].forEach(k => AgPulse.setActive(k, false)); },
+  stop() { ['logconn', 'logview', 'loghits'].forEach(k => AgPulse.setActive(k, false)); },
   switchTab(key) {
     AgPulse.setActive(this.pulseKey(), false);
     this.tab = key;
@@ -479,7 +479,7 @@ function initLogs() {
   AgPulse.mount($('pulse-logconn'), { key: 'logconn', defMs: 1000, options: [1000, 2000, 5000, 10000], onTick: () => LogsView.pollConns() });
   AgPulse.mount($('pulse-logview'), { key: 'logview', defMs: 1000, options: [1000, 2000, 5000], onTick: () => LogsView.pollLogs() });
   AgPulse.mount($('pulse-loghits'), { key: 'loghits', defMs: 2000, options: [2000, 5000, 10000], onTick: () => LogsView.tickHits() });
-  AgPulse.mount($('pulse-logev'), { key: 'logev', defMs: 10000, options: [5000, 10000, 30000], onTick: () => LogsView.pollEvents() });
+  // logev pulse is mounted in initNotify (the event center moved to the notifications page)
 
   /* Implicit header chrome: resize on both tables. conn: server-side sort (目标/连接/最近) + funnels
      (目标 text / 出口·命中·状态 enum multi-select) — the toolbar below keeps only the non-column-bound

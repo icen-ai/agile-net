@@ -157,6 +157,8 @@ AgI18n.register({
   'fanin.searchPh': { zh: '搜索名称 / 地址 / 状态', en: 'Search name / address / status' },
   // ---- notify (view-notify) ----
   'notify.desc': { zh: '会话通知、吊销告知与审批状态（本机收件箱，重启保留）', en: 'Session notices, revocation messages and approval states (local inbox, kept across restarts)' },
+  'notify.tabInbox': { zh: '收件箱', en: 'Inbox' },
+  'notify.tabActivity': { zh: '活动', en: 'Activity' },
   // ---- rules (view-routes) ----
   'rules.title': { zh: '路由规则', en: 'Routing Rules' },
   'rules.desc': { zh: '放行/映射为本地自定义规则，优先级高于订阅与端点规则；组合 = 成组启停的规则集合；开关立即生效并本地记忆', en: 'Bypass/hosts are local custom rules with priority over subscription and endpoint rules; combos are named rule sets toggled as a group; switches apply instantly and are remembered locally' },

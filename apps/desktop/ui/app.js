@@ -97,6 +97,7 @@ function initTitlebarExtra() {
 let CUR_VIEW = 'connect';
 function switchView(v) {
   if (CUR_VIEW === 'logs' && v !== 'logs') LogsView.stop(); // Leaving the logs view stops polling immediately
+  if (CUR_VIEW === 'notify' && v !== 'notify') AgPulse.setActive('logev', false); // leaving notify stops the event poller
   CUR_VIEW = v;
   document.querySelectorAll('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.view === v));
   document.querySelectorAll('#bnav .bnav-item').forEach(n => n.classList.toggle('active', n.dataset.view === v));
@@ -108,7 +109,7 @@ function switchView(v) {
   if (v === 'subscription') { refreshSubs(); refreshSubStatus(); refreshSubScripts(); SubTraffic.poll(); }
   if (v === 'proxy') { refreshSubs(); refreshGroups(); }
   if (v === 'logs') LogsView.enter();
-  if (v === 'notify') refreshNotify(true);
+  if (v === 'notify') { refreshNotify(true); NotifyView.enter(); }
   if (v === 'settings') { refreshSysproxy(); refreshSubFeature(); loadSyncConfig(); loadMachineIdentity(); }
 }
 function initTitlebar() {

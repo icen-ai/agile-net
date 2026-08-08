@@ -210,6 +210,16 @@ html.no-blur .skel::after { animation: none; }
   70%, 100% { box-shadow: var(--shadow-2), 0 0 22px var(--power-glow), 0 0 0 14px transparent; }
 }
 
+/* --- role-bar: compact horizontal strip of role status pills (client/server/subscription/web) ---
+   Structure: <div class="role-bar"><button class="role-pill on"><span class="role-dot on"></span>客户端</button>…</div>
+   Clicking a pill jumps to the view containing its toggle. Off pills are dimmed. */
+.role-bar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
+.role-pill { display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; border-radius: 999px; background: var(--panel2); border: 1px solid var(--border); color: var(--dim2); font-size: 12px; font-weight: 600; cursor: pointer; transition: background var(--dur-fast), border-color var(--dur-fast), color var(--dur-fast); }
+.role-pill:hover { border-color: var(--border2); color: var(--dim); }
+.role-pill.on { background: var(--accent-bg); border-color: var(--accent-bg); color: var(--accent-text); }
+.role-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--border2); flex-shrink: 0; transition: background var(--dur-fast); }
+.role-dot.on { background: var(--ok); }
+
 /* --- lat latency badge (tabular 12px pill; three semantic tiers + .lat-na timeout gray) ---
    Structure: <span class="lat lat-good">86ms</span> / <span class="lat lat-na">timeout</span> */
 .lat { display: inline-flex; align-items: center; justify-content: center; min-width: 54px; padding: 1px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; line-height: 1.5; font-variant-numeric: tabular-nums; white-space: nowrap; }
