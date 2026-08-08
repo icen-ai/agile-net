@@ -16,14 +16,16 @@ use crate::api::extractors::{AdminAuth, ClientIp};
 use crate::api::{ApiState, codes, err, ok};
 
 /// GET /api/v1/admin/sessions — live session inventory (fan-in peers + delegated consumers),
-/// each row carrying the proven device identity, entry class and live counters.
+/// each row carrying the proven device identity, entry class and live counters. Relay-entry
+/// consumers (terminated at an intermediate relay, reported upstream via ConsumerSessionReport)
+/// are merged in from the delegation engine's reported-sessions cache.
 pub async fn list_sessions(AdminAuth(_): AdminAuth, State(state): State<ApiState>) -> Response {
     let Some(listener) = &state.runtime.listener else {
         return ok(json!({ "items": [] }));
     };
     let display = listener.peer_display_map().into_iter().collect::<std::collections::HashMap<_, _>>();
     let local = listener.local_delegated_registry();
-    let items: Vec<serde_json::Value> = listener
+    let mut items: Vec<serde_json::Value> = listener
         .sessions_detail()
         .into_iter()
         .map(|s| {
@@ -60,6 +62,42 @@ pub async fn list_sessions(AdminAuth(_): AdminAuth, State(state): State<ApiState
             })
         })
         .collect();
+
+    // federation P2: relay-entry consumers reported upstream by intermediate relays. These
+    // sessions are NOT terminated at this listener (the relay owns them), so they don't appear
+    // in sessions_detail() — merge them from the delegation engine's reported-sessions cache.
+    let reported = state.runtime.connector_manager.delegation_engine().reported_sessions();
+    for (token_hash, sessions) in reported.iter() {
+        let token_label = state
+            .runtime
+            .listener
+            .as_ref()
+            .and_then(|l| {
+                let reg = l.delegated_registry();
+                reg.get(token_hash).map(|t| t.label.clone())
+            })
+            .unwrap_or_default();
+        for info in sessions {
+            items.push(json!({
+                "session_id": info.session_id,
+                "session_key": format!("delegated:{token_hash}:{}", info.session_id),
+                "kind": "consumer",
+                "node_id": serde_json::Value::Null,
+                "display": serde_json::Value::Null,
+                "device_fp": info.device_fp,
+                "my_name": info.my_name,
+                "ip": info.peer_ip,
+                "connected_at": 0, // uptime unknown (session lives on the relay, not here)
+                "bytes_up": 0,
+                "bytes_down": 0,
+                "channels": 0,
+                "token_hash": token_hash,
+                "token_label": token_label,
+                "entry": "relay",
+            }));
+        }
+    }
+
     ok(json!({ "items": items }))
 }
 

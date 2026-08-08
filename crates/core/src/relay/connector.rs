@@ -150,6 +150,18 @@ pub trait DelegationHooks: Send + Sync {
     /// Pending-session appeal forwarded by the relay (PendingNote uplink; fp + session key are
     /// relay-attested). The issuer files it onto the device's certification approval item.
     fn pending_note(&self, _device_fp: &str, _session_key: &str, _body: &str) {}
+
+    /// Relay-side consumer session state report (federation P2 visibility for relay-entry
+    /// tokens): the issuer's issuance panel cannot otherwise see consumers connected through an
+    /// intermediate relay. Event-driven (online/offline) + periodic full-snapshot reconciliation.
+    fn consumer_session_report(
+        &self,
+        _kind: &str,
+        _token_hash: &str,
+        _info: &crate::proto::message::ConsumerSessionInfo,
+        _sessions: &[crate::proto::message::ConsumerSessionInfo],
+    ) {
+    }
 }
 
 impl From<u8> for ConnectionState {
@@ -649,6 +661,26 @@ impl RelayConnector {
                                 // relay-forwarded consumer appeal (fp/session key relay-attested)
                                 if let Some(h) = &hooks {
                                     h.pending_note(&device_fp, &session_key, &body);
+                                }
+                            }
+                            Ok(CtrlMessage::ConsumerSessionReport {
+                                kind,
+                                token_hash,
+                                device_fp,
+                                my_name,
+                                session_id,
+                                peer_ip,
+                                sessions,
+                            }) => {
+                                // relay-side consumer session visibility for relay-entry tokens
+                                if let Some(h) = &hooks {
+                                    let info = crate::proto::message::ConsumerSessionInfo {
+                                        device_fp,
+                                        my_name,
+                                        session_id,
+                                        peer_ip,
+                                    };
+                                    h.consumer_session_report(&kind, &token_hash, &info, &sessions);
                                 }
                             }
                             _ => debug!("ignoring unknown/malformed ctrl frame from upstream"),

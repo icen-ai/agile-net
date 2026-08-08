@@ -225,6 +225,19 @@ pub struct HintEntry {
     pub groups: Vec<String>,
 }
 
+/// One live consumer session as seen by the relay, reported upstream to the issuer (federation
+/// P2 visibility for relay-entry tokens). The relay attests the device fingerprint, name and IP
+/// (the consumer itself is behind the relay and cannot self-report them).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConsumerSessionInfo {
+    pub device_fp: String,
+    #[serde(default)]
+    pub my_name: String,
+    pub session_id: String,
+    #[serde(default)]
+    pub peer_ip: String,
+}
+
 /// Session concurrency policy of a delegated token (unified issuance): carried by the Ctrl
 /// token_register/revoke frames, enforced by the relay at consumer-session auth.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -302,6 +315,25 @@ pub enum CtrlMessage {
     /// federation control plane. Full sync on session start (双向 opt-in), incremental after.
     /// Middle hops forward blindly; the receiver verifies origin signatures itself.
     CertPush { records: Vec<CertRecord> },
+    /// Relay -> issuer: consumer-session state report for relay-entry tokens (federation P2
+    /// visibility). Event-driven on connect/discharge + periodic full-snapshot reconciliation so
+    /// the issuer's issuance panel shows who is actually connected through the relay.
+    /// `kind` = "online" (session came up) | "offline" (session went down) | "snapshot" (full
+    /// reconciliation; `sessions` carries the complete live set for the token).
+    ConsumerSessionReport {
+        kind: String,
+        token_hash: String,
+        #[serde(default)]
+        device_fp: String,
+        #[serde(default)]
+        my_name: String,
+        #[serde(default)]
+        session_id: String,
+        #[serde(default)]
+        peer_ip: String,
+        #[serde(default)]
+        sessions: Vec<ConsumerSessionInfo>,
+    },
 }
 
 /// Pending-session appeal cap (server-side enforcement, per session).

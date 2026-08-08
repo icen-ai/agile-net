@@ -11,7 +11,7 @@ use crate::service::acl::PeerAclRegistry;
 use crate::service::delegation::{DelegationEngine, build_register_msg};
 use crate::service::{ClientRoutes, load_pem_certs, resolve_upstream};
 use agile_net_core::proto::frame::{Frame, FrameType};
-use agile_net_core::proto::message::{CtrlMessage, PushedGroupMsg};
+use agile_net_core::proto::message::{ConsumerSessionInfo, CtrlMessage, PushedGroupMsg};
 use agile_net_core::relay::transit::TransitMeter;
 use agile_net_core::relay::{ConnectionState, MuxSession, PeerEvent, RelayConnector, RelayListener};
 use agile_net_core::tunnel::tls::TlsConfigBuilder;
@@ -576,6 +576,69 @@ impl ConnectorManager {
             }));
         }
 
+        // federation P2 visibility: periodic consumer-session snapshot reconciliation — every
+        // ~10s this relay sends a full-snapshot ConsumerSessionReport per token to the issuer,
+        // so any lost online/offline event self-heals. Only meaningful when this node acts as a
+        // relay (has a listener terminating consumer sessions for tokens issued elsewhere).
+        if let Some(l) = &self.listener {
+            let listener = l.clone();
+            let c = connector.clone();
+            let db = self.db.clone();
+            let connector_id = id.to_string();
+            tasks.push(tokio::spawn(async move {
+                let mut interval = tokio::time::interval(Duration::from_secs(10));
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                // skip the immediate first tick (fires at t=0)
+                interval.tick().await;
+                loop {
+                    interval.tick().await;
+                    if !c.is_connected() {
+                        continue;
+                    }
+                    let Some(mux) = c.current_mux() else {
+                        continue;
+                    };
+                    let tokens = db
+                        .delegated_tokens_of_connector(&connector_id)
+                        .unwrap_or_default();
+                    let metas = listener.session_metas();
+                    for rec in &tokens {
+                        // collect every live consumer session of this token (any node_id)
+                        let prefix = format!("delegated:{}:", rec.token_hash);
+                        let sessions: Vec<ConsumerSessionInfo> =
+                            metas
+                                .iter()
+                                .filter(|m| m.session_key.starts_with(&prefix))
+                                .map(|m| ConsumerSessionInfo {
+                                    device_fp: m.device_fp.clone(),
+                                    my_name: m.my_name.clone(),
+                                    session_id: m.session_id.clone(),
+                                    peer_ip: m.peer_ip.clone(),
+                                })
+                                .collect();
+                        let report = CtrlMessage::ConsumerSessionReport {
+                            kind: "snapshot".to_string(),
+                            token_hash: rec.token_hash.clone(),
+                            device_fp: String::new(),
+                            my_name: String::new(),
+                            session_id: String::new(),
+                            peer_ip: String::new(),
+                            sessions,
+                        };
+                        if let Ok(payload) = serde_json::to_vec(&report) {
+                            if mux
+                                .send_frame(Frame::new(FrameType::Ctrl, 0, payload))
+                                .await
+                                .is_err()
+                            {
+                                break; // session died; next tick re-evaluates
+                            }
+                        }
+                    }
+                }
+            }));
+        }
+
         Ok(Some(ConnectorHandle {
             connector,
             push_slot,
@@ -583,6 +646,8 @@ impl ConnectorManager {
             tasks,
         }))
     }
+
+
 
     /// Assemble the pushed policy groups of a connector record (push_groups ids -> name + rule values).
     fn pushed_groups_of(&self, rec: &ConnectorRecord) -> Vec<PushedGroupMsg> {

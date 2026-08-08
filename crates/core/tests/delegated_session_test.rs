@@ -152,14 +152,18 @@ async fn send_ctrl(mux: &MuxSession, msg: &CtrlMessage) {
 }
 
 async fn recv_ack(rx: &mut tokio::sync::mpsc::Receiver<Bytes>) -> (bool, String) {
-    let payload = tokio::time::timeout(Duration::from_secs(3), rx.recv())
-        .await
-        .expect("ack delivered")
-        .expect("payload");
-    let CtrlMessage::TokenAck { ok, error, .. } = serde_json::from_slice(&payload).unwrap() else {
-        panic!("expected TokenAck");
-    };
-    (ok, error)
+    // skip non-ack ctrl frames (the relay may send ConsumerSessionReport on consumer up/down;
+    // drain until the next TokenAck arrives)
+    loop {
+        let payload = tokio::time::timeout(Duration::from_secs(3), rx.recv())
+            .await
+            .expect("ack delivered")
+            .expect("payload");
+        let msg: CtrlMessage = serde_json::from_slice(&payload).unwrap();
+        if let CtrlMessage::TokenAck { ok, error, .. } = msg {
+            return (ok, error);
+        }
+    }
 }
 
 #[test]

@@ -712,6 +712,44 @@ impl RelayListener {
         mux.shutdown();
     }
 
+    /// Report a relay-entry consumer session's state to its issuer over the federation control
+    /// plane (federation P2 visibility). Only meaningful for relay-entry tokens — the issuer
+    /// lives at another hop and cannot otherwise see who is connected through this relay. The
+    /// report rides the issuer's fan-out session mux; a dropped session is silent (the periodic
+    /// snapshot task reconciles any lost events). `kind` = "online" | "offline".
+    async fn report_consumer_session(
+        &self,
+        token_hash: &str,
+        device_fp: &str,
+        my_name: &str,
+        session_id: &str,
+        peer_ip: &str,
+        kind: &str,
+    ) {
+        // resolve the issuer of this token, then its live peer mux
+        let Some(issuer) = self.delegated.get(token_hash).map(|e| e.issuer.clone()) else {
+            return;
+        };
+        let Some(peer) = self.peers.get(&issuer) else {
+            return; // issuer offline — the periodic snapshot reconciles on reconnect
+        };
+        let report = crate::proto::message::CtrlMessage::ConsumerSessionReport {
+            kind: kind.to_string(),
+            token_hash: token_hash.to_string(),
+            device_fp: device_fp.to_string(),
+            my_name: my_name.to_string(),
+            session_id: session_id.to_string(),
+            peer_ip: peer_ip.to_string(),
+            sessions: Vec::new(),
+        };
+        if let Ok(p) = serde_json::to_vec(&report) {
+            let _ = peer
+                .mux
+                .send_frame(Frame::new(FrameType::Ctrl, 0, Bytes::from(p)))
+                .await;
+        }
+    }
+
     /// Force-disconnect all sessions under one consumer session key (a SessionNotice with the
     /// reason precedes the close). Returns the number of disconnected sessions.
     pub async fn disconnect_client(&self, session_key: &str, reason_code: &str, message: &str) -> usize {
@@ -1243,22 +1281,17 @@ impl RelayListener {
         );
 
         // same-identity re-auth kicks the stale session (tolerates restart flapping; the hijack
-        // boundary equals relay-token revocation — the token is the identity). The stale
-        // session's delegated registrations die with it (federation P2, session-scoped).
+        // boundary equals relay-token revocation — the token is the identity). The stale peer
+        // connection is dropped, but the issuer's delegated registrations are deliberately LEFT
+        // in place: a reconnect (heartbeat timeout / split-config follow / network flap) is not
+        // a registration invalidation. The issuer's sync task re-registers every token on the
+        // fresh session (TokenRegister is idempotent — the insert at register_delegated
+        // overwrites). Tearing down the registrations here would kill every live consumer of a
+        // multi-cap token with SESSION_TAKEOVER (which the client treats as terminal),
+        // permanently blocking consumers that are well within their concurrency budget.
         if let Some((_, old)) = self.peers.remove(&node_id) {
             info!(node = %node_id, "duplicate node session: kicking the stale one");
             Self::notify_and_shutdown(&old.mux, reason::SESSION_TAKEOVER, "").await;
-            let stale: Vec<String> = self
-                .delegated
-                .iter()
-                .filter(|e| e.value().issuer == node_id)
-                .map(|e| e.key().clone())
-                .collect();
-            for hash in stale {
-                self.delegated.remove(&hash);
-                self.disconnect_delegated_token(&hash, reason::SESSION_TAKEOVER, "")
-                    .await;
-            }
             let _ = self.events.send(PeerEvent::NodeDisconnected {
                 node_id: node_id.clone(),
             });
@@ -1460,11 +1493,14 @@ impl RelayListener {
                     hook(node_id.to_string(), records);
                 }
             }
-            C::SessionNotice { .. } | C::PendingNote { .. } => {
+            C::SessionNotice { .. }
+            | C::PendingNote { .. }
+            | C::ConsumerSessionReport { .. } => {
                 // SessionNotice flows TO the kicked peer; PendingNote flows from a pending
-                // consumer to its issuer (the node crate's delegated console, M3) — neither is
-                // meaningful on an issuer session at this relay
-                debug!(node = %node_id, "unexpected session-notice/pending-note from issuer ignored");
+                // consumer to its issuer; ConsumerSessionReport flows relay -> issuer over the
+                // issuer's own fan-out session — none of these are meaningful arriving on a
+                // fan-in issuer session at this relay (they are sent directly to the issuer's mux)
+                debug!(node = %node_id, "unexpected session-notice/pending-note/session-report from issuer ignored");
             }
         }
     }
@@ -1663,6 +1699,7 @@ impl RelayListener {
         } else {
             "relay"
         };
+        let peer_ip = peer_addr.ip().to_string();
         self.clients
             .entry(session_key.clone())
             .or_default()
@@ -1672,18 +1709,31 @@ impl RelayListener {
             SessionMeta {
                 session_id: session_id.clone(),
                 session_key: session_key.clone(),
-                device_fp: device_meta.device_fp,
+                device_fp: device_meta.device_fp.clone(),
                 pubkey: device_meta.pubkey,
                 token_hash: token_hash.clone(),
                 entry: entry_class.to_string(),
-                my_name: device_meta.my_name,
-                peer_ip: peer_addr.ip().to_string(),
+                my_name: device_meta.my_name.clone(),
+                peer_ip: peer_ip.clone(),
                 connected_at: Instant::now(),
             },
         );
         let _ = self.events.send(PeerEvent::ClientConnected {
             session_key: session_key.clone(),
         });
+        // federation P2 visibility: relay-entry consumer sessions are reported upstream to the
+        // issuer (direct-entry sessions are local and already visible to the issuer's listener)
+        if entry_class == "relay" {
+            self.report_consumer_session(
+                &token_hash,
+                &device_meta.device_fp,
+                &device_meta.my_name,
+                &session_id,
+                &peer_ip,
+                "online",
+            )
+            .await;
+        }
 
         // handle this consumer's Open requests + ctrl uplink (pending appeals) until the
         // connection drops (open_tx is released when the reader task ends and recv returns None)
@@ -1746,22 +1796,36 @@ impl RelayListener {
         let _ = reader_handle.await;
         // M5: flush the session ledger record exactly once (kicks and natural closes both end
         // here -- the reason rides the mux close-reason slot)
-        if let Some((_, meta)) = self.session_meta.remove(&session_id)
-            && let Some(hook) = &self.session_close_hook
-        {
-            let (out, inn) = mux.traffic();
-            hook(SessionCloseRecord {
-                session_id: meta.session_id,
-                session_key: meta.session_key,
-                device_fp: meta.device_fp,
-                token_hash: meta.token_hash,
-                peer_ip: meta.peer_ip,
-                entry: meta.entry,
-                connected_at: meta.connected_at,
-                bytes_in: inn,
-                bytes_out: out,
-                close_reason: mux.close_reason().unwrap_or_default(),
-            });
+        if let Some((_, meta)) = self.session_meta.remove(&session_id) {
+            // federation P2 visibility: report the consumer's offline BEFORE the issuer session
+            // lookup could race with the issuer going down (meta captured here, report sent after)
+            let was_relay = meta.entry == "relay";
+            if was_relay {
+                self.report_consumer_session(
+                    &meta.token_hash,
+                    &meta.device_fp,
+                    &meta.my_name,
+                    &meta.session_id,
+                    &meta.peer_ip,
+                    "offline",
+                )
+                .await;
+            }
+            if let Some(hook) = &self.session_close_hook {
+                let (out, inn) = mux.traffic();
+                hook(SessionCloseRecord {
+                    session_id: meta.session_id,
+                    session_key: meta.session_key,
+                    device_fp: meta.device_fp,
+                    token_hash: meta.token_hash,
+                    peer_ip: meta.peer_ip,
+                    entry: meta.entry,
+                    connected_at: meta.connected_at,
+                    bytes_in: inn,
+                    bytes_out: out,
+                    close_reason: mux.close_reason().unwrap_or_default(),
+                });
+            }
         }
         // remove this session from the session table (may already have been cleared by disconnect_client)
         if let Some(mut sessions) = self.clients.get_mut(&session_key) {

@@ -305,6 +305,12 @@ pub struct DelegationEngine {
     admin_runtime: arc_swap::ArcSwapOption<AdminRuntime>,
     /// Device certification gate cache (node.md M3-T2; wired at service assembly)
     device_gate: arc_swap::ArcSwapOption<super::device_gate::DeviceGateCache>,
+    /// Relay-entry consumer sessions reported upstream by relays (federation P2 visibility):
+    /// token_hash -> live consumer sessions as seen by the relay. Event-driven upsert/remove +
+    /// periodic full-snapshot reconciliation. Surfaced to the issuance panel + /admin/sessions so
+    /// the issuer sees who is connected through a relay it does not terminate locally.
+    reported_sessions:
+        arc_swap::ArcSwap<std::collections::HashMap<String, Vec<agile_net_core::proto::message::ConsumerSessionInfo>>>,
 }
 
 impl DelegationEngine {
@@ -344,6 +350,16 @@ impl DelegationEngine {
     /// relay-entry consumer opens (direct-entry opens are gated at the listener).
     pub fn set_device_gate(&self, gate: std::sync::Arc<super::device_gate::DeviceGateCache>) {
         self.device_gate.store(Some(gate));
+    }
+
+    /// Snapshot of relay-reported consumer sessions keyed by token_hash (federation P2 visibility).
+    /// Used by the session inventory API to show relay-entry consumers on the issuance panel.
+    pub fn reported_sessions(
+        &self,
+    ) -> std::sync::Arc<
+        std::collections::HashMap<String, Vec<agile_net_core::proto::message::ConsumerSessionInfo>>,
+    > {
+        self.reported_sessions.load_full()
     }
 
     /// Rebuild the kid -> E2E key cache from the DB (call on issue/revoke and at startup).
@@ -434,6 +450,54 @@ impl agile_net_core::relay::DelegationHooks for DelegationEngine {
         };
         if let Some(id) = super::approvals::ensure_device_certify_approval(&rt.db, device_fp) {
             let _ = rt.db.add_approval_message(&id, "appeal", body);
+        }
+    }
+
+    /// Relay-side consumer session state report (federation P2 visibility): maintain the
+    /// `reported_sessions` cache so the issuance panel + /admin/sessions show relay-entry
+    /// consumers. Event-driven online/offline upsert/remove + periodic snapshot reconciliation.
+    fn consumer_session_report(
+        &self,
+        kind: &str,
+        token_hash: &str,
+        info: &agile_net_core::proto::message::ConsumerSessionInfo,
+        sessions: &[agile_net_core::proto::message::ConsumerSessionInfo],
+    ) {
+        match kind {
+            "online" => {
+                let cur = self.reported_sessions.load();
+                let mut map: std::collections::HashMap<_, _> = (**cur).clone();
+                let entry = map.entry(token_hash.to_string()).or_default();
+                // upsert by session_id (stable across reports)
+                if let Some(existing) = entry.iter_mut().find(|s| s.session_id == info.session_id) {
+                    *existing = info.clone();
+                } else {
+                    entry.push(info.clone());
+                }
+                self.reported_sessions.store(std::sync::Arc::new(map));
+            }
+            "offline" => {
+                let cur = self.reported_sessions.load();
+                let mut map: std::collections::HashMap<_, _> = (**cur).clone();
+                if let Some(entry) = map.get_mut(token_hash) {
+                    entry.retain(|s| s.session_id != info.session_id);
+                    if entry.is_empty() {
+                        map.remove(token_hash);
+                    }
+                }
+                self.reported_sessions.store(std::sync::Arc::new(map));
+            }
+            "snapshot" => {
+                let cur = self.reported_sessions.load();
+                let mut map: std::collections::HashMap<_, _> = (**cur).clone();
+                if sessions.is_empty() {
+                    map.remove(token_hash);
+                } else {
+                    map.insert(token_hash.to_string(), sessions.to_vec());
+                }
+                self.reported_sessions.store(std::sync::Arc::new(map));
+            }
+            _ => {}
         }
     }
 
