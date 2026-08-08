@@ -449,7 +449,7 @@ function clDetailRowHtml(r, recent) {
         const d = new Date(c.start_ms);
         const pad = (n) => String(n).padStart(2, '0');
         const t = pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
-        const stTxt = st === 'active' ? AgI18n.t('logs.conn.live') : st === 'closed' ? AgI18n.t('logs.conn.closed') : AgI18n.t('logs.cl.failed') + (c.state.reason ? '（' + c.state.reason + '）' : '');
+        const stTxt = st === 'active' ? AgI18n.t('logs.conn.live') : st === 'closed' ? AgI18n.t('logs.conn.closed') : AgI18n.t('logs.cl.failed') + (c.state.reason ? ' ' + AgI18n.t('common.paren', { n: c.state.reason }) : '');
         return '<div class="mono" style="font-size:11px;line-height:1.7"><span class="dim">' + t + '</span>　↓' + fmtBytes(c.down) + ' ↑' + fmtBytes(c.up) + '　<span class="dim">' + esc(stTxt) + '</span></div>';
       }).join('') + '</div>';
   }
@@ -458,7 +458,7 @@ function clDetailRowHtml(r, recent) {
     '<div style="font-size:12px;display:flex;gap:16px;flex-wrap:wrap;align-items:center">' +
     kv(AgI18n.t('logs.cl.detailSess'), '<span class="mono">↓' + fmtBytes(r.sess_down) + ' ↑' + fmtBytes(r.sess_up) + '</span>') +
     kv(AgI18n.t('logs.cl.detailHist'), '<span class="mono">↓' + fmtBytes(r.hist_down) + ' ↑' + fmtBytes(r.hist_up) + '</span>') +
-    kv(AgI18n.t('logs.cl.detailConns'), '<span class="mono">' + r.conns + (r.fails ? '（' + AgI18n.t('logs.cl.failed') + ' ' + r.fails + '）' : '') + '</span>') +
+    kv(AgI18n.t('logs.cl.detailConns'), '<span class="mono">' + r.conns + (r.fails ? ' ' + AgI18n.t('common.paren', { n: AgI18n.t('logs.cl.failed') + ' ' + r.fails }) : '') + '</span>') +
     kv(AgI18n.t('logs.cl.detailFirst'), '<span class="mono">' + day(r.first_ms) + '</span>') +
     kv(AgI18n.t('logs.cl.detailLast'), '<span class="mono">' + day(r.last_ms) + '</span>') +
     '</div>' + recentHtml + '</td></tr>';

@@ -159,7 +159,7 @@ AgI18n.register({
   'dt.badgeSingle': { zh: '单端', en: 'Single' },
   'dt.badgeMulti': { zh: '多端≤{n}', en: 'Multi ≤{n}' },
   'dt.badgeAdmin': { zh: '管理档 {scope}', en: 'Admin {scope}' },
-  'dt.regs': { zh: '容灾', en: 'Set' },
+  'dt.regsShort': { zh: '容灾', en: 'Set' },
   'dt.life-expiring': { zh: '即将过期', en: 'Expiring' },
   'dt.life-expired': { zh: '已过期', en: 'Expired' },
   'dt.life-exhausted': { zh: '已用尽', en: 'Exhausted' },

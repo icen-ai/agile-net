@@ -842,7 +842,7 @@ async function refreshProxy() {
     let mode, text;
     if (nodes.length && degraded.length) {
       mode = 'warn';
-      text = T('st-degraded') + '（' + degraded.length + '）';
+      text = T('st-degraded') + ' ' + T('common.paren', { n: degraded.length });
     } else if (st.running) {
       mode = 'on';
       text = T('proxy-running') + ' 127.0.0.1:' + st.port;
@@ -1476,7 +1476,7 @@ async function refreshDelegation() {
     return '<div class="node-card"><div class="info">' +
       '<div class="name">' + esc(t.label) + ' ' + dtBadges(t) + '</div>' +
       '<div class="addr mono">' + esc(t.token_prefix || '') + ' · ' + groups +
-      (regs ? ' · ' + AgI18n.t('dt.regs') + ' ' + regs : '') +
+      (regs ? ' · ' + AgI18n.t('dt.regsShort') + ' ' + regs : '') +
       ' · <span class="dim">' + esc((t.created_at || '').replace('T', ' ').replace(/\..*$/, '')) + '</span></div>' +
       '</div><div class="card-actions">' +
       '<button class="danger small icon-btn" title="' + AgI18n.t('dt.revokeTitle') + '" data-dt-revoke="' + esc(t.id) + '">' + AgIcon('trash-2', 13) + '</button>' +

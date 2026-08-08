@@ -20,6 +20,8 @@ AgI18n.register({
   // ---- common actions (2-char zh symmetry) ----
   'common.save': { zh: '保存', en: 'Save' },
   'common.cancel': { zh: '取消', en: 'Cancel' },
+  'common.ok': { zh: '确定', en: 'OK' },
+  'common.paren': { zh: '（{n}）', en: '({n})' },
   'common.confirm': { zh: '确认', en: 'Confirm' },
   'common.delete': { zh: '删除', en: 'Delete' },
   'common.edit': { zh: '编辑', en: 'Edit' },
@@ -76,6 +78,7 @@ AgI18n.register({
   'term.token': { zh: '令牌', en: 'Token' },
   'term.relay': { zh: '中继', en: 'Relay' },
   'term.tunnel': { zh: '隧道', en: 'Tunnel' },
+  'term.tls': { zh: 'TLS', en: 'TLS' },
   'term.proxy': { zh: '代理', en: 'Proxy' },
   'term.subscription': { zh: '订阅', en: 'Subscription' },
   'term.kernel': { zh: '内核', en: 'Kernel' },

@@ -1061,13 +1061,13 @@ async function renderDeviceDetail() {
   $('view').innerHTML = '<div class="page-title">' + ic('monitor-smartphone', 20) + T('dev.detailTitle') + '<div class="spacer"></div><button class="ghost small" id="dev-back">' + ic('chevron-right', 13) + ' ' + T('common.back') + '</button></div>' +
     '<div class="card" id="dev-hero"></div>' +
     '<div class="stat-grid" id="dev-kpis"></div>' +
-    '<div class="card"><h3>' + T('dev.sessTitle') + '</h3><div class="table-wrap"><table><thead><tr><th>IP</th><th>' + T('sess.col.ago') + '</th><th>' + T('sess.col.tr') + '</th><th>' + T('sess.col.chans') + '</th><th>' + T('sess.col.key') + '</th><th>' + T('common.action') + '</th></tr></thead><tbody id="dev-sess"></tbody></table></div></div>' +
+    '<div class="card"><h3>' + T('dev.sessTitle') + '</h3><div class="table-wrap"><table><thead><tr><th>' + T('sess.col.ip') + '</th><th>' + T('sess.col.ago') + '</th><th>' + T('sess.col.tr') + '</th><th>' + T('sess.col.chans') + '</th><th>' + T('sess.col.key') + '</th><th>' + T('common.action') + '</th></tr></thead><tbody id="dev-sess"></tbody></table></div></div>' +
     '<div class="card"><h3>' + T('dev.trafficTitle') + '</h3>' +
       '<div class="sess-toolbar" style="border:none;padding:0 0 8px"><div class="op" id="dev-tr-range">' +
         '<button class="ghost small" data-range="24h">24h</button><button class="ghost small" data-range="7d">7d</button><button class="ghost small" data-range="30d">30d</button></div></div>' +
       '<div id="dev-traffic"></div></div>' +
     '<div class="card"><h3>' + T('dev.heatTitle') + ahelp(T('dev.heatHelp')) + '</h3><div id="dev-heat"></div></div>' +
-    '<div class="card"><h3>' + T('dev.histTitle') + '</h3><div class="table-wrap"><table><thead><tr><th>' + T('sess.col.entry') + '</th><th>IP</th><th>' + T('sess.col.start') + '</th><th>' + T('sess.col.tr') + '</th><th>' + T('sess.col.close') + '</th></tr></thead><tbody id="dev-hist"></tbody></table></div></div>' +
+    '<div class="card"><h3>' + T('dev.histTitle') + '</h3><div class="table-wrap"><table><thead><tr><th>' + T('sess.col.entry') + '</th><th>' + T('sess.col.ip') + '</th><th>' + T('sess.col.start') + '</th><th>' + T('sess.col.tr') + '</th><th>' + T('sess.col.close') + '</th></tr></thead><tbody id="dev-hist"></tbody></table></div></div>' +
     '<div class="card"><h3>' + T('dev.eventsTitle') + '</h3><div class="agtimeline" id="dev-events"></div></div>';
   $('dev-back').onclick = () => { S.devFp = ''; S.timers.forEach(clearInterval); S.timers = []; renderDevices(); };
   $('dev-tr-range').querySelectorAll('button').forEach(b => b.onclick = () => {
@@ -1123,7 +1123,7 @@ async function loadDeviceDetail() {
   tblAttach('dev-sess', {
     key: 'adm-devsess',
     sort: { 1: 'ago', 2: 'bytes', 3: 'chans' },
-    filter: { 0: { label: 'IP' } },
+    filter: { 0: { label: T('sess.col.ip') } },
     onSort: () => loadDeviceDetail(),
     onFilter: () => loadDeviceDetail(),
   });
@@ -1194,7 +1194,7 @@ async function loadDeviceHistory() {
       filter: {
         0: { label: 'sess.col.entry', type: 'enum', options: [
           { v: 'direct', label: 'deleg.badgeDirect' }, { v: 'relay', label: 'deleg.badgeRelay' }] },
-        1: { label: 'IP' },
+        1: { label: T('sess.col.ip') },
       },
       onSort: () => loadDeviceHistory(),
       onFilter: () => loadDeviceHistory(),
@@ -1472,8 +1472,8 @@ async function renderDashboard() {
       AgChart.line($('traffic-chart'), {
         x: xs,
         series: [
-          { name: 'RX', values: dimSum('down') },
-          { name: 'TX', values: dimSum('up') },
+          { name: T('dashboard.down'), values: dimSum('down') },
+          { name: T('dashboard.up'), values: dimSum('up') },
         ],
         fmtY: fmtBytes,
         fmtX: h => String(h || '').slice(11, 16),
@@ -1486,7 +1486,7 @@ async function renderDashboard() {
       '><div class="k">' + k + '</div><div class="v">' + v + '</div><div class="sub">' + sub + '</div></div>';
   }
   await load();
-  S.timers.push(setInterval(load, 15000));
+  S.timers.push(setInterval(() => { if (!document.hidden) load(); }, 15000));
 
   // WebSocket live events
   try {
@@ -1888,7 +1888,7 @@ async function renderFanIn() {
     renderFaninTokens();
   };
   await Promise.all([loadFaninStatus(), loadTokens(), reloadSessions()]);
-  S.timers.push(setInterval(() => { loadFaninStatus(); reloadSessions(); }, 10000));
+  S.timers.push(setInterval(() => { if (!document.hidden) { loadFaninStatus(); reloadSessions(); } }, 10000));
 }
 /* Listener card + peers table share roles.listener: single fetch, single-signature change detection (no DOM rewrite when unchanged) */
 async function loadFaninStatus() {
@@ -1920,7 +1920,7 @@ async function loadFaninStatus() {
   } else {
     box.innerHTML =
       '<div class="kv"><span class="k">' + T('fanin.addr') + '</span><span class="mono">' + esc(L.addr || '-') + '</span></div>' +
-      '<div class="kv"><span class="k">TLS</span><span>' + (L.tls ? '<span class="badge b-ok">' + T('common.enabled') + '</span>' : '<span class="badge b-off">' + T('adm.stNotOn') + '</span>') + '</span></div>' +
+      '<div class="kv"><span class="k">' + T('term.tls') + '</span><span>' + (L.tls ? '<span class="badge b-ok">' + T('common.enabled') + '</span>' : '<span class="badge b-off">' + T('adm.stNotOn') + '</span>') + '</span></div>' +
       '<div class="kv"><span class="k">' + T('fanin.endpoints') + '</span><span>' + T('fanin.connectedCount', { n: L.connected_connectors || 0 }) + '</span></div>' +
       '<div class="kv"><span class="k">' + T('fanin.onlineClients') + '</span><span>' + T('adm.countN', { n: L.online_clients || 0 }) + '</span></div>' +
       (fp ? '<div class="kv"><span class="k">' + T('set.certFp') + '</span><span class="mono" style="font-size:11px;word-break:break-all">' + esc(fp) +
@@ -2229,7 +2229,7 @@ async function renderConnectors() {
   };
   $('deleg-issue').onclick = () => openIssueDelegation();
   await Promise.all([loadConnectors(), loadDelegation(), reloadSessions()]);
-  S.timers.push(setInterval(() => { loadConnectors(); loadDelegation(); reloadSessions(); }, 5000));
+  S.timers.push(setInterval(() => { if (!document.hidden) { loadConnectors(); loadDelegation(); reloadSessions(); } }, 5000));
 }
 /* M3-T1 relay transit block (fan-out 连接 tab): consumer sessions where this machine was the
    rendezvous (entry=relay). Signature-guarded; expansion state lives in SESS_OPEN. */

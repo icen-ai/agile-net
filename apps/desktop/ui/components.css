@@ -468,7 +468,7 @@ html[data-theme="dark"] .badge-beta { color: rgba(255,255,255,.95); }
 .agtbl th .th-f.on { opacity: 1; color: var(--accent); }
 .agtbl th .th-f.on::after { content: ''; position: absolute; right: -1px; top: 0; width: 4px; height: 4px; border-radius: 50%; background: var(--accent); }
 /* Filter popover (position: fixed by JS near the header) */
-.th-pop { position: fixed; z-index: 90; min-width: 180px; max-width: 260px; background: var(--card); border: 1px solid var(--card-border); border-radius: 10px; box-shadow: 0 8px 30px rgba(15, 23, 42, .14); padding: 10px; }
+.th-pop { position: fixed; z-index: 90; min-width: 180px; max-width: 260px; background: var(--panel2); border: 1px solid var(--border2); border-radius: 10px; box-shadow: 0 8px 30px rgba(15, 23, 42, .14); padding: 10px; }
 .th-pop input[type="text"] { width: 100%; font-size: 12px; padding: 6px 9px; }
 .th-pop .th-pop-vals { max-height: 180px; overflow-y: auto; margin-top: 6px; display: flex; flex-direction: column; gap: 2px; }
 .th-pop .th-pop-v { display: flex; align-items: center; gap: 7px; font-size: 12px; padding: 4px 6px; border-radius: 6px; cursor: pointer; }
@@ -480,7 +480,7 @@ html[data-theme="dark"] .badge-beta { color: rgba(255,255,255,.95); }
 .agpulse { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--dim2); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .agpulse .ap-t { letter-spacing: .2px; }
 .agpulse select.agp-iv { font-size: 11px; padding: 1px 4px; border: 1px solid transparent; background: transparent; color: var(--dim2); border-radius: 6px; cursor: pointer; }
-.agpulse select.agp-iv:hover { border-color: var(--card-border); color: var(--dim); }
+.agpulse select.agp-iv:hover { border-color: var(--border2); color: var(--dim); }
 .agpulse select.agp-iv:focus { border-color: var(--accent); color: var(--text); outline: none; }
 
 /* --- native radio theming (both ends): brand accent + normalized size. Row pickers keep radios;

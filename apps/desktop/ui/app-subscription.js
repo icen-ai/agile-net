@@ -924,7 +924,7 @@ function renderDlCard(st) {
     const pct = st.total ? Math.min(100, st.downloaded / st.total * 100) : 0;
     bar.style.width = pct.toFixed(1) + '%';
     const sizeTxt = st.total
-      ? fmtBytes(st.downloaded) + ' / ' + fmtBytes(st.total) + '（' + pct.toFixed(0) + '%）'
+      ? fmtBytes(st.downloaded) + ' / ' + fmtBytes(st.total) + ' ' + AgI18n.t('common.paren', { n: pct.toFixed(0) + '%' })
       : AgI18n.t('sub.dlSizeUnknown', { size: fmtBytes(st.downloaded) });
     setText('dl-detail', sizeTxt + ' · ' + (st.mirror || AgI18n.t('sub.dlConnecting')));
   } else {

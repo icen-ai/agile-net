@@ -199,7 +199,7 @@ const AgPulse = (() => {
       '<option value="' + m + '"' + (m === ms ? ' selected' : '') + '>' + (m / 1000) + 's</option>').join('');
     wrap.appendChild(sel);
     el.appendChild(wrap);
-    const rec = { key, fn: opts.onTick, ms, timer: null, active: false, timeEl: wrap.firstChild };
+    const rec = { key, fn: opts.onTick, ms, timer: null, active: false, busy: false, timeEl: wrap.firstChild };
     reg.set(key, rec);
     sel.addEventListener('change', () => {
       rec.ms = parseInt(sel.value, 10);
@@ -212,9 +212,11 @@ const AgPulse = (() => {
   function stop(rec) { if (rec.timer) { clearInterval(rec.timer); rec.timer = null; } }
   async function tick(key) {
     const rec = reg.get(key);
-    if (!rec || !rec.active || document.hidden) return;
+    if (!rec || !rec.active || document.hidden || rec.busy) return;
+    rec.busy = true;
     let ok;
     try { ok = await rec.fn(); } catch (e) { ok = false; }
+    rec.busy = false;
     if (ok !== false) beat(key);
   }
   function setActive(key, on) {

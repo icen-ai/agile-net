@@ -254,7 +254,7 @@ const NetProbe = {
     if (HTTP_MODE) return;
     try {
       const r = await invoke('lan_ip');
-      this.lan = r.ip + (r.iface ? '（' + r.iface + '）' : '');
+      this.lan = r.ip + (r.iface ? ' ' + T('common.paren', { n: r.iface }) : '');
     } catch (e) { this.lan = ''; }
     this.render();
   },
