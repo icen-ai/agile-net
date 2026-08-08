@@ -954,6 +954,12 @@ fn spawn_delegated_supervisor(
         let mut idx = 0usize;
         let mut attempt: u32 = 0;
         let mut live: Option<Arc<ClientTunnel>> = Some(first);
+        // bad_credentials grace clock: a relay answers bad_credentials the moment it does not
+        // know the token — including right after the RELAY'S OWN restart, which wipes its
+        // in-memory tombstone window before the issuer's connector re-registers. Only a
+        // sustained rejection (past the grace) is a genuine terminal rejection; anything
+        // shorter is retried like any transient drop (fixes relay-restart pseudo-revocation).
+        let mut bad_cred_since: Option<std::time::Instant> = None;
         loop {
             // wait for the live tunnel to die
             if let Some(t) = &live {
@@ -1013,6 +1019,7 @@ fn spawn_delegated_supervisor(
             match connect_delegated_entry(&params, &entry, fp, &account_id).await {
                 Ok(t) => {
                     attempt = 0;
+                    bad_cred_since = None; // a successful auth clears any rejection grace clock
                     opener.current.store(Some(t.clone()));
                     opener.current_entry.store(Arc::new(entry.clone()));
                     // pending certification rides every reconnect (gate state may have changed)
@@ -1035,11 +1042,23 @@ fn spawn_delegated_supervisor(
                 }
                 Err(e) => {
                     // structured auth rejection: terminal reasons stop the loop (M4-T2)
-                    if let Some(rej) = &e.reject
-                        && is_terminal_reason(&rej.reason_code)
-                    {
-                        block_node(&inner, &node_id, &rej.reason_code, &rej.message);
-                        return;
+                    if let Some(rej) = &e.reject {
+                        if rej.reason_code == agile_net_core::proto::message::reason::BAD_CREDENTIALS {
+                            // grace path: only a SUSTAINED bad_credentials blocks the node
+                            let since = bad_cred_since.get_or_insert_with(std::time::Instant::now);
+                            if since.elapsed() >= BAD_CREDENTIALS_GRACE {
+                                block_node(&inner, &node_id, &rej.reason_code, &rej.message);
+                                return;
+                            }
+                        } else {
+                            bad_cred_since = None;
+                            if is_terminal_reason(&rej.reason_code) {
+                                block_node(&inner, &node_id, &rej.reason_code, &rej.message);
+                                return;
+                            }
+                        }
+                    } else {
+                        bad_cred_since = None;
                     }
                     debug!(node = %node_id, entry = %entry, error = %e.err, "delegated entry connect failed");
                     idx = idx.saturating_add(1);
@@ -1059,6 +1078,13 @@ fn spawn_delegated_supervisor(
     })
 }
 
+/// Grace window for bad_credentials rejections (relay-restart pseudo-revocation): a relay
+/// answers bad_credentials the moment it does not know the token, and a relay PROCESS restart
+/// wipes its in-memory tombstone window — consumers reconnecting before the issuer re-registers
+/// would otherwise park in Blocked over a seconds-long gap. Within the window the rejection is
+/// retried like a transient drop; a rejection sustained past the window is genuinely terminal.
+const BAD_CREDENTIALS_GRACE: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+
 /// Terminal session/auth reasons (M4): no auto-retry — the reason + one-time notice go to the
 /// inbox and the node rests in Blocked until the user acts (re-import, contact the admin).
 /// NOTE: `kicked` and `session_takeover` are intentionally NOT terminal — both are attention
@@ -1066,8 +1092,7 @@ fn spawn_delegated_supervisor(
 /// drop. A takeover fires when the issuer's fan-out connector reconnects (heartbeat timeout /
 /// split-config follow); blocking permanently on it would orphan multi-cap consumers that are
 /// well within their session budget, recoverable only by manual re-import.
-fn is_terminal_reason(rc: &str) -> bool {
-    use agile_net_core::proto::message::reason as r;
+fn is_terminal_reason(rc: &str) -> bool {    use agile_net_core::proto::message::reason as r;
     matches!(
         rc,
         r::REVOKED_BY_ADMIN
