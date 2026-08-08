@@ -641,10 +641,10 @@ async function loadTopo() {
     $('topo-ownfp').innerHTML = agcopy(d.own_fp || '', (d.own_fp || '').slice(0, 12) + '…');
     $('topo-trust').value = (d.trust_list || []).join('\n');
     const adopted = tblApply('adm-topo-adopted', d.adopted || [],
-      { device: a => a.remark || a.my_name || '', holder: a => a.subject || '' },
+      { device: a => devDisplayName(a) || (a.device_fp || '').slice(0, 12), holder: a => a.subject || '' },
       { 3: a => a.state || '' });
     $('topo-adopted').innerHTML = adopted.map(a =>
-      '<tr><td><b data-agid="' + esc(a.device_fp) + '" data-act="dev-open" data-fp="' + esc(a.device_fp) + '" style="cursor:pointer">' + esc(a.remark || a.my_name || a.device_fp.slice(0, 12)) + '</b></td>' +
+      '<tr><td><b data-agid="' + esc(a.device_fp) + '" data-act="dev-open" data-fp="' + esc(a.device_fp) + '" style="cursor:pointer">' + esc(devDisplayName(a) || (a.device_fp || '').slice(0, 12)) + '</b></td>' +
       '<td>' + esc(a.subject || '-') + '</td><td class="mono" style="color:var(--dim2)">' + esc((a.origin_fp || '').slice(0, 12)) + '</td>' +
       '<td>' + devStateBadge(a.state) + '</td></tr>'
     ).join('') || '<tr><td colspan="4" class="empty">' + T('common.empty') + '</td></tr>';
@@ -882,7 +882,7 @@ function sessRowHtml(s, cols) {
     key: '<div>' + agcopy(s.session_key || '', String(s.session_key || '').slice(0, 6)) + '</div>',
     token: '<div style="color:var(--dim)">' + esc(s.token_label || '-') + '</div>',
     chans: '<div style="color:var(--dim)">' + (s.channels || 0) + '</div>',
-    op: '<div><button class="danger small" data-act="sess-kick" data-key="' + esc(s.session_key) + '" data-name="' + esc(s.my_name || s.session_key || '') + '">' + T('sess.kick') + '</button></div>',
+    op: '<div><button class="danger small" data-act="sess-kick" data-key="' + esc(s.session_key) + '" data-name="' + esc(devDisplayName({ ...d, my_name: s.my_name || d.my_name }) || s.session_key || '') + '">' + T('sess.kick') + '</button></div>',
   };
   return '<div class="sess-row" style="grid-template-columns:' + sessGrid(cols) + '">' + cols.map(c => cell[c] || '').join('') + '</div>';
 }
@@ -1118,7 +1118,7 @@ async function loadDeviceDetail() {
     '<td class="mono" style="color:var(--dim)">↑ ' + fmtBytes(s.bytes_up) + ' ↓ ' + fmtBytes(s.bytes_down) + '</td>' +
     '<td style="color:var(--dim)">' + (s.channels || 0) + '</td>' +
     '<td>' + agcopy(s.session_key || '', String(s.session_key || '').slice(0, 6)) + '</td>' +
-    '<td><button class="danger small" data-act="sess-kick" data-key="' + esc(s.session_key) + '" data-name="' + esc(d.my_name || '') + '">' + T('sess.kick') + '</button></td></tr>'
+    '<td><button class="danger small" data-act="sess-kick" data-key="' + esc(s.session_key) + '" data-name="' + esc(devDisplayName(d) || '') + '">' + T('sess.kick') + '</button></td></tr>'
   ).join('') || '<tr><td colspan="6" class="empty">' + T('sess.empty') + '</td></tr>';
   tblAttach('dev-sess', {
     key: 'adm-devsess',
@@ -1332,10 +1332,12 @@ function renderApprList() {
   box.innerHTML = items.map(a => {
     const dt = a.detail || {};
     const fp = a.object_ref || '';
+    const dtName = (dt.subject || dt.my_name || (fp || '').slice(0, 12));
     const detailBits = [];
-    if (dt.my_name) detailBits.push(T('appr.detailName') + ' ' + esc(dt.my_name));
+    // subject/my_name are now the anchor label — show only the non-winning one as a detail bit
+    if (dt.subject && dt.my_name && dt.subject !== dt.my_name) detailBits.push(T('appr.detailName') + ' ' + esc(dt.my_name));
     if (dt.ip) detailBits.push('IP ' + esc(dt.ip));
-    if (dt.subject) detailBits.push(T('appr.detailSubject') + ' ' + esc(dt.subject));
+    if (dt.subject && dt.my_name && dt.subject !== dt.my_name) detailBits.push(T('appr.detailSubject') + ' ' + esc(dt.subject));
     if (dt.new_fp) detailBits.push(T('appr.detailNew') + ' ' + esc(String(dt.new_fp).slice(0, 12)));
     const msgs = (a.messages || []).map(m =>
       '<div class="kv"><span class="k">' + (m.direction === 'appeal' ? T('appr.msgAppeal') : T('appr.msgNotice')) + '</span>' +
@@ -1354,7 +1356,7 @@ function renderApprList() {
     return '<div class="card">' +
       '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">' + apprTypeBadge(a.type) + apprStateBadge(a.state) +
         '<b>' + esc(a.requester || '-') + '</b>' +
-        (fp ? devNameHtml(fp, (fp || '').slice(0, 12)) : '') +
+        (fp ? devNameHtml(fp, dtName) : '') +
         '<div class="spacer" style="flex:1"></div><span style="color:var(--dim2);font-size:12px">' + esc((a.created_at || '').replace('T', ' ').replace(/\..*$/, '')) + '</span></div>' +
       (detailBits.length ? '<div class="hint" style="margin-top:6px">' + detailBits.join(' · ') + '</div>' : '') +
       msgs + acts + '</div>';

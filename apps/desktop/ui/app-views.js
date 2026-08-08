@@ -611,7 +611,7 @@ async function connectWith(input, btn) {
   }
   try {
     const st = await invoke('connect_node', { input });
-    toast(T('connected-toast').replace('{name}', st.node_name).replace('{n}', st.rules.length), 'ok');
+    toast(T('connected-toast').replace('{name}', st.issuer_node_name || st.node_name).replace('{n}', st.rules.length), 'ok');
     // auto-start proxy after successful connect if needed
     if (PREFS.autoproxy) {
       try {
@@ -704,7 +704,7 @@ async function refreshAdminEntry() {
     }
     for (const m of (n.manageable || [])) {
       if (n.status === 'Connected') {
-        remotes.push({ kind: 'up', id: n.node_id, up: m.node_name, label: m.node_name, sub: AgI18n.t('views.admin-up-sub', { name: n.node_name }) });
+        remotes.push({ kind: 'up', id: n.node_id, up: m.node_name, label: m.node_name, sub: AgI18n.t('views.admin-up-sub', { name: n.issuer_node_name || n.node_name }) });
       }
     }
   }
@@ -951,7 +951,7 @@ function renderCredList(creds, statusMap) {
   const shownCreds = creds.filter(([key, c]) =>
     match(key.includes('@') ? key.slice(0, key.indexOf('@')) : key, c.label, c.addr, statusMap[key])
     || (c.name && match(c.name, c.label, c.addr, statusMap[key])));
-  const shownUnsaved = unsaved.filter(n => match(n.node_name, n.label, n.addr, n.status));
+  const shownUnsaved = unsaved.filter(n => match(n.node_name, n.label, n.issuer_node_name, n.addr, n.status));
   // web.md §3.2: signature guard — identical inputs skip the full DOM rebuild (10s poll stability)
   const sig = JSON.stringify([creds, statusMap, f, window._nodes || [], [...unreadNodes], window._pnoteCount || {}]);
   if (list.dataset.sig === sig) return;
@@ -1008,7 +1008,7 @@ function renderCredList(creds, statusMap) {
     return '<div class="node-card' + (live(st) ? '' : ' down') + '"><div class="info">' +
       '<div class="name"><span class="cred-name" data-rename="' + esc(key) + '" title="' + AgI18n.t('fanin.rename') + '">' + esc(epName) + '</span> ' + badge + tierBadge + '</div>' +
       '<div class="addr mono">' + addrLine + (c.insecure ? ' · <span class="badge b-warn">insecure</span>' : '') + '</div>' +
-      (n && n.issuer_node_name ? '<div class="addr dim">来源：' + esc(n.issuer_node_name) + '</div>' : '') +
+      (n && n.issuer_node_name ? '<div class="addr dim">' + AgI18n.t('views.srcLabel') + '：' + esc(n.issuer_node_name) + '</div>' : '') +
       blockLine + unreadLine + pendLine +
       '</div><div class="card-actions">' +
       '<button class="ghost small icon-btn" title="' + AgI18n.t('common.edit') + '" data-act="edit" data-key="' + esc(key) + '">' + AgIcon('pencil', 13) + '</button>' +
@@ -1021,9 +1021,9 @@ function renderCredList(creds, statusMap) {
       '</div></div>';
   }).join('') + shownUnsaved.map(n =>
     '<div class="node-card' + (live(n.status) ? '' : ' down') + '"><div class="info">' +
-    '<div class="name">' + esc(n.node_name) + ' ' + statusBadgeHtml(n.status) + ' <span class="badge b-gray">' + AgI18n.t('views.unsaved') + '</span></div>' +
+    '<div class="name">' + esc(n.node_name) + ' ' + statusBadgeHtml(n.status) + (n.issuer_node_name ? ' <span class="badge b-gray" title="' + AgI18n.t('views.srcHint', { name: n.issuer_node_name }) + '">' + esc(n.issuer_node_name) + '</span>' : '') + ' <span class="badge b-gray">' + AgI18n.t('views.unsaved') + '</span></div>' +
     '<div class="addr mono">' + esc(n.addr) + '</div>' +
-    (n.issuer_node_name ? '<div class="addr dim">来源：' + esc(n.issuer_node_name) + '</div>' : '') +
+    (n.issuer_node_name ? '<div class="addr dim">' + AgI18n.t('views.srcLabel') + '：' + esc(n.issuer_node_name) + '</div>' : '') +
     (n.status === 'Blocked'
       ? '<div class="addr"><span class="badge b-off">' + esc(reasonText(n.block_reason)) + '</span>' +
         (n.block_message ? ' <span class="dim">' + esc(n.block_message) + '</span>' : '') + '</div>'

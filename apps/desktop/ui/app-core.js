@@ -425,7 +425,7 @@ const Island = {
   renderDetail() {
     $('island-detail').innerHTML = '<div class="dt-title">' + esc(AgI18n.t('core.island-detail')) + '</div>' +
       this.detailNodes.map(n =>
-        '<div class="island-row"><span class="dot off"></span><b>' + esc(n.node_name) + '</b>' +
+        '<div class="island-row"><span class="dot off"></span><b>' + esc(n.issuer_node_name || n.node_name) + '</b>' +
         '<span class="mono">' + esc(n.addr) + '</span><span class="st">' + esc(statusText(n.status)) + '</span></div>'
       ).join('');
   },

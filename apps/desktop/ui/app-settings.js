@@ -483,7 +483,7 @@ function renderMachineCert() {
   const nodes = window._nodes || [];
   const html = nodes.length
     ? nodes.map(n =>
-        '<div class="kv"><span class="k">' + esc(n.node_name || n.label || n.node_id) + '</span><span>' +
+        '<div class="kv"><span class="k">' + esc(n.issuer_node_name || n.node_name || n.label || n.node_id) + '</span><span>' +
         (n.device_state === 'pending'
           ? '<span class="badge b-warn">' + AgI18n.t('identity.pending') + '</span>'
           : '<span class="badge b-ok">' + AgI18n.t('identity.certified') + '</span>') +

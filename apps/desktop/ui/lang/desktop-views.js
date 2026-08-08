@@ -74,6 +74,8 @@ AgI18n.register({
   'views.connect': { zh: '连接', en: 'Connect' },
   'views.manage': { zh: '管理', en: 'Manage' },
   'views.unsaved': { zh: '未保存', en: 'Unsaved' },
+  'views.srcLabel': { zh: '来源', en: 'Source' },
+  'views.srcHint': { zh: '来源节点：{name}', en: 'Source node: {name}' },
   'views.export-title': { zh: '导出接入链接（复制到剪贴板）', en: 'Export connect URL (copy to clipboard)' },
   // ---- .anet credential file (identical values as lang/admin.js, both ends aligned) ----
   'anet.exportTitle': { zh: '导出 .anet 凭据文件', en: 'Export .anet Credential File' },
