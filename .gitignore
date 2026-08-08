@@ -36,3 +36,4 @@ apps/desktop/gen/
 
 # Kimi Code project-local config (machine-specific MCP server paths)
 .kimi-code/
+.zcode/

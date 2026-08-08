@@ -820,6 +820,7 @@ pub(crate) async fn qr_pick_decode(app: tauri::AppHandle) -> Result<Option<Strin
 
 /// Generate a QR code PNG from a URL (phone-sync: the phone scans the QR to import an
 /// `anet://connect` or `anet://fanout` link). Returns base64-encoded PNG for inline `<img>` rendering.
+#[tauri::command]
 pub(crate) async fn qr_generate(url: String) -> Result<String, String> {
     let png = agile_net_node::qr::generate_qr_png(&url)?;
     Ok(agile_net_core::util::base64_encode(&png))
