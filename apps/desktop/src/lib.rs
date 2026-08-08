@@ -329,6 +329,7 @@ pub fn run() {
             anet_open_file,
             read_text_file,
             qr_pick_decode,
+            misc::qr_generate,
             conlog_status,
             conlog_query,
             conlog_hosts,

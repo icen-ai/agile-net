@@ -1,6 +1,7 @@
-//! QR image decoding (universal import wizard `agimport.js`): one implementation shared by the
-//! admin API (`POST /api/v1/admin/tool/qr-decode`) and the desktop `qr_pick_decode` command.
-//! PNG/JPEG screenshots of an anet:// link QR decode back to the link text; pure Rust (rqrr).
+//! QR image decoding + generation (universal import wizard `agimport.js` + phone-QR sync):
+//! one implementation shared by the admin API and the desktop Tauri commands.
+//! PNG/JPEG screenshots of an anet:// link QR decode back to the link text; pure Rust (rqrr +
+//! qrcode crate, both workspace deps).
 
 /// Decode the first QR code found in an image (PNG/JPEG bytes) into its text payload.
 /// Errors are user-facing Chinese strings (no QR found / unreadable image / empty payload).
@@ -21,6 +22,26 @@ pub fn decode_qr_image(bytes: &[u8]) -> Result<String, String> {
         return Err("二维码内容为空".into());
     }
     Ok(text)
+}
+
+/// Generate a QR code PNG from a text payload (typically an `anet://connect?...` URL for
+/// phone-sync). Error-correction level M (suitable for scanning from a phone camera at
+/// desktop-screen distance). Returns PNG bytes.
+/// Errors are user-facing Chinese strings (payload too large for QR capacity / encoding failure).
+pub fn generate_qr_png(url: &str) -> Result<Vec<u8>, String> {
+    if url.len() > 1000 {
+        return Err("内容过长，超出二维码容量上限".into());
+    }
+    let code = qrcode::QrCode::with_error_correction_level(url.as_bytes(), qrcode::EcLevel::M)
+        .map_err(|e| format!("生成二维码失败：{e}"))?;
+    let img = code
+        .render::<image::Luma<u8>>()
+        .min_dimensions(280, 280)
+        .build();
+    let mut buf = std::io::Cursor::new(Vec::new());
+    img.write_to(&mut buf, image::ImageFormat::Png)
+        .map_err(|e| format!("编码 PNG 失败：{e}"))?;
+    Ok(buf.into_inner())
 }
 
 #[cfg(test)]

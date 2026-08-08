@@ -151,8 +151,9 @@ select.agsel-src { position: absolute !important; width: 1px !important; height:
          <span class="down">3.4 MB/s</span></div></div>;
    up/down arrows = ::before on .up/.down injecting colored unicode ↑↓ (no icon font), values use tabular numerals;
    collapsed state (body.collapsed) keeps only rates (compact vertical layout), entirely hidden ≤720px. */
-.side-foot { margin-top: auto; flex-shrink: 0; border-top: 1px solid var(--row-border); padding: 10px 8px 6px; display: flex; flex-direction: column; gap: 8px; }
+.side-foot { margin-top: auto; flex-shrink: 0; border-top: 1px solid var(--row-border); padding: 10px 8px 6px; display: flex; flex-direction: column; gap: 6px; }
 .side-foot-rate { display: flex; align-items: center; gap: 14px; font-size: 12px; color: var(--dim); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.side-foot-tools { display: flex; gap: 4px; }
 .side-foot-rate .up, .side-foot-rate .down { display: inline-flex; align-items: baseline; gap: 3px; }
 .side-foot-rate .up::before { content: "↑"; font-size: 11px; color: var(--ok-text); }
 .side-foot-rate .down::before { content: "↓"; font-size: 11px; color: var(--info-text); }
@@ -161,6 +162,9 @@ body.collapsed .side-foot > *:not(.side-foot-rate) { display: none; }
 /* 46px rail (width = titlebar height): numbers would clip mid-glyph, so collapsed keeps only the two
    direction arrows as a minimal live indicator (span text zeroed, ::before arrows keep their own size) */
 body.collapsed .side-foot-rate { flex-direction: column; gap: 2px; font-size: 0; }
+/* Mobile-only buttons: hidden on desktop, visible on mobile (body.mobile is set by the Tauri platform check at startup) */
+.mobile-only { display: none; }
+body.mobile .mobile-only { display: inline-flex; }
 body.collapsed .side-foot-rate .up::before, body.collapsed .side-foot-rate .down::before { font-size: 11px; }
 @media (max-width: 720px) {
   .side-foot { display: none; }

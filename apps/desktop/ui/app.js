@@ -91,6 +91,10 @@ function initTitlebarExtra() {
     }
   });
   $('about-close').onclick = () => { $('about-modal').style.display = 'none'; };
+  // Phone QR sync: open the config-selector → QR display modal
+  const pqr = $('btn-phone-qr'); if (pqr) pqr.onclick = () => openPhoneQr();
+  // Mobile scan button: open the import wizard (on mobile, the file/QR pick triggers camera)
+  const scan = $('btn-scan'); if (scan) scan.onclick = () => openUniversalImport();
 }
 
 /* ================= View navigation & window control ================= */
@@ -160,6 +164,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   // Uninstall: shown only on desktop (Windows installed build); hidden on the browser remote panel and Android
   const unCard = $('btn-uninstall') && $('btn-uninstall').closest('.card');
   if (HTTP_MODE || /Android/i.test(navigator.userAgent)) {
+    document.body.classList.add('mobile'); // enables .mobile-only buttons (scan, etc.)
     if (unCard) unCard.style.display = 'none';
     // Desktop float ball is a desktop window capability; hide on Android too (the bubble-notification row hides along with it)
     const fb = $('row-float-ball'); if (fb) fb.style.display = 'none';

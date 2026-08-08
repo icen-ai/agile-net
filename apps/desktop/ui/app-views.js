@@ -774,6 +774,53 @@ async function openNodeConsole(nodeId) {
   await enterAdmin(nodeId, null, label);
 }
 
+/* ================= Phone QR sync (desktop → phone scan) ================= */
+async function openPhoneQr() {
+  // gather selectable configs: fan-in credentials + fan-out connectors
+  const [credsR, connsR] = await Promise.allSettled([
+    invoke('list_credentials'),
+    invoke('list_server_connectors'),
+  ]);
+  const credItems = (credsR.status === 'fulfilled' ? credsR.value : []).map(([key, c]) => ({
+    kind: 'connect', label: c.name || c.label || key.split('@')[0],
+    url: AgLink.buildConnect({
+      addr: c.addr, account: 'd:' + (c.label || ''), password: c.token,
+      fp: c.pinned_fingerprint, insecure: c.insecure,
+      entries: c.entries, entry_fps: c.entry_fps || c.entries?.map(() => ''),
+      en: c.en, emode: c.emode, eadmin: c.eadmin, myname: c.myname,
+    }),
+  }));
+  const connItems = (connsR.status === 'fulfilled' ? connsR.value : []).map(c => ({
+    kind: 'fanout', label: c.name || c.upstream_addr,
+    url: AgLink.buildFanout({
+      addr: c.upstream_addr, token: c.token_plain || '', sni: c.sni_hostname,
+      fp: c.pinned_fingerprint, insecure: c.insecure, myname: c.my_name,
+    }),
+  }));
+  const items = [...credItems, ...connItems];
+  if (!items.length) { toast(AgI18n.t('phone.noConfig'), 'err'); return; }
+  // build modal: config selector + QR display area
+  const opts = items.map((it, i) => '<option value="' + i + '">' + esc(it.label) + ' (' + (it.kind === 'connect' ? AgI18n.t('term.fanin') : AgI18n.t('term.fanout')) + ')</option>').join('');
+  openModal(AgI18n.t('phone.title'),
+    '<select id="qr-sel" style="width:100%">' + opts + '</select>' +
+    '<div id="qr-display" style="text-align:center;margin-top:14px;min-height:280px;display:flex;align-items:center;justify-content:center"></div>' +
+    '<div class="hint" style="text-align:center;margin-top:8px">' + AgI18n.t('phone.scanTip') + '</div>',
+    [{ label: AgI18n.t('common.close'), kind: 'ghost', fn: closeModal }]);
+  agSelectEnhance($('qr-sel'));
+  const renderQr = async () => {
+    const idx = parseInt($('qr-sel').value, 10);
+    const item = items[idx]; if (!item) return;
+    const display = $('qr-display');
+    display.innerHTML = '<span class="dim">' + AgI18n.t('common.loading') + '</span>';
+    try {
+      const b64 = await invoke('qr_generate', { url: item.url });
+      display.innerHTML = '<img src="data:image/png;base64,' + b64 + '" style="max-width:280px;width:100%;border-radius:10px;border:1px solid var(--border)">';
+    } catch (e) { display.innerHTML = '<span class="err">' + esc(friendlyError(e)) + '</span>'; }
+  };
+  $('qr-sel').addEventListener('change', renderQr);
+  renderQr();
+}
+
 /* ================= Connect-link import ================= */
 async function importUrl(url, btn) {
   url = (url || '').trim();

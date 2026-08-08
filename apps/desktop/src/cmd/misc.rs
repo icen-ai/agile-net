@@ -795,6 +795,13 @@ pub(crate) async fn qr_pick_decode(app: tauri::AppHandle) -> Result<Option<Strin
     agile_net_node::qr::decode_qr_image(&bytes).map(Some)
 }
 
+/// Generate a QR code PNG from a URL (phone-sync: the phone scans the QR to import an
+/// `anet://connect` or `anet://fanout` link). Returns base64-encoded PNG for inline `<img>` rendering.
+pub(crate) async fn qr_generate(url: String) -> Result<String, String> {
+    let png = agile_net_node::qr::generate_qr_png(&url)?;
+    Ok(agile_net_core::util::base64_encode(&png))
+}
+
 /// Write the real client proxy state into the embedded node state slot (call after start/stop/mode switch/role shutdown;
 /// the admin "local proxy" card reads it via node status; the mode comes from the GUI proxy settings).
 /// Also broadcasts `ag-proxy` (every mutation path funnels through here): tray / float-ball / remote
