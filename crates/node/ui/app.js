@@ -615,6 +615,17 @@ async function doLogout() {
   $('login-view').style.display = 'flex';
 }
 
+/* Sidebar footer node badge: WHICH endpoint this console manages — penetration-admin consoles
+   (`upstream:<节点>` full scope) of many nodes look identical otherwise. The status call doubles
+   as the S.nodeName cache fill (anetIssuer reuses it). Independent of enterApp's me-fetch. */
+async function refreshNodeBadge() {
+  try {
+    const st = await api('GET', '/api/v1/admin/node/status');
+    S.nodeName = st.node_name || 'AgileNet';
+    $('node-info').innerHTML = ic('server', 14) + ' ' + esc(S.nodeName);
+  } catch(e) {}
+}
+
 async function enterApp() {
   $('login-view').style.display = 'none';
   $('app').style.display = 'block';
@@ -622,6 +633,7 @@ async function enterApp() {
     const me = await api('GET', '/api/v1/auth/me');
     $('me-info').innerHTML = ic('user', 14) + ' ' + esc(me.username) + ' <span class="badge b-info">' + esc(me.role) + '</span>';
   } catch(e) { return; }
+  refreshNodeBadge();
   await loadGroupsCache();
   // Pending-approval badge: global poller (paused while hidden) + hover identity card shell
   refreshApprovalsBadge();
@@ -2917,6 +2929,7 @@ async function saveNodeName() {
   try {
     await api('PUT', '/api/v1/admin/node/settings', { node_name: $('set-name').value.trim() });
     toast(T('adm.saved'), 'ok');
+    refreshNodeBadge(); // sidebar footer badge follows the rename
   } catch(e) { toast(e.message, 'err'); }
 }
 async function savePublicHost() {
