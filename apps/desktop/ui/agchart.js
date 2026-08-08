@@ -200,7 +200,7 @@ Chart.prototype._setData = function (cfg) {
     series: series,
     fmtX: cfg.fmtX || null,
     fmtY: cfg.fmtY || null,
-    empty: cfg.empty || '暂无数据',
+    empty: cfg.empty || (window.AgI18n ? AgI18n.t('common.empty') : '—'),
     legend: cfg.legend !== false,
   };
   this._resolveColors();
@@ -511,7 +511,7 @@ Bars.prototype.update = function (cfg) {
   if (!items.length) {
     var em = document.createElement('div');
     em.className = 'agchart-bars-empty';
-    em.textContent = cfg.empty || '暂无数据';
+    em.textContent = cfg.empty || (window.AgI18n ? AgI18n.t('common.empty') : '—');
     el.appendChild(em);
     return;
   }

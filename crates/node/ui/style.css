@@ -220,3 +220,18 @@ label { font-size: 11px; font-weight: 600; letter-spacing: .03em; }
    declared after the v2 card-head override so the zero padding/negative margin pair cancels here */
 .card-flush { padding: 0; overflow: hidden; }
 .card-flush > h3:first-child { margin: 0; border-radius: calc(var(--radius) - 1px) calc(var(--radius) - 1px) 0 0; }
+
+/* ================= Responsive (mobile / narrow viewport) =================
+   Below 720px: collapse the sidebar to a top bar — the admin panel is primarily desktop, but
+   this keeps it usable when opened directly on a phone browser or a narrow embedded window.
+   The sidebar becomes a horizontal scroll strip; nav labels stay visible. */
+@media (max-width: 720px) {
+  .shell { flex-direction: column; height: auto; min-height: 100vh; }
+  .sidebar { width: 100%; flex-direction: row; flex-wrap: wrap; gap: 4px; padding: 8px 10px; flex-shrink: 0; border-bottom: 1px solid var(--border); overflow-x: auto; }
+  .brand { padding: 0 8px 0 4px; white-space: nowrap; }
+  .nav-item { margin-bottom: 0; padding: 6px 10px; font-size: 12px; }
+  .sidebar-footer { margin-top: 0; margin-left: auto; border-top: none; padding: 0 4px; }
+  .main { padding: 14px 12px; overflow-y: visible; }
+  .stat-grid { grid-template-columns: 1fr; }
+}
+

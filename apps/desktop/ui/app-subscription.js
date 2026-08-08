@@ -267,6 +267,8 @@ async function refreshGroups() {
   updateDashSub();
 }
 
+// pending chunked-render timer for the node grid (cancelled on re-entry to avoid stale writes)
+let _nodeGridChunks = null;
 function renderNodeGrid(force) {
   const g = PROXY_DATA && PROXY_DATA[CUR_GROUP];
   if (!g) return;
@@ -275,8 +277,11 @@ function renderNodeGrid(force) {
   const sig = JSON.stringify([CUR_GROUP, g.type, g.now, g.all, PROXY_CACHED, getSortMode(CUR_GROUP)]);
   if (!force && grid.dataset.sig === sig) return;
   grid.dataset.sig = sig;
+  // cancel any pending chunked render from a previous call
+  if (_nodeGridChunks) { clearTimeout(_nodeGridChunks); _nodeGridChunks = null; }
   const best = bestNode(CUR_GROUP);
-  grid.innerHTML = sortedNodes(CUR_GROUP).map(n => {
+  const nodes = sortedNodes(CUR_GROUP);
+  const nodeHtml = (n) => {
     const p = PROXY_DATA[n] || {};
     const cur = g.now === n;
     return '<div class="snode-card' + (cur ? ' current' : '') + '" data-group="' + esc(CUR_GROUP) + '" data-node="' + esc(n) + '">' +
@@ -286,7 +291,21 @@ function renderNodeGrid(force) {
       '<div class="node-foot" style="padding-right:0"><span class="node-proto">' + esc(p.type || '') + '</span>' +
       latHtml(delayOf(CUR_GROUP, n)) +
       '</div></div>';
-  }).join('');
+  };
+  // chunked render: first batch synchronous (first paint), rest via setTimeout to avoid blocking
+  const BATCH = 120;
+  grid.innerHTML = nodes.slice(0, BATCH).map(nodeHtml).join('');
+  if (nodes.length > BATCH) {
+    let i = BATCH;
+    const flush = () => {
+      const end = Math.min(i + BATCH, nodes.length);
+      grid.insertAdjacentHTML('beforeend', nodes.slice(i, end).map(nodeHtml).join(''));
+      i = end;
+      if (i < nodes.length) _nodeGridChunks = setTimeout(flush, 16);
+      else _nodeGridChunks = null;
+    };
+    _nodeGridChunks = setTimeout(flush, 16);
+  }
 }
 
 /* Badge-only refresh, no re-render: '…' loading / null not tested (—) / 0 timeout / >0 valid latency */

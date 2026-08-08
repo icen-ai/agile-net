@@ -209,6 +209,7 @@ const S = {
   devQ: '',             // devices page search term
   devState: '',         // devices page state filter: '' | online | offline | pending | certified | revoked
   devFp: '',            // devices page: fingerprint of the open detail view ('' = list)
+  devLimit: 50,         // devices page: render cap (show-more expands)
   apprState: 'pending', // approvals page filter: pending | all | approved | rejected
   apprTimer: null,      // global pending-approval badge poller (survives view switches)
   groups: [],
@@ -284,14 +285,19 @@ async function api(method, path, body, retried) {
 }
 
 /* ================= Modal ================= */
+let _modalPrevFocus = null;
 function openModal(title, bodyHtml, actions) {
   const root = $('modal-root');
+  _modalPrevFocus = document.activeElement;
   root.innerHTML = '';
   const mask = document.createElement('div');
   mask.className = 'modal-mask';
   mask.onclick = (e) => { if (e.target === mask) closeModal(); };
   const modal = document.createElement('div');
   modal.className = 'modal';
+  modal.setAttribute('role', 'dialog');
+  modal.setAttribute('aria-modal', 'true');
+  modal.setAttribute('aria-label', title);
   modal.innerHTML = '<h3>' + esc(title) + '</h3>' + bodyHtml;
   const bar = document.createElement('div');
   bar.className = 'actions';
@@ -305,9 +311,17 @@ function openModal(title, bodyHtml, actions) {
   modal.appendChild(bar);
   mask.appendChild(modal);
   root.appendChild(mask);
+  // Esc to close + focus the first actionable element
+  mask.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.preventDefault(); closeModal(); } });
   agSelectEnhance(modal);
+  const firstBtn = modal.querySelector('input, select, textarea, button');
+  if (firstBtn) firstBtn.focus();
 }
-function closeModal() { $('modal-root').innerHTML = ''; }
+function closeModal() {
+  $('modal-root').innerHTML = '';
+  if (_modalPrevFocus && _modalPrevFocus.focus) { try { _modalPrevFocus.focus(); } catch(e) {} }
+  _modalPrevFocus = null;
+}
 function confirmAction(text, onYes) {
   openModal(T('adm.confirmTitle'), '<p style="color:var(--dim)">' + esc(text) + '</p>', [
     {label: T('common.cancel'), kind:'ghost', fn: closeModal},
@@ -761,6 +775,7 @@ const ACT_CLICK = {
     if (S.view !== 'devices') switchView('devices'); else renderDeviceDetail();
   },
   'dev-certify': b => openCertify(b.dataset.fp),
+  'dev-more': () => { S.devLimit += 50; renderDeviceRows(); },
   'dev-revoke': b => openRevoke(b.dataset.fp),
   'dev-rebind': b => openRebind(b.dataset.fp),
   'appr-approve': b => openDecide(b.dataset.id, 'approve'),
@@ -988,6 +1003,7 @@ async function devCardHtml(fp) {
 /* ================= Devices (node.md M3-T2) + pending policy gate (M3-T5) ================= */
 async function renderDevices() {
   if (S.devFp) return renderDeviceDetail();
+  S.devLimit = 50;
   $('view').innerHTML = '<div class="page-title">' + ic('monitor-smartphone', 20) + T('dev.title') + '</div><div class="page-desc">' + T('dev.desc') + '</div>' +
     '<div class="card"><h3>' + T('dev.policyTitle') + ahelp(T('dev.policyTip')) + '</h3>' +
       '<label class="chk" style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="dev-policy"> <span>' + T('dev.policyAllow') + '</span></label></div>' +
@@ -1031,10 +1047,12 @@ function renderDeviceRows() {
     sorted.sort((a, b) => (b.online - a.online) || String(b.last_seen || '').localeCompare(String(a.last_seen || '')));
   }
   items = sorted;
-  const sig = JSON.stringify([items, q, S.devState, tblSig('adm-dev')]);
+  const sig = JSON.stringify([items, q, S.devState, S.devLimit, tblSig('adm-dev')]);
   if (sig === body.dataset.sig) return;
   body.dataset.sig = sig;
-  body.innerHTML = items.map(d =>
+  const visible = items.slice(0, S.devLimit);
+  const remaining = items.length - visible.length;
+  body.innerHTML = visible.map(d =>
     '<tr><td><span class="dot ' + (d.online ? 'on' : 'off') + '"></span>' + devNameHtml(d.device_fp, devDisplayName(d)) +
       '<div style="margin-top:2px">' + agcopy(d.device_fp, d.short_fp || (d.device_fp || '').slice(0, 12)) + '</div>' +
       // subtitle: certified → the self-declared name + remark (subject already in the bold line);
@@ -1050,6 +1068,9 @@ function renderDeviceRows() {
       (d.state === 'pending' ? '<button class="ghost small" data-act="dev-certify" data-fp="' + esc(d.device_fp) + '">' + T('dev.certify') + '</button> ' : '') +
       '<button class="ghost small" data-act="dev-open" data-fp="' + esc(d.device_fp) + '">' + T('groups.detail') + '</button></td></tr>'
   ).join('') || '<tr><td colspan="6" class="empty">' + T('dev.empty') + '</td></tr>';
+  if (remaining > 0) {
+    body.innerHTML += '<tr><td colspan="6" style="text-align:center;padding:10px"><button class="ghost small" data-act="dev-more">' + T('dev.showMore', { n: remaining }) + '</button></td></tr>';
+  }
   tblAttach('dev-body', {
     key: 'adm-dev',
     sort: { 0: 'name', 2: 'sess', 3: 'bytes', 4: 'last' },
@@ -1514,7 +1535,15 @@ async function renderDashboard() {
         while (list.children.length > 50) list.lastChild.remove();
       } catch(err) {}
     };
-    ws.onclose = () => { const l = $('events-list'); if (l && S.view === 'dashboard') l.innerHTML = '<span style="color:var(--dim2)">' + esc(T('dashboard.eventsClosed')) + '</span>'; };
+    ws.onclose = () => {
+      const l = $('events-list');
+      if (l && S.view === 'dashboard') l.innerHTML = '<span style="color:var(--dim2)">' + esc(T('dashboard.eventsClosed')) + '</span>';
+      // auto-reconnect with backoff (transient network blips shouldn't permanently kill live events)
+      if (S.ws === ws) {
+        S.ws = null;
+        setTimeout(() => { if (S.view === 'dashboard') renderDashboard(); }, 3000);
+      }
+    };
   } catch(e) {}
 }
 
@@ -2570,6 +2599,7 @@ async function openIssueDelegation() {
         const adminScope = trust === 'admin' ? (segVal('di-scope') || 'full') : '';
         const life = lifecycleFieldsVal('di');
         const names = nameTripletVal('di');
+        if (!names.target.trim()) { toast(T('deleg.labelRequired'), 'err'); return; }
         try {
           const d = await api('POST', '/api/v1/admin/delegation/tokens', {
             label: names.target,
@@ -2964,7 +2994,10 @@ window.addEventListener('DOMContentLoaded', async () => {
   $('login-theme-btn').onclick = toggleTheme;
   $('theme-btn').onclick = toggleTheme;
   $('logout-btn').onclick = doLogout;
-  document.querySelectorAll('.nav-item[data-view]').forEach(n => { n.onclick = () => switchView(n.dataset.view); });
+  document.querySelectorAll('.nav-item[data-view]').forEach(n => {
+    n.onclick = () => switchView(n.dataset.view);
+    n.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); switchView(n.dataset.view); } };
+  });
   // Tauri console window: show the custom title bar (frameless window), wire window controls and the theme broadcast
   if (window.__TAURI__) {
     document.body.classList.add('tb-mode');

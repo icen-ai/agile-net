@@ -173,6 +173,10 @@ window.addEventListener('DOMContentLoaded', () => {
   $('fm-root').hidden = false;
   if (TAURI.event && TAURI.event.listen) {
     TAURI.event.listen('ag-theme', e => { document.documentElement.dataset.theme = e.payload; }).catch(() => {});
+    // cross-window state sync: refresh labels when proxy mode / kernel state changes elsewhere
+    TAURI.event.listen('ag-proxy', () => { initState(); }).catch(() => {});
+    TAURI.event.listen('ag-kernel', () => { initState(); }).catch(() => {});
+    TAURI.event.listen('ag-roles', () => { initState(); }).catch(() => {});
   }
   bind();
   initState();

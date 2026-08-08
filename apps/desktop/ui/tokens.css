@@ -12,6 +12,7 @@
   --ok: #61C555; --warn: #F6BE50; --danger: #ED6A5F;
   --ok-text: #3E8E2E; --warn-text: #9A7414; --danger-text: #CE3F34;
   --ok-bg: rgba(97,197,85,.14); --warn-bg: rgba(246,190,80,.20); --danger-bg: rgba(237,106,95,.12);
+  --warn-ring: rgba(246,190,80,.5);
   --danger-border: rgba(237,106,95,.45);
   --chip: #F1F1F1; --hover: #E2E2E2;
   --row-border: #E7E8EA;
@@ -71,6 +72,7 @@ html[data-theme="dark"] {
   --ok: #5FCF65; --warn: #F8CE52; --danger: #F96057;
   --ok-text: #5FCF65; --warn-text: #F8CE52; --danger-text: #F96057;
   --ok-bg: rgba(95,207,101,.14); --warn-bg: rgba(248,206,82,.16); --danger-bg: rgba(249,96,87,.14);
+  --warn-ring: rgba(248,206,82,.5);
   --danger-border: rgba(249,96,87,.40);
   --chip: #2F2D2D; --hover: #3A3838;
   --row-border: #3B3939;

@@ -1,11 +1,11 @@
 /* AgileNet client — visual tokens shared from tokens.css (AGENTS.md §6); page-level styles only
    App shell: unified titlebar + Dynamic Island notifications + left grouped nav + independently scrolling content */
 :root {
-  --gray: #686B72; --gray-bg: rgba(104,107,114,.12);
+  --gray: var(--dim); --gray-bg: rgba(104,107,114,.12);
   --scroll: rgba(0,0,0,.16); --scroll-hover: rgba(0,0,0,.30);
 }
 html[data-theme="dark"] {
-  --gray: #9A9DA3; --gray-bg: rgba(154,157,163,.15);
+  --gray: var(--dim); --gray-bg: rgba(154,157,163,.15);
   --scroll: rgba(255,255,255,.16); --scroll-hover: rgba(255,255,255,.30);
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -327,9 +327,9 @@ input[type="checkbox"]:disabled { opacity: .5; cursor: not-allowed; }
 .switch input:checked + .slider::before { transform: translateX(14px); }
 tr.rule-paused td { opacity: .45; }
 
-/* Status pulse animation (connecting/reconnecting) */
+/* Status pulse animation (connecting/reconnecting); --warn-ring derives from the warn token */
 .pulse { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--warn); margin-right: 4px; animation: pulse 1.2s infinite; }
-@keyframes pulse { 0%,100% { opacity: 1; box-shadow: 0 0 0 0 rgba(245,158,11,.5); } 50% { opacity: .5; box-shadow: 0 0 0 5px rgba(245,158,11,0); } }
+@keyframes pulse { 0%,100% { opacity: 1; box-shadow: 0 0 0 0 var(--warn-ring, rgba(246,190,80,.5)); } 50% { opacity: .5; box-shadow: 0 0 0 5px transparent; } }
 
 /* In-button loading animation */
 .spinner { display: inline-block; width: 12px; height: 12px; border: 2px solid rgba(128,128,128,.35); border-top-color: currentColor; border-radius: 50%; animation: spin .7s linear infinite; vertical-align: -2px; margin-right: 6px; }
