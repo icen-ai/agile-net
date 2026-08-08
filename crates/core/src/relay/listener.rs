@@ -612,6 +612,14 @@ impl RelayListener {
         self.local_delegated.clone()
     }
 
+    /// Whether a delegated token is locally owned (direct-entry, issued by this node) vs
+    /// relay-transit (registered by a remote issuer's fan-out session). Used by the admin kick
+    /// API to enforce the security boundary: a relay admin may not kick sessions authenticated
+    /// by a remote issuer's token — the issuer owns those consumers, not the relay.
+    pub fn is_local_delegated_token(&self, token_hash: &str) -> bool {
+        self.local_delegated.contains_key(token_hash)
+    }
+
     /// Resolve a delegated token by hash: persistent local registry first (self-entry/direct
     /// mode), then the session-scoped registry.
     fn resolve_delegated_token(&self, token_hash: &str) -> Option<DelegatedToken> {

@@ -416,6 +416,8 @@ AgI18n.register({
   'sess.onlineN': { zh: '{n} 在线', en: '{n} online' },
   'sess.toolbar': { zh: '在线 {n} 个会话 · 踢断立即生效', en: '{n} live sessions · kicks apply at once' },
   'sess.kick': { zh: '踢下线', en: 'Kick' },
+  'sess.relayOnly': { zh: '中转过境', en: 'Transit' },
+  'sess.relayTransit': { zh: '中转过境会话：仅令牌签发端可踢断', en: 'Relay-transit session: only the token issuer may kick' },
   'sess.kickAll': { zh: '全部下线', en: 'Kick All' },
   'sess.kickTitle': { zh: '踢断会话', en: 'Kick Session' },
   'sess.kickConfirm': { zh: '确定踢断「{name}」的这个会话？', en: 'Kick this session of "{name}"?' },

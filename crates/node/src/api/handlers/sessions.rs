@@ -109,6 +109,9 @@ pub struct KickReq {
 }
 
 /// POST /api/v1/admin/sessions/kick — force-close one session (SessionNotice 'kicked' first).
+/// Security boundary: relay-transit consumer sessions (authenticated by a remote issuer's
+/// delegated token, not by this node) cannot be kicked by this node's admin — the issuer owns
+/// those consumers. Fan-in peer sessions and direct-entry consumers are always kickable.
 pub async fn kick_session(
     AdminAuth(claims): AdminAuth,
     State(state): State<ApiState>,
@@ -118,6 +121,21 @@ pub async fn kick_session(
     let Some(listener) = &state.runtime.listener else {
         return err(StatusCode::BAD_REQUEST, codes::BAD_REQUEST, "relay listener not enabled");
     };
+    // relay-transit consumer sessions: delegated:<token_hash>:<node_id> where token_hash is NOT
+    // in the local registry → this node is just a relay, the token belongs to a remote issuer
+    if req.session_key.starts_with("delegated:") {
+        if let Some(rest) = req.session_key.strip_prefix("delegated:") {
+            if let Some(hash) = rest.split(':').next() {
+                if !listener.is_local_delegated_token(hash) {
+                    return err(
+                        StatusCode::FORBIDDEN,
+                        codes::FORBIDDEN,
+                        "relay-transit session: only the token issuer may kick this consumer",
+                    );
+                }
+            }
+        }
+    }
     let n = if listener.is_peer_online(&req.session_key) {
         listener
             .disconnect_peer(&req.session_key, reason::KICKED, &req.message)
@@ -142,7 +160,9 @@ pub struct KickTokenReq {
 }
 
 /// POST /api/v1/admin/sessions/kick_token — force-close every consumer session of one
-/// delegated token (the toolbar "全部下线" action).
+/// delegated token (the toolbar "全部下线" action). Security boundary: only locally-issued
+/// tokens (direct-entry) may be kicked by this admin; relay-transit tokens belong to a remote
+/// issuer and are off-limits to this node's admin.
 pub async fn kick_token(
     AdminAuth(claims): AdminAuth,
     State(state): State<ApiState>,
@@ -152,6 +172,13 @@ pub async fn kick_token(
     let Some(listener) = &state.runtime.listener else {
         return err(StatusCode::BAD_REQUEST, codes::BAD_REQUEST, "relay listener not enabled");
     };
+    if !listener.is_local_delegated_token(&req.token_hash) {
+        return err(
+            StatusCode::FORBIDDEN,
+            codes::FORBIDDEN,
+            "relay-transit token: only the token issuer may kick its consumers",
+        );
+    }
     let n = listener
         .disconnect_delegated_token(&req.token_hash, reason::KICKED, &req.message)
         .await;

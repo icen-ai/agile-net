@@ -897,7 +897,9 @@ function sessRowHtml(s, cols) {
     key: '<div>' + agcopy(s.session_key || '', String(s.session_key || '').slice(0, 6)) + '</div>',
     token: '<div style="color:var(--dim)">' + esc(s.token_label || '-') + '</div>',
     chans: '<div style="color:var(--dim)">' + (s.channels || 0) + '</div>',
-    op: '<div><button class="danger small" data-act="sess-kick" data-key="' + esc(s.session_key) + '" data-name="' + esc(devDisplayName({ ...d, my_name: s.my_name || d.my_name }) || s.session_key || '') + '">' + T('sess.kick') + '</button></div>',
+    op: '<div>' + (s.entry === 'relay'
+      ? '<span style="color:var(--dim2);font-size:11px" title="' + esc(T('sess.relayTransit')) + '">' + esc(T('sess.relayOnly')) + '</span>'
+      : '<button class="danger small" data-act="sess-kick" data-key="' + esc(s.session_key) + '" data-name="' + esc(devDisplayName({ ...d, my_name: s.my_name || d.my_name }) || s.session_key || '') + '">' + T('sess.kick') + '</button>') + '</div>',
   };
   return '<div class="sess-row" style="grid-template-columns:' + sessGrid(cols) + '">' + cols.map(c => cell[c] || '').join('') + '</div>';
 }
@@ -3026,7 +3028,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     if (d.type === 'ag-theme' && (d.theme === 'dark' || d.theme === 'light')) {
       try { localStorage.setItem('ag_theme', d.theme); applyTheme(); } catch(_) {}
     }
-    if (d.type === 'ag-nav' && {dashboard:1,groups:1,rules:1,fanin:1,connectors:1,devices:1,approvals:1,audit:1,settings:1}[d.view]) {
+    if (d.type === 'ag-nav' && {dashboard:1,groups:1,rules:1,fanin:1,connectors:1,devices:1,approvals:1,topo:1,audit:1,settings:1}[d.view]) {
       switchView(d.view);
     }
     // Desktop bridge: native open-dialog result (ag-anet-open was requested by an import entry)
