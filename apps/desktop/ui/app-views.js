@@ -775,11 +775,12 @@ async function openNodeConsole(nodeId) {
 }
 
 /* ================= Phone QR sync (desktop → phone scan) ================= */
+/* The phone is an independent device (own fingerprint + key + device proof). Scanning a QR
+   is equivalent to pasting an anet://connect link — the phone goes through the normal import
+   flow as a new consumer. The QR just saves manual copy/paste. Only fan-in credentials are
+   listed: fan-out is a server-role identity, each device runs its own — there's nothing to
+   "sync" from the desktop. */
 async function openPhoneQr() {
-  // gather selectable fan-in credentials; the URL is built by the Rust export_credential
-  // command (connect_url_of) which correctly handles the full failover set + fingerprints.
-  // Fan-out connectors are excluded: the plaintext token is a reversible-storage exception
-  // that is deliberately never exposed over IPC (only token_prefix is visible).
   let creds = [];
   try { creds = await invoke('list_credentials'); } catch (e) {}
   if (!creds.length) { toast(AgI18n.t('phone.noConfig'), 'err'); return; }
