@@ -866,14 +866,15 @@ function sessEntryBadge(entry) {
 function sessRowHtml(s, cols) {
   const d = DEV_MAP[s.device_fp] || {};
   const st = d.state || '';
-  const fpShort = (s.device_fp || '').slice(0, 12);
+  const fpTip = s.device_fp ? ' title="' + esc(s.device_fp) + '"' : '';
+  // who column: name + auth badge (certified checkmark / pending / revoked state pill);
+  // the raw fingerprint lives in the hover passport card — no need to clutter the row with it
   const authMark = st === 'certified'
-    ? ' <span class="nb-auth" title="' + T('dev.stCertified') + '">' + ic('badge-check', 10) + '</span>'
-    : '';
+    ? '<span class="nb-auth"' + fpTip + '>' + ic('badge-check', 11) + '</span>'
+    : st ? devStateBadge(st) : '';
   const cell = {
     who: '<div class="sess-who"><span class="sess-dot pulse"></span>' + devNameHtml(s.device_fp, devDisplayName({ ...d, my_name: s.my_name || d.my_name })) +
-      (s.device_fp ? '<span class="nodebadge">' + esc(fpShort) + authMark + '</span>' : '') +
-      (st && st !== 'certified' ? ' ' + devStateBadge(st) : '') + '</div>',
+      (authMark ? ' ' + authMark : '') + '</div>',
     ip: '<div class="mono" style="color:var(--dim)">' + esc(s.ip || '-') + '</div>',
     entry: '<div>' + sessEntryBadge(s.entry) + '</div>',
     ago: '<div style="color:var(--dim)">' + fmtAgo(s.connected_at) + '</div>',
@@ -941,9 +942,11 @@ function kickTokenSessions(hash, name) {
   });
 }
 
-/* ================= Hover identity card (node.md M3-T3; shell = AgIdCard in agutil.js) =================
+/* ================= Hover identity card — device passport (node.md M3-T3; shell = AgIdCard in agutil.js) =================
    Any [data-agid="<device_fp>"] element (session rows, device list, approval items) gets the card;
-   payloads are cached 30s (device state is slow-moving; the card re-fetches after expiry). */
+   payloads are cached 30s (device state is slow-moving; the card re-fetches after expiry).
+   Four sections: identity (name + state + self-declared alias) / keys (fp + ssh, copyable) /
+   certification (holder · remark · source · first seen) / activity (traffic + online sessions). */
 const DEV_CARD_CACHE = new Map(); // fp -> { html, ts }
 async function devCardHtml(fp) {
   const hit = DEV_CARD_CACHE.get(fp);
@@ -952,13 +955,32 @@ async function devCardHtml(fp) {
   try { d = await api('GET', '/api/v1/admin/devices/' + encodeURIComponent(fp)); }
   catch (e) { return ''; }
   const row = (k, v) => '<div class="agidcard-r"><span class="k">' + esc(k) + '</span><span class="v">' + v + '</span></div>';
+  const sep = '<div class="agidcard-sep"></div>';
   const online = (d.sessions || []).length;
-  const html = '<div class="agidcard-h">' + esc(devDisplayName(d) || T('dev.unnamed')) + ' ' + devStateBadge(d.state) + '</div>' +
-    row(T('dev.cardFp'), agcopy(d.device_fp, (d.device_fp || '').slice(0, 16) + '…')) +
-    (d.openssh ? row(T('dev.cardKey'), agcopy(d.openssh, d.openssh.slice(0, 30) + '…')) : '') +
-    row(T('dev.cardSubject'), esc(d.subject || '-')) +
-    row(T('dev.cardOnline'), online ? T('dev.onlineN', { n: online }) : T('dev.offline')) +
-    row(T('dev.cardTraffic'), '↑ ' + fmtBytes(d.bytes_up) + ' · ↓ ' + fmtBytes(d.bytes_down));
+  const name = devDisplayName(d) || T('dev.unnamed');
+  // self-declared alias shown only when it differs from the authoritative display name
+  const alias = (d.my_name && d.state === 'certified' && d.subject && d.my_name !== d.subject) ? d.my_name : '';
+  const fmtDate = (s) => (s || '').replace('T', ' ').replace('Z', '').slice(0, 19) || '-';
+  let html = '';
+  // § identity
+  html += '<div class="agidcard-h">' + ic('shield-check', 16) + esc(name) + ' ' + devStateBadge(d.state) + '</div>';
+  if (alias) html += '<div class="agidcard-alias">' + T('dev.cardAlias') + esc(alias) + '</div>';
+  // § keys
+  html += sep +
+    row(T('dev.cardFp'), agcopy(d.device_fp, (d.device_fp || '').slice(0, 16) + '…'));
+  if (d.openssh) html += row(T('dev.cardKey'), agcopy(d.openssh, d.openssh.slice(0, 24) + '…'));
+  // § certification
+  html += sep +
+    row(T('dev.cardHolder'), esc(d.subject || '-') + (d.remark ? ' · ' + esc(d.remark) : ''));
+  if (d.state === 'certified') {
+    const src = d.certified_by || T('dev.cardCertLocal');
+    html += row(T('dev.cardCert'), esc(src) + (d.certified_at ? ' · ' + esc(fmtDate(d.certified_at)) : ''));
+  }
+  html += row(T('dev.cardFirst'), esc(fmtDate(d.first_seen)));
+  // § activity
+  html += sep +
+    row(T('dev.cardTraffic'), '↑ ' + fmtBytes(d.bytes_up) + ' · ↓ ' + fmtBytes(d.bytes_down)) +
+    row(T('dev.cardOnline'), online ? T('dev.onlineN', { n: online }) : T('dev.offline'));
   DEV_CARD_CACHE.set(fp, { html, ts: Date.now() });
   return html;
 }

@@ -411,11 +411,15 @@ html[data-theme="dark"] .badge-beta { color: rgba(255,255,255,.95); }
 .agcopy svg { width: 11px; height: 11px; flex: none; opacity: .7; }
 
 /* ================= agidcard hover identity card (node.md M3-T3; shell JS in agutil.js AgIdCard) =================
-   Fixed-position card over [data-agid] anchors: header (name + state badge) + rows (k/v).
+   Fixed-position card over [data-agid] anchors: device passport — identity (name + state) /
+   keys (fp + ssh) / certification (holder · source · first seen) / activity (traffic + sessions).
    z-index 480: above ahelp-tip(450), below agsel-pop(500). Content HTML is supplied per end (esc applied there). */
-.agidcard { position: fixed; z-index: 480; width: 300px; max-width: calc(100vw - 24px); background: var(--panel2); border: 1px solid var(--border); border-radius: 11px; box-shadow: var(--shadow-2); padding: 12px 14px; font-size: 12.5px; animation: agid-in .14s ease both; }
+.agidcard { position: fixed; z-index: 480; width: 320px; max-width: calc(100vw - 24px); background: var(--panel2); border: 1px solid var(--border); border-radius: 11px; box-shadow: var(--shadow-2); padding: 12px 14px; font-size: 12.5px; animation: agid-in .14s ease both; }
 @keyframes agid-in { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
-.agidcard-h { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-weight: 600; color: var(--text-strong); margin-bottom: 6px; }
+.agidcard-h { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-weight: 600; color: var(--text-strong); margin-bottom: 4px; }
+.agidcard-h .agidcard-ic { color: var(--ok-text); flex: none; }
+.agidcard-alias { font-size: 11px; color: var(--dim2); margin-bottom: 2px; }
+.agidcard-sep { border-top: 1px solid var(--border); margin: 8px -14px; }
 .agidcard-r { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; padding: 2.5px 0; font-size: 12px; }
 .agidcard-r .k { flex-shrink: 0; color: var(--dim2); }
 .agidcard-r .v { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
