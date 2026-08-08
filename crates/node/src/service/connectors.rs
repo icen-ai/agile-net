@@ -716,13 +716,25 @@ impl ConnectorManager {
     /// Federation P2: revoke a delegated token — delete locally, then by entry mode: relay
     /// tokens send the revocation frame to every online upstream of the disaster set (offline
     /// upstreams invalidate by disconnect); direct tokens drop out of the listener's persistent
-    /// local registry.
+    /// local registry AND every live consumer session is kicked immediately (an existing data
+    /// channel would otherwise keep flowing until the consumer's next Open fails closed).
     pub async fn revoke_delegated(&self, token_id: &str) -> Result<bool> {
         let Some(rec) = crate::service::delegation::revoke_token(&self.db, token_id)? else {
             return Ok(false);
         };
         if rec.entry_mode == "direct" {
             self.reconcile_local_direct();
+            // kick every live consumer session of this token at the issuing node's listener —
+            // revoke-by-disconnect (registry removal) only blocks new Opens; existing channels
+            // need an explicit disconnect to terminate immediately.
+            if let Some(l) = &self.listener {
+                l.disconnect_delegated_token(
+                    &rec.token_hash,
+                    agile_net_core::proto::message::reason::REVOKED_BY_ADMIN,
+                    "",
+                )
+                .await;
+            }
             return Ok(true);
         }
         for reg in &rec.regs {

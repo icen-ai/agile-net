@@ -104,6 +104,18 @@ pub fn adopt_records(db: &Database, records: &[CertRecord], own_fp: &str) -> (us
             }
             continue;
         }
+        // monotonicity guard: a revoked device from this origin cannot be re-certified by a
+        // STALE (older-ts) record — this closes the "zombie cert" replay window where a middle
+        // hop replays an old un-revoked record after the origin's revocation has propagated.
+        // Only a genuinely newer certification (ts > the revocation's lineage ts) may revive.
+        if let Some(e) = &existing
+            && e.certified_by == rec.origin_fp
+            && e.state == "revoked"
+            && !rec.ts.is_empty()
+            && e.cert_ts.as_str() >= rec.ts.as_str()
+        {
+            continue; // stale replay — keep the revoked state
+        }
         // idempotency: an already-adopted row from this origin is current
         if let Some(e) = &existing
             && e.certified_by == rec.origin_fp

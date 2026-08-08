@@ -139,7 +139,22 @@ pub fn sanitize_pushed_groups(
             g.rules = g
                 .rules
                 .into_iter()
-                .filter(|r| !r.trim().is_empty() && r.len() <= MAX_PUSHED_RULE_LEN)
+                .filter(|r| {
+                    let r = r.trim();
+                    if r.is_empty() || r.len() > MAX_PUSHED_RULE_LEN {
+                        return false;
+                    }
+                    // reject cloud-metadata IPs in pushed rules — the classic SSRF pivot target
+                    // (169.254.169.254 is AWS/GCP/Azure metadata; a delegated consumer should
+                    // never reach the issuer's cloud metadata endpoint). Loopback and other
+                    // private ranges are left through — they may be legitimate local targets.
+                    if let Ok(net) = r.parse::<IpNetwork>() {
+                        return net.network_address()
+                            != std::net::IpAddr::V4(std::net::Ipv4Addr::new(169, 254, 169, 254));
+                    }
+                    let lower = r.to_ascii_lowercase();
+                    !lower.starts_with("169.254.169.254")
+                })
                 .take(MAX_PUSHED_GROUP_RULES)
                 .collect();
             g
@@ -891,6 +906,8 @@ impl RelayListener {
 
     /// Force-disconnect EVERY session of one device (fan-in node peers and delegated consumers
     /// alike); a SessionNotice with the given reason precedes each close. Returns sessions closed.
+    /// Security boundary: relay-transit consumer sessions (authenticated by a remote issuer's
+    /// token, not in the local registry) are SKIPPED — the relay has no authority over them.
     pub async fn disconnect_device(&self, device_fp: &str, reason_code: &str, message: &str) -> usize {
         let keys: std::collections::HashSet<String> = self
             .session_meta
@@ -905,6 +922,17 @@ impl RelayListener {
                     n += 1;
                 }
             } else {
+                // consumer session: skip relay-transit (the token belongs to a remote issuer,
+                // this node is just a relay and has no authority to disconnect the consumer)
+                if key.starts_with("delegated:") {
+                    if let Some(rest) = key.strip_prefix("delegated:") {
+                        if let Some(hash) = rest.split(':').next() {
+                            if !self.local_delegated.contains_key(hash) {
+                                continue; // relay-transit — off-limits
+                            }
+                        }
+                    }
+                }
                 n += self.disconnect_client(&key, reason_code, message).await;
             }
         }
@@ -1479,17 +1507,31 @@ impl RelayListener {
                 message,
                 ..
             } => {
-                if let Some(label) = self
+                match self
                     .revoke_delegated(node_id, &token_hash, &reason_code, &message)
                     .await
                 {
-                    info!(node = %node_id, label = %label, "delegated token revoked");
-                    let _ = self.events.send(PeerEvent::DelegationRevoked {
-                        node_id: node_id.to_string(),
-                        label,
-                    });
+                    Some(label) => {
+                        info!(node = %node_id, label = %label, "delegated token revoked");
+                        let _ = self.events.send(PeerEvent::DelegationRevoked {
+                            node_id: node_id.to_string(),
+                            label,
+                        });
+                        self.send_ctrl_ack(mux, token_hash, true, String::new()).await;
+                    }
+                    None => {
+                        // revoke_delegated returned None: no matching registration for this issuer
+                        // (unknown hash, wrong issuer, or already gone). ACK truthfully so the
+                        // issuer knows the revoke had no effect rather than assuming success.
+                        self.send_ctrl_ack(
+                            mux,
+                            token_hash,
+                            false,
+                            "no registration owned by this issuer".into(),
+                        )
+                        .await;
+                    }
                 }
-                self.send_ctrl_ack(mux, token_hash, true, String::new()).await;
             }
             C::TokenAck { .. } => {
                 debug!(node = %node_id, "unexpected TokenAck from issuer ignored");
@@ -1555,6 +1597,13 @@ impl RelayListener {
         if max_sessions == 0 || max_sessions > MAX_DELEGATED_SESSIONS {
             return Err("max_sessions out of range".into());
         }
+        // Ownership guard: a token_hash already registered by a DIFFERENT issuer is rejected.
+        // This is session-scoped (the entry dies with the owning issuer's session — see the
+        // disconnect cleanup in serve_node_session), so a squatter's block is temporary. A full
+        // proof-of-knowledge (proving the registrant holds the token plaintext) is not feasible
+        // at the relay layer (it only ever sees hashes); the session-scoped lifetime + the
+        // fail-closed ACL on the squatted entry (empty acl_rules → all Opens denied) bound the
+        // impact to a temporary DoS on that one token while the squatter stays connected.
         if let Some(existing) = self.delegated.get(token_hash)
             && existing.issuer != node_id
         {

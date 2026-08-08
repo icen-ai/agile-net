@@ -370,8 +370,8 @@ pub struct CertRecord {
 /// Canonical bytes of a cert record for origin signing/verification.
 pub fn cert_sign_bytes(r: &CertRecord) -> Vec<u8> {
     format!(
-        "anet/cert/v1\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
-        r.device_fp, r.subject, r.remark, r.origin_fp, r.ts, r.revoked, r.pubkey
+        "anet/cert/v1\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
+        r.device_fp, r.subject, r.remark, r.origin_fp, r.origin_name, r.ts, r.revoked, r.pubkey
     )
     .into_bytes()
 }
