@@ -139,6 +139,7 @@ AgI18n.register({
   'reason.kicked': { zh: '已被踢下线', en: 'Kicked offline' },
   'reason.session_takeover': { zh: '已在其他设备上线', en: 'Taken over by another device' },
   'reason.bad_credentials': { zh: '凭据无效', en: 'Invalid credentials' },
+  'reason.session_cap': { zh: '并发会话已满', en: 'Session cap reached' },
   'reason.device_proof_invalid': { zh: '设备验证失败', en: 'Device proof failed' },
   'reason.pending_approval': { zh: '等待管理员认证', en: 'Awaiting approval' },
   'reason.server_shutdown': { zh: '端点已关闭', en: 'Endpoint shut down' },

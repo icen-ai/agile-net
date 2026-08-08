@@ -34,7 +34,7 @@ pub async fn list_devices(AdminAuth(_): AdminAuth, State(state): State<ApiState>
         })
         .await
         .unwrap_or_default();
-    let online: std::collections::HashMap<String, usize> = match &state.runtime.listener {
+    let mut online: std::collections::HashMap<String, usize> = match &state.runtime.listener {
         Some(l) => {
             let mut m = std::collections::HashMap::new();
             for s in l.sessions_detail() {
@@ -44,6 +44,19 @@ pub async fn list_devices(AdminAuth(_): AdminAuth, State(state): State<ApiState>
         }
         None => Default::default(),
     };
+    // federation P2: relay-entry consumer sessions live on intermediate relays (reported
+    // upstream via ConsumerSessionReport); they count towards the device's online flag too
+    for sessions in state
+        .runtime
+        .connector_manager
+        .delegation_engine()
+        .reported_sessions()
+        .values()
+    {
+        for info in sessions {
+            *online.entry(info.device_fp.clone()).or_insert(0) += 1;
+        }
+    }
     let items: Vec<serde_json::Value> = rows
         .into_iter()
         .map(|d| {
@@ -81,7 +94,7 @@ pub async fn get_device(AdminAuth(_): AdminAuth, State(state): State<ApiState>, 
     let Ok(Some(d)) = rec else {
         return err(StatusCode::NOT_FOUND, codes::NOT_FOUND, "device not found");
     };
-    let sessions: Vec<serde_json::Value> = state
+    let mut sessions: Vec<serde_json::Value> = state
         .runtime
         .listener
         .as_ref()
@@ -103,6 +116,28 @@ pub async fn get_device(AdminAuth(_): AdminAuth, State(state): State<ApiState>, 
                 .collect()
         })
         .unwrap_or_default();
+    // federation P2: relay-entry consumer sessions (terminated at an intermediate relay,
+    // reported upstream) — merged so the identity card shows the device online; counters are
+    // unknown here (the relay owns the session), uptime is not tracked upstream
+    for infos in state
+        .runtime
+        .connector_manager
+        .delegation_engine()
+        .reported_sessions()
+        .values()
+    {
+        for info in infos.iter().filter(|i| i.device_fp == d.device_fp) {
+            sessions.push(json!({
+                "session_id": info.session_id,
+                "session_key": "relay",
+                "ip": info.peer_ip,
+                "online_secs": 0,
+                "bytes_up": 0,
+                "bytes_down": 0,
+                "channels": 0,
+            }));
+        }
+    }
     // OpenSSH-format public key (display/copy only)
     let openssh = agile_net_core::util::base64_decode(&d.pubkey)
         .map(|raw| agile_net_core::device::openssh_line(&raw, ""))

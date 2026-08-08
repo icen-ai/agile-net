@@ -47,6 +47,27 @@ pub const DEFAULT_MAX_AUTH_FAILURES_PER_MINUTE: u32 = 20;
 /// exhaustion; the local open_channel direction is already guarded by
 /// MAX_CHANNELS_PER_SESSION — this cap covers the peer-initiated direction).
 pub const MAX_INBOUND_OPENS_PER_SESSION: usize = 256;
+/// Delegated-token tombstone lifetime (federation P2): how long after an issuer session drops
+/// the relay remembers "this token hash was registered here". Auth misses inside the window get
+/// a retryable issuer_offline instead of the terminal bad_credentials, so consumers ride out
+/// the issuer's reconnect + re-registration gap instead of parking themselves in Blocked.
+pub const DELEGATED_TOMBSTONE_TTL: Duration = Duration::from_secs(30 * 60);
+
+/// Outcome of a delegated-consumer auth attempt (unified issuance).
+// Admitted carries the full AuthIdentity by value (moved once into the session path); the unit
+// variants keep transient rejects allocation-free — boxing would only shrink a stack temporary.
+#[allow(clippy::large_enum_variant)]
+enum DelegatedAuth {
+    /// Token resolved and the concurrency policy admitted the session.
+    Admitted(AuthIdentity),
+    /// Unknown token — no registration anywhere (terminal bad_credentials).
+    Unknown,
+    /// The token was registered but its issuer session dropped within the tombstone window —
+    /// the issuer is expected back and re-registers on its fresh session (retryable).
+    IssuerOffline,
+    /// Multi-concurrency cap reached (transient — slots free up as sessions end; retryable).
+    CapReached,
+}
 
 /// Principal identity after successful auth.
 #[derive(Debug, Clone)]
@@ -369,6 +390,11 @@ pub struct RelayListener {
     /// validation — the word is issuer-self-minted and semantics-free), and die with their issuer
     /// session exactly like delegated registrations.
     entrust: Arc<DashMap<String, String>>,
+    /// Federation P2: tombstones of delegated registrations that died with their issuer session
+    /// (token_hash -> death time). Auth misses on a fresh tombstone answer the retryable
+    /// issuer_offline instead of the terminal bad_credentials. Explicit revokes leave NO
+    /// tombstone, so a revoked token keeps failing terminal.
+    delegated_tombstones: Arc<DashMap<String, Instant>>,
     /// Aggregated queryable route table (RCU hot update)
     routes: Arc<arc_swap::ArcSwap<AdvertisedRoutes>>,
     /// Online consumer sessions (session key -> session handle list, for online checks and forced
@@ -442,6 +468,7 @@ impl RelayListener {
             delegated: Arc::new(DashMap::new()),
             local_delegated: Arc::new(DashMap::new()),
             entrust: Arc::new(DashMap::new()),
+            delegated_tombstones: Arc::new(DashMap::new()),
             routes: Arc::new(arc_swap::ArcSwap::from_pointee(AdvertisedRoutes::default())),
             clients: Arc::new(DashMap::new()),
             session_meta: Arc::new(DashMap::new()),
@@ -647,8 +674,22 @@ impl RelayListener {
     /// Delegated consumer auth (unified issuance): resolve the token against the delegated
     /// registries and enforce the token's session concurrency policy — single kicks every older
     /// session of the token; multi admits while active sessions stay below `max_sessions`.
-    async fn delegated_auth(&self, auth: &AuthRequest, token_hash: &str) -> Option<AuthIdentity> {
-        let entry = self.resolve_delegated_token(token_hash)?;
+    /// A resolve miss on a fresh tombstone (issuer session just dropped) is IssuerOffline, not
+    /// Unknown: the issuer's sync task re-registers on its fresh session within seconds, and the
+    /// terminal bad_credentials would otherwise park the consumer in Blocked over a transient gap.
+    async fn delegated_auth(&self, auth: &AuthRequest, token_hash: &str) -> DelegatedAuth {
+        let Some(entry) = self.resolve_delegated_token(token_hash) else {
+            let fresh = self
+                .delegated_tombstones
+                .get(token_hash)
+                .map(|t| t.elapsed() <= DELEGATED_TOMBSTONE_TTL)
+                .unwrap_or(false);
+            return if fresh {
+                DelegatedAuth::IssuerOffline
+            } else {
+                DelegatedAuth::Unknown
+            };
+        };
         match entry.concurrency {
             Concurrency::Single => {
                 self.disconnect_delegated_token(token_hash, reason::SESSION_TAKEOVER, "")
@@ -657,11 +698,11 @@ impl RelayListener {
             Concurrency::Multi => {
                 if self.active_delegated_sessions(token_hash) >= entry.max_sessions as usize {
                     warn!(token_hash, max = entry.max_sessions, "delegated session cap reached, rejecting auth");
-                    return None;
+                    return DelegatedAuth::CapReached;
                 }
             }
         }
-        Some(AuthIdentity::Delegated(DelegatedIdentity {
+        DelegatedAuth::Admitted(AuthIdentity::Delegated(DelegatedIdentity {
             node_id: auth.node_id.clone(),
             acl: delegated_acl_of(&entry),
         }))
@@ -1229,13 +1270,20 @@ impl RelayListener {
         // node/relay tokens resolve through the injected validator hook; consumer auths
         // (kind = Client) fall through to the listener's own delegated token registries
         // (persistent local first, then session-scoped) with concurrency enforcement
-        let identity = match self.validator.validate(&auth_req) {
-            Some(identity) => Some(identity),
-            None if auth_req.kind == AuthKind::Client => self.delegated_auth(&auth_req, &token_hash).await,
-            None => None,
+        let identity: std::result::Result<AuthIdentity, &'static str> = match self.validator.validate(&auth_req) {
+            Some(identity) => Ok(identity),
+            None if auth_req.kind == AuthKind::Client => match self.delegated_auth(&auth_req, &token_hash).await {
+                DelegatedAuth::Admitted(identity) => Ok(identity),
+                DelegatedAuth::Unknown => Err(reason::BAD_CREDENTIALS),
+                // transient rejects stay retryable (the client only blocks on terminal reasons):
+                // the issuer re-registers after a flap, and multi-cap slots free up as sessions end
+                DelegatedAuth::IssuerOffline => Err(reason::ISSUER_OFFLINE),
+                DelegatedAuth::CapReached => Err(reason::SESSION_CAP),
+            },
+            None => Err(reason::BAD_CREDENTIALS),
         };
         match identity {
-            Some(identity) => {
+            Ok(identity) => {
                 self.clear_auth_failures(&peer_addr.ip());
                 let peer_version = auth_req.version;
                 // handshake v2: push the control-plane endpoint when the downstream token carries the expose flag (old downstreams ignore unknown fields)
@@ -1269,14 +1317,14 @@ impl RelayListener {
                 .await?;
                 Ok(Some((tls_stream, identity, token_hash, peer_version, device_meta)))
             }
-            None => {
-                warn!(peer = %peer_addr, node_id = %auth_req.node_id, "auth failed: bad token");
+            Err(rc) => {
+                warn!(peer = %peer_addr, node_id = %auth_req.node_id, reason = rc, "auth failed");
                 self.record_auth_failure(&peer_addr.ip());
                 // random 150-400ms delay to slow down online brute force
                 let delay_ms = 150 + rand::random::<u64>() % 250;
                 tokio::time::sleep(Duration::from_millis(delay_ms)).await;
                 let fail = FailReason {
-                    reason_code: reason::BAD_CREDENTIALS.into(),
+                    reason_code: rc.into(),
                     message: String::new(),
                 };
                 let payload = serde_json::to_vec(&fail).unwrap_or_default();
@@ -1444,9 +1492,15 @@ impl RelayListener {
                 .collect();
             for hash in dead {
                 self.delegated.remove(&hash);
+                // tombstone: consumers (re)connecting during the issuer's reconnect +
+                // re-registration gap get the retryable issuer_offline, not bad_credentials
+                self.delegated_tombstones.insert(hash.clone(), Instant::now());
                 self.disconnect_delegated_token(&hash, reason::ISSUER_OFFLINE, "")
                     .await;
             }
+            // prune expired tombstones (the table is otherwise bounded by live registrations)
+            self.delegated_tombstones
+                .retain(|_, t| t.elapsed() <= DELEGATED_TOMBSTONE_TTL);
             // entrust words die with the issuer session too (same revoke-by-disconnect contract)
             self.entrust.retain(|_, v| v != &node_id);
         }
@@ -1692,6 +1746,8 @@ impl RelayListener {
                 max_sessions,
             },
         );
+        // a live registration supersedes any tombstone left by the issuer's previous session
+        self.delegated_tombstones.remove(token_hash);
         Ok(())
     }
 
@@ -1702,6 +1758,8 @@ impl RelayListener {
         let (hash, tok) = self
             .delegated
             .remove_if(token_hash, |_, v| v.issuer == node_id)?;
+        // an explicit revoke is terminal: no tombstone, later auth misses stay bad_credentials
+        self.delegated_tombstones.remove(token_hash);
         // entrust words of this token leave the opaque registry with it
         for h in &tok.hint_map {
             if h.hint.starts_with(crate::relay::e2e::ENTRUST_PREFIX) {

@@ -100,6 +100,9 @@ pub mod reason {
     pub const SERVER_SHUTDOWN: &str = "server_shutdown";
     /// Bad credentials (unknown/expired/exhausted token)
     pub const BAD_CREDENTIALS: &str = "bad_credentials";
+    /// Multi-concurrency delegated token: session cap reached (transient — slots free up as
+    /// sessions end; clients keep retrying with backoff)
+    pub const SESSION_CAP: &str = "session_cap";
     /// Device awaiting administrator certification (pending session, appeals allowed)
     pub const PENDING_APPROVAL: &str = "pending_approval";
     /// Device proof missing/invalid (mandatory since protocol v4 device identity)

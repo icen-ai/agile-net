@@ -111,8 +111,10 @@ Length = 1 (type) + 4 (channel) + N (payload)，不含自身 4 字节。
 
 `revoked_by_admin`（管理员吊销）/ `device_revoked`（设备吊销，终态）/ `device_replaced`
 （换机迁移）/ `token_expired`（过期/用尽）/ `kicked`（管理员踢下线）/ `session_takeover`
-（single 档新会话接管）/ `issuer_offline`（签发者会话掉线）/ `server_shutdown`（服务关闭）/
-`bad_credentials`（凭据无效）/ `device_proof_invalid`（设备证明失败）/ `pending_approval`
+（single 档新会话接管）/ `issuer_offline`（签发者会话掉线；含签发端断连间隙内消费端认证失败——
+注册表墓碑窗口 `DELEGATED_TOMBSTONE_TTL` 内回此可重试码而非终态 bad_credentials，显式吊销不留墓碑）/
+`server_shutdown`（服务关闭）/ `bad_credentials`（凭据无效）/ `session_cap`（multi 档并发上限，
+可重试——会话结束即释放槽位）/ `device_proof_invalid`（设备证明失败）/ `pending_approval`
 （等待认证）。
 
 ### Ctrl 会话控制面（channel 0，JSON）

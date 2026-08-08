@@ -50,22 +50,28 @@ async fn start_listener(addr: SocketAddr) -> Arc<RelayListener> {
     listener
 }
 
-/// Consumer auth against the listener (kind = Client). Some(stream) on AuthOk — holding the
-/// stream open keeps the session online; None on AuthFail.
-async fn consumer_auth(
+/// Consumer auth against the listener (kind = Client). Ok(stream) on AuthOk — holding the
+/// stream open keeps the session online; Err(FailReason) on AuthFail.
+async fn consumer_auth_reason(
     addr: SocketAddr,
     node_id: &str,
     token: &str,
-) -> Option<tokio_rustls::client::TlsStream<TcpStream>> {
+) -> Result<tokio_rustls::client::TlsStream<TcpStream>, agile_net_core::proto::message::FailReason> {
     let tls = TlsConfigBuilder::new()
         .allow_self_signed(true)
         .build_client()
         .unwrap();
     let connector = tokio_rustls::TlsConnector::from(tls);
-    let tcp = TcpStream::connect(addr).await.ok()?;
+    let tcp = TcpStream::connect(addr).await.map_err(|_| agile_net_core::proto::message::FailReason {
+        reason_code: "connect".into(),
+        message: String::new(),
+    })?;
     let server_name =
         rustls::pki_types::ServerName::try_from("cdn.cloudflare.com".to_string()).unwrap();
-    let mut stream = connector.connect(server_name, tcp).await.ok()?;
+    let mut stream = connector.connect(server_name, tcp).await.map_err(|_| agile_net_core::proto::message::FailReason {
+        reason_code: "tls".into(),
+        message: String::new(),
+    })?;
     let mut auth = AuthRequest {
         node_id: node_id.into(),
         token: token.into(),
@@ -78,19 +84,47 @@ async fn consumer_auth(
         device_sig: String::new(),
     };
     // device proof is mandatory (handshake v4): sign the TLS-exporter challenge (throwaway identity)
-    let challenge = agile_net_core::device::session_challenge(stream.get_ref().1).ok()?;
+    let challenge = agile_net_core::device::session_challenge(stream.get_ref().1).map_err(|_| {
+        agile_net_core::proto::message::FailReason {
+            reason_code: "challenge".into(),
+            message: String::new(),
+        }
+    })?;
     auth.attach_device_proof(&challenge, &agile_net_core::device::DeviceIdentity::ephemeral());
     let payload = serde_json::to_vec(&auth).unwrap();
     Frame::new(FrameType::Auth, 0, Bytes::from(payload))
         .write_to(&mut stream)
         .await
-        .ok()?;
-    let f = Frame::read_from(&mut stream).await.ok()?;
+        .map_err(|_| agile_net_core::proto::message::FailReason {
+            reason_code: "io".into(),
+            message: String::new(),
+        })?;
+    let f = Frame::read_from(&mut stream).await.map_err(|_| {
+        agile_net_core::proto::message::FailReason {
+            reason_code: "io".into(),
+            message: String::new(),
+        }
+    })?;
     if f.frame_type == FrameType::AuthOk {
-        Some(stream)
+        Ok(stream)
     } else {
-        None
+        Err(agile_net_core::proto::message::FailReason::from_payload(&f.payload).unwrap_or(
+            agile_net_core::proto::message::FailReason {
+                reason_code: "unknown".into(),
+                message: String::new(),
+            },
+        ))
     }
+}
+
+/// Consumer auth against the listener (kind = Client). Some(stream) on AuthOk — holding the
+/// stream open keeps the session online; None on AuthFail.
+async fn consumer_auth(
+    addr: SocketAddr,
+    node_id: &str,
+    token: &str,
+) -> Option<tokio_rustls::client::TlsStream<TcpStream>> {
+    consumer_auth_reason(addr, node_id, token).await.ok()
 }
 
 /// Issuer node peer with a Ctrl-plane subscription (for token_register/revoke + ack reads).
@@ -415,4 +449,104 @@ async fn issuer_disconnect_revokes_session_registrations() {
     let _s2 = consumer_auth(addr, "consumer-b", token)
         .await
         .expect("local entry keeps auth working");
+}
+
+/// Tombstone window: when the issuer session drops (revoke-by-disconnect), consumers
+/// (re)connecting before the issuer re-registers get the RETRYABLE issuer_offline — never the
+/// terminal bad_credentials, which would park the client in Blocked over a transient gap.
+/// An explicit revoke leaves no tombstone: later auth misses stay terminal bad_credentials.
+#[tokio::test]
+async fn issuer_disconnect_tombstone_yields_retryable_reason() {
+    use agile_net_core::proto::message::reason;
+
+    let addr = get_free_addr();
+    let listener = start_listener(addr).await;
+    let (issuer, mut acks) = issuer_peer(addr, "issuer-a", "node-psk").await;
+    let token = "psk_delegated-tombstone";
+    let hash = sha256_hex(token.as_bytes());
+    let register = || CtrlMessage::TokenRegister {
+        token_hash: hash.clone(),
+        label: "tomb".into(),
+        groups: vec![],
+        hint_map: vec![HintEntry {
+            hint: format!("en_{}", &hash[..12]),
+            groups: vec![],
+        }],
+        concurrency: Concurrency::Multi,
+        max_sessions: 4,
+    };
+    send_ctrl(&issuer, &register()).await;
+    let (ok, _) = recv_ack(&mut acks).await;
+    assert!(ok);
+
+    // issuer session drops -> registration dies, tombstone marks the gap
+    issuer.shutdown();
+    drop(issuer);
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let err = consumer_auth_reason(addr, "consumer-a", token)
+        .await
+        .expect_err("registration gone: auth must fail");
+    assert_eq!(
+        err.reason_code,
+        reason::ISSUER_OFFLINE,
+        "签发端断连间隙必须回可重试的 issuer_offline 而非终态 bad_credentials"
+    );
+
+    // the issuer returns on a fresh session and re-registers: auth works again at once
+    let (issuer2, mut acks2) = issuer_peer(addr, "issuer-a", "node-psk").await;
+    send_ctrl(&issuer2, &register()).await;
+    let (ok, _) = recv_ack(&mut acks2).await;
+    assert!(ok);
+    let _s = consumer_auth(addr, "consumer-a", token)
+        .await
+        .expect("re-registered: auth works");
+
+    // explicit revoke: no tombstone — a later auth miss is the terminal bad_credentials
+    send_ctrl(
+        &issuer2,
+        &CtrlMessage::TokenRevoke {
+            token_hash: hash.clone(),
+            concurrency: Concurrency::Multi,
+            max_sessions: 4,
+            reason_code: String::new(),
+            message: String::new(),
+        },
+    )
+    .await;
+    let (ok, _) = recv_ack(&mut acks2).await;
+    assert!(ok);
+    let err = consumer_auth_reason(addr, "consumer-b", token)
+        .await
+        .expect_err("revoked: auth must fail");
+    assert_eq!(
+        err.reason_code,
+        reason::BAD_CREDENTIALS,
+        "显式吊销必须保持终态 bad_credentials"
+    );
+}
+
+/// Multi-cap rejection is transient (slots free up as sessions end): the relay answers the
+/// retryable session_cap, not the terminal bad_credentials.
+#[tokio::test]
+async fn multi_cap_reject_is_retryable_session_cap() {
+    use agile_net_core::proto::message::reason;
+
+    let addr = get_free_addr();
+    let listener = start_listener(addr).await;
+    let token = "psk_delegated-cap";
+    let hash = sha256_hex(token.as_bytes());
+    listener
+        .delegated_registry()
+        .insert(hash.clone(), delegated_entry(Concurrency::Multi, 1));
+
+    let _s_a = consumer_auth(addr, "consumer-a", token).await.expect("a online");
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    let err = consumer_auth_reason(addr, "consumer-b", token)
+        .await
+        .expect_err("cap reached: auth must fail");
+    assert_eq!(
+        err.reason_code,
+        reason::SESSION_CAP,
+        "并发上限拒开必须回可重试的 session_cap 而非终态 bad_credentials"
+    );
 }
