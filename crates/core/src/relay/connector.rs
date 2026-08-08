@@ -71,10 +71,14 @@ pub struct DelegationConfig {
     /// "active" / "pending" / "denied" -- overlaid by the serving connector from the device gate
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub device_state: String,
-    /// One-time admin notice for the calling device (reject/decision note; take-on-read at the
+    /// One-time admin notice for the calling device (reject/decision note; take-on read at the
     /// issuer, relayed here so relay-entry consumers actually receive it)
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub device_notice: String,
+    /// The issuer's own node name (from node_config.node_name) — shown by the consumer as a
+    /// "source" hint next to the link label, so the consumer knows which node a link terminates at.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub issuer_node_name: String,
 }
 
 /// One named group of the token's vocabulary (split-tier delivery).

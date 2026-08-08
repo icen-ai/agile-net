@@ -491,6 +491,10 @@ impl NodeServer {
         if let Some(g) = &device_gate_cache {
             connector_manager.delegation_engine().set_device_gate(g.clone());
         }
+        // the issuer's own node name is surfaced to consumers over the config channel (source hint)
+        if let Ok(Some(name)) = db.get_config("node_name") {
+            connector_manager.delegation_engine().set_node_name(name);
+        }
 
         // M6 cert propagation: adoption + blind-forward of inbound cert records
         {

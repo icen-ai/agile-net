@@ -311,6 +311,9 @@ pub struct DelegationEngine {
     /// the issuer sees who is connected through a relay it does not terminate locally.
     reported_sessions:
         arc_swap::ArcSwap<std::collections::HashMap<String, Vec<agile_net_core::proto::message::ConsumerSessionInfo>>>,
+    /// The issuer's own node name (node_config.node_name), surfaced to consumers over the config
+    /// channel as a "source" hint so they know which node a link terminates at.
+    node_name: arc_swap::ArcSwapOption<String>,
 }
 
 impl DelegationEngine {
@@ -350,6 +353,11 @@ impl DelegationEngine {
     /// relay-entry consumer opens (direct-entry opens are gated at the listener).
     pub fn set_device_gate(&self, gate: std::sync::Arc<super::device_gate::DeviceGateCache>) {
         self.device_gate.store(Some(gate));
+    }
+
+    /// Wire the issuer's own node name (surfaced to consumers over the config channel).
+    pub fn set_node_name(&self, name: String) {
+        self.node_name.store(Some(std::sync::Arc::new(name)));
     }
 
     /// Snapshot of relay-reported consumer sessions keyed by token_hash (federation P2 visibility).
@@ -588,6 +596,12 @@ impl agile_net_core::relay::DelegationHooks for DelegationEngine {
         let mut cfg = DelegationConfig {
             rules,
             groups: group_entries,
+            issuer_node_name: self
+                .node_name
+                .load()
+                .as_ref()
+                .map(|s| (**s).clone())
+                .unwrap_or_default(),
             ..Default::default()
         };
         if !entry.admin_scope.is_empty()

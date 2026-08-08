@@ -697,10 +697,10 @@ async function refreshAdminEntry() {
     }
   } catch (e) {}
   for (const n of nodes) {
-    // Manageable-console list shows each endpoint's OWN console name (it identifies the management
-    // target) — deliberately NOT the user alias; aliases only title my own fan-in connections
+    // Manageable-console list shows the issuer's node name (the management target identity);
+    // falls back to the link label when the config channel hasn't delivered the name yet
     if (n.admin_console && n.status === 'Connected') {
-      remotes.push({ kind: 'node', id: n.node_id, label: n.node_name, sub: n.addr });
+      remotes.push({ kind: 'node', id: n.node_id, label: n.issuer_node_name || n.node_name, sub: n.addr });
     }
     for (const m of (n.manageable || [])) {
       if (n.status === 'Connected') {
@@ -770,7 +770,7 @@ function initAdminMode() {
 /* ================= Console channel (manage this endpoint; embedded in main window) ================= */
 async function openNodeConsole(nodeId) {
   const n = (window._nodes || []).find(x => x.node_id === nodeId);
-  const label = n ? n.node_name : nodeId;
+  const label = n ? (n.issuer_node_name || n.node_name) : nodeId;
   await enterAdmin(nodeId, null, label);
 }
 
@@ -1008,6 +1008,7 @@ function renderCredList(creds, statusMap) {
     return '<div class="node-card' + (live(st) ? '' : ' down') + '"><div class="info">' +
       '<div class="name"><span class="cred-name" data-rename="' + esc(key) + '" title="' + AgI18n.t('fanin.rename') + '">' + esc(epName) + '</span> ' + badge + tierBadge + '</div>' +
       '<div class="addr mono">' + addrLine + (c.insecure ? ' · <span class="badge b-warn">insecure</span>' : '') + '</div>' +
+      (n && n.issuer_node_name ? '<div class="addr dim">来源：' + esc(n.issuer_node_name) + '</div>' : '') +
       blockLine + unreadLine + pendLine +
       '</div><div class="card-actions">' +
       '<button class="ghost small icon-btn" title="' + AgI18n.t('common.edit') + '" data-act="edit" data-key="' + esc(key) + '">' + AgIcon('pencil', 13) + '</button>' +
@@ -1022,6 +1023,7 @@ function renderCredList(creds, statusMap) {
     '<div class="node-card' + (live(n.status) ? '' : ' down') + '"><div class="info">' +
     '<div class="name">' + esc(n.node_name) + ' ' + statusBadgeHtml(n.status) + ' <span class="badge b-gray">' + AgI18n.t('views.unsaved') + '</span></div>' +
     '<div class="addr mono">' + esc(n.addr) + '</div>' +
+    (n.issuer_node_name ? '<div class="addr dim">来源：' + esc(n.issuer_node_name) + '</div>' : '') +
     (n.status === 'Blocked'
       ? '<div class="addr"><span class="badge b-off">' + esc(reasonText(n.block_reason)) + '</span>' +
         (n.block_message ? ' <span class="dim">' + esc(n.block_message) + '</span>' : '') + '</div>'
@@ -1526,6 +1528,7 @@ function dtSync() {
 async function dtOpenModal() {
   DT_STATE = { entry: 'direct', trust: 'plain', route: 'dedicated', conc: 'single' };
   $('dt-label').value = '';
+  const mn = $('dt-myname'); if (mn) mn.value = '';
   $('dt-err').textContent = '';
   $('dt-scope').value = 'ro';
   agSelectRefresh($('dt-scope'));
@@ -1564,12 +1567,14 @@ async function dtSubmit() {
     for (const id of checked) regs.push({ connector_id: id, is_primary: id === primary });
   }
   err.textContent = '';
+  const myName = ($('dt-myname') || {}).value?.trim() || '';
   const body = {
     label, group_ids: groupIds, regs,
     mode: s.route,
     admin_scope: s.trust === 'admin' ? $('dt-scope').value : '',
     entry_mode: s.entry,
     concurrency: s.conc,
+    my_name: myName,
   };
   const btn = $('dt-ok');
   btn.disabled = true;

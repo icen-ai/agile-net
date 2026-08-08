@@ -1233,8 +1233,11 @@
       </div>
     </div>
     <div class="sm-body">
-      <label data-i18n="dt.label">备注（消费者标识）</label>
+      <label><span data-i18n="deleg.linkLabel">链接名称</span> <span class="hint inline" data-i18n="deleg.labelHelp">这条委托链接的名字，消费者侧以此标识此连接</span></label>
       <input id="dt-label" maxlength="128" placeholder="例如：张三的笔记本" data-i18n-ph="dt.labelPh">
+
+      <label><span data-i18n="deleg.mynameOpt">我的名称（选填）</span> <span class="hint inline" data-i18n="deleg.mynameOptTip">预填给消费者的名称建议，留空 = 不下发</span></label>
+      <input id="dt-myname" maxlength="64" data-i18n-ph="triplet.mynameTip" placeholder="选填，自声明名称">
 
       <label data-i18n="dt.entry">入口</label>
       <div class="group-tabs" id="dt-entry" style="margin-bottom:4px">

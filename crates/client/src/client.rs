@@ -120,6 +120,10 @@ pub struct NodeState {
     /// One-time admin notice attached to the block (immutable)
     #[serde(default)]
     pub block_message: String,
+    /// The issuer's own node name (delivered over the config channel) — shown as a "source" hint
+    /// so the consumer knows which node a link terminates at, distinct from the link label.
+    #[serde(default)]
+    pub issuer_node_name: String,
 }
 
 /// Manageable node (issuer / upstream chain discovery via the delegated config channel).
@@ -601,6 +605,7 @@ impl AgileNetClient {
             device_state: tunnel.device_state().unwrap_or_default(),
             block_reason: String::new(),
             block_message: String::new(),
+            issuer_node_name: String::new(),
         };
         if state.status == NodeStatus::PendingApproval {
             self.inner.notify.load().push(
@@ -1185,6 +1190,16 @@ async fn fetch_and_apply_deleg_config(
             node_id,
         );
     }
+    // issuer node name (source hint): always refresh so the consumer's node list shows which
+    // node a link terminates at, even if the vocabulary didn't change
+    if !cfg.issuer_node_name.is_empty()
+        && let Some(mut h) = inner.nodes.get_mut(node_id)
+    {
+        if h.state.issuer_node_name != cfg.issuer_node_name {
+            h.state.issuer_node_name = cfg.issuer_node_name.clone();
+            inner.touch_state();
+        }
+    }
     // certification state overlay (M3-T2): a relay-entry pending device learns it here
     // (the config channel is the only issuer-reachable path for a gated consumer)
     if !cfg.device_state.is_empty()
@@ -1277,6 +1292,9 @@ struct DelegConfigWire {
     /// One-time admin notice attached to a non-active device state (reject note, take-on-read)
     #[serde(default)]
     device_notice: String,
+    /// The issuer's own node name (source hint shown next to the link label)
+    #[serde(default)]
+    issuer_node_name: String,
 }
 
 /// Parsed config answer with rules mapped to client rules.
@@ -1290,6 +1308,8 @@ struct DelegConfig {
     device_state: String,
     /// One-time admin notice for a non-active device state (empty = none)
     device_notice: String,
+    /// The issuer's own node name (source hint shown next to the link label)
+    issuer_node_name: String,
     /// Vocabulary signature (rules + named groups): the periodic re-pull's change guard
     sig: String,
 }
@@ -1332,6 +1352,7 @@ async fn fetch_deleg_config(opener: &Arc<DelegatedOpener>) -> Result<DelegConfig
             upstreams: wire.upstreams,
             device_state: wire.device_state,
             device_notice: wire.device_notice,
+            issuer_node_name: wire.issuer_node_name,
             sig,
         })
     };

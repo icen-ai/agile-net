@@ -851,6 +851,13 @@ function devNameHtml(fp, name) {
   if (!fp) return '<b>' + esc(name || '-') + '</b>';
   return '<b data-agid="' + esc(fp) + '" data-act="dev-open" data-fp="' + esc(fp) + '" style="cursor:pointer">' + esc(name || T('dev.unnamed')) + '</b>';
 }
+/* Device display name resolution: certified devices show the admin-assigned subject (authoritative),
+   uncertified devices fall back to the self-declared my_name; returns the resolved name string. */
+function devDisplayName(d) {
+  if (!d) return '';
+  if (d.state === 'certified' && d.subject) return d.subject;
+  return d.my_name || d.subject || '';
+}
 function fmtAgo(s) { s = Number(s) || 0; return s < 60 ? T('sess.justNow') : fmtUptime(s); }
 function sessEntryBadge(entry) {
   if (!entry) return '-';
@@ -864,7 +871,7 @@ function sessRowHtml(s, cols) {
     ? ' <span class="nb-auth" title="' + T('dev.stCertified') + '">' + ic('badge-check', 10) + '</span>'
     : '';
   const cell = {
-    who: '<div class="sess-who"><span class="sess-dot pulse"></span>' + devNameHtml(s.device_fp, s.my_name || d.subject) +
+    who: '<div class="sess-who"><span class="sess-dot pulse"></span>' + devNameHtml(s.device_fp, devDisplayName({ ...d, my_name: s.my_name || d.my_name })) +
       (s.device_fp ? '<span class="nodebadge">' + esc(fpShort) + authMark + '</span>' : '') +
       (st && st !== 'certified' ? ' ' + devStateBadge(st) : '') + '</div>',
     ip: '<div class="mono" style="color:var(--dim)">' + esc(s.ip || '-') + '</div>',
@@ -946,7 +953,7 @@ async function devCardHtml(fp) {
   catch (e) { return ''; }
   const row = (k, v) => '<div class="agidcard-r"><span class="k">' + esc(k) + '</span><span class="v">' + v + '</span></div>';
   const online = (d.sessions || []).length;
-  const html = '<div class="agidcard-h">' + esc(d.my_name || d.subject || T('dev.unnamed')) + ' ' + devStateBadge(d.state) + '</div>' +
+  const html = '<div class="agidcard-h">' + esc(devDisplayName(d) || T('dev.unnamed')) + ' ' + devStateBadge(d.state) + '</div>' +
     row(T('dev.cardFp'), agcopy(d.device_fp, (d.device_fp || '').slice(0, 16) + '…')) +
     (d.openssh ? row(T('dev.cardKey'), agcopy(d.openssh, d.openssh.slice(0, 30) + '…')) : '') +
     row(T('dev.cardSubject'), esc(d.subject || '-')) +
@@ -993,7 +1000,7 @@ function renderDeviceRows() {
   if (q) items = items.filter(d => ((d.my_name || '') + (d.subject || '') + (d.remark || '') + (d.device_fp || '')).toLowerCase().includes(q));
   // header sort (AgTbl): default stays online-first + last-seen; 状态/搜索走工具栏（不重复进表头）
   const sorted = tblApply('adm-dev', items, {
-    name: d => d.my_name || d.subject || '',
+    name: d => devDisplayName(d),
     sess: d => d.sessions || 0,
     bytes: d => (d.bytes_up || 0) + (d.bytes_down || 0),
     last: d => d.last_seen || '',
@@ -1006,9 +1013,13 @@ function renderDeviceRows() {
   if (sig === body.dataset.sig) return;
   body.dataset.sig = sig;
   body.innerHTML = items.map(d =>
-    '<tr><td><span class="dot ' + (d.online ? 'on' : 'off') + '"></span>' + devNameHtml(d.device_fp, d.my_name || d.subject) +
+    '<tr><td><span class="dot ' + (d.online ? 'on' : 'off') + '"></span>' + devNameHtml(d.device_fp, devDisplayName(d)) +
       '<div style="margin-top:2px">' + agcopy(d.device_fp, d.short_fp || (d.device_fp || '').slice(0, 12)) + '</div>' +
-      (d.subject ? '<div style="color:var(--dim2);font-size:12px">' + esc(d.subject) + (d.remark ? ' · ' + esc(d.remark) : '') + '</div>' : (d.remark ? '<div style="color:var(--dim2);font-size:12px">' + esc(d.remark) + '</div>' : '')) + '</td>' +
+      // subtitle: certified → the self-declared name + remark (subject already in the bold line);
+      //          uncertified → the admin capsule (subject · remark) when present
+      (d.state === 'certified'
+        ? (d.my_name || d.remark ? '<div style="color:var(--dim2);font-size:12px">' + [d.my_name, d.remark].filter(Boolean).map(esc).join(' · ') + '</div>' : '')
+        : (d.subject ? '<div style="color:var(--dim2);font-size:12px">' + esc(d.subject) + (d.remark ? ' · ' + esc(d.remark) : '') + '</div>' : (d.remark ? '<div style="color:var(--dim2);font-size:12px">' + esc(d.remark) + '</div>' : ''))) + '</td>' +
     '<td>' + devStateBadge(d.state) + '</td>' +
     '<td>' + T('adm.countN', { n: d.sessions || 0 }) + '</td>' +
     '<td class="mono" style="color:var(--dim)">↑ ' + fmtBytes(d.bytes_up) + ' ↓ ' + fmtBytes(d.bytes_down) + '</td>' +
@@ -1063,7 +1074,7 @@ async function loadDeviceDetail() {
     (d.state !== 'revoked' ? '<button class="danger" data-act="dev-revoke" data-fp="' + esc(d.device_fp) + '">' + ic('ban', 14) + T('adm.revoke') + '</button>' : '');
   hero.innerHTML =
     '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px">' +
-      '<b style="font-size:16px">' + esc(d.my_name || d.subject || T('dev.unnamed')) + '</b>' + devStateBadge(d.state) +
+      '<b style="font-size:16px">' + esc(devDisplayName(d) || T('dev.unnamed')) + '</b>' + devStateBadge(d.state) +
       (online ? '<span class="badge b-ok">' + T('dev.onlineN', { n: online }) + '</span>' : '<span class="badge b-info">' + T('dev.offline') + '</span>') +
       '<div class="spacer" style="flex:1"></div>' + acts + '</div>' +
     '<div class="kv"><span class="k">' + T('dev.heroSubject') + '</span><span>' + esc(d.subject || '-') + (d.remark ? ' <span style="color:var(--dim2)">' + esc(d.remark) + '</span>' : '') + '</span></div>' +
@@ -1225,10 +1236,10 @@ async function openRebind(oldFp) {
   if (!pend.length) { toast(T('dev.rebindEmpty'), 'err'); return; }
   const old = DEV_MAP[oldFp] || {};
   openModal(T('dev.rebindTitle'),
-    '<p style="color:var(--dim)">' + T('dev.rebindHint', { name: old.my_name || old.subject || (oldFp || '').slice(0, 12) }) + '</p>' +
+    '<p style="color:var(--dim)">' + T('dev.rebindHint', { name: devDisplayName(old) || (oldFp || '').slice(0, 12) }) + '</p>' +
     '<div class="rule-check" style="max-height:180px">' + pend.map((p, i) =>
       '<label><input type="radio" name="rebind-new" value="' + esc(p.device_fp) + '"' + (i === 0 ? ' checked' : '') + '>' +
-      '<span><b>' + esc(p.my_name || p.subject || T('dev.unnamed')) + '</b> <span class="mono" style="color:var(--dim2)">' + esc(p.short_fp || '') + '</span></span>' +
+      '<span><b>' + esc(devDisplayName(p) || T('dev.unnamed')) + '</b> <span class="mono" style="color:var(--dim2)">' + esc(p.short_fp || '') + '</span></span>' +
       '<span style="color:var(--dim)">' + esc((p.first_seen || '').replace('T', ' ').replace('Z', '')) + '</span></label>').join('') + '</div>' +
     '<label>' + T('sess.kickMsg') + '</label><input id="rebind-msg" style="width:100%" placeholder="' + T('sess.kickMsgPh') + '">',
     [
@@ -2505,8 +2516,12 @@ async function openIssueDelegation() {
       { v: 'single', label: T('deleg.concSingle') },
       { v: 'multi', label: T('deleg.concMulti') + ' ≤' + maxSessions },
     ], 'single') +
-    // M3-T6 naming triplet: target name = the token's local label; my name prefills the link's myname word
-    nameTriplet('di', {}, { remark: false }) +
+    // naming: link name (the token label = the connection identity for the consumer) +
+    // optional my-name suggestion (prefilled into the link's myname word; blank = not sent)
+    '<label>' + T('deleg.linkLabel') + ' ' + ahelp(T('deleg.labelHelp')) + '</label>' +
+    '<input id="di-target" style="width:100%" placeholder="' + esc(T('deleg.labelPh')) + '">' +
+    '<label style="margin-top:8px">' + T('deleg.mynameOpt') + ' ' + ahelp(T('deleg.mynameOptTip')) + '</label>' +
+    '<input id="di-myname" style="width:100%" maxlength="64" placeholder="' + esc(T('triplet.mynameTip')) + '">' +
     lifecycleFieldsHtml('di', '', ''),
     [
       {label: T('common.cancel'), kind: 'ghost', fn: closeModal},
