@@ -287,7 +287,8 @@ impl agile_net_core::tunnel::opener::ChannelOpener for ServerUpstreamOpener {
 }
 
 /// Console loopback forwarder: local loopback port → opener channel → target API.
-/// Deduped by key (node_id / node_id|upstream / local|upstream); the caller cleans up and rebuilds after reconnect.
+/// Deduped by key (node_id / node_id|upstream / local|upstream); removal goes through
+/// drop_console_forwarders (disconnect / server-role stop), which aborts the accept task.
 pub(crate) async fn ensure_console_forwarder(
     state: &State<'_, AppState>,
     key: &str,
@@ -296,22 +297,22 @@ pub(crate) async fn ensure_console_forwarder(
     target_port: u16,
 ) -> Result<u16, String> {
     let mut map = state.consoles.lock().await;
-    if let Some(p) = map.get(key) {
-        return Ok(*p);
+    if let Some(f) = map.get(key) {
+        return Ok(f.port);
     }
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .map_err(map_err)?;
     let port = listener.local_addr().map_err(map_err)?.port();
     let target_host = target_host.to_string();
-    tauri::async_runtime::spawn(async move {
+    let task = tokio::spawn(async move {
         loop {
             let Ok((stream, _)) = listener.accept().await else {
                 break;
             };
             let opener = opener.clone();
             let target_host = target_host.clone();
-            tauri::async_runtime::spawn(async move {
+            tokio::spawn(async move {
                 match opener.open("", &target_host, target_port).await {
                     Ok(ch) => {
                         let _ = agile_net_core::relay::bridge::bridge(stream, ch).await;
@@ -323,8 +324,30 @@ pub(crate) async fn ensure_console_forwarder(
             });
         }
     });
-    map.insert(key.to_string(), port);
+    map.insert(
+        key.to_string(),
+        crate::ConsoleForwarder {
+            port,
+            abort: task.abort_handle(),
+        },
+    );
     Ok(port)
+}
+
+/// Abort + remove every console forwarder whose key matches `pred`. Aborting the accept task
+/// drops the listener (frees the loopback port) and releases the opener Arc; already-bridged
+/// connections are independent tasks and drain on their own.
+pub(crate) async fn drop_console_forwarders(
+    state: &State<'_, AppState>,
+    pred: impl Fn(&str) -> bool,
+) {
+    let mut map = state.consoles.lock().await;
+    let keys: Vec<String> = map.keys().filter(|k| pred(k)).cloned().collect();
+    for k in keys {
+        if let Some(f) = map.remove(&k) {
+            f.abort.abort();
+        }
+    }
 }
 
 // ==================== Fan-out connection management (DB is the single source of truth; hot-apply via ConnectorManager at runtime, no restart) ====================

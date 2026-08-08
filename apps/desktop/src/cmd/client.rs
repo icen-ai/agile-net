@@ -104,10 +104,10 @@ pub(crate) async fn connect_node(state: State<'_, AppState>, input: ConnectInput
 #[tauri::command]
 pub(crate) async fn disconnect_node(state: State<'_, AppState>, node_id: String) -> Result<(), String> {
     state.client.disconnect(&node_id).await;
-    let mut map = state.consoles.lock().await;
-    map.remove(&node_id);
+    // kill this node's console forwarders outright (abort the accept task, don't just forget
+    // the port — a detached listener task would leak the port and pin the opener's token)
     let prefix = format!("{node_id}|");
-    map.retain(|k, _| !k.starts_with(&prefix));
+    super::misc::drop_console_forwarders(&state, |k| k == node_id || k.starts_with(&prefix)).await;
     Ok(())
 }
 

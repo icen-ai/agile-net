@@ -78,6 +78,9 @@ pub(crate) async fn emit_settings(app: &tauri::AppHandle, state: &State<'_, AppS
 pub(crate) async fn set_client_role(app: tauri::AppHandle, state: State<'_, AppState>, enabled: bool) -> Result<(), String> {
     if !enabled {
         state.client.disconnect_all().await;
+        // every node-scoped console forwarder dies with the client role (local|<upstream>
+        // forwarders belong to the server role and are unaffected)
+        super::misc::drop_console_forwarders(&state, |k| !k.starts_with("local|")).await;
         // Stop through the shared inner so a managed system proxy (preference on / locked) is
         // restored too — it must never keep pointing at the now-dead port
         super::proxy::stop_proxy_inner(&app, &state).await?;
@@ -208,6 +211,8 @@ pub(crate) async fn set_server_role(state: State<'_, AppState>, enabled: bool) -
         if let Some(s) = server {
             s.stop().await;
         }
+        // server-role upstream consoles (local|<upstream> forwarders) die with the server role
+        super::misc::drop_console_forwarders(&state, |k| k.starts_with("local|")).await;
     }
     {
         let mut roles = state.roles.lock().await;

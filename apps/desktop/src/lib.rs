@@ -64,14 +64,23 @@ pub(crate) use cmd::*;
 /// Connect parameters from the frontend (shares agile-net-client::ParsedConnect with Web REST)
 pub type ConnectInput = ParsedConnect;
 
+/// Console loopback forwarder handle. The abort handle is NOT optional bookkeeping: removing
+/// the map entry without aborting leaks the accept-loop task forever (the listener it owns is
+/// never dropped), pins the opener Arc (which holds the delegated token plaintext), and orphans
+/// the old origin's stored console session when a re-open binds a fresh port.
+pub(crate) struct ConsoleForwarder {
+    pub(crate) port: u16,
+    pub(crate) abort: tokio::task::AbortHandle,
+}
+
 pub struct AppState {
     pub(crate) client: AgileNetClient,
     pub(crate) creds: Arc<Option<Arc<CredentialStore>>>,
     pub(crate) web_api: Arc<tokio::sync::Mutex<Option<agile_net_client::api::ClientApiHandle>>>,
     pub(crate) roles: Arc<tokio::sync::Mutex<RoleSettings>>,
     pub(crate) server: Arc<tokio::sync::Mutex<Option<NodeServer>>>,
-    /// Console loopback forwarders: node_id → local loopback port
-    pub(crate) consoles: Arc<tokio::sync::Mutex<std::collections::HashMap<String, u16>>>,
+    /// Console loopback forwarders: key (node_id|… / local|<upstream>) → forwarder handle
+    pub(crate) consoles: Arc<tokio::sync::Mutex<std::collections::HashMap<String, ConsoleForwarder>>>,
     /// Subscription kernel (mihomo sidecar)
     pub(crate) kernel: Arc<subscription::KernelManager>,
     /// Artifact download manager (mihomo kernel / wintun.dll; progress state machine + manual install)

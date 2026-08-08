@@ -199,6 +199,7 @@ function tblAttach(tbodyId, opts) {
 const S = {
   access: localStorage.getItem('ag_access') || '',
   refresh: localStorage.getItem('ag_refresh') || '',
+  bootTicket: '',       // ticket consoles only: the #boot ticket, kept for silent re-bootstrap
   view: 'dashboard',
   page: { groups: 1, rules: 1, audit: 1 },
   size: { groups: 10, rules: 10, audit: 15 },
@@ -272,9 +273,31 @@ async function refreshSession() {
   localStorage.setItem('ag_access', S.access);
   return true;
 }
+/* Ticket-console self-heal: a ticket-booted console has no usable credential form, so a dead
+   session (refresh token lost/raced) must NOT be a dead end. The boot ticket is redeemable
+   again within its TTL/max_uses (100 uses, minted fresh on every console open) — re-bootstrap
+   silently before giving up. False = caller falls back to the boot dead-end view. */
+async function rebootTicket() {
+  if (!S.bootTicket) return false;
+  try {
+    const res = await fetch('/api/v1/auth/admin-bootstrap', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ticket: S.bootTicket })
+    });
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok || j.code !== 0 || !j.data) return false;
+    S.access = j.data.access_token; S.refresh = j.data.refresh_token || '';
+    localStorage.setItem('ag_access', S.access);
+    localStorage.setItem('ag_refresh', S.refresh);
+    return true;
+  } catch(e) { return false; }
+}
 async function api(method, path, body, retried) {
   let res = await apiRaw(method, path, body);
   if (res.status === 401 && !retried && await refreshSession()) {
+    res = await apiRaw(method, path, body);
+  }
+  if (res.status === 401 && !retried && await rebootTicket()) {
     res = await apiRaw(method, path, body);
   }
   if (res.status === 401) { doLogout(); throw new Error(T('adm.sessionExpired')); }
@@ -604,7 +627,15 @@ async function doLogin() {
   } catch(e) { $('login-err').textContent = T('login.netError'); }
 }
 async function doLogout() {
-  try { await api('POST', '/api/v1/auth/logout', { refresh_token: S.refresh }); } catch(e) {}
+  // raw fetch, NOT api(): a 401 here must not re-enter doLogout via api()'s recovery path
+  // (dead-session logout would otherwise loop forever); revocation is best-effort anyway
+  try {
+    await fetch('/api/v1/auth/logout', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + S.access },
+      body: JSON.stringify({ refresh_token: S.refresh })
+    });
+  } catch(e) {}
   S.access = ''; S.refresh = '';
   localStorage.removeItem('ag_access');
   localStorage.removeItem('ag_refresh');
@@ -612,6 +643,17 @@ async function doLogout() {
   S.timers.forEach(clearInterval); S.timers = [];
   if (S.apprTimer) { clearInterval(S.apprTimer); S.apprTimer = null; }
   $('app').style.display = 'none';
+  if (S.bootTicket) {
+    // ticket console: the credential form cannot log in here — land on the boot dead-end view
+    // (retry re-bootstraps with the same ticket; beyond its TTL the hint says reopen from client)
+    $('boot-view').style.display = 'flex';
+    $('boot-spin').style.display = 'none';
+    $('boot-msg').textContent = T('adm.bootInvalid');
+    $('boot-hint').style.display = '';
+    $('boot-hint').textContent = T('adm.bootInvalidHint');
+    $('boot-retry').style.display = '';
+    return;
+  }
   $('login-view').style.display = 'flex';
 }
 
@@ -3068,6 +3110,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   if (boot) {
     history.replaceState(null, '', location.pathname);
     const ticket = boot[1];
+    S.bootTicket = ticket; // kept for silent re-bootstrap on later session death (rebootTicket)
     const hadSession = !!S.access; // same forwarder origin keeps the previous session — no splash then
     const showBoot = (msgKey, hintKey, canRetry) => {
       $('login-view').style.display = 'none';
