@@ -641,7 +641,7 @@ async function renderTopo() {
       '<label style="display:block;margin-top:8px">' + T('topo.trustList') + '</label>' +
       '<textarea id="topo-trust" rows="3" style="width:100%" placeholder="' + T('topo.trustPh') + '"></textarea>' +
       '<div style="margin-top:8px"><button id="topo-save">' + T('common.save') + '</button></div></div>' +
-    '<div class="card"><h3>' + T('topo.adoptedTitle') + '</h3><div class="table-wrap"><table><thead><tr><th>' + T('dev.colDevice') + '</th><th>' + T('topo.colHolder') + '</th><th>' + T('topo.colOrigin') + '</th><th>' + T('common.status') + '</th></tr></thead><tbody id="topo-adopted"></tbody></table></div></div>' +
+    '<div class="card"><h3>' + T('topo.adoptedTitle') + ' ' + ahelp(T('topo.adoptedHint')) + '</h3><div class="table-wrap"><table><thead><tr><th>' + T('dev.colDevice') + '</th><th>' + T('topo.colHolder') + '</th><th>' + T('topo.colOrigin') + '</th><th>' + T('common.status') + '</th></tr></thead><tbody id="topo-adopted"></tbody></table></div></div>' +
     '<div class="card"><h3>' + T('topo.receiptsTitle') + ahelp(T('topo.receiptsHelp')) + '</h3><div class="table-wrap"><table><thead><tr><th>' + T('topo.colArtifact') + '</th><th>' + T('topo.colHolder') + '</th><th>' + T('topo.colVis') + '</th><th>' + T('common.status') + '</th><th>' + T('common.createdAt') + '</th></tr></thead><tbody id="topo-receipts"></tbody></table></div></div>';
   $('topo-save').onclick = saveTopoSettings;
   $('topo-in').onchange = () => {};
@@ -1319,7 +1319,7 @@ async function renderApprovals() {
   S.timers.push(setInterval(loadApprovals, 12000));
 }
 function apprTypeBadge(t) {
-  const m = ({ device_certify: 'appr.typeCertify', device_rebind: 'appr.typeRebind' })[t];
+  const m = ({ device_certify: 'appr.typeCertify', device_rebind: 'appr.typeRebind', ref_cert_adopt: 'appr.typeRefAdopt', topo_approve: 'appr.typeTopo' })[t];
   return '<span class="badge b-info">' + (m ? T(m) : esc(t)) + '</span>';
 }
 function apprStateBadge(st) {
@@ -1757,7 +1757,6 @@ async function renderRules() {
         '<option value="host" ' + (S.filter.rulesType==='host'?'selected':'') + '>host</option>' +
       '</select>' +
       '<div class="spacer"></div>' +
-      '<button class="ghost" id="rule-adopt">' + ic('download', 15) + T('groups.adopt') + '</button>' +
       '<button class="ghost" id="rule-batch">' + T('rules.batch') + '</button>' +
       '<button id="rule-create">' + ic('plus', 15) + T('rules.create') + '</button>' +
     '</div>' +
@@ -1766,7 +1765,6 @@ async function renderRules() {
   $('rule-q').oninput = (e) => { S.filter.rules = e.target.value; S.page.rules = 1; renderRules(); };
   $('rule-type').onchange = (e) => { S.filter.rulesType = e.target.value; S.page.rules = 1; renderRules(); };
   $('rule-batch').onclick = openBatchImport;
-  $('rule-adopt').onclick = openAdoptCenter;
   $('rule-create').onclick = openCreateRule;
   await loadRules();
 }
@@ -1898,7 +1896,7 @@ async function renderFanIn() {
       '<div class="agtabs-pill">' +
         '<button class="agtab' + (tab === 'listen' ? ' active' : '') + '" data-agtab="listen">' + T('adm.tabListen') + '</button>' +
         '<button class="agtab' + (tab === 'peers' ? ' active' : '') + '" data-agtab="peers">' + T('adm.tabConns') + '</button>' +
-        '<button class="agtab' + (tab === 'tokens' ? ' active' : '') + '" data-agtab="tokens">' + T('adm.tabIssue') + '</button>' +
+        '<button class="agtab' + (tab === 'tokens' ? ' active' : '') + '" data-agtab="tokens">' + T('adm.tabTokens') + '</button>' +
       '</div>' +
       '<div class="agtabs-tools"><input id="fanin-q" style="width:230px" placeholder="' + T('fanin.admSearchPh') + '" value="' + esc(S.faninQuery) + '"' + (tab === 'listen' ? ' hidden' : '') + '></div>' +
     '</div>' +
@@ -2224,7 +2222,7 @@ async function renderConnectors() {
   $('view').innerHTML = '<div class="page-title">' + ic('git-fork', 20) + T('term.fanout') + '</div><div class="page-desc">' + T('fanout.admDesc') + '</div>' +
     '<div class="agtabs" id="fanout-tabs">' +
       '<div class="agtabs-pill">' +
-        '<button class="agtab' + (tab === 'watch' ? ' active' : '') + '" data-agtab="watch">' + T('adm.tabListen') + '</button>' +
+        '<button class="agtab' + (tab === 'watch' ? ' active' : '') + '" data-agtab="watch">' + T('adm.tabWatch') + '</button>' +
         '<button class="agtab' + (tab === 'conns' ? ' active' : '') + '" data-agtab="conns">' + T('adm.tabConns') + '</button>' +
         '<button class="agtab' + (tab === 'issue' ? ' active' : '') + '" data-agtab="issue">' + T('adm.tabIssue') + '</button>' +
       '</div>' +
@@ -2233,7 +2231,7 @@ async function renderConnectors() {
     '<div data-agpanel="watch" hidden><div class="card"><h3>' + T('deleg.watchTitle') + ahelp(T('deleg.watchHelp')) + '</h3>' +
       '<div class="table-wrap"><table><thead><tr><th>' + T('deleg.colLabel') + '</th><th>' + T('deleg.colEntry') + '</th><th>' + T('deleg.colSet') + '</th><th>' + T('deleg.colConcurrency') + '</th><th>' + T('deleg.colActivity') + '</th><th>' + T('common.createdAt') + '</th><th></th></tr></thead><tbody id="watch-body"></tbody></table></div></div></div>' +
     '<div data-agpanel="conns" hidden>' +
-      '<div class="toolbar"><div class="spacer"></div><button class="ghost" id="conn-adopt">' + ic('download', 15) + T('groups.adopt') + '</button><button class="ghost" id="conn-import">' + ic('upload', 15) + T('anet.importBtn') + '</button><button id="conn-create">' + ic('plus', 15) + T('fanout.create') + '</button></div>' +
+      '<div class="toolbar"><div class="spacer"></div><button class="ghost" id="conn-import">' + ic('upload', 15) + T('anet.importBtn') + '</button><button id="conn-create">' + ic('plus', 15) + T('fanout.create') + '</button></div>' +
       '<input type="file" id="conn-import-file" accept=".anet,application/json" style="display:none">' +
       // M3-T1: relay transit block — consumer sessions relayed by THIS machine as a rendezvous
       // (entry=relay; a per-connector mapping does not exist by design, one shared block instead)
@@ -2245,7 +2243,6 @@ async function renderConnectors() {
       '<div class="card table-wrap"><table><thead><tr><th>' + T('deleg.colLabel') + '</th><th>' + T('deleg.colGroups') + '</th><th>' + T('common.createdAt') + '</th><th>' + T('common.action') + '</th></tr></thead><tbody id="deleg-body"></tbody></table></div>' +
     '</div>';
   agTabsBind($('fanout-tabs'), (k) => { S.fanoutTab = k; });
-  $('conn-adopt').onclick = openAdoptCenter;
   $('conn-create').onclick = () => openCreateConnector();
   // .anet import: native open dialog via the desktop bridge when embedded, file picker otherwise
   $('conn-import').onclick = () => {

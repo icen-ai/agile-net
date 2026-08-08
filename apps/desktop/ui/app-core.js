@@ -104,7 +104,20 @@ AgI18n.onChange(() => {
   document.querySelectorAll('select[data-agsel]').forEach(agSelectRefresh);
 });
 function applyTheme() {
-  document.documentElement.dataset.theme = localStorage.getItem('ag_theme') || 'light';
+  const theme = localStorage.getItem('ag_theme') || 'light';
+  document.documentElement.dataset.theme = theme;
+  // update the titlebar toggle icon (moon = "switch to dark", sun = "switch to light")
+  const btn = document.getElementById('btn-theme');
+  if (btn) {
+    const ic = btn.querySelector('i, svg');
+    if (ic) {
+      const newIcon = document.createElement('i');
+      newIcon.setAttribute('data-ic', theme === 'dark' ? 'sun' : 'moon');
+      newIcon.setAttribute('data-sz', '16');
+      ic.replaceWith(newIcon);
+      if (window.AgIconHydrate) AgIconHydrate(btn);
+    }
+  }
 }
 /* Performance mode (reduced effects): toggle html.no-blur to disable glass blur & animations (fallback rules in components.css/style.css).
    localStorage cache applied first to avoid first-frame wait; initRoles corrects after reading get_role_settings().reduce_effects. */

@@ -54,6 +54,7 @@
     <button id="btn-admin" class="tb-icon disabled" title="管理端点" data-i18n-title="menu.admin"><i data-ic="fingerprint" data-sz="16"></i></button>
     <button id="btn-agent" class="tb-icon" title="网络助手" data-i18n-title="agent.title"><i data-ic="sparkles" data-sz="16"></i></button>
     <button id="btn-notify" class="tb-icon" title="通知" data-i18n-title="menu.notify"><i data-ic="bell" data-sz="16"></i><span class="tb-badge" id="notify-badge" hidden></span></button>
+    <button id="btn-theme" class="tb-icon" title="切换主题" data-i18n-title="menu.theme"><i data-ic="moon" data-sz="16"></i></button>
     <span class="tb-spacer"></span>
   </div>
   <!-- Admin console entry (local server always first, rest sorted by name; icon grayed when no manageable endpoints) -->
@@ -90,7 +91,7 @@
       <div class="nav-item" data-view="routes"><i data-ic="route"></i><span class="nav-label" data-i18n="term.rule">规则</span></div>
       <div class="nav-sep"></div>
       <div class="nav-item sub-feature" data-view="subscription" style="display:none"><i data-ic="satellite"></i><span class="nav-label" data-i18n="term.subscription">订阅</span></div>
-      <div class="nav-item sub-feature" data-view="proxy" style="display:none"><i data-ic="earth"></i><span class="nav-label" data-i18n="term.node">节点</span></div>
+      <div class="nav-item sub-feature" data-view="proxy" style="display:none"><i data-ic="earth"></i><span class="nav-label" data-i18n="term.proxyNode">代理节点</span></div>
       <div class="nav-sep"></div>
       <div class="nav-item" data-view="logs"><i data-ic="scroll-text"></i><span class="nav-label" data-i18n="term.logs">日志</span></div>
       <div class="nav-item" data-view="notify"><i data-ic="bell"></i><span class="nav-label" data-i18n="menu.notify">通知</span><span class="nav-badge" id="nav-notify-badge" hidden></span></div>
@@ -507,7 +508,7 @@
 
     <!-- Proxy: node groups of active subscription and switching (toolbar: group tabs + sort toggle + group latency test; 「全部测速」 at title row right) -->
     <section class="view" id="view-proxy" hidden>
-      <div class="page-title"><i data-ic="earth" data-sz="19"></i><span data-i18n="term.node">节点</span>
+      <div class="page-title"><i data-ic="earth" data-sz="19"></i><span data-i18n="term.proxyNode">代理节点</span>
         <span class="h3-tools"><button class="ghost small" id="btn-test-all"><i data-ic="gauge" data-sz="14"></i><span data-i18n="proxy.testAll">全部测速</span></button></span>
       </div>
       <div class="page-desc" id="proxy-sub-desc">激活订阅的节点列表；点击卡片切换，按组批量测速后自动推荐最快节点</div>
@@ -898,6 +899,7 @@
     <i data-ic="sparkles" data-sz="15"></i><span class="ag-title" data-i18n="agent.title">网络助手</span>
     <span class="pill pill-dim" id="ag-model"></span>
     <span class="ag-head-tools">
+      <button class="ghost small icon-btn" id="ag-config-btn" data-i18n-title="agent.config" title="配置"><i data-ic="settings" data-sz="14"></i></button>
       <button class="ghost small icon-btn" id="ag-skills-btn" data-i18n-title="agent.skills" title="技能"><i data-ic="layers" data-sz="14"></i></button>
       <button class="ghost small icon-btn" id="ag-clear" data-i18n-title="agent.clear" title="清空对话"><i data-ic="trash-2" data-sz="14"></i></button>
       <button class="ghost small icon-btn" id="ag-close" data-i18n-title="agent.close" title="关闭"><i data-ic="x" data-sz="14"></i></button>

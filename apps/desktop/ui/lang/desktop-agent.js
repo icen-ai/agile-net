@@ -23,6 +23,7 @@ AgI18n.register({
   'agent.toolDenied': { zh: '已拒绝', en: 'Denied' },
   'agent.toolFailed': { zh: '失败', en: 'Failed' },
   'agent.skills': { zh: '技能', en: 'Skills' },
+  'agent.config': { zh: '配置', en: 'Configure' },
   'agent.skillsTitle': { zh: '场景技能', en: 'Playbooks' },
   'agent.skillBuiltin': { zh: '内置', en: 'Built-in' },
   'agent.skillNamePh': { zh: '技能名称', en: 'Skill name' },

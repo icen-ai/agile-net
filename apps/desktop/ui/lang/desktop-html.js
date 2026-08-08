@@ -21,6 +21,7 @@ AgI18n.register({
   'menu.update': { zh: '检查更新', en: 'Check for Updates' },
   'menu.about': { zh: '关于', en: 'About' },
   'menu.notify': { zh: '通知', en: 'Notifications' },
+  'menu.theme': { zh: '切换主题', en: 'Toggle Theme' },
   'menu.min': { zh: '最小化', en: 'Minimize' },
   'menu.max': { zh: '最大化 / 还原', en: 'Maximize / Restore' },
   'menu.closeWin': { zh: '关闭（最小化到托盘）', en: 'Close (Minimize to Tray)' },

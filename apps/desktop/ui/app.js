@@ -65,6 +65,19 @@ function initTitlebarExtra() {
   document.addEventListener('click', (e) => {
     if (!e.target.closest('#more-menu') && !e.target.closest('#btn-more')) menu.style.display = 'none';
   });
+  // Quick theme toggle in the titlebar (mirrors the settings select)
+  $('btn-theme').onclick = () => {
+    const cur = localStorage.getItem('ag_theme') || 'light';
+    const next = cur === 'light' ? 'dark' : 'light';
+    localStorage.setItem('ag_theme', next);
+    applyTheme();
+    invoke('broadcast_theme', { theme: next }).catch(() => {});
+    const s = $('s-theme'); if (s) { s.value = next; agSelectRefresh(s); }
+    if (ADMIN) {
+      const f = $('admin-frame');
+      if (f && f.contentWindow) f.contentWindow.postMessage({ type: 'ag-theme', theme: next }, ADMIN.origin);
+    }
+  };
   // Menu and about-modal actions
   document.addEventListener('click', (e) => {
     const btn = e.target.closest('[data-more]');

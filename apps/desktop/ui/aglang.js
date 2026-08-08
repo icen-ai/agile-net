@@ -72,6 +72,7 @@ AgI18n.register({
   'term.fanout': { zh: '扇出', en: 'Fan-out' },
   'term.fanin': { zh: '扇入', en: 'Fan-in' },
   'term.node': { zh: '节点', en: 'Node' },
+  'term.proxyNode': { zh: '代理节点', en: 'Proxy Node' },
   'term.rule': { zh: '规则', en: 'Rule' },
   'term.group': { zh: '权限组', en: 'Group' },
   'term.account': { zh: '账号', en: 'Account' },

@@ -333,6 +333,14 @@ function initAgent() {
       tg.classList.toggle('open');
     }
   });
+  // config: jump to settings → AI assistant card
+  $('ag-config-btn').onclick = () => {
+    const drawer = $('agent-drawer');
+    if (drawer) drawer.classList.remove('open');
+    if (typeof switchView === 'function') switchView('settings');
+    const card = $('agent-card');
+    if (card) { card.scrollIntoView({ behavior: 'smooth', block: 'center' }); card.style.transition = 'box-shadow .4s'; card.style.boxShadow = '0 0 0 2px var(--accent)'; setTimeout(() => { card.style.boxShadow = ''; }, 1200); }
+  };
   // skills popover
   $('ag-skills-btn').onclick = () => {
     const pop = $('ag-skills-pop');
