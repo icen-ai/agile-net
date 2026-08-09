@@ -181,7 +181,7 @@ pub(crate) async fn set_active_subscription(
     let sub = subscription::set_active_subscription(&id)?;
     if state.roles.lock().await.subscription {
         state.kernel.stop().await;
-        state.kernel.start(super::roles::tun_relay_hosts(&state).await).await?;
+        state.kernel.start(super::roles::tun_extras(&state).await).await?;
         apply_proxy_fallback(&state).await;
     }
     Ok(sub)
@@ -197,7 +197,7 @@ pub(crate) async fn add_subscription(
     let sub = subscription::add_subscription(&name, &url).await?;
     if state.roles.lock().await.subscription && sub.active {
         state.kernel.stop().await;
-        if let Err(e) = state.kernel.start(super::roles::tun_relay_hosts(&state).await).await {
+        if let Err(e) = state.kernel.start(super::roles::tun_extras(&state).await).await {
             return Err(format!("订阅已保存，但内核重启失败: {e}"));
         }
         apply_proxy_fallback(&state).await;
@@ -236,7 +236,7 @@ pub(crate) async fn import_local_subscription(
     let sub = subscription::add_local_subscription(&name, &body)?;
     if state.roles.lock().await.subscription && sub.active {
         state.kernel.stop().await;
-        if let Err(e) = state.kernel.start(super::roles::tun_relay_hosts(&state).await).await {
+        if let Err(e) = state.kernel.start(super::roles::tun_extras(&state).await).await {
             return Err(format!("订阅已导入，但内核重启失败: {e}"));
         }
         apply_proxy_fallback(&state).await;
@@ -252,7 +252,7 @@ pub(crate) async fn remove_subscription(state: State<'_, AppState>, id: String) 
     if state.roles.lock().await.subscription {
         state.kernel.stop().await;
         if !subscription::list_subscriptions().is_empty() || state.roles.lock().await.tun_mode {
-            state.kernel.start(super::roles::tun_relay_hosts(&state).await).await?;
+            state.kernel.start(super::roles::tun_extras(&state).await).await?;
         }
         apply_proxy_fallback(&state).await;
     }
@@ -401,11 +401,9 @@ pub(crate) async fn sub_add_rule_for_host(
     host: String,
     target: String,
 ) -> Result<(), String> {
-    let via_subscription = match target.as_str() {
-        "direct" => false,
-        "subscription" => true,
-        _ => return Err("target 参数须为 direct（直连放行）或 subscription（经订阅出口）".into()),
-    };
+    if !custom_rules::valid_target(&target) {
+        return Err("target 参数非法（应为 direct|subscription|sysproxy|tun）".into());
+    }
     let host = custom_rules::normalize_host(&host)?;
     // Idempotent: an existing rule with the same pattern counts as success (does not change the existing rule's egress)
     let exists = custom_rules::snapshot()
@@ -415,7 +413,7 @@ pub(crate) async fn sub_add_rule_for_host(
     if exists {
         return Ok(());
     }
-    custom_rules::add_bypass(&state.client, &host, via_subscription)?;
+    custom_rules::add_bypass(&state.client, &host, &target)?;
     roles::audit(
         "gui.sub_rule_for_host",
         serde_json::json!({"host": host, "target": target}),
@@ -429,7 +427,7 @@ pub(crate) async fn sub_add_rule_for_host(
 pub(crate) async fn reload_kernel_if_running(state: &State<'_, AppState>) -> Result<(), String> {
     if state.roles.lock().await.subscription {
         state.kernel.stop().await;
-        state.kernel.start(super::roles::tun_relay_hosts(state).await).await?;
+        state.kernel.start(super::roles::tun_extras(state).await).await?;
         apply_proxy_fallback(state).await;
     }
     Ok(())
@@ -570,7 +568,7 @@ pub(crate) async fn test_sub_script(state: State<'_, AppState>, code: String) ->
     // Same pipeline as production: base render (non-TUN; scripts do not apply to the TUN skeleton, established decision) →
     // enabled script chain (failures skipped) → dry-run code (errors surfaced)
     let store = subscription::current_store();
-    let base = subscription::render_config(&store, &mode, false, &[]);
+    let base = subscription::render_config(&store, &mode, false, &crate::kernel::config::TunExtras::default());
     let (effective, _) = sub_script::apply_scripts(&base, &scripts);
     let before: serde_json::Value =
         serde_yaml::from_str(&effective).map_err(|e| format!("当前配置解析失败: {e}"))?;
@@ -638,7 +636,7 @@ pub(crate) async fn restore_subscription_role(app: &tauri::AppHandle) {
             tun_mode = false;
         }
     }
-    match state.kernel.start(super::roles::tun_relay_hosts(&state).await).await {
+    match state.kernel.start(super::roles::tun_extras(&state).await).await {
         Ok(()) => {
             tracing::info!(tun = tun_mode, "subscription kernel restored");
             apply_proxy_fallback(&state).await;
@@ -653,7 +651,7 @@ pub(crate) async fn restore_subscription_role(app: &tauri::AppHandle) {
                 // TUN config start failed: abandon TUN and retry once in normal mode
                 tracing::error!(error = %e, "failed to restore kernel with TUN, retrying normal mode");
                 crate::abandon_tun(app, &state, &format!("启动失败（{e}）")).await;
-                match state.kernel.start(Vec::new()).await {
+                match state.kernel.start(crate::kernel::config::TunExtras::default()).await {
                     Ok(()) => {
                         tracing::info!("subscription kernel restored in normal mode after TUN failure");
                         apply_proxy_fallback(&state).await;

@@ -15,13 +15,28 @@ use std::sync::{OnceLock, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 // ==================== Model ====================
 
+/// Bypass rule target (放行出口): direct = anet 直连; subscription = anet 转订阅出口;
+/// sysproxy / tun = TUN 配置层域名钉（系统代理 = 显式钉入 anet 全链路 ANET-IN；虚拟网卡 =
+/// mihomo 层直送订阅出口 AGILE-SUB，anet 不参与）——后两项不进 anet 路由器，只渲染进 TUN 骨架。
+pub const TARGET_DIRECT: &str = "direct";
+pub const TARGET_SUBSCRIPTION: &str = "subscription";
+pub const TARGET_SYSPROXY: &str = "sysproxy";
+pub const TARGET_TUN: &str = "tun";
+
+/// Validate a bypass target (one of the four channels; unknown values are rejected, not coerced).
+pub fn valid_target(t: &str) -> bool {
+    matches!(t, TARGET_DIRECT | TARGET_SUBSCRIPTION | TARGET_SYSPROXY | TARGET_TUN)
+}
+
 /// Bypass rule (wildcard IP/domain filter).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BypassRule {
     pub id: String,
     pub pattern: String,
-    #[serde(default)]
-    pub via_subscription: bool,
+    /// Egress channel (TARGET_* constants; direct|subscription feed the anet router,
+    /// sysproxy|tun only render into the TUN skeleton)
+    #[serde(default = "default_target")]
+    pub target: String,
     #[serde(default = "default_true")]
     pub enabled: bool,
     /// Whether the rule is managed (GUI custom bypass). Defaults false for old persisted JSON.
@@ -64,6 +79,10 @@ fn default_true() -> bool {
     true
 }
 
+fn default_target() -> String {
+    TARGET_DIRECT.to_string()
+}
+
 /// Current UNIX timestamp in seconds.
 fn now_ts() -> u64 {
     std::time::SystemTime::now()
@@ -100,9 +119,11 @@ pub fn effective_rules(data: &StoreData) -> agile_net_client::CustomRules {
         .bypass
         .iter()
         .filter(|r| effective(&r.id, r.enabled))
+        // TUN-layer pins (sysproxy/tun targets) never enter the anet router — they render into the TUN skeleton
+        .filter(|r| matches!(r.target.as_str(), TARGET_DIRECT | TARGET_SUBSCRIPTION))
         .map(|r| agile_net_client::CustomBypassRule {
             pattern: r.pattern.clone(),
-            via_subscription: r.via_subscription,
+            via_subscription: r.target == TARGET_SUBSCRIPTION,
             sort: r.sort,
         })
         .collect();
@@ -117,6 +138,28 @@ pub fn effective_rules(data: &StoreData) -> agile_net_client::CustomRules {
             .map(|r| (r.hostname.clone(), r.ip.clone()))
             .collect(),
     }
+}
+
+/// TUN-skeleton domain pins (系统代理 / 虚拟网卡 targets): enabled patterns per channel, in storage
+/// order (combos included). Rendered as mihomo DOMAIN/DOMAIN-SUFFIX/host-CIDR rules — see kernel::config.
+pub fn tun_rule_domains(data: &StoreData) -> (Vec<String>, Vec<String>) {
+    let combo_keys: std::collections::HashSet<&str> = data
+        .combos
+        .iter()
+        .filter(|c| c.enabled)
+        .flat_map(|c| c.rule_keys.iter().map(|k| k.as_str()))
+        .collect();
+    let effective = |r: &BypassRule| r.enabled || combo_keys.contains(r.id.as_str());
+    let mut sysproxy = Vec::new();
+    let mut tun = Vec::new();
+    for r in data.bypass.iter().filter(|r| effective(r)) {
+        match r.target.as_str() {
+            TARGET_SYSPROXY => sysproxy.push(r.pattern.clone()),
+            TARGET_TUN => tun.push(r.pattern.clone()),
+            _ => {}
+        }
+    }
+    (sysproxy, tun)
 }
 
 // ==================== Storage (atomic write) ====================
@@ -237,14 +280,18 @@ pub fn normalize_host(input: &str) -> Result<String, String> {
 }
 
 /// Add a bypass rule (dedup by pattern; enabled by default), returns id.
+/// target: one of the TARGET_* channels (validated — unknown values rejected).
 pub fn add_bypass(
     client: &agile_net_client::AgileNetClient,
     pattern: &str,
-    via_subscription: bool,
+    target: &str,
 ) -> Result<String, String> {
     let pattern = pattern.trim();
     if pattern.is_empty() || pattern.chars().any(|c| c.is_whitespace()) {
         return Err("匹配目标不能为空且不含空白字符".into());
+    }
+    if !valid_target(target) {
+        return Err("非法放行出口（应为 direct|subscription|sysproxy|tun）".into());
     }
     let mut guard = write_store();
     if guard
@@ -259,7 +306,7 @@ pub fn add_bypass(
     guard.data.bypass.push(BypassRule {
         id: id.clone(),
         pattern: pattern.to_string(),
-        via_subscription,
+        target: target.to_string(),
         enabled: true,
         managed: true,
         sort: 0, // user rules first; engine sorts ascending so presets (1) fall behind
@@ -492,7 +539,7 @@ pub fn seed_presets() -> bool {
         .map(|(id, pattern)| BypassRule {
             id,
             pattern,
-            via_subscription: false, // presets are always direct
+            target: TARGET_DIRECT.into(), // presets are always direct
             enabled: true,
             managed: false,
             sort: 1, // presets sort behind user rules (0)
@@ -665,11 +712,11 @@ mod tests {
         dir
     }
 
-    fn br(id: &str, pattern: &str, via: bool, enabled: bool) -> BypassRule {
+    fn br(id: &str, pattern: &str, via_sub: bool, enabled: bool) -> BypassRule {
         BypassRule {
             id: id.into(),
             pattern: pattern.into(),
-            via_subscription: via,
+            target: if via_sub { TARGET_SUBSCRIPTION } else { TARGET_DIRECT }.into(),
             enabled,
             managed: true,
             sort: 0,
@@ -734,7 +781,7 @@ mod tests {
         let loaded = load_from(&path);
         assert_eq!(loaded.bypass.len(), 1);
         assert_eq!(loaded.bypass[0].pattern, "*.baidu.com");
-        assert!(loaded.bypass[0].via_subscription);
+        assert_eq!(loaded.bypass[0].target, TARGET_SUBSCRIPTION);
         assert!(!loaded.bypass[0].enabled); // enabled=false must persist
         assert_eq!(loaded.hosts[0].hostname, "git.internal");
         assert_eq!(loaded.combos[0].rule_keys.len(), 2);
@@ -742,7 +789,7 @@ mod tests {
         std::fs::write(&path, r#"{"bypass":[{"id":"x","pattern":"a.com"}]}"#).unwrap();
         let loaded = load_from(&path);
         assert!(loaded.bypass[0].enabled); // defaults to true
-        assert!(!loaded.bypass[0].via_subscription);
+        assert_eq!(loaded.bypass[0].target, TARGET_DIRECT);
         // Corrupt file → fall back to empty store
         std::fs::write(&path, "not json{{{").unwrap();
         let loaded = load_from(&path);
@@ -800,7 +847,7 @@ mod tests {
             BypassRule {
                 id: "preset-lan10".into(),
                 pattern: "10.*".into(),
-                via_subscription: false,
+                target: TARGET_DIRECT.into(),
                 enabled: true,
                 managed: false,
                 sort: 1,
@@ -809,7 +856,7 @@ mod tests {
             BypassRule {
                 id: "bypass-user".into(),
                 pattern: "10.12.0.0/16".into(),
-                via_subscription: true,
+                target: TARGET_SUBSCRIPTION.into(),
                 enabled: true,
                 managed: true,
                 sort: 0,
@@ -821,8 +868,8 @@ mod tests {
         assert_eq!(bypass[1].id, "preset-lan10");
         // Stable within a key: presets keep their predefined order
         let mut p = [
-            BypassRule { id: "preset-lan10".into(), pattern: "10.*".into(), via_subscription: false, enabled: true, managed: false, sort: 1, created_at: 0 },
-            BypassRule { id: "preset-lan172".into(), pattern: "172.*".into(), via_subscription: false, enabled: true, managed: false, sort: 1, created_at: 0 },
+            BypassRule { id: "preset-lan10".into(), pattern: "10.*".into(), target: TARGET_DIRECT.into(), enabled: true, managed: false, sort: 1, created_at: 0 },
+            BypassRule { id: "preset-lan172".into(), pattern: "172.*".into(), target: TARGET_DIRECT.into(), enabled: true, managed: false, sort: 1, created_at: 0 },
         ];
         p.sort_by_key(|r| r.sort);
         assert_eq!(p[0].id, "preset-lan10");
@@ -844,7 +891,7 @@ mod tests {
             .collect();
         assert_eq!(presets.len(), preset_entries().len());
         // All presets are direct, enabled, sort=1 (behind user rules), not managed
-        assert!(presets.iter().all(|r| !r.via_subscription && r.enabled && r.sort == 1 && !r.managed));
+        assert!(presets.iter().all(|r| r.target == TARGET_DIRECT && r.enabled && r.sort == 1 && !r.managed));
         // Loopback / link-local / CGNAT before the RFC1918 LAN prefixes (stable precedence)
         let pats: Vec<&str> = presets.iter().map(|r| r.pattern.as_str()).collect();
         let i10 = pats.iter().position(|p| *p == "10.*").unwrap();
@@ -861,7 +908,7 @@ mod tests {
             bypass: vec![BypassRule {
                 id: "preset-lan10".into(),
                 pattern: "10.*".into(),
-                via_subscription: false,
+                target: TARGET_DIRECT.into(),
                 enabled: false, // user toggled it off
                 managed: false,
                 sort: 1,
@@ -890,7 +937,7 @@ mod tests {
             |(id, pattern)| BypassRule {
                 id,
                 pattern,
-                via_subscription: false,
+                target: TARGET_DIRECT.into(),
                 enabled: true,
                 managed: false,
                 sort: 1,
@@ -915,6 +962,46 @@ mod tests {
         let eff = effective_rules(&data);
         assert_eq!(eff.bypass.len(), 1);
         assert!(eff.bypass[0].via_subscription);
+    }
+
+    // ---------- TUN-layer channel pins (放行规则四通道) ----------
+
+    #[test]
+    fn tun_rule_domains_split_and_engine_exclusion() {
+        // sysproxy/tun targets never enter the engine bypass; they come out as TUN-skeleton domain pins
+        let mk = |id: &str, pattern: &str, target: &str| BypassRule {
+            id: id.into(),
+            pattern: pattern.into(),
+            target: target.into(),
+            enabled: true,
+            managed: true,
+            sort: 0,
+            created_at: 0,
+        };
+        let data = StoreData {
+            bypass: vec![
+                mk("b1", "a.com", TARGET_DIRECT),
+                mk("b2", "b.com", TARGET_SUBSCRIPTION),
+                mk("b3", "grok.com", TARGET_SYSPROXY),
+                mk("b4", "*.x.ai", TARGET_TUN),
+            ],
+            hosts: vec![],
+            combos: vec![],
+        };
+        let eff = effective_rules(&data);
+        assert_eq!(eff.bypass.len(), 2, "sysproxy/tun targets must not enter the anet router");
+        assert!(eff.bypass.iter().any(|r| r.pattern == "b.com" && r.via_subscription));
+        let (sysproxy, tun) = tun_rule_domains(&data);
+        assert_eq!(sysproxy, vec!["grok.com".to_string()]);
+        assert_eq!(tun, vec!["*.x.ai".to_string()]);
+        // disabled rules drop out of the pins
+        let mut data2 = data.clone();
+        data2.bypass[2].enabled = false;
+        let (sysproxy, _) = tun_rule_domains(&data2);
+        assert!(sysproxy.is_empty());
+        // target validation
+        assert!(valid_target("sysproxy") && valid_target("tun"));
+        assert!(!valid_target("sub") && !valid_target(""));
     }
 
     // ---------- System hosts parsing ----------

@@ -40,7 +40,8 @@ pub struct AddHostResult {
 pub struct BypassRuleView {
     pub id: String,
     pub pattern: String,
-    pub via_subscription: bool,
+    /// Egress channel: direct | subscription | sysproxy | tun (custom_rules::TARGET_*)
+    pub target: String,
     pub enabled: bool,
     /// user = user-created; preset = built-in direct preset (LAN/link-local/loopback/CGNAT, FlClash standard)
     pub source: String,
@@ -60,7 +61,7 @@ pub(crate) async fn list_custom_rules() -> Result<CustomRulesView, String> {
         .map(|r| BypassRuleView {
             id: r.id.clone(),
             pattern: r.pattern.clone(),
-            via_subscription: r.via_subscription,
+            target: r.target.clone(),
             enabled: r.enabled,
             source: if r.id.starts_with(custom_rules::PRESET_ID_PREFIX) {
                 "preset"
@@ -106,9 +107,23 @@ pub(crate) async fn list_custom_rules() -> Result<CustomRulesView, String> {
 pub(crate) async fn add_bypass_rule(
     state: State<'_, AppState>,
     pattern: String,
-    via_subscription: bool,
+    target: String,
 ) -> Result<String, String> {
-    custom_rules::add_bypass(&state.client, &pattern, via_subscription)
+    let tun_layer = matches!(target.as_str(), custom_rules::TARGET_SYSPROXY | custom_rules::TARGET_TUN);
+    let id = custom_rules::add_bypass(&state.client, &pattern, &target)?;
+    maybe_reload_tun(&state, tun_layer).await;
+    Ok(id)
+}
+
+/// TUN-layer channel pins (sysproxy/tun targets) live in the TUN skeleton, not the anet router:
+/// a mutation only takes effect after the kernel config is re-rendered (restart while TUN runs).
+async fn maybe_reload_tun(state: &State<'_, AppState>, touches_tun_layer: bool) {
+    if !touches_tun_layer || !state.roles.lock().await.tun_mode {
+        return;
+    }
+    if let Err(e) = super::subscription::reload_kernel_if_running(state).await {
+        tracing::warn!(error = %e, "kernel reload after TUN-layer rule change failed");
+    }
 }
 
 #[tauri::command]
@@ -131,12 +146,36 @@ pub(crate) async fn set_custom_rule_enabled(
     id: String,
     enabled: bool,
 ) -> Result<(), String> {
-    custom_rules::set_enabled(&state.client, &id, enabled)
+    let target = custom_rules::snapshot()
+        .bypass
+        .iter()
+        .find(|r| r.id == id)
+        .map(|r| r.target.clone())
+        .unwrap_or_default();
+    custom_rules::set_enabled(&state.client, &id, enabled)?;
+    maybe_reload_tun(
+        &state,
+        matches!(target.as_str(), custom_rules::TARGET_SYSPROXY | custom_rules::TARGET_TUN),
+    )
+    .await;
+    Ok(())
 }
 
 #[tauri::command]
 pub(crate) async fn remove_custom_rule(state: State<'_, AppState>, id: String) -> Result<(), String> {
-    custom_rules::remove(&state.client, &id)
+    let target = custom_rules::snapshot()
+        .bypass
+        .iter()
+        .find(|r| r.id == id)
+        .map(|r| r.target.clone())
+        .unwrap_or_default();
+    custom_rules::remove(&state.client, &id)?;
+    maybe_reload_tun(
+        &state,
+        matches!(target.as_str(), custom_rules::TARGET_SYSPROXY | custom_rules::TARGET_TUN),
+    )
+    .await;
+    Ok(())
 }
 
 #[tauri::command]

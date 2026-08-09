@@ -17,12 +17,25 @@ fn yaml_escape(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
+/// Extra TUN-skeleton inputs collected from GUI state (relay carriage + per-domain channel pins).
+/// Non-TUN renders ignore it entirely.
+#[derive(Debug, Default, Clone)]
+pub struct TunExtras {
+    /// Connected delegated nodes' relay entry hosts (carriage rules → AGILE-SUB)
+    pub relay_hosts: Vec<String>,
+    /// 系统代理 pin: explicit ANET-IN — the domain always takes the full anet-router path
+    /// (the exact system-proxy engine path), ahead of any broader bypass
+    pub sysproxy_domains: Vec<String>,
+    /// 虚拟网卡 pin: straight to AGILE-SUB at the mihomo layer — the anet router is not involved
+    pub kernel_domains: Vec<String>,
+}
+
 /// Render mihomo config.yaml from the subscription list (loads only the active subscription; single provider always named main).
 /// mode is the outbound mode (rule|global|direct; invalid values fall back to rule); tun=true uses the TUN skeleton (§2.3).
-/// relay_hosts are the connected delegated nodes' relay entry hosts, rendered as carriage rules in TUN mode only.
-pub fn render_config(store: &SubStore, mode: &str, tun: bool, relay_hosts: &[String]) -> String {
+/// extras carry TUN-only inputs (relay carriage + domain channel pins); ignored in non-TUN mode.
+pub fn render_config(store: &SubStore, mode: &str, tun: bool, extras: &TunExtras) -> String {
     if tun {
-        return render_config_tun(store, relay_hosts);
+        return render_config_tun(store, extras);
     }
     let mode = if roles::valid_sub_mode(mode) {
         mode
@@ -86,9 +99,12 @@ fn push_provider_section(s: &mut String, active: Option<&Subscription>) {
 /// would be re-captured by auto-route and loop back into ANET-IN; the PROCESS-NAME rule makes them exit directly via
 /// mihomo (auto-detect-interface binds the physical NIC, no re-capture). Relay entry hosts ride the subscription group
 /// via per-host carriage rules rendered ahead of the process rule (keeps the "anet in front, FlClash behind" semantics).
+/// Domain channel pins (放行规则四通道): 系统代理 = explicit ANET-IN (the full anet-router path, exactly the
+/// system-proxy engine behavior); 虚拟网卡 = straight to AGILE-SUB at the mihomo layer (anet not involved) —
+/// both render ahead of the process rule so they win over every broader pattern.
 /// Standing decision: TUN config does not go through the override script chain — scripts act on subscription proxy config semantics,
 /// so this skeleton's loop-prevention constraints (no mixed-port / ANET-IN outbound / MATCH target) must stay intact.
-fn render_config_tun(store: &SubStore, relay_hosts: &[String]) -> String {
+fn render_config_tun(store: &SubStore, extras: &TunExtras) -> String {
     let active = store.subscriptions.iter().find(|s| s.active);
     let mut s = String::new();
     s.push_str("# 本文件由 AgileNet 自动生成，手动修改将在下次启动时被覆盖（TUN 模式）\n");
@@ -141,16 +157,16 @@ fn render_config_tun(store: &SubStore, relay_hosts: &[String]) -> String {
     s.push_str("  - IP-CIDR,127.0.0.0/8,DIRECT,no-resolve\n");
     // Tunnel-transport carriage: the GUI's raw dials to relay entries keep riding the subscription
     // group (rendered ahead of the process-level DIRECT rule; fake-ip maps captured dials back to domains)
-    for host in relay_hosts {
-        match host.parse::<std::net::IpAddr>() {
-            Ok(std::net::IpAddr::V4(_)) => {
-                s.push_str(&format!("  - IP-CIDR,{host}/32,AGILE-SUB,no-resolve\n"))
-            }
-            Ok(std::net::IpAddr::V6(_)) => {
-                s.push_str(&format!("  - IP-CIDR6,{host}/128,AGILE-SUB,no-resolve\n"))
-            }
-            Err(_) => s.push_str(&format!("  - DOMAIN,{host},AGILE-SUB\n")),
-        }
+    for host in &extras.relay_hosts {
+        push_pattern_rule(&mut s, host, "AGILE-SUB");
+    }
+    // Domain channel pins (放行规则四通道的后两项): 系统代理 = full anet-router path (ANET-IN);
+    // 虚拟网卡 = mihomo-layer straight to the subscription group (anet not involved)
+    for pat in &extras.sysproxy_domains {
+        push_pattern_rule(&mut s, pat, "ANET-IN");
+    }
+    for pat in &extras.kernel_domains {
+        push_pattern_rule(&mut s, pat, "AGILE-SUB");
     }
     // Process-level loop prevention: anet-gui's own raw dials (Direct decisions, tunnel transport)
     // must never re-enter ANET-IN — mihomo dials them directly, bound to the physical interface
@@ -158,6 +174,25 @@ fn render_config_tun(store: &SubStore, relay_hosts: &[String]) -> String {
     s.push_str("  - IN-TYPE,socks,AGILE-SUB                   # anet 回落（socks 入站）直达订阅出口\n");
     s.push_str("  - MATCH,ANET-IN                               # 全部 TCP 转交 anet 路由器\n");
     s
+}
+
+/// Render one mihomo rule for a host/wildcard pattern (relay carriage + domain channel pins):
+/// exact IP → host CIDR; `*.x` → DOMAIN-SUFFIX; exact domain/host → DOMAIN; any other wildcard
+/// shape is not expressible as a mihomo rule and is skipped with a comment.
+fn push_pattern_rule(s: &mut String, pattern: &str, target: &str) {
+    let pat = pattern.trim();
+    if let Ok(ip) = pat.parse::<std::net::IpAddr>() {
+        match ip {
+            std::net::IpAddr::V4(_) => s.push_str(&format!("  - IP-CIDR,{ip}/32,{target},no-resolve\n")),
+            std::net::IpAddr::V6(_) => s.push_str(&format!("  - IP-CIDR6,{ip}/128,{target},no-resolve\n")),
+        }
+    } else if let Some(suffix) = pat.strip_prefix("*.") {
+        s.push_str(&format!("  - DOMAIN-SUFFIX,{suffix},{target}\n"));
+    } else if pat.contains('*') {
+        s.push_str(&format!("  # 跳过无法表达的通配规则: {pat}（仅支持精确域名 / *.后缀 / 精确 IP）\n"));
+    } else {
+        s.push_str(&format!("  - DOMAIN,{pat},{target}\n"));
+    }
 }
 
 /// Loop-prevention static check (§2.5 hard constraints): runs after config generation and before writing to disk; any violation refuses to start the kernel.
@@ -230,7 +265,7 @@ mod tests {
         store
             .subscriptions
             .push(mk("b", "机场B", "https://b.example.com/link", false));
-        let cfg = render_config(&store, "rule", false, &[]);
+        let cfg = render_config(&store, "rule", false, &TunExtras::default());
         assert!(cfg.contains("mixed-port: 57892"));
         assert!(cfg.contains("external-controller: 127.0.0.1:59292"));
         assert!(cfg.contains("secret: \"s3cret\""));
@@ -262,7 +297,7 @@ mod tests {
             total: 0,
             expire: None,
         });
-        let cfg = render_config(&store, "rule", false, &[]);
+        let cfg = render_config(&store, "rule", false, &TunExtras::default());
         assert!(cfg.contains("\\\"injected"));
     }
 
@@ -285,14 +320,14 @@ mod tests {
             total: 0,
             expire: None,
         });
-        let cfg = render_config(&store, "rule", false, &[]);
+        let cfg = render_config(&store, "rule", false, &TunExtras::default());
         assert!(cfg.contains("    type: file\n"));
         assert!(cfg.contains("    path: \"C:/Users/x/local-a.yaml\"\n"));
         assert!(!cfg.contains("type: http"));
         assert!(!cfg.contains("interval: 86400"));
         assert!(check_no_loop(&cfg, false).is_ok());
         // The TUN skeleton supports this too
-        let cfg = render_config(&store, "rule", true, &[]);
+        let cfg = render_config(&store, "rule", true, &TunExtras::default());
         assert!(cfg.contains("    type: file\n"));
         assert!(check_no_loop(&cfg, true).is_ok());
     }
@@ -305,10 +340,10 @@ mod tests {
             ("global", "mode: global\n"),
             ("direct", "mode: direct\n"),
         ] {
-            assert!(render_config(&store, mode, false, &[]).contains(expect), "mode={mode}");
+            assert!(render_config(&store, mode, false, &TunExtras::default()).contains(expect), "mode={mode}");
         }
         // Invalid values fall back to rule
-        assert!(render_config(&store, "bogus", false, &[]).contains("mode: rule\n"));
+        assert!(render_config(&store, "bogus", false, &TunExtras::default()).contains("mode: rule\n"));
     }
 
     /// TUN mode config snapshot (tun.md §2.3 skeleton, field by field) + loop-prevention check passes
@@ -330,7 +365,7 @@ mod tests {
             total: 0,
             expire: None,
         });
-        let cfg = render_config(&store, "rule", true, &[]);
+        let cfg = render_config(&store, "rule", true, &TunExtras::default());
         // Skeleton header: no mixed-port (loop-prevention key), control plane kept
         assert!(!cfg.contains("mixed-port"));
         assert!(cfg.contains("external-controller: 127.0.0.1:59292"));
@@ -374,7 +409,7 @@ mod tests {
             secret: "s3cret".into(),
             ..Default::default()
         };
-        let cfg = render_config(&store, "rule", true, &[]);
+        let cfg = render_config(&store, "rule", true, &TunExtras::default());
         assert!(!cfg.contains("proxy-providers:"));
         assert!(cfg.contains("  - name: AGILE-SUB\n    type: select\n    proxies:\n      - DIRECT\n"));
         assert!(cfg.contains("  - PROCESS-NAME,anet-gui.exe,DIRECT\n"));
@@ -389,18 +424,47 @@ mod tests {
             secret: "s".into(),
             ..Default::default()
         };
-        let hosts = vec![
-            "relay.example.com".to_string(),
-            "203.0.113.7".to_string(),
-            "2001:db8::1".to_string(),
-        ];
-        let cfg = render_config(&store, "rule", true, &hosts);
+        let extras = TunExtras {
+            relay_hosts: vec![
+                "relay.example.com".to_string(),
+                "203.0.113.7".to_string(),
+                "2001:db8::1".to_string(),
+            ],
+            ..Default::default()
+        };
+        let cfg = render_config(&store, "rule", true, &extras);
         assert!(cfg.contains("  - DOMAIN,relay.example.com,AGILE-SUB\n"));
         assert!(cfg.contains("  - IP-CIDR,203.0.113.7/32,AGILE-SUB,no-resolve\n"));
         assert!(cfg.contains("  - IP-CIDR6,2001:db8::1/128,AGILE-SUB,no-resolve\n"));
         let carriage = cfg.find("DOMAIN,relay.example.com").unwrap();
         let proc_rule = cfg.find("PROCESS-NAME,anet-gui.exe").unwrap();
         assert!(carriage < proc_rule, "搭车规则须排在进程级直连之前");
+        assert!(check_no_loop(&cfg, true).is_ok());
+    }
+
+    /// Domain channel pins (放行规则四通道): sysproxy → explicit ANET-IN, tun → AGILE-SUB at the
+    /// mihomo layer; `*.x` renders DOMAIN-SUFFIX, unexpressible wildcards degrade to a comment
+    #[test]
+    fn config_render_tun_domain_pins() {
+        let store = SubStore {
+            secret: "s".into(),
+            ..Default::default()
+        };
+        let extras = TunExtras {
+            relay_hosts: vec![],
+            sysproxy_domains: vec!["grok.com".into(), "*.x.ai".into(), "198.51.100.9".into()],
+            kernel_domains: vec!["*.cf-workers.dev".into(), "10.12.*".into()],
+        };
+        let cfg = render_config(&store, "rule", true, &extras);
+        assert!(cfg.contains("  - DOMAIN,grok.com,ANET-IN\n"));
+        assert!(cfg.contains("  - DOMAIN-SUFFIX,x.ai,ANET-IN\n"));
+        assert!(cfg.contains("  - IP-CIDR,198.51.100.9/32,ANET-IN,no-resolve\n"));
+        assert!(cfg.contains("  - DOMAIN-SUFFIX,cf-workers.dev,AGILE-SUB\n"));
+        assert!(cfg.contains("# 跳过无法表达的通配规则: 10.12.*"));
+        // pins sit ahead of the process-level DIRECT rule, after the carriage slot
+        let pin = cfg.find("DOMAIN,grok.com,ANET-IN").unwrap();
+        let proc_rule = cfg.find("PROCESS-NAME,anet-gui.exe").unwrap();
+        assert!(pin < proc_rule, "域名钉须排在进程级直连之前");
         assert!(check_no_loop(&cfg, true).is_ok());
     }
 
@@ -411,8 +475,8 @@ mod tests {
             secret: "s".into(),
             ..Default::default()
         };
-        let tun_cfg = render_config(&store, "rule", true, &[]);
-        let base_cfg = render_config(&store, "rule", false, &[]);
+        let tun_cfg = render_config(&store, "rule", true, &TunExtras::default());
+        let base_cfg = render_config(&store, "rule", false, &TunExtras::default());
         assert!(check_no_loop(&tun_cfg, true).is_ok());
         assert!(check_no_loop(&base_cfg, false).is_ok());
 
@@ -447,9 +511,9 @@ mod tests {
             secret: "57890abcdef".into(),
             ..Default::default()
         };
-        let cfg = render_config(&store, "rule", false, &[]);
+        let cfg = render_config(&store, "rule", false, &TunExtras::default());
         assert!(check_no_loop(&cfg, false).is_ok(), "secret 行不参与检查");
-        let cfg = render_config(&store, "rule", true, &[]);
+        let cfg = render_config(&store, "rule", true, &TunExtras::default());
         assert!(check_no_loop(&cfg, true).is_ok(), "secret 行不参与检查");
     }
 }

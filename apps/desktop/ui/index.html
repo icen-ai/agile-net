@@ -1329,9 +1329,12 @@
       <input id="bp-pattern" class="mono" placeholder="*.baidu.com / 127.*">
       <label data-i18n="rules.colVia">方式</label>
       <select id="bp-via">
-        <option value="direct" data-i18n="rules.viaDirect">直连（默认）</option>
-        <option value="sub" data-i18n="rules.viaSub">经过订阅</option>
+        <option value="direct" data-i18n="rules.viaDirect">直连放行</option>
+        <option value="subscription" data-i18n="rules.viaSub" selected>订阅路由</option>
+        <option value="sysproxy" data-i18n="rules.viaSysproxy">系统代理</option>
+        <option value="tun" data-i18n="rules.viaTun">虚拟网卡</option>
       </select>
+      <div class="hint" data-i18n="rules.viaTunNote">系统代理 / 虚拟网卡仅 TUN 模式生效（域名或精确 IP 规则；*.后缀 可用）</div>
       <div class="hint" data-i18n="rules.bypassNote">新建后默认启用，可在列表中随时停用</div>
       <div class="hint sm-err" id="bp-err"></div>
     </div>

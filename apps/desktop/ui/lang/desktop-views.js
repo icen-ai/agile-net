@@ -6,8 +6,10 @@ AgI18n.register({
   // ---- rules table: type badges / sources / row actions ----
   'views.rule-bypass': { zh: '放行', en: 'Bypass' },
   'views.rule-map': { zh: '映射', en: 'Mapping' },
-  'views.rule-direct': { zh: '直连', en: 'Direct' },
-  'views.rule-via-sub': { zh: '经过订阅', en: 'Via subscription' },
+  'views.rule-direct': { zh: '直连放行', en: 'Direct' },
+  'views.rule-via-sub': { zh: '订阅路由', en: 'Sub Route' },
+  'views.rule-sysproxy': { zh: '系统代理', en: 'System Proxy' },
+  'views.rule-tun': { zh: '虚拟网卡', en: 'Virtual NIC' },
   'views.src-custom': { zh: '自定义', en: 'Custom' },
   'views.src-preset': { zh: '预置', en: 'Preset' },
   'views.src-system-hosts': { zh: '系统 hosts', en: 'System hosts' },

@@ -742,7 +742,7 @@ pub(crate) async fn agent_config_set(
                 .iter()
                 .any(|r| r.pattern.eq_ignore_ascii_case(&host));
             if !exists {
-                let _ = crate::custom_rules::add_bypass(&state.client, &host, false);
+                let _ = crate::custom_rules::add_bypass(&state.client, &host, crate::custom_rules::TARGET_DIRECT);
             }
         }
     }

@@ -239,9 +239,9 @@ impl Default for KernelManager {
 
 impl KernelManager {
     /// Start the kernel (rewrite config → spawn → supervisor watch).
-    /// relay_hosts: connected delegated nodes' relay entry hosts, rendered as carriage rules in the
-    /// TUN skeleton only (crash-restart reuses the on-disk config, so no re-render needed there).
-    pub async fn start(&self, relay_hosts: Vec<String>) -> Result<(), String> {
+    /// extras: TUN-skeleton inputs (relay carriage + domain channel pins), used only when TUN mode is
+    /// on (crash-restart reuses the on-disk config, so no re-render needed there).
+    pub async fn start(&self, extras: super::config::TunExtras) -> Result<(), String> {
         if self.state.lock().unwrap().stop_tx.is_some() {
             return Ok(());
         }
@@ -263,9 +263,9 @@ impl KernelManager {
         // proxy config semantics; the TUN skeleton's no-loop constraints (no mixed-port / ANET-IN outbound / MATCH target) must stay intact.
         let effective = if settings.tun_mode {
             self.state.lock().unwrap().script_errors = Vec::new();
-            render_config(&store, &settings.sub_mode, true, &relay_hosts)
+            render_config(&store, &settings.sub_mode, true, &extras)
         } else {
-            let base = render_config(&store, &settings.sub_mode, false, &relay_hosts);
+            let base = render_config(&store, &settings.sub_mode, false, &extras);
             let (effective, script_fails) =
                 crate::sub_script::apply_scripts(&base, &settings.sub_scripts);
             self.state.lock().unwrap().script_errors = script_fails;
@@ -555,7 +555,7 @@ mod tests {
 
         // Start the kernel
         let km = KernelManager::default();
-        km.start(Vec::new()).await.unwrap();
+        km.start(crate::kernel::config::TunExtras::default()).await.unwrap();
         eprintln!("内核已启动并就绪");
 
         // Find and select the target node
@@ -641,7 +641,7 @@ mod tests {
         }
         let km = KernelManager::default();
         let result = async {
-            km.start(Vec::new()).await.map_err(|e| format!("start: {e}"))?;
+            km.start(crate::kernel::config::TunExtras::default()).await.map_err(|e| format!("start: {e}"))?;
             // Wait up to 15s for the control plane (including cold start after extraction)
             let mut version = String::new();
             for _ in 0..30 {
@@ -756,7 +756,7 @@ mod tests {
                 }
             }
             assert!(wintun_dll_path().exists(), "wintun.dll 未落盘");
-            km.start(Vec::new()).await.map_err(|e| format!("start: {e}"))?;
+            km.start(crate::kernel::config::TunExtras::default()).await.map_err(|e| format!("start: {e}"))?;
             let api = kernel_api().await?;
             let cfg = api.configs().await?;
             assert_eq!(cfg["tun"]["enable"].as_bool(), Some(true), "控制面未见 TUN 生效");

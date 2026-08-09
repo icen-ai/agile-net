@@ -123,11 +123,12 @@ function renderMergedRules(nodes) {
   // custom bypass (highest engine priority, listed first by default)
   if (tf === 'all' || tf === 'bypass') {
     for (const r of custom.bypass) {
-      const way = r.via_subscription ? AgI18n.t('views.rule-via-sub') : AgI18n.t('views.rule-direct');
+      const wayKey = { direct: 'views.rule-direct', subscription: 'views.rule-via-sub', sysproxy: 'views.rule-sysproxy', tun: 'views.rule-tun' }[r.target] || 'views.rule-direct';
+      const way = AgI18n.t(wayKey);
       if (!hit(r.pattern, AgI18n.t('views.rule-bypass'), way, AgI18n.t('views.src-custom'), AgI18n.t('views.src-preset'))) continue;
       const src = r.source === 'preset' ? AgI18n.t('views.src-preset') : AgI18n.t('views.src-custom');
       rows.push({
-        type: 'bypass', val: r.pattern, via: r.via_subscription ? 'sub' : 'direct', src,
+        type: 'bypass', val: r.pattern, via: r.target || 'direct', src,
         html: '<tr class="' + (r.enabled ? '' : 'rule-paused') + '">' +
           '<td><span class="badge b-ok">' + AgI18n.t('views.rule-bypass') + '</span></td>' +
           '<td class="mono">' + esc(r.pattern) + '</td>' +
@@ -211,7 +212,7 @@ async function toggleRule(nodeId, key, paused) {
 
 /* ================= Custom rules (bypass / hosts mapping) and combos =================
    Backend contract (apps/desktop/src/custom_rules.rs + lib.rs command layer; GUI local capability, hidden on Web remote panel):
-   list_custom_rules() -> { bypass:[{id,pattern,via_subscription,enabled}],
+   list_custom_rules() -> { bypass:[{id,pattern,target,enabled}],
                             hosts:[{id,hostname,ip,enabled,source}] } (source=user|system, system is read-only);
    combo rule_keys: custom = its id, pulled = ruleKey(r) (type:value lowercased).
    Pulled keys in combos are ignored by the engine; this module orchestrates them via the existing pause API (orchestrateCombo). */
@@ -482,7 +483,7 @@ function initRules() {
   /* ---- Add bypass modal ---- */
   $('btn-add-bypass').onclick = () => {
     $('bp-pattern').value = '';
-    $('bp-via').value = 'direct';
+    $('bp-via').value = 'subscription'; // 默认订阅路由（与原「经过订阅」同语义）
     agSelectRefresh($('bp-via'));
     $('bp-err').textContent = '';
     $('bypass-modal').style.display = 'flex';
@@ -496,7 +497,7 @@ function initRules() {
     const btn = $('bp-ok');
     btn.disabled = true;
     try {
-      await invoke('add_bypass_rule', { pattern, viaSubscription: $('bp-via').value === 'sub' });
+      await invoke('add_bypass_rule', { pattern, target: $('bp-via').value });
       $('bypass-modal').style.display = 'none';
       toast(AgI18n.t('views.bp-added'), 'ok');
       refreshCustomRules(true);
