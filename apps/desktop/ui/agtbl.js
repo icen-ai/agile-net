@@ -62,7 +62,9 @@ const AgTbl = (() => {
       const ns = tr.nextSibling;
       const tail = (ns && ns.nodeType === 1 && !ns.dataset.agk && ns._agAfter === tr) ? ns : null;
       const unit = tail || tr;
-      if (unit.nextSibling !== before) {
+      // Fresh rows are detached (parentNode null): a bare nextSibling check would skip the insert
+      // (null === null) and the next iteration's insertBefore(sibling) would hit a detached ref
+      if (tr.parentNode !== container || unit.nextSibling !== before) {
         container.insertBefore(tr, before);
         if (tail) container.insertBefore(tail, before);
       }

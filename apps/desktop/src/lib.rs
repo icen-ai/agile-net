@@ -303,6 +303,7 @@ pub fn run() {
             reorder_sub_scripts,
             test_sub_script,
             set_sub_mode,
+            set_sub_miss_direct,
             set_system_proxy,
             sysproxy_status,
             sysproxy_toggle,

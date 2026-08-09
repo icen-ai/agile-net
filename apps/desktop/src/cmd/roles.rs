@@ -430,13 +430,43 @@ pub(crate) async fn tun_side_effects(app: &tauri::AppHandle, state: &State<'_, A
     crate::apply_proxy_fallback(state).await;
     let server = crate::expected_sysproxy(state);
     let _ = tokio::task::spawn_blocking(move || sysproxy::engage(&server)).await;
-    // Probe the effective fallback target (subscription exit or external upstream; unreachable only triggers a frontend Dynamic Island alert, non-blocking; §2.4)
-    let ok = match crate::effective_fallback(state).await {
-        Some(sa) => tun::tcp_reachable(sa).await,
-        None => false,
+    // Probe the effective fallback target (subscription exit or external upstream; unreachable only triggers a frontend Dynamic Island alert, non-blocking; §2.4).
+    // No fallback at all (miss-direct preference or nothing configured) = nothing to probe, no alert.
+    *state.tun_upstream_ok.lock().await = match crate::effective_fallback(state).await {
+        Some(sa) => Some(tun::tcp_reachable(sa).await),
+        None => None,
     };
-    *state.tun_upstream_ok.lock().await = Some(ok);
     Ok(())
+}
+
+/// Relay entry hosts of the connected delegated nodes, rendered into the TUN skeleton as carriage
+/// rules (DOMAIN/IP-CIDR → AGILE-SUB, ahead of the process-level DIRECT) so tunnel transport keeps
+/// riding the subscription group. Empty when TUN is off; nodes connecting after kernel start fall
+/// back to the PROCESS-NAME direct path (no carriage) until the next kernel restart.
+pub(crate) async fn tun_relay_hosts(state: &State<'_, AppState>) -> Vec<String> {
+    if !state.roles.lock().await.tun_mode {
+        return Vec::new();
+    }
+    let mut out: Vec<String> = Vec::new();
+    for node in state.client.list_nodes().await {
+        for raw in [node.addr, node.current_entry] {
+            // Strip the port only when everything after the last colon is digits and no earlier
+            // colon exists (spares IPv6 literals); drop brackets of bracketed v6 forms
+            let host = match raw.rsplit_once(':') {
+                Some((h, p))
+                    if !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()) && !h.contains(':') =>
+                {
+                    h.to_string()
+                }
+                _ => raw,
+            };
+            let host = host.trim_matches(&['[', ']'][..]).trim().to_string();
+            if !host.is_empty() && !out.contains(&host) {
+                out.push(host);
+            }
+        }
+    }
+    out
 }
 
 /// TUN mode toggle (§2.2 elevation / §2.4 fallback / §2.5 mutual exclusion / §2.6 system proxy).
@@ -468,9 +498,6 @@ pub(crate) async fn set_tun_mode(
             }
             return Err(e);
         }
-        if subscription::list_subscriptions().is_empty() {
-            return Err("请先添加订阅".into());
-        }
         {
             let mut roles = state.roles.lock().await;
             // §2.4 fallback target validity (hard constraint; refuse to enable on violation)
@@ -485,14 +512,14 @@ pub(crate) async fn set_tun_mode(
         );
         // Restart kernel to load the TUN skeleton + data-plane side effects; any failure rolls back entirely to normal mode (subscription unaffected)
         state.kernel.stop().await;
-        let start_result = match state.kernel.start().await {
+        let start_result = match state.kernel.start(tun_relay_hosts(&state).await).await {
             Ok(()) => tun_side_effects(&app, &state).await,
             Err(e) => Err(e),
         };
         if let Err(e) = start_result {
             abandon_tun(&app, &state, &format!("启动失败（{e}）")).await;
             // After rollback, try restarting the kernel in normal mode so the subscription role stays usable
-            let _ = state.kernel.start().await;
+            let _ = state.kernel.start(Vec::new()).await;
             crate::apply_proxy_fallback(&state).await;
             return Err(format!("TUN 开启失败，已回退普通模式: {e}"));
         }
@@ -507,7 +534,7 @@ pub(crate) async fn set_tun_mode(
         *state.tun_upstream_ok.lock().await = None;
         // Kernel returns to normal config (subscription role stays on)
         state.kernel.stop().await;
-        state.kernel.start().await?;
+        state.kernel.start(Vec::new()).await?;
         crate::apply_proxy_fallback(&state).await;
         // §2.6 TUN off: restore the system proxy snapshot; if the system proxy preference is still on and the proxy is running, re-take over per preference
         let _ = tokio::task::spawn_blocking(sysproxy::disengage).await;
@@ -582,7 +609,7 @@ pub(crate) async fn set_subscription_role(
                 subscription::NEED_DOWNLOAD_PREFIX
             ));
         }
-        if let Err(e) = state.kernel.start().await {
+        if let Err(e) = state.kernel.start(tun_relay_hosts(&state).await).await {
             crate::float_notify(&app, format!("订阅内核启动失败：{e}"));
             return Err(e);
         }
@@ -636,7 +663,7 @@ pub(crate) async fn set_sub_mode(state: State<'_, AppState>, mode: String) -> Re
         if !patched {
             // Hot-switch fallback: restart the kernel to regenerate config with the new setting
             state.kernel.stop().await;
-            state.kernel.start().await?;
+            state.kernel.start(tun_relay_hosts(&state).await).await?;
             crate::apply_proxy_fallback(&state).await;
         }
     }

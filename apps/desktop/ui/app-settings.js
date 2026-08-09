@@ -175,6 +175,9 @@ async function initRoles() {
   const subMode = settings.sub_mode || 'rule';
   $('sub-mode').value = subMode;
   $('sub-mode').dataset.prev = subMode;
+  const subMiss = settings.sub_miss_direct ? 'direct' : 'sub';
+  $('sub-miss').value = subMiss;
+  $('sub-miss').dataset.prev = subMiss;
   applySubFeature(!!settings.subscription_feature);
   // Initial values of the settings-view local toggles (system proxy lock / desktop float ball / float-ball bubble notifications / performance mode)
   $('s-sysproxy-lock').checked = !!settings.sysproxy_lock;

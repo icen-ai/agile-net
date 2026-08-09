@@ -77,6 +77,7 @@ AgI18n.register({
   'sub.modeGlobal': { zh: '全局', en: 'Global' },
   'sub.modeDirect': { zh: '直连', en: 'Direct' },
   'sub.modeSwitched': { zh: '出站模式已切换为 {mode}', en: 'Outbound mode switched to {mode}' },
+  'sub.missSwitched': { zh: '无匹配流量已切换为 {mode}', en: 'Unmatched traffic now goes: {mode}' },
   'sub.cachedOnly': { zh: '订阅内核未运行，仅展示缓存节点', en: 'Kernel is not running; showing cached nodes only' },
   'sub.switchedTo': { zh: '已切换到 {name}', en: 'Switched to {name}' },
 

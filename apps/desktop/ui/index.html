@@ -461,6 +461,12 @@
             <option value="direct" data-i18n="sub.modeDirect">直连</option>
           </select>
         </div>
+        <div class="kv"><span class="k"><span data-i18n="sub.missPolicy">无匹配流量</span> <span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip" data-i18n="sub.missPolicyTip">既未命中 anet 规则也未命中订阅规则的流量：经订阅节点出口或直接连接；系统代理与 TUN 模式同样生效</span></span></span>
+          <select id="sub-miss" class="small" style="width:120px">
+            <option value="sub" data-i18n="sub.missSub">走订阅节点</option>
+            <option value="direct" data-i18n="sub.missDirect">直连</option>
+          </select>
+        </div>
         <div class="kv"><span class="k" data-i18n="sub.exitIp">出口 IP</span><span class="mono" id="sub-exit-ip">内核未运行</span></div>
         <div class="hint" id="sub-exit-geo" style="margin-top:4px"></div>
         <div class="kv" id="sub-traffic-row" style="display:none"><span class="k" data-i18n="sub.traffic">流量</span><span class="mono" id="sub-traffic-total">-</span></div>
@@ -486,14 +492,14 @@
       <!-- TUN mode (docs/plan/tun.md P1: NIC-level takeover, anet in front, FlClash behind; Windows x64 only, requires admin) -->
       <div class="card" id="tun-card">
         <h3><i data-ic="layers"></i><span data-i18n="tun.mode">TUN 模式</span> <span class="hint inline" id="tun-status-text">未开启</span>
-          <span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip" data-i18n="tun.tip">虚拟网卡接管全部流量（含不读系统代理的应用）：先走 anet 分流，命中规则走隧道，未命中回落订阅出口（无订阅时回落外部上游）；需管理员权限</span></span>
+          <span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip" data-i18n="tun.tip">虚拟网卡接管整机 TCP（含不读系统代理的应用：数据库 / SSH 等）：anet 分流优先，命中走隧道，未命中按「无匹配流量」选项回落订阅 / 外部上游或直连；无订阅亦可开启；ICMP（ping）与 UDP 不接管；需管理员权限</span></span>
           <span class="h3-tools"><label class="switch"><input type="checkbox" id="tun-mode"><span class="slider"></span></label></span>
         </h3>
         <div class="kv"><span class="k"><span data-i18n="tun.upstream">外部上游</span> <span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip" data-i18n="tun.upstreamTip">无可用订阅时未命中流量的回落目标（如 FlClash mixed 入站）；有订阅时未命中流量自动走订阅出口（127.0.0.1:57893）；仅允许本机回环地址</span></span></span>
           <span id="tun-upstream" class="mono"></span>
         </div>
         <div class="kv"><span class="k" data-i18n="common.status">状态</span><span class="mono" id="tun-state">-</span></div>
-        <div class="hint" style="margin-top:6px" data-i18n="tun.coexistHint">未命中流量默认走订阅出口；若与 FlClash 共存，建议关闭其「系统代理」开关（保持内核监听即可），避免两软件互抢注册表</div>
+        <div class="hint" style="margin-top:6px" data-i18n="tun.coexistHint">未命中流量走向由「无匹配流量」选项决定；若与 FlClash 共存，建议关闭其「系统代理」开关（保持内核监听即可），避免两软件互抢注册表</div>
       </div>
 
       <div class="card">

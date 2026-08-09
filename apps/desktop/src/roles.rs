@@ -77,6 +77,11 @@ pub struct RoleSettings {
     /// Connection log (docs/todo/conn-log.md; default off — records are browsing history, opt-in)
     #[serde(default)]
     pub conn_log_enabled: bool,
+    /// Miss policy for traffic matching no anet rule: true = DIRECT instead of the subscription /
+    /// external-upstream fallback (the anet router's default outbound becomes Direct; under TUN the
+    /// process-level rule keeps those raw dials loop-free)
+    #[serde(default)]
+    pub sub_miss_direct: bool,
 }
 
 fn default_true() -> bool {
@@ -143,6 +148,7 @@ impl Default for RoleSettings {
             notify_float_ball: true,
             reduce_effects: false,
             conn_log_enabled: false,
+            sub_miss_direct: false,
         }
     }
 }

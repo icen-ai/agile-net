@@ -684,6 +684,21 @@ function initSubscription() {
       toast(friendlyError(err), 'err');
     }
   };
+  /* Miss policy (无匹配流量): persist; backend re-applies the anet router fallback immediately */
+  $('sub-miss').onchange = async (e) => {
+    const prev = e.target.dataset.prev || 'sub';
+    try {
+      await invoke('set_sub_miss_direct', { enabled: e.target.value === 'direct' });
+      e.target.dataset.prev = e.target.value;
+      if (window._rolesCache) window._rolesCache.sub_miss_direct = e.target.value === 'direct';
+      const label = AgI18n.t(e.target.value === 'direct' ? 'sub.missDirect' : 'sub.missSub');
+      toast(AgI18n.t('sub.missSwitched', { mode: label }), 'ok');
+    } catch (err) {
+      e.target.value = prev;
+      agSelectRefresh(e.target);
+      toast(friendlyError(err), 'err');
+    }
+  };
   initSubScripts();
 
   /* Proxy page events */
