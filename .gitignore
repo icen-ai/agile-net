@@ -1,6 +1,7 @@
-# IDE
-.idea/
+# IDE（.idea/ 整体忽略，但保留 runConfigurations/ 以便跨机器共享 RustRover 运行命令）
+.idea/*
 *.iml
+!.idea/runConfigurations/
 
 # Rust
 target/
