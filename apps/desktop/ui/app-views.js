@@ -1221,7 +1221,7 @@ function initNotify() {
   // Event center pulse (moved from logs view)
   AgPulse.mount($('pulse-logev'), { key: 'logev', defMs: 10000, options: [5000, 10000, 30000], onTick: () => LogsView.pollEvents() });
   agTabsBind($('nv-tabs'), (key) => NotifyView.switchTab(key));
-  $('btn-notify').onclick = () => switchView('notify');
+  const bell = $('btn-notify'); if (bell) bell.onclick = () => switchView('notify');
   $('btn-notify-read-all').onclick = async () => {
     try { await invoke('notifications_read_all'); } catch (e) { toast(friendlyError(e), 'err'); }
     refreshNotify(true);
