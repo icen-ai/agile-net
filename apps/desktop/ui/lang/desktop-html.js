@@ -71,6 +71,8 @@ AgI18n.register({
   'home.listenAddr': { zh: '监听地址', en: 'Listen Address' },
   'home.netCheck': { zh: '网络检测', en: 'Network' },
   'home.reprobe': { zh: '重新探测', en: 'Probe Again' },
+  'home.copyIp': { zh: '复制出口 IP', en: 'Copy Exit IP' },
+  'home.rateSilk': { zh: '实时速率 · 60S', en: 'Live Rate · 60s' },
   'home.lanIp': { zh: '内网 IP', en: 'LAN IP' },
   'home.roleBanner': { zh: '扇入已停用：下游连接与本地代理均已关闭，可在首页重新开启', en: 'Fan-in is disabled: downstream connections and the local proxy are off; re-enable it on the Home page' },
   // ---- fan-out (view-upstreams) ----

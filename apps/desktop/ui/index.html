@@ -22,6 +22,8 @@
 .hstat-l { display: inline-flex; align-items: center; gap: 4px; font-size: 10.5px; letter-spacing: .08em; color: var(--mast-dim2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .hstat-v { font-family: ui-monospace, Consolas, monospace; font-size: 21px; font-weight: 600; line-height: 1.3; color: var(--mast-text); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
 .hstat-s { font-size: 10px; color: var(--mast-faint); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+/* Silk label above the rate readout (instrument-panel lettering) */
+.hero-silk { font-size: 10px; letter-spacing: .1em; font-weight: 600; color: var(--mast-faint); }
 #hero-card .empty-t { color: var(--mast-dim); }
 #hero-power-state { color: var(--mast-text); }
 #hero-card .hint { color: var(--mast-dim); }
@@ -138,8 +140,9 @@
            Rates and traffic come only from the subscription kernel data source (anet proxy traffic has no counters, no faking); number roll via .odo component (driven by odoSet);
            narrow-screen reflow in head style block (≤860px summary wraps into even row, ≤720px switch shrinks to 64px) -->
       <div class="card" id="hero-card" style="display:flex;align-items:center;gap:20px;flex-wrap:wrap">
-        <!-- Left: rate readout row (large down / small up on same line) + dual-series chart (min-width:0 prevents squeezing the stat wall) -->
+        <!-- Left: silk label + rate readout row (large down / small up on same line) + dual-series chart (min-width:0 prevents squeezing the stat wall) -->
         <div class="hero-left" style="flex:1;min-width:0;display:flex;flex-direction:column;gap:6px">
+          <span class="hero-silk" data-i18n="home.rateSilk">实时速率 · 60S</span>
           <div style="display:flex;align-items:baseline;gap:16px">
             <span style="font-size:24px;font-weight:600;color:var(--chart-down);font-variant-numeric:tabular-nums;white-space:nowrap">↓&nbsp;<span class="odo" id="hero-rate-down">-</span></span>
             <span style="font-size:16px;color:var(--chart-up);font-variant-numeric:tabular-nums;white-space:nowrap">↑&nbsp;<span class="odo" id="hero-rate-up">-</span></span>
@@ -165,11 +168,13 @@
             <span class="hstat-v" id="hero-mode" style="font-size:14px">-</span>
           </div>
         </div>
-        <!-- Right: proxy master switch + status text (handy position for right-handed users) -->
-        <div style="display:flex;flex-direction:column;align-items:center;gap:6px;flex-shrink:0">
+        <!-- Right: proxy master switch + side state block (status line + one-time hint) -->
+        <div style="display:flex;align-items:center;gap:14px;flex-shrink:0">
           <button id="btn-power" class="power-btn" title="代理总开关" data-i18n-title="home.powerTitle"><i data-ic="power" data-sz="32"></i></button>
-          <div id="hero-power-state" style="font-size:12px;font-weight:600;text-align:center;max-width:120px">已停止</div>
-          <div class="hint" id="hero-power-hint" style="margin-top:0;display:none;text-align:center;font-size:10px;max-width:120px"></div>
+          <div style="display:flex;flex-direction:column;gap:2px;max-width:150px">
+            <div id="hero-power-state" style="font-size:12px;font-weight:600">已停止</div>
+            <div class="hint" id="hero-power-hint" style="margin-top:0;display:none;font-size:10px"></div>
+          </div>
         </div>
       </div>
 
@@ -222,13 +227,15 @@
           </div>
         </div>
 
-        <!-- Fan-in: client role switch + connected/saved counts (click card to open fan-in page) -->
+        <!-- Fan-in: client role switch + connected/saved counts + saved-node mini rows (click card to open fan-in page) -->
         <div class="dcard" id="dc-fanin" data-goto="nodes">
           <div class="dc-head"><i data-ic="orbit" data-sz="15"></i><span data-i18n="term.fanin">扇入</span> <span id="d-fanin-off" style="display:none"><span class="badge b-off" data-i18n="home.faninOff">已停用</span></span>
+            <span class="dc-goto"><i data-ic="chevron-right" data-sz="13"></i></span>
             <label class="switch dc-switch local-only"><input type="checkbox" id="r-client" checked><span class="slider"></span></label>
           </div>
           <div class="dc-val" id="d-fanin-val">-</div>
           <div class="dc-sub" id="d-fanin-sub">扇入加载中…</div>
+          <div class="mini-rows" id="d-fanin-mini" style="display:none"></div>
           <div class="dc-tf" id="d-fanin-tf" style="display:none"></div>
           <div class="dc-spark" id="d-fanin-spark" style="display:none"></div>
         </div>
@@ -236,6 +243,7 @@
         <!-- Fan-out: listen switch + connected count + API/Relay address summary (click card to open fan-out page; server role is Beta lab) -->
         <div class="dcard local-only" id="dc-fanout" data-goto="upstreams">
           <div class="dc-head"><i data-ic="git-fork" data-sz="15"></i><span data-i18n="term.fanout">扇出</span> <span class="badge-beta">Beta</span> <span id="d-server-badge"></span>
+            <span class="dc-goto"><i data-ic="chevron-right" data-sz="13"></i></span>
             <label class="switch dc-switch"><input type="checkbox" id="d-server"><span class="slider"></span></label>
           </div>
           <div class="dc-val" id="d-fanout-val">-</div>
@@ -245,6 +253,7 @@
         <!-- Subscription: kernel switch + active subscription/node count + current node latency; shows guide state when feature not activated -->
         <div class="dcard local-only" id="dc-sub" data-goto="subscription">
           <div class="dc-head"><i data-ic="satellite" data-sz="15"></i><span data-i18n="term.subscription">订阅</span> <span id="d-sub-badge"></span>
+            <span class="dc-goto"><i data-ic="chevron-right" data-sz="13"></i></span>
             <label class="switch dc-switch" id="d-sub-switch"><input type="checkbox" id="d-sub"><span class="slider"></span></label>
           </div>
           <div id="d-sub-body">
@@ -275,7 +284,7 @@
           <div class="dc-head"><i data-ic="activity" data-sz="15"></i><span data-i18n="home.netCheck">网络检测</span>
             <span class="h3-tools"><button class="ghost small icon-btn" id="btn-net-refresh" title="重新探测" data-i18n-title="home.reprobe"><i data-ic="refresh-cw" data-sz="13"></i></button></span>
           </div>
-          <div class="dc-val mono" id="d-net-ip">探测中…</div>
+          <div class="dc-ip-row"><span class="dc-val mono" id="d-net-ip">探测中…</span><button class="ghost small icon-btn" id="btn-net-copy" title="复制出口 IP" data-i18n-title="home.copyIp"><i data-ic="copy" data-sz="13"></i></button></div>
           <div class="dc-sub" id="d-net-geo"></div>
           <div class="dc-kv"><span class="k" data-i18n="home.lanIp">内网 IP</span><span class="mono v2" id="d-net-lan">-</span></div>
         </div>

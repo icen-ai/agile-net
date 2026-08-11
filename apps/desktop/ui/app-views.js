@@ -956,6 +956,26 @@ function updateDashFanin() {
     sparkEl.style.display = has ? '' : 'none';
     if (has) AgChart.sparkline(sparkEl, _tfSeries.length > 1 ? _tfSeries : [0, 0]);
   }
+  /* Saved-node mini rows (≤3): status dot + name + addr + one-click connect (click delegation in app.js dash-grid handler) */
+  const mini = $('d-fanin-mini');
+  if (mini) {
+    const statusMap = window._nodeStatus || {};
+    const rows = (window._credsRaw || []).slice(0, 3);
+    const msig = JSON.stringify([rows, statusMap, AgI18n.lang]);
+    if (mini.dataset.sig !== msig) {
+      mini.dataset.sig = msig;
+      mini.style.display = rows.length ? '' : 'none';
+      mini.innerHTML = rows.map(([key, c]) => {
+        const st = statusMap[key];
+        const on = st === 'Connected';
+        const busy = st === 'Connecting' || st === 'Reconnecting' || st === 'PendingApproval';
+        const name = (c.name && c.name.trim()) || (key.includes('@') ? key.slice(0, key.indexOf('@')) : key);
+        const btn = on || st === 'Blocked' ? '' : '<button class="ghost small" data-mini-conn="' + esc(key) + '">' + AgI18n.t('views.connect') + '</button>';
+        return '<div class="mini-row"><span class="mr-dot' + (on ? ' on' : (busy ? ' warn' : '')) + '"></span>' +
+          '<span class="mr-name">' + esc(name) + '</span><span class="mr-addr">' + esc(c.addr) + '</span>' + btn + '</div>';
+      }).join('');
+    }
+  }
 }
 
 /* ================= Fan-in list (saved fan-ins as main body + unsaved active connections; connect/disconnect/export/delete) ================= */

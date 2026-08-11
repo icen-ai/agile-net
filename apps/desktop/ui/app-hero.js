@@ -212,12 +212,14 @@ const Onboarding = {
     card.style.display = '';
     if (sig !== this._sig) {
       this._sig = sig;
+      // Horizontal step band (v2): done steps get a filled check + grayed title; undone steps keep the 「去完成」 jump
       $('ob-list').innerHTML = OB_STEPS.map((s, i) =>
-        '<div class="role-row">' +
-        '<div class="role-info"><b><input type="checkbox" disabled' + (done[i] ? ' checked' : '') + '> ' + esc(AgI18n.t(s.label)) + '</b>' +
-        '<span class="hint">' + esc(AgI18n.t(s.desc)) + '</span></div>' +
+        '<div class="ob-step' + (done[i] ? ' done' : '') + '">' +
+        '<span class="ob-check">' + AgIcon('check', 11) + '</span>' +
+        '<div class="ob-text"><span class="ob-t">' + esc(AgI18n.t(s.label)) + '</span>' +
+        '<span class="ob-d">' + esc(AgI18n.t(s.desc)) + '</span>' +
         (!done[i] && s.goto ? '<button class="ghost small" data-ob-goto="' + s.goto + '">' + AgI18n.t('hero.obGo') + '</button>' : '') +
-        '</div>').join('');
+        '</div></div>').join('');
     }
     if (all && !this._doneTimer) {
       setText('ob-title', AgI18n.t('hero.obAllDone'));

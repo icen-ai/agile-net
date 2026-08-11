@@ -301,8 +301,15 @@ window.addEventListener('DOMContentLoaded', async () => {
   };
   $('d-proxy').onchange = toggleProxy;
   $('btn-net-refresh').onclick = () => { NetProbe.refresh(true); NetProbe.refreshLan(); };
+  $('btn-net-copy').onclick = () => {
+    const t = ($('d-net-ip').textContent || '').trim();
+    if (!t || t === AgI18n.t('hero.probeLoading') || t === AgI18n.t('hero.probeFailed')) return;
+    navigator.clipboard.writeText(t).then(() => toast(AgI18n.t('common.copied'), 'ok'), () => {});
+  };
   // Dashboard cards: clicking a non-switch/button area jumps to the matching view (switches handle themselves via change events)
   $('dash-grid').addEventListener('click', (e) => {
+    const mini = e.target.closest('[data-mini-conn]');
+    if (mini) { reconnectSaved(mini.dataset.miniConn, mini); return; } // fan-in card mini-row one-click connect
     if (e.target.closest('.switch, button, input, select, a, .group-tabs')) return;
     const card = e.target.closest('[data-goto]');
     if (card) switchView(card.dataset.goto);

@@ -347,14 +347,19 @@ tr:last-child td { border-bottom: none; }
 .dash-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(258px, 1fr)); gap: 12px; margin-bottom: 14px; }
 .dcard { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 13px 15px; box-shadow: var(--shadow-1); display: flex; flex-direction: column; gap: 8px; min-width: 0; align-items: flex-start; }
 .dcard > * { width: 100%; }
+.dcard > .group-tabs { width: fit-content; } /* segmented control hugs its options (instrument well), not full-width */
 .dcard[data-goto] { cursor: pointer; transition: border-color .15s, box-shadow var(--dur) var(--ease), transform var(--dur) var(--ease); }
 .dcard[data-goto]:hover { border-color: var(--border2); transform: translateY(-1px); box-shadow: var(--shadow-2); }
 .dc-head { display: flex; align-items: center; gap: 7px; color: var(--text-strong); font-size: 13px; font-weight: 600; }
 .dc-head .dc-switch, .dc-head .h3-tools { margin-left: auto; }
+/* Clickable cards: head chevron fades in on hover (no lift — v2 hover language is border + head-band deepening) */
+.dc-head .dc-goto { margin-left: auto; display: inline-flex; color: var(--dim2); opacity: 0; transition: opacity .15s; }
+.dc-head .dc-goto ~ .dc-switch { margin-left: 0; }
+.dcard[data-goto]:hover .dc-goto { opacity: 1; }
 .dc-val { font-size: 19px; font-weight: 600; color: var(--text-strong); font-variant-numeric: tabular-nums; line-height: 1.35; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dc-sub { font-size: 11.5px; color: var(--dim2); line-height: 1.5; }
 .dc-tf { font-size: 11.5px; color: var(--dim); font-variant-numeric: tabular-nums; line-height: 1.5; }
-.dc-spark { height: 28px; margin-top: 6px; }
+.dc-spark { height: 28px; margin-top: auto; padding-top: 6px; } /* sinks to the card bottom so same-row cards align */
 .dc-kv { display: flex; justify-content: space-between; align-items: center; gap: 10px; font-size: 12.5px; }
 .dc-kv .k { color: var(--dim); flex-shrink: 0; }
 .dc-kv .v2 { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -493,6 +498,34 @@ label, .modal label { font-size: 11px; font-weight: 600; letter-spacing: .03em; 
 .dcard.off .dc-head { background: transparent; box-shadow: none; border-bottom-color: var(--row-border); color: var(--dim2); }
 .dcard.off > *:not(.dc-head) { opacity: .45; }
 html[data-theme="dark"] .dcard.off > *:not(.dc-head) { opacity: .38; }
+
+/* Onboarding checklist: horizontal step band (home v2); ≤720px falls back to stacked rows */
+#ob-list { flex-direction: row; align-items: stretch; gap: 0; }
+#ob-list .ob-step { flex: 1; display: flex; align-items: flex-start; gap: 9px; padding: 6px 12px; min-width: 0; }
+#ob-list .ob-step + .ob-step { border-left: 1px solid var(--row-border); }
+#ob-list .ob-check { width: 18px; height: 18px; border-radius: 50%; border: 1.5px solid var(--border2); flex-shrink: 0; margin-top: 2px; display: flex; align-items: center; justify-content: center; color: transparent; }
+#ob-list .ob-step.done .ob-check { background: var(--ok); border-color: var(--ok); color: #fff; }
+#ob-list .ob-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+#ob-list .ob-t { font-size: 12.5px; font-weight: 600; color: var(--text-strong); line-height: 1.45; }
+#ob-list .ob-step.done .ob-t { color: var(--dim2); font-weight: 500; }
+#ob-list .ob-d { font-size: 11px; color: var(--dim2); line-height: 1.5; }
+#ob-list .ob-step .ghost { align-self: flex-start; margin-top: 4px; }
+@media (max-width: 720px) {
+  #ob-list { flex-direction: column; }
+  #ob-list .ob-step + .ob-step { border-left: none; border-top: 1px solid var(--row-border); }
+}
+
+/* Fan-in card: saved-node mini rows (status dot + name + addr + one-click connect; rendered by updateDashFanin) */
+.mini-rows { display: flex; flex-direction: column; gap: 6px; }
+.mini-row { display: flex; align-items: center; gap: 8px; padding: 5px 10px; background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; }
+.mini-row .mr-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--border2); flex-shrink: 0; }
+.mini-row .mr-dot.on { background: var(--ok); box-shadow: 0 0 0 3px var(--ok-bg); }
+.mini-row .mr-dot.warn { background: var(--warn); box-shadow: 0 0 0 3px var(--warn-bg); }
+.mini-row .mr-name { font-size: 12px; font-weight: 600; color: var(--text-strong); white-space: nowrap; max-width: 42%; overflow: hidden; text-overflow: ellipsis; }
+.mini-row .mr-addr { flex: 1; font-size: 10.5px; color: var(--dim2); font-family: ui-monospace, Consolas, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Network-probe card: exit-IP row with inline copy button */
+.dc-ip-row { display: flex; align-items: center; gap: 6px; }
 
 /* Fan-in row inline rename (click the name or the pencil; input swaps in place, Enter saves / Esc cancels) */
 .cred-name { cursor: text; border-bottom: 1px dashed transparent; }
