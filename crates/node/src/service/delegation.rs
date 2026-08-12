@@ -382,6 +382,7 @@ impl DelegationEngine {
             }
         }
         let mut map = std::collections::HashMap::new();
+        let names_by_id = db.group_names_by_id().unwrap_or_default();
         for rec in db.list_delegated_tokens().unwrap_or_default() {
             match e2e_key_of(db, &rec) {
                 Ok(key) => {
@@ -389,7 +390,7 @@ impl DelegationEngine {
                     let group_ids: Vec<String> = serde_json::from_str(&rec.groups).unwrap_or_default();
                     let groups = group_ids
                         .iter()
-                        .filter_map(|gid| db.get_group(gid).ok().flatten().map(|g| g.name))
+                        .filter_map(|gid| names_by_id.get(gid).cloned())
                         .collect();
                     map.insert(
                         agile_net_core::relay::e2e::kid_of(&rec.token_hash).to_string(),
@@ -418,11 +419,10 @@ impl DelegationEngine {
         let mut map = std::collections::HashMap::new();
         // list_groups is paged; local group counts are small, pull one generous page
         let (groups, _) = db.list_groups(1, 10000, None, None).unwrap_or_default();
+        // One bulk fetch for all group→rules bindings (avoids an N+1 per-group query).
+        let rules_by_group = db.rules_by_group_all().unwrap_or_default();
         for g in groups {
-            let rules: Vec<String> = db
-                .rules_of_group(&g.id)
-                .map(|rs| rs.into_iter().map(|r| r.value).collect())
-                .unwrap_or_default();
+            let rules: Vec<String> = rules_by_group.get(&g.id).cloned().unwrap_or_default();
             map.insert(
                 g.name,
                 std::sync::Arc::new(GroupEntry {

@@ -223,6 +223,27 @@ impl Database {
         Ok(items)
     }
 
+    /// All group→rules bindings in one query (group_id -> values). Used by the enforcement-cache
+    /// rebuilds (refresh_groups) to avoid an N+1 per-group round-trip on startup and every
+    /// group/rule change.
+    pub fn rules_by_group_all(&self) -> Result<std::collections::HashMap<String, Vec<String>>> {
+        let conn = self.conn();
+        let mut stmt = conn
+            .prepare(
+                "SELECT gr.group_id, r.value FROM rule r JOIN group_rule gr ON r.id = gr.rule_id ORDER BY gr.group_id, r.value",
+            )
+            .map_err(db_err)?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+            .map_err(db_err)?;
+        let mut map: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+        for r in rows {
+            let (gid, value) = r.map_err(db_err)?;
+            map.entry(gid).or_default().push(value);
+        }
+        Ok(map)
+    }
+
     // ==================== Group ====================
 
     pub fn list_groups(
@@ -275,6 +296,24 @@ impl Database {
             Some(r) => Some(map_group_row(r).map_err(db_err)?),
             None => None,
         })
+    }
+
+    /// Group id -> name in one query (for cache rebuilds resolving token group ids en masse;
+    /// avoids a per-id get_group round-trip on startup and every issuance/rule change).
+    pub fn group_names_by_id(&self) -> Result<std::collections::HashMap<String, String>> {
+        let conn = self.conn();
+        let mut stmt = conn
+            .prepare("SELECT id, name FROM \"group\"")
+            .map_err(db_err)?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+            .map_err(db_err)?;
+        let mut map = std::collections::HashMap::new();
+        for r in rows {
+            let (id, name) = r.map_err(db_err)?;
+            map.insert(id, name);
+        }
+        Ok(map)
     }
 
     /// Look up a LOCAL group by name (adopted mirrors excluded — name uniqueness is per-tier:
