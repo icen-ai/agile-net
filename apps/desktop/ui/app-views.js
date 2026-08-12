@@ -725,7 +725,10 @@ async function refreshAdminEntry() {
 function initAdminMode() {
   $('nav-admin-back').onclick = exitAdmin;
   document.querySelectorAll('#nav-admin .nav-item[data-aview]').forEach(n => {
+    n.setAttribute('role', 'button');
+    n.setAttribute('tabindex', '0');
     n.onclick = () => adminNavActivate(n.dataset.aview);
+    n.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); adminNavActivate(n.dataset.aview); } };
   });
   // embedded admin console (SPA) toasts routed into Dynamic Island (origin-checked, only from the current admin iframe)
   window.addEventListener('message', async (e) => {
@@ -1377,11 +1380,15 @@ async function refreshUpstreams() {
   try {
     FO_ITEMS = await invoke('list_server_connectors');
   } catch (e) { $('fo-list').innerHTML = '<div class="empty">' + AgI18n.t('views.load-failed') + '</div>'; return false; }
+  const sig = JSON.stringify(FO_ITEMS);
+  const list = $('fo-list');
+  if (list.dataset.sig === sig) return true; // signature guard: no repaint when unchanged
+  list.dataset.sig = sig;
   if (!FO_ITEMS.length) {
-    $('fo-list').innerHTML = '<div class="empty">' + AgI18n.t('views.fo-empty') + '</div>';
+    list.innerHTML = '<div class="empty">' + AgI18n.t('views.fo-empty') + '</div>';
     return true;
   }
-  $('fo-list').innerHTML = FO_ITEMS.map(c =>
+  list.innerHTML = FO_ITEMS.map(c =>
     '<div class="node-card"><div class="info">' +
     '<div class="name">' + esc(c.name || c.upstream_addr) + ' ' + foBadge(c) + '</div>' +
     // live upstream identity (self-declared node name + TLS verification tier mark)

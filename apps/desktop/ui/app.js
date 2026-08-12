@@ -128,8 +128,18 @@ function initTitlebar() {
 window.addEventListener('DOMContentLoaded', async () => {
   Island.init();
   bindSearch();
-  document.querySelectorAll('#nav-client .nav-item').forEach(n => n.onclick = () => switchView(n.dataset.view));
-  document.querySelectorAll('#bnav .bnav-item').forEach(n => n.onclick = () => switchView(n.dataset.view));
+  document.querySelectorAll('#nav-client .nav-item').forEach(n => {
+    n.setAttribute('role', 'button');
+    n.setAttribute('tabindex', '0');
+    n.onclick = () => switchView(n.dataset.view);
+    n.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); switchView(n.dataset.view); } };
+  });
+  document.querySelectorAll('#bnav .bnav-item').forEach(n => {
+    n.setAttribute('role', 'button');
+    n.setAttribute('tabindex', '0');
+    n.onclick = () => switchView(n.dataset.view);
+    n.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); switchView(n.dataset.view); } };
+  });
   initAdminMode();
   initUpstreams();
   initRules();

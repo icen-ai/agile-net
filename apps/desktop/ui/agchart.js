@@ -417,7 +417,7 @@ Chart.prototype._drawHover = function () {
       row.appendChild(chip);
       var nm = document.createElement('span');
       nm.className = 'n';
-      nm.textContent = sv.name || '值';
+      nm.textContent = sv.name || (window.AgI18n ? AgI18n.t('chart.value') : '值');
       row.appendChild(nm);
       var vv = document.createElement('span');
       vv.className = 'v';
@@ -591,7 +591,10 @@ Heat.prototype._build = function (days, hours) {
 Heat.prototype.update = function (cfg) {
   cfg = cfg || {};
   var vals = normHeat(cfg.values);
-  var days = Array.isArray(cfg.days) && cfg.days.length === 7 ? cfg.days : ['一', '二', '三', '四', '五', '六', '日'];
+  var days = Array.isArray(cfg.days) && cfg.days.length === 7 ? cfg.days
+    : (window.AgI18n
+      ? ['chart.d0', 'chart.d1', 'chart.d2', 'chart.d3', 'chart.d4', 'chart.d5', 'chart.d6'].map(function (k) { return AgI18n.t(k); })
+      : ['一', '二', '三', '四', '五', '六', '日']);
   var hours = Array.isArray(cfg.hours) && cfg.hours.length === 24 ? cfg.hours : [];
   if (!hours.length) { for (var i = 0; i < 24; i++) hours.push(i); }
   if (cfg.hourMarks) hours.marks = cfg.hourMarks;

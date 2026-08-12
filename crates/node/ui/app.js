@@ -348,7 +348,14 @@ function closeModal() {
 function confirmAction(text, onYes) {
   openModal(T('adm.confirmTitle'), '<p style="color:var(--dim)">' + esc(text) + '</p>', [
     {label: T('common.cancel'), kind:'ghost', fn: closeModal},
-    {label: T('adm.confirmExec'), kind:'danger', fn: async () => { closeModal(); await onYes(); }},
+    {label: T('adm.confirmExec'), kind:'danger', fn: async (e) => {
+      // Disable before awaiting so a double-click / double-Enter can't fire the side effect twice.
+      const b = e.currentTarget;
+      if (b.disabled) return;
+      b.disabled = true;
+      try { await onYes(); }
+      finally { closeModal(); }
+    }},
   ]);
 }
 

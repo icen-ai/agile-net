@@ -176,4 +176,13 @@ AgI18n.register({
   'badge.authTls': { zh: '已认证 · TLS 验证', en: 'Verified · TLS' },
   'badge.local': { zh: '本机', en: 'Local' },
   'badge.mirror': { zh: '只读镜像', en: 'Read-only mirror' },
+  // ---- shared chart (agchart.js) ----
+  'chart.value': { zh: '值', en: 'Value' },
+  'chart.d0': { zh: '一', en: 'Mon' },
+  'chart.d1': { zh: '二', en: 'Tue' },
+  'chart.d2': { zh: '三', en: 'Wed' },
+  'chart.d3': { zh: '四', en: 'Thu' },
+  'chart.d4': { zh: '五', en: 'Fri' },
+  'chart.d5': { zh: '六', en: 'Sat' },
+  'chart.d6': { zh: '日', en: 'Sun' },
 });
