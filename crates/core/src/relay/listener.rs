@@ -10,8 +10,8 @@
 use crate::error::{Error, Result};
 use crate::proto::frame::{Frame, FrameType};
 use crate::proto::message::{
-    AuthKind, AuthRequest, Concurrency, FailReason, OpenChannel, OpenFailed, PROTOCOL_VERSION,
-    PROTOCOL_VERSION_FLOW_CONTROL, reason,
+    AuthKind, AuthRequest, CertRecord, Concurrency, FailReason, OpenChannel, OpenFailed,
+    PROTOCOL_VERSION, PROTOCOL_VERSION_FLOW_CONTROL, reason,
 };
 use crate::proxy::router::{Outbound, ProxyRouter};
 use crate::relay::acl::PeerAcl;
@@ -305,6 +305,13 @@ pub struct SessionCloseRecord {
 /// Session-close sink (node layer flushes device_session + folds cumulative counters).
 pub type SessionCloseHook = Arc<dyn Fn(SessionCloseRecord) + Send + Sync>;
 
+/// M6 cert-propagation intake: (origin session node_id, records) -> node-layer adoption.
+pub type CertInHook = Arc<dyn Fn(String, Vec<CertRecord>) + Send + Sync>;
+
+/// One consumer session key -> its live mux handles (a delegated consumer may hold several
+/// concurrent sessions under the same token within max_sessions).
+type ClientHandles = Vec<(String, Arc<MuxSession>)>;
+
 /// Connected node session
 pub struct PeerSession {
     pub node_id: String,
@@ -399,7 +406,7 @@ pub struct RelayListener {
     routes: Arc<arc_swap::ArcSwap<AdvertisedRoutes>>,
     /// Online consumer sessions (session key -> session handle list, for online checks and forced
     /// disconnect; delegated consumers key on `delegated:<token_hash>:<node_id>`)
-    clients: Arc<DashMap<String, Vec<(String, Arc<MuxSession>)>>>,
+    clients: Arc<DashMap<String, ClientHandles>>,
     /// Proven device identity + connection metadata, keyed by unique session id (M3 session
     /// tables); entries die with their session
     session_meta: Arc<DashMap<String, SessionMeta>>,
@@ -422,7 +429,7 @@ pub struct RelayListener {
     /// Session-close sink (M5 device_session ledger flush)
     session_close_hook: Option<SessionCloseHook>,
     /// M6 cert-propagation intake (origin node_id of the fan-in session, records)
-    cert_in_hook: Option<Arc<dyn Fn(String, Vec<crate::proto::message::CertRecord>) + Send + Sync>>,
+    cert_in_hook: Option<CertInHook>,
 }
 
 impl RelayListener {
@@ -521,10 +528,7 @@ impl RelayListener {
     }
 
     /// M6 cert-propagation intake: (origin session node_id, records) -> node-layer adoption.
-    pub fn with_cert_in_hook(
-        mut self,
-        hook: Arc<dyn Fn(String, Vec<crate::proto::message::CertRecord>) + Send + Sync>,
-    ) -> Self {
+    pub fn with_cert_in_hook(mut self, hook: CertInHook) -> Self {
         self.cert_in_hook = Some(hook);
         self
     }
@@ -965,14 +969,11 @@ impl RelayListener {
             } else {
                 // consumer session: skip relay-transit (the token belongs to a remote issuer,
                 // this node is just a relay and has no authority to disconnect the consumer)
-                if key.starts_with("delegated:") {
-                    if let Some(rest) = key.strip_prefix("delegated:") {
-                        if let Some(hash) = rest.split(':').next() {
-                            if !self.local_delegated.contains_key(hash) {
-                                continue; // relay-transit — off-limits
-                            }
-                        }
-                    }
+                if let Some(rest) = key.strip_prefix("delegated:")
+                    && let Some(hash) = rest.split(':').next()
+                    && !self.local_delegated.contains_key(hash)
+                {
+                    continue; // relay-transit — off-limits
                 }
                 n += self.disconnect_client(&key, reason_code, message).await;
             }

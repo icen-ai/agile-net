@@ -22,7 +22,7 @@ fn get_free_addr() -> SocketAddr {
 /// Port-allocation race guard: get_free_addr releases the probe socket before rebinding, so
 /// parallel tests can collide on the same port (TLS cross-talk: "got ClientHello"). Serialize
 /// the network tests — the probe-bind/listen sequence stays fast enough for that.
-static NET_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static NET_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// AT-M2-01: frame encode/decode roundtrip
 #[test]
@@ -61,7 +61,7 @@ fn frame_roundtrip_all_types() {
 /// AT-M2-02: TLS tunnel establishment and bidirectional communication
 #[tokio::test]
 async fn tls_tunnel_established() -> Result<()> {
-    let _net_guard = NET_TEST_LOCK.lock().unwrap();
+    let _net_guard = NET_TEST_LOCK.lock().await;
     let addr = get_free_addr();
     let token = "secret_token_123";
 
@@ -88,7 +88,7 @@ async fn tls_tunnel_established() -> Result<()> {
 /// AT-M2-04: auth failure rejected
 #[tokio::test]
 async fn auth_rejected_with_wrong_token() -> Result<()> {
-    let _net_guard = NET_TEST_LOCK.lock().unwrap();
+    let _net_guard = NET_TEST_LOCK.lock().await;
     let addr = get_free_addr();
     let listener = std::sync::Arc::new(RelayListener::new(addr, "correct_token")?);
     tokio::spawn(async move {
@@ -109,7 +109,7 @@ async fn auth_rejected_with_wrong_token() -> Result<()> {
 /// AT-M2-03: TCP passthrough E2E
 #[tokio::test]
 async fn tcp_passthrough() -> Result<()> {
-    let _net_guard = NET_TEST_LOCK.lock().unwrap();
+    let _net_guard = NET_TEST_LOCK.lock().await;
     let echo_addr = get_free_addr();
     let relay_addr = get_free_addr();
     let token = "passthrough_token";
@@ -163,7 +163,7 @@ async fn tcp_passthrough() -> Result<()> {
 /// AT-M2-07: concurrent data channels
 #[tokio::test]
 async fn concurrent_data_channels() -> Result<()> {
-    let _net_guard = NET_TEST_LOCK.lock().unwrap();
+    let _net_guard = NET_TEST_LOCK.lock().await;
     let echo_addr = get_free_addr();
     let relay_addr = get_free_addr();
     let token = "concurrent_token";
@@ -228,7 +228,7 @@ async fn concurrent_data_channels() -> Result<()> {
 /// authorizable pool (peer_offers), and are cleared when the session drops.
 #[tokio::test]
 async fn pushed_groups_pool_and_disconnect_clear() -> Result<()> {
-    let _net_guard = NET_TEST_LOCK.lock().unwrap();
+    let _net_guard = NET_TEST_LOCK.lock().await;
     use agile_net_core::proto::message::PushedGroupMsg;
     let addr = get_free_addr();
     let token = "secret_token_123";

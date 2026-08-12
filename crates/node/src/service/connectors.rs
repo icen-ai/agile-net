@@ -625,14 +625,13 @@ impl ConnectorManager {
                             peer_ip: String::new(),
                             sessions,
                         };
-                        if let Ok(payload) = serde_json::to_vec(&report) {
-                            if mux
+                        if let Ok(payload) = serde_json::to_vec(&report)
+                            && mux
                                 .send_frame(Frame::new(FrameType::Ctrl, 0, payload))
                                 .await
                                 .is_err()
-                            {
-                                break; // session died; next tick re-evaluates
-                            }
+                        {
+                            break; // session died; next tick re-evaluates
                         }
                     }
                 }

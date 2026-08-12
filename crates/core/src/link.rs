@@ -307,6 +307,7 @@ pub fn build_fanout_url(
 /// order (per-entry relay fingerprints; an empty item falls back to TOFU). The token lives in
 /// `password` — a delegated credential is a pure data-plane key: the client dials the relay
 /// directly (no API roundtrip), so the server param always carries an explicit relay port.
+#[allow(clippy::too_many_arguments)]
 pub fn build_delegate_url(
     primary_addr: &str,
     label: &str,

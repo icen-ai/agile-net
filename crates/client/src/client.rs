@@ -1219,11 +1219,10 @@ async fn fetch_and_apply_deleg_config(
     // node a link terminates at, even if the vocabulary didn't change
     if !cfg.issuer_node_name.is_empty()
         && let Some(mut h) = inner.nodes.get_mut(node_id)
+        && h.state.issuer_node_name != cfg.issuer_node_name
     {
-        if h.state.issuer_node_name != cfg.issuer_node_name {
-            h.state.issuer_node_name = cfg.issuer_node_name.clone();
-            inner.touch_state();
-        }
+        h.state.issuer_node_name = cfg.issuer_node_name.clone();
+        inner.touch_state();
     }
     // certification state overlay (M3-T2): a relay-entry pending device learns it here
     // (the config channel is the only issuer-reachable path for a gated consumer)

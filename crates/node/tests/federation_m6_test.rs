@@ -111,12 +111,13 @@ async fn m6_cert_propagation_and_revocation() {
     // B adopts (trusted origin): certified_by = C's fp
     let mut adopted = false;
     for _ in 0..50 {
-        if let Some(d) = b.db().get_device(&dev_fp).unwrap() {
-            if d.state == "certified" && d.certified_by == c_key.device_fp() {
-                assert_eq!(d.subject, "小明");
-                adopted = true;
-                break;
-            }
+        if let Some(d) = b.db().get_device(&dev_fp).unwrap()
+            && d.state == "certified"
+            && d.certified_by == c_key.device_fp()
+        {
+            assert_eq!(d.subject, "小明");
+            adopted = true;
+            break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }

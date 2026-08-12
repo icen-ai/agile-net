@@ -4,7 +4,7 @@
 
 use agile_net_node::api::{ApiState, NodeRuntime, create_app};
 use agile_net_node::auth::jwt::JwtService;
-use agile_net_node::db::{Database, hash_password};
+use agile_net_node::db::Database;
 use agile_net_node::logs::LogBuffer;
 use agile_net_node::service::connectors::ConnectorManager;
 use axum::{

@@ -196,7 +196,7 @@ impl Database {
         let mut stmt = conn.prepare(&sql).map_err(db_err)?;
         let params = rusqlite::params_from_iter(bind.iter().map(|b| b.as_ref()));
         let rows = stmt
-            .query_map(params, |r| map_device(r))
+            .query_map(params, map_device)
             .map_err(db_err)?
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(db_err)?;
@@ -330,7 +330,7 @@ impl Database {
             .query_row(
                 &format!("SELECT {DEVICE_COLS} FROM device_registry WHERE device_fp = ?1"),
                 params![old_fp],
-                |r| map_device(r),
+                map_device,
             )
             .map_err(|_| Error::NotFound(format!("device {old_fp} not found")))?;
         if old.state == "revoked" {
@@ -457,7 +457,7 @@ impl Database {
         };
         let mut stmt = conn.prepare(&sql).map_err(db_err)?;
         let rows = stmt
-            .query_map(rusqlite::params_from_iter(bind.iter()), |r| map_approval(r))
+            .query_map(rusqlite::params_from_iter(bind.iter()), map_approval)
             .map_err(db_err)?
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(db_err)?;

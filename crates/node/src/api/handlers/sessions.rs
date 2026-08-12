@@ -123,18 +123,15 @@ pub async fn kick_session(
     };
     // relay-transit consumer sessions: delegated:<token_hash>:<node_id> where token_hash is NOT
     // in the local registry → this node is just a relay, the token belongs to a remote issuer
-    if req.session_key.starts_with("delegated:") {
-        if let Some(rest) = req.session_key.strip_prefix("delegated:") {
-            if let Some(hash) = rest.split(':').next() {
-                if !listener.is_local_delegated_token(hash) {
-                    return err(
-                        StatusCode::FORBIDDEN,
-                        codes::FORBIDDEN,
-                        "relay-transit session: only the token issuer may kick this consumer",
-                    );
-                }
-            }
-        }
+    if let Some(rest) = req.session_key.strip_prefix("delegated:")
+        && let Some(hash) = rest.split(':').next()
+        && !listener.is_local_delegated_token(hash)
+    {
+        return err(
+            StatusCode::FORBIDDEN,
+            codes::FORBIDDEN,
+            "relay-transit session: only the token issuer may kick this consumer",
+        );
     }
     let n = if listener.is_peer_online(&req.session_key) {
         listener

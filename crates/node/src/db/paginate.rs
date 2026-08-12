@@ -9,12 +9,11 @@ use agile_net_core::error::Result;
 /// Whitelisted ORDER BY for the paged list endpoints: `sort` arrives as "col:dir"; the map pairs the
 /// public column id with its SQL fragment, so no raw input ever reaches the SQL text.
 pub(super) fn order_clause(sort: Option<&str>, map: &[(&str, &str)], default: &str) -> String {
-    if let Some(s) = sort {
-        if let Some((col, dir)) = s.split_once(':') {
-            if let Some((_, frag)) = map.iter().find(|(k, _)| *k == col) {
-                return format!("{} {}", frag, if dir == "asc" { "ASC" } else { "DESC" });
-            }
-        }
+    if let Some(s) = sort
+        && let Some((col, dir)) = s.split_once(':')
+        && let Some((_, frag)) = map.iter().find(|(k, _)| *k == col)
+    {
+        return format!("{} {}", frag, if dir == "asc" { "ASC" } else { "DESC" });
     }
     default.to_string()
 }

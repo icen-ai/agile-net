@@ -460,7 +460,7 @@ async fn issuer_disconnect_tombstone_yields_retryable_reason() {
     use agile_net_core::proto::message::reason;
 
     let addr = get_free_addr();
-    let listener = start_listener(addr).await;
+    let _ = start_listener(addr).await;
     let (issuer, mut acks) = issuer_peer(addr, "issuer-a", "node-psk").await;
     let token = "psk_delegated-tombstone";
     let hash = sha256_hex(token.as_bytes());
