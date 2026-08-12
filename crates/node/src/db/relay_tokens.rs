@@ -214,25 +214,25 @@ impl Database {
     pub fn check_relay_token(&self, token_hash: &str) -> Result<bool> {
         let conn = self.conn();
         let mut stmt = conn
-            .prepare("SELECT id, expires_at, max_uses, used_count FROM relay_token WHERE token_hash = ?1")
+            .prepare("SELECT id, expires_at FROM relay_token WHERE token_hash = ?1")
             .map_err(db_err)?;
         let mut rows = stmt.query(params![token_hash]).map_err(db_err)?;
         if let Some(r) = rows.next().map_err(db_err)? {
             let id: String = r.get(0).map_err(db_err)?;
             let expires_at: Option<String> = r.get(1).map_err(db_err)?;
-            let max_uses: Option<i64> = r.get(2).map_err(db_err)?;
-            let used_count: i64 = r.get(3).map_err(db_err)?;
-            if !super::pool::expiry_active(expires_at.as_deref())
-                || super::pool::uses_exhausted(max_uses, used_count)
-            {
+            if !super::pool::expiry_active(expires_at.as_deref()) {
                 return Ok(false);
             }
-            conn.execute(
-                "UPDATE relay_token SET last_used_at = ?1, used_count = used_count + 1 WHERE id = ?2",
-                params![now_rfc3339(), id],
-            )
-            .map_err(db_err)?;
-            Ok(true)
+            // Atomic check-and-increment: the usage cap is enforced in the UPDATE's WHERE clause,
+            // so concurrent auths can't overshoot max_uses (a read-then-write would race).
+            let changed = conn
+                .execute(
+                    "UPDATE relay_token SET last_used_at = ?1, used_count = used_count + 1 \
+                     WHERE id = ?2 AND (max_uses IS NULL OR used_count < max_uses)",
+                    params![now_rfc3339(), id],
+                )
+                .map_err(db_err)?;
+            Ok(changed > 0)
         } else {
             Ok(false)
         }

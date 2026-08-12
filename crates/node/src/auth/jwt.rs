@@ -129,6 +129,9 @@ impl JwtService {
     pub fn verify(&self, token: &str) -> Result<Claims> {
         let mut validation = Validation::default();
         validation.validate_exp = true;
+        // Fail closed: no clock-skew grace. An expired token is expired at the second boundary,
+        // not up to the library-default 60s later.
+        validation.leeway = 0;
         let data = decode::<Claims>(
             token,
             &DecodingKey::from_secret(self.secret.as_bytes()),

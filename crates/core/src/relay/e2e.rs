@@ -358,6 +358,14 @@ impl<S: AsyncRead + Unpin> AsyncRead for E2eStream<S> {
             }
 
             if self.inner_eof {
+                // Truncated tail ciphertext (a partial or undecodable record) is not a clean EOF —
+                // surface it so an upper layer can't mistake a cut-short stream for complete data.
+                if !self.read_enc.is_empty() {
+                    return Poll::Ready(Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "e2e stream truncated mid-record",
+                    )));
+                }
                 return Poll::Ready(Ok(())); // clean EOF with no pending plaintext
             }
 

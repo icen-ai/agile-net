@@ -175,6 +175,15 @@ pub async fn init(
     ClientIp(ip): ClientIp,
     Json(req): Json<InitRequest>,
 ) -> Response {
+    // This endpoint is anonymous until the first admin exists: rate-limit it like the other
+    // bootstrap path so a network-reachable node can't be brute-forced or first-use hijacked.
+    if state.bootstrap_limiter.check(ip).is_err() {
+        return err(
+            StatusCode::TOO_MANY_REQUESTS,
+            codes::RATE_LIMITED,
+            "too many init attempts, try again later",
+        );
+    }
     if state.db_call(|db| db.has_admin()).await.unwrap_or(true) {
         return err(
             StatusCode::FORBIDDEN,

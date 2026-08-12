@@ -166,12 +166,17 @@ pub fn sanitize_pushed_groups(
                         return false;
                     }
                     // reject cloud-metadata IPs in pushed rules — the classic SSRF pivot target
-                    // (169.254.169.254 is AWS/GCP/Azure metadata; a delegated consumer should
-                    // never reach the issuer's cloud metadata endpoint). Loopback and other
-                    // private ranges are left through — they may be legitimate local targets.
+                    // (169.254.169.254 is AWS/GCP/Azure metadata). Reject any non-default CIDR that
+                    // COVERS the metadata address (a wider 169.254.0.0/16 rule would otherwise reach
+                    // it); a delegated consumer should never touch the issuer's cloud metadata
+                    // endpoint. The 0.0.0.0/0 catch-all (full-route delegation) is preserved —
+                    // that's the issuer's explicit "route everything" intent, not a metadata pivot.
+                    // Loopback and other private ranges are left through (legitimate local targets).
                     if let Ok(net) = r.parse::<IpNetwork>() {
-                        return net.network_address()
-                            != std::net::IpAddr::V4(std::net::Ipv4Addr::new(169, 254, 169, 254));
+                        const METADATA: std::net::Ipv4Addr = std::net::Ipv4Addr::new(169, 254, 169, 254);
+                        if net.contains(std::net::IpAddr::V4(METADATA)) && !net.is_default_route() {
+                            return false;
+                        }
                     }
                     let lower = r.to_ascii_lowercase();
                     !lower.starts_with("169.254.169.254")
