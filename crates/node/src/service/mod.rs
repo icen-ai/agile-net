@@ -608,6 +608,7 @@ impl NodeServer {
             let listener = relay_listener.clone();
             startup.tasks.push(tokio::spawn(async move {
                 let mut last_version = db.config_version().unwrap_or(0);
+                let mut last_offer_sig = None;
                 let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
                 interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                 loop {
@@ -615,7 +616,7 @@ impl NodeServer {
                     // federation P1 acceptance: adopted groups follow their pushed sources
                     // (drift-only writes; the bump below re-enters this watcher on its own)
                     if let Some(l) = &listener {
-                        adoption::sync_adopted(&db, &l.peer_offers());
+                        adoption::sync_adopted(&db, &l.peer_offers(), &mut last_offer_sig);
                     }
                     let current = db.config_version().unwrap_or(last_version);
                     if current != last_version {

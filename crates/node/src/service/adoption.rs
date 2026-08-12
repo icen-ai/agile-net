@@ -6,9 +6,46 @@
 use crate::db::Database;
 use agile_net_core::relay::listener::PeerOffer;
 
+/// FNV-1a fingerprint of the pushed offers (deterministic, no allocation on the compare path).
+/// The adopted mirror's only input is the offer set, so an unchanged fingerprint means the
+/// full recompute (per-group SQL round-trips) can be skipped on the steady-state tick.
+fn offers_sig(offers: &[PeerOffer]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for o in offers {
+        for b in o.node_id.as_bytes() {
+            h ^= *b as u64;
+            h = h.wrapping_mul(0x1000_0000_01b3);
+        }
+        for g in &o.groups {
+            for b in g.name.as_bytes() {
+                h ^= *b as u64;
+                h = h.wrapping_mul(0x1000_0000_01b3);
+            }
+            for r in &g.rules {
+                for b in r.as_bytes() {
+                    h ^= *b as u64;
+                    h = h.wrapping_mul(0x1000_0000_01b3);
+                }
+            }
+            h ^= g.e2e_required as u64;
+            h = h.wrapping_mul(0x1000_0000_01b3);
+        }
+    }
+    h
+}
+
 /// Re-apply every adopted group's source state (rules + E2E flag); bumps config_version once
 /// when anything actually changed. Returns the number of changed groups.
-pub fn sync_adopted(db: &Database, offers: &[PeerOffer]) -> u32 {
+///
+/// `prev_sig` is the caller-held fingerprint of the last-synced offer set: when unchanged the
+/// recompute is skipped entirely (the 2s watcher tick stays zero-cost at steady state instead of
+/// re-issuing per-group SQL reads).
+pub fn sync_adopted(db: &Database, offers: &[PeerOffer], prev_sig: &mut Option<u64>) -> u32 {
+    let sig = offers_sig(offers);
+    if *prev_sig == Some(sig) {
+        return 0;
+    }
+    *prev_sig = Some(sig);
     let Ok(adopted) = db.list_adopted_groups() else {
         return 0;
     };
@@ -95,10 +132,11 @@ mod tests {
     fn mirror_follows_source_drift_and_stays_on_vanish() {
         let db = Database::in_memory().unwrap();
         let g = db.create_adopted_group("git", "上送", "peer-c", "git").unwrap();
+        let mut sig = None;
 
         // source appears with two rules -> mirrored
         let offers = vec![pushed("peer-c", "git", &["10.12.0.0/16", "git.internal"], false)];
-        assert_eq!(sync_adopted(&db, &offers), 1);
+        assert_eq!(sync_adopted(&db, &offers, &mut sig), 1);
         let vals: Vec<String> = db
             .rules_of_group(&g.id)
             .unwrap()
@@ -107,14 +145,17 @@ mod tests {
             .collect();
         assert_eq!(vals.len(), 2);
 
-        // source drifts (one rule swapped) -> follows; a second tick is a no-op (drift-only writes)
+        // unchanged offer set -> fingerprint skip (steady-state tick is zero-cost)
+        assert_eq!(sync_adopted(&db, &offers, &mut sig), 0);
+
+        // source drifts (one rule swapped) -> follows
         let offers = vec![pushed("peer-c", "git", &["10.12.0.0/16", "ops.internal"], true)];
-        assert_eq!(sync_adopted(&db, &offers), 2); // rules + e2e flag
-        assert_eq!(sync_adopted(&db, &offers), 0);
+        assert_eq!(sync_adopted(&db, &offers, &mut sig), 2); // rules + e2e flag
+        assert_eq!(sync_adopted(&db, &offers, &mut sig), 0); // drift-only writes: re-sync is a no-op
         assert!(db.get_group(&g.id).unwrap().unwrap().e2e_required);
 
         // source vanishes -> the last snapshot stays (rules untouched)
-        assert_eq!(sync_adopted(&db, &[]), 0);
+        assert_eq!(sync_adopted(&db, &[], &mut sig), 0);
         let vals: Vec<String> = db
             .rules_of_group(&g.id)
             .unwrap()
