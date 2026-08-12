@@ -86,7 +86,7 @@ Listener 比对令牌哈希（常数时间比较）
 | 维度 | 档位 | 安全语义 |
 |------|------|---------|
 | 入口 `entry_mode` | `direct` / `relay` | direct = 消费者直连签发者本机 listener，自注册进签发者本地持久注册表——TLS 已端到端（消费者↔签发者），**信任档锁明文**，无中继可泄露；relay = 经扇出容灾集合会合点，注册随上游会话存活 |
-| 信任档 | 明文 / E2E / E2E+管理档 | 引用组含 `e2e_required` 组时自动携带 entrust 路由词（`en_<令牌哈希前12hex>`），消费者全部 Open 端到端加密（HKDF(token) 密钥层次），中继只见不透明路由词、零规则泄露；管理档（`admin_scope` ro/rules/full）的引导票据经 E2E 配置通道下发，**绝不明文过中继** |
+| 信任档 | 明文 / E2E / E2E+管理档 | 引用组含 `e2e_required` 组时自动携带 entrust 路由词（`en_<令牌哈希前12hex>`），消费者全部 Open 端到端加密（随机主密钥 `ek` 经分享链接直送消费端，与认证令牌解耦），中继只见不透明路由词、零规则泄露；管理档（`admin_scope` ro/rules/full）的引导票据经 E2E 配置通道下发，**绝不明文过中继** |
 | 路由 `mode` | `dedicated` / `split` | 专线 = 全量路由；分流 = 词表经 E2E 配置通道（保留目标 `__anet_delegation_config__`）下发，要求 E2E 组 |
 | 并发 `concurrency` | `single` / `multi` | single = 同令牌新会话踢旧留新；multi = 多会话并存，listener 按 `max_sessions`（签发时 node_config `delegation_max_sessions` 快照，默认 8）上限执法，超限拒开 |
 
@@ -108,7 +108,7 @@ Listener 比对令牌哈希（常数时间比较）
 | admin access_token | JWT HS256 | 内存 |
 | admin refresh_token | JWT HS256 | jti 哈希落库，可吊销/轮换 |
 | relay psk | `psk_` + 48 位 | SHA-256 哈希落库，列表仅显示前缀 |
-| delegated token | `psk_` + 48 位 | SHA-256 哈希落库；E2E 主密钥 HKDF(token) AES-256-GCM 加密落库（可逆例外） |
+| delegated token | `psk_` + 48 位 | SHA-256 哈希落库；E2E 主密钥（随机 32 字节，与令牌解耦）AES-256-GCM 加密落库（可逆例外） |
 | 管理密码 | 用户自设 | argon2id 哈希落库（64MB / t=3 / p=4） |
 
 可逆存储例外（全库仅两处，均为 AES-256-GCM `v1:nonce_b64:ct_b64`，机器密钥
