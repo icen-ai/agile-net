@@ -212,7 +212,7 @@ impl Database {
     /// not reached); updates last_used_at and increments used_count on a live hit.
     /// An expired/exhausted token reports as a miss (auth rejects it like an unknown token).
     pub fn check_relay_token(&self, token_hash: &str) -> Result<bool> {
-        let conn = self.conn();
+        let conn = self.try_conn()?;
         let mut stmt = conn
             .prepare("SELECT id, expires_at FROM relay_token WHERE token_hash = ?1")
             .map_err(db_err)?;

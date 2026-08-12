@@ -42,8 +42,16 @@ impl Database {
         Ok(db)
     }
 
+    /// Fallible connection borrow. Data-plane auth paths use this so a poisoned/exhausted pool
+    /// fails closed (the validator rejects as unknown token) instead of panicking the task.
+    pub(crate) fn try_conn(&self) -> Result<r2d2::PooledConnection<SqliteConnectionManager>> {
+        self.pool
+            .get()
+            .map_err(|e| Error::Other(format!("db pool unavailable: {e}")))
+    }
+
     pub(crate) fn conn(&self) -> r2d2::PooledConnection<SqliteConnectionManager> {
-        self.pool.get().expect("db pool exhausted")
+        self.try_conn().expect("db pool exhausted")
     }
 }
 
