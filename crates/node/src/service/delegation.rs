@@ -24,7 +24,8 @@ pub(crate) fn concurrency_of(s: &str) -> Concurrency {
 }
 
 /// Issue a delegated token and set its disaster set (one row per upstream connector).
-/// Returns the record and the plaintext (shown once, inside the share link).
+/// Returns the record, the plaintext (shown once, inside the share link), and the E2E master key
+/// (base64; carried in the share link's `ek` word — never sent through the relay).
 ///
 /// `entry_mode`: `relay` = registered upstream via the disaster set (`regs` must be non-empty
 /// with exactly one primary); `direct` = the consumer dials this issuer's own listener (`regs`
@@ -41,7 +42,7 @@ pub fn issue_token(
     entry_mode: &str,
     concurrency: &str,
     max_sessions: i64,
-) -> Result<(DelegatedTokenRecord, String)> {
+) -> Result<(DelegatedTokenRecord, String, String)> {
     if label.len() > 128 {
         bail!("备注过长（≤128 字符）");
     }
@@ -107,8 +108,12 @@ pub fn issue_token(
         bail!("授权管理要求引用组含端到端加密组（票据经 E2E 通道下发）");
     }
 
-    let e2e_key = agile_net_core::relay::e2e::derive_key(&plaintext);
-    let e2e_key_enc = db.encrypt_secret(&agile_net_core::util::base64_encode(&e2e_key))?;
+    // The E2E master key is random and independent of the auth token: a relay authenticates the
+    // consumer with the token plaintext, so deriving the E2E key from it would let the relay
+    // decrypt every envelope it forwards. The key reaches the consumer only via the share link.
+    let e2e_key = agile_net_core::relay::e2e::random_key();
+    let e2e_key_b64 = agile_net_core::util::base64_encode(&e2e_key);
+    let e2e_key_enc = db.encrypt_secret(&e2e_key_b64)?;
     let groups_json = serde_json::to_string(group_ids)?;
     let hint_json = serde_json::to_string(&hint_map)?;
     let prefix: String = plaintext.chars().take(8).collect();
@@ -130,7 +135,7 @@ pub fn issue_token(
     )?;
     db.set_delegated_token_regs(&rec.id, regs)?;
     let rec = db.get_delegated_token(&rec.id)?.expect("just created");
-    Ok((rec, plaintext))
+    Ok((rec, plaintext, e2e_key_b64))
 }
 
 /// Delete a delegated token; returns the record (with regs) so the caller can send the
@@ -701,7 +706,7 @@ mod tests {
     }
 
     /// Issue a relay-mode token with a single-entry disaster set.
-    fn issue_relay(db: &Database, label: &str, group_ids: &[String], admin_scope: &str) -> (DelegatedTokenRecord, String) {
+    fn issue_relay(db: &Database, label: &str, group_ids: &[String], admin_scope: &str) -> (DelegatedTokenRecord, String, String) {
         let cid = mk_connector(db, &format!("up-{label}"));
         issue_token(db, label, group_ids, &[(cid, true)], "dedicated", admin_scope, "relay", "single", 8)
             .expect("issue relay token")
@@ -712,16 +717,20 @@ mod tests {
         let db = Database::in_memory().unwrap();
         let gid = mk_group(&db, "git");
 
-        let (rec, plaintext) = issue_relay(&db, "alice", std::slice::from_ref(&gid), "");
+        let (rec, plaintext, ek_b64) = issue_relay(&db, "alice", std::slice::from_ref(&gid), "");
         assert!(plaintext.starts_with("psk_"));
         assert_eq!(plaintext.len(), 4 + 48);
         assert_eq!(rec.token_prefix, plaintext[..8]);
         // DB holds the hash, never the plaintext
         assert_eq!(rec.token_hash, sha256_hex(plaintext.as_bytes()));
         assert_ne!(rec.e2e_key_enc, plaintext);
-        // E2E key recovers to HKDF(plaintext)
+        // The E2E key is random (NOT derivable from the token) and round-trips through the link's base64 word
         let key = e2e_key_of(&db, &rec).unwrap();
-        assert_eq!(key, agile_net_core::relay::e2e::derive_key(&plaintext));
+        assert_eq!(
+            agile_net_core::relay::e2e::key_from_b64(&ek_b64),
+            Some(key)
+        );
+        assert_ne!(key, agile_net_core::util::sha256_hex(plaintext.as_bytes()).as_bytes()[..32]);
         // disaster set persisted with the primary flag
         assert_eq!(rec.regs.len(), 1);
         assert!(rec.regs[0].is_primary);
@@ -763,7 +772,7 @@ mod tests {
         let gid = mk_group(&db, "git");
 
         // direct mode: no disaster set needed
-        let (rec, _) = issue_token(&db, "local-alice", &[gid], &[], "dedicated", "", "direct", "multi", 4)
+        let (rec, _, _) = issue_token(&db, "local-alice", &[gid], &[], "dedicated", "", "direct", "multi", 4)
             .expect("direct issue with empty regs");
         assert_eq!(rec.entry_mode, "direct");
         assert_eq!(rec.concurrency, "multi");
@@ -776,7 +785,7 @@ mod tests {
         let db = Database::in_memory().unwrap();
         let gid = mk_e2e_group(&db, "db-prod");
 
-        let (rec, _) = issue_relay(&db, "e2e-alice", &[gid], "");
+        let (rec, _, _) = issue_relay(&db, "e2e-alice", &[gid], "");
         let hints: Vec<HintEntry> = serde_json::from_str(&rec.hint_map).unwrap();
         assert_eq!(hints.len(), 1);
         assert_eq!(
@@ -796,8 +805,8 @@ mod tests {
         let registry: DelegatedRegistry = Default::default();
 
         // one direct token + one relay token: only the direct one self-registers
-        let (direct, _) = issue_token(&db, "d1", std::slice::from_ref(&gid), &[], "dedicated", "", "direct", "single", 8).unwrap();
-        let (_relay, _) = issue_relay(&db, "r1", std::slice::from_ref(&gid), "");
+        let (direct, _, _) = issue_token(&db, "d1", std::slice::from_ref(&gid), &[], "dedicated", "", "direct", "single", 8).unwrap();
+        let (_relay, _, _) = issue_relay(&db, "r1", std::slice::from_ref(&gid), "");
         sync_local_direct(&registry, "node-a", &db);
         assert!(registry.contains_key(&direct.token_hash));
         assert_eq!(registry.len(), 1);
@@ -828,7 +837,7 @@ mod tests {
         assert!(registry.is_empty());
 
         // an expired direct token is never registered
-        let (dead, _) = issue_token(&db, "d2", &[gid], &[], "dedicated", "", "direct", "single", 8).unwrap();
+        let (dead, _, _) = issue_token(&db, "d2", &[gid], &[], "dedicated", "", "direct", "single", 8).unwrap();
         db.set_delegated_token_lifecycle(&dead.id, Some("2020-01-01T00:00:00Z"), None).unwrap();
         sync_local_direct(&registry, "node-a", &db);
         assert!(!registry.contains_key(&dead.token_hash));
@@ -843,7 +852,7 @@ mod tests {
         let r2 = db.create_rule("host", "*.internal", false, "").unwrap().id;
         db.set_group_rules(&g1, &[r1.clone(), r2]).unwrap();
         db.set_group_rules(&g2, &[r1]).unwrap(); // same value bound to both groups -> dedup
-        let (rec, _) = issue_relay(&db, "alice", &[g1, g2], "");
+        let (rec, _, _) = issue_relay(&db, "alice", &[g1, g2], "");
 
         let engine = DelegationEngine::new();
         engine.refresh_keys(&db);
@@ -861,7 +870,7 @@ mod tests {
     fn engine_admin_config_ticket_and_scope() {
         let db = Database::in_memory().unwrap();
         let gid = mk_e2e_group(&db, "db-fine");
-        let (rec, _) = issue_relay(&db, "root-laptop", &[gid], "full");
+        let (rec, _, _) = issue_relay(&db, "root-laptop", &[gid], "full");
         let engine = DelegationEngine::new();
         engine.refresh_keys(&db);
         engine.refresh_groups(&db);
@@ -884,7 +893,7 @@ mod tests {
         let db = Database::in_memory().unwrap();
         let g1 = mk_group(&db, "git");
         let g2 = mk_group(&db, "ops");
-        let (rec, _) = issue_relay(&db, "alice", &[g1.clone(), g2.clone()], "");
+        let (rec, _, _) = issue_relay(&db, "alice", &[g1.clone(), g2.clone()], "");
 
         let msg = build_register_msg(&db, &rec);
         let CtrlMessage::TokenRegister { token_hash, label, groups, hint_map, concurrency, max_sessions } = msg else {
@@ -910,7 +919,7 @@ mod tests {
     fn revoke_returns_record_for_frames() {
         let db = Database::in_memory().unwrap();
         let gid = mk_group(&db, "git");
-        let (rec, _) = issue_relay(&db, "alice", &[gid], "");
+        let (rec, _, _) = issue_relay(&db, "alice", &[gid], "");
 
         let revoked = revoke_token(&db, &rec.id).unwrap().expect("existed");
         assert_eq!(revoked.token_hash, rec.token_hash);
@@ -967,16 +976,16 @@ mod tests {
     #[test]
     fn engine_e2e_unwrap_three_roles() {
         use agile_net_core::relay::DelegationHooks;
-        use agile_net_core::relay::e2e::{derive_key, kid_of, seal_open};
+        use agile_net_core::relay::e2e::{kid_of, random_key, seal_open};
 
         let db = Database::in_memory().unwrap();
         let gid = mk_group(&db, "db-prod");
-        let (rec, plaintext) = issue_relay(&db, "alice", &[gid], "");
+        let (rec, _, _) = issue_relay(&db, "alice", &[gid], "");
 
         let engine = DelegationEngine::new();
         engine.refresh_keys(&db);
 
-        let key = derive_key(&plaintext);
+        let key = e2e_key_of(&db, &rec).unwrap();
         let (env, _cipher) = seal_open(
             &key,
             kid_of(&rec.token_hash),
@@ -999,7 +1008,7 @@ mod tests {
         assert!(engine.e2e_unwrap(&foreign).unwrap().is_none());
 
         // forged envelope (right kid, wrong key material) -> hard error
-        let other_key = derive_key("psk_someone-else");
+        let other_key = random_key();
         let (forged, _) = seal_open(&other_key, kid_of(&rec.token_hash), "h", "a", 1, &[]);
         assert!(engine.e2e_unwrap(&forged).is_err());
 
@@ -1012,12 +1021,12 @@ mod tests {
     #[test]
     fn engine_token_lifecycle_gate() {
         use agile_net_core::relay::DelegationHooks;
-        use agile_net_core::relay::e2e::{derive_key, kid_of, seal_open};
+        use agile_net_core::relay::e2e::{kid_of, seal_open};
 
         let db = Database::in_memory().unwrap();
         let gid = mk_group(&db, "db-prod");
-        let (rec, plaintext) = issue_relay(&db, "alice", &[gid], "");
-        let key = derive_key(&plaintext);
+        let (rec, _, _) = issue_relay(&db, "alice", &[gid], "");
+        let key = e2e_key_of(&db, &rec).unwrap();
         let seal = || {
             seal_open(&key, kid_of(&rec.token_hash), "h", "10.2.0.5", 5432, &[]).0
         };

@@ -400,8 +400,9 @@ function shareCardBind(root, opts) {
           insecure: parsed.insecure,
           // federation P2: keep the disaster set of a delegated credential across rebuilds
           entries: (parsed.entries || []).map((a, i) => ({ addr: a, fp: (parsed.entryFps || [])[i] || '' })),
-          // federation P3: keep the entrust word, the consumer mode and the admin flag
+          // federation P3: keep the entrust word, the E2E key, the consumer mode and the admin flag
           en: parsed.en || '',
+          ek: parsed.ek || '',
           emode: parsed.emode || '',
           eadmin: !!parsed.eadmin,
           // M3-T6: keep the issuer-suggested "my name" across endpoint switches

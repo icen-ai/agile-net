@@ -45,6 +45,12 @@ pub struct ConnectLink {
     /// Absent = transparent tier (no E2E envelope).
     #[serde(default)]
     pub en: Option<String>,
+    /// E2E master key (delegated E2E links only): base64 of the 32-byte random key, delivered
+    /// ONLY in the share link — never through the relay. Present whenever `en` is set (the
+    /// transparent tier needs no key). Decoupled from the auth token so the entry relay cannot
+    /// derive it.
+    #[serde(default)]
+    pub ek: Option<String>,
     /// Consumer mode (delegated E2E links only): `split` = pull the token's rule
     /// vocabulary (E2E-sealed) and route selectively; absent = `dedicated` (whole
     /// machine captured, the 专线 tier).
@@ -140,6 +146,7 @@ pub fn parse_connect_url(url: &str) -> std::result::Result<ConnectLink, String> 
     let mut entries: Vec<String> = Vec::new();
     let mut entry_fps: Vec<String> = Vec::new();
     let mut en: Option<String> = None;
+    let mut ek: Option<String> = None;
     let mut emode: Option<String> = None;
     let mut eadmin = false;
     let mut myname: Option<String> = None;
@@ -161,6 +168,8 @@ pub fn parse_connect_url(url: &str) -> std::result::Result<ConnectLink, String> 
             "entryfp" => entry_fps = v.split(',').map(|s| s.trim().to_string()).collect(),
             // entrust mode: opaque en_xxx routing word (E2E; absent = transparent tier)
             "en" => en = Some(v),
+            // E2E master key (base64; E2E links only — see the struct doc)
+            "ek" => ek = Some(v),
             // split tier: pull the rule vocabulary and route selectively
             "emode" => emode = Some(v),
             // delegated admin: the token may manage the issuer (ticket via config channel)
@@ -186,6 +195,7 @@ pub fn parse_connect_url(url: &str) -> std::result::Result<ConnectLink, String> 
         entries,
         entry_fps,
         en,
+        ek,
         emode,
         eadmin,
         myname,
@@ -307,6 +317,7 @@ pub fn build_fanout_url(
 /// order (per-entry relay fingerprints; an empty item falls back to TOFU). The token lives in
 /// `password` — a delegated credential is a pure data-plane key: the client dials the relay
 /// directly (no API roundtrip), so the server param always carries an explicit relay port.
+/// E2E links also carry the base64 master key in `ek` (never sent through the relay).
 #[allow(clippy::too_many_arguments)]
 pub fn build_delegate_url(
     primary_addr: &str,
@@ -314,6 +325,7 @@ pub fn build_delegate_url(
     token: &str,
     entries: &[(String, String)],
     en: Option<&str>,
+    ek: Option<&str>,
     emode: Option<&str>,
     eadmin: bool,
     myname: Option<&str>,
@@ -338,6 +350,9 @@ pub fn build_delegate_url(
     }
     if let Some(word) = en.filter(|s| !s.is_empty()) {
         url.push_str(&format!("&en={}", url_encode(word)));
+    }
+    if let Some(key) = ek.filter(|s| !s.is_empty()) {
+        url.push_str(&format!("&ek={}", url_encode(key)));
     }
     // dedicated is the default tier — only the split tier is spelled out
     if let Some(mode) = emode.filter(|m| *m == "split") {
@@ -441,7 +456,7 @@ mod tests {
     #[test]
     fn password_special_chars_encoded() {
         let entries = vec![("h:54430".to_string(), String::new())];
-        let url = build_delegate_url("h:54430", "u", "p&=x%", &entries, None, None, false, None);
+        let url = build_delegate_url("h:54430", "u", "p&=x%", &entries, None, None, None, false, None);
         let p = parse_connect_url(&url).unwrap();
         assert_eq!(p.password, "p&=x%");
     }
@@ -453,7 +468,7 @@ mod tests {
             ("b2.example.com:54430".to_string(), "".to_string()),
             ("10.0.0.3:54430".to_string(), "cc33".to_string()),
         ];
-        let url = build_delegate_url("b1.example.com:54430", "alice-laptop", "psk_secret", &entries, Some("en_a1b2c3d4e5f6"), Some("split"), true, Some("小明"));
+        let url = build_delegate_url("b1.example.com:54430", "alice-laptop", "psk_secret", &entries, Some("en_a1b2c3d4e5f6"), Some("QUJDREVG"), Some("split"), true, Some("小明"));
         let p = parse_connect_url(&url).expect("parse delegate link");
         assert!(p.is_delegated());
         assert_eq!(p.delegated_label(), Some("alice-laptop"));
@@ -461,6 +476,7 @@ mod tests {
         assert_eq!(p.password, "psk_secret");
         assert_eq!(p.pinned_fingerprint.as_deref(), Some("aa11"));
         assert_eq!(p.en.as_deref(), Some("en_a1b2c3d4e5f6"));
+        assert_eq!(p.ek.as_deref(), Some("QUJDREVG"));
         assert_eq!(p.emode.as_deref(), Some("split"));
         assert!(p.eadmin);
         assert_eq!(p.myname.as_deref(), Some("小明"));
@@ -478,14 +494,16 @@ mod tests {
     #[test]
     fn delegate_url_single_entry_omits_entry_params() {
         let entries = vec![("b1.example.com:54430".to_string(), "aa11".to_string())];
-        let url = build_delegate_url("b1.example.com:54430", "bob", "psk_x", &entries, None, None, false, None);
+        let url = build_delegate_url("b1.example.com:54430", "bob", "psk_x", &entries, None, None, None, false, None);
         assert!(!url.contains("entry="));
         assert!(!url.contains("&en="));
+        assert!(!url.contains("&ek="));
         assert!(!url.contains("emode="));
         assert!(!url.contains("eadmin="));
         let p = parse_connect_url(&url).unwrap();
         assert_eq!(p.entries(), vec!["b1.example.com:54430".to_string()]);
         assert_eq!(p.en, None);
+        assert_eq!(p.ek, None);
         assert_eq!(p.emode, None);
         assert!(!p.eadmin);
     }
@@ -497,5 +515,6 @@ mod tests {
         assert_eq!(p.entries(), vec!["h:1".to_string()]);
         assert!(p.entry_fps.is_empty());
         assert_eq!(p.en, None);
+        assert_eq!(p.ek, None);
     }
 }

@@ -91,6 +91,8 @@ function parse(url) {
       entryFps: entries.length ? entryFps : [p.fp || ''],
       // entrust word (en_xxx opaque routing ID; every Open is E2E-sealed when set)
       en: p.en || '',
+      // E2E master key (base64; link `ek` word, delivered out-of-band from the relay — present iff `en`)
+      ek: p.ek || '',
       // consumer tier: 'split' = E2E rule delivery (route selectively);
       // absent = dedicated 专线 (whole machine captured)
       emode: p.emode || '',
@@ -141,6 +143,7 @@ function buildConnect(f) {
     params.push(['entryfp', entries.map(e => e.fp || '').join(',')]);
   }
   if (f.en) params.push(['en', f.en]);
+  if (f.ek) params.push(['ek', f.ek]);
   if (f.emode === 'split') params.push(['emode', 'split']);
   if (f.eadmin) params.push(['eadmin', '1']);
   if (f.myname) params.push(['myname', f.myname]);

@@ -65,6 +65,7 @@ pub async fn run(config_path: &str) -> Result<()> {
             entries: parsed.entries,
             entry_fps: parsed.entry_fps,
             en: parsed.en,
+            ek: parsed.ek,
             emode: parsed.emode,
             eadmin: parsed.eadmin,
             myname: parsed.myname,

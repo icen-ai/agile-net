@@ -38,6 +38,9 @@ pub struct ParsedConnect {
     /// Entrust word (en_xxx opaque routing ID; every Open is E2E-sealed when set)
     #[serde(default)]
     pub en: Option<String>,
+    /// E2E master key (base64; link `ek` word). Present iff `en` is set.
+    #[serde(default)]
+    pub ek: Option<String>,
     /// Consumer mode (`split` = E2E rule delivery; None = dedicated 专线)
     #[serde(default)]
     pub emode: Option<String>,
@@ -69,6 +72,7 @@ pub fn parse_connect_url(url: &str) -> std::result::Result<ParsedConnect, String
         entries: link.entries,
         entry_fps: link.entry_fps,
         en: link.en,
+        ek: link.ek,
         emode: link.emode,
         eadmin: link.eadmin,
         myname: link.myname,
@@ -97,6 +101,7 @@ pub fn connect_url_of(c: &Credential) -> String {
         &c.token,
         &entries,
         c.en.as_deref(),
+        c.ek.as_deref(),
         c.emode.as_deref(),
         c.eadmin,
         // myname is the importer-side "我的名称" suggestion; re-export keeps whatever the
@@ -149,6 +154,7 @@ mod tests {
             entries: vec!["1.2.3.4:54430".into(), "5.6.7.8:54430".into()],
             entry_fps: vec!["ab".into(), "".into()],
             en: Some("en_a1b2c3d4e5f6".into()),
+            ek: Some("QUJDREVG".into()),
             emode: Some("split".into()),
             eadmin: true,
             myname: Some("小明".into()),
@@ -162,6 +168,7 @@ mod tests {
         assert_eq!(p.pinned_fingerprint.as_deref(), Some("ab"));
         assert_eq!(p.entries, vec!["1.2.3.4:54430".to_string(), "5.6.7.8:54430".to_string()]);
         assert_eq!(p.en.as_deref(), Some("en_a1b2c3d4e5f6"));
+        assert_eq!(p.ek.as_deref(), Some("QUJDREVG"));
         assert_eq!(p.emode.as_deref(), Some("split"));
         assert!(p.eadmin);
         assert_eq!(p.myname.as_deref(), Some("小明"));

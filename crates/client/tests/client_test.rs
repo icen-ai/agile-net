@@ -23,6 +23,7 @@ async fn credentials_persist() {
                 entries: vec!["1.2.3.4:54430".into()],
                 entry_fps: vec!["ab12".into()],
                 en: Some("en_a1b2c3d4e5f6".into()),
+                ek: Some("QUJDREVG".into()),
                 emode: None,
                 eadmin: false,
             },

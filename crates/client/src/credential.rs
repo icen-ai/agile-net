@@ -34,6 +34,10 @@ pub struct Credential {
     /// Entrust word (en_xxx opaque routing ID; every Open is E2E-sealed when set)
     #[serde(default)]
     pub en: Option<String>,
+    /// E2E master key (base64; link `ek` word). Present iff `en` is set; never derived from the
+    /// token, so the entry relay cannot decrypt the E2E envelopes it forwards.
+    #[serde(default)]
+    pub ek: Option<String>,
     /// Consumer mode: `split` = pull the rule vocabulary (E2E) and route
     /// selectively; None = `dedicated` (专线 — whole machine captured)
     #[serde(default)]
@@ -144,6 +148,7 @@ mod tests {
             entries: Vec::new(),
             entry_fps: Vec::new(),
             en: None,
+            ek: None,
             emode: None,
             eadmin: false,
             myname: None,

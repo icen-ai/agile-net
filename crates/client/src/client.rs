@@ -62,6 +62,11 @@ pub struct ConnectParams {
     /// Entrust word (en_xxx opaque routing ID): every Open is E2E-sealed when set; None = transparent tier
     #[serde(default)]
     pub en: Option<String>,
+    /// E2E master key (base64; link `ek` word). Present iff `en` is set. Delivered out-of-band
+    /// from the relay — never derived from the token, so the entry relay cannot decrypt the E2E
+    /// envelopes it forwards.
+    #[serde(default)]
+    pub ek: Option<String>,
     /// Consumer mode (`split` = E2E rule delivery; None = dedicated 专线)
     #[serde(default)]
     pub emode: Option<String>,
@@ -164,8 +169,11 @@ struct NodeHandle {
 struct DelegatedOpener {
     /// Currently live tunnel (swapped by the supervisor on failover; None while redialing)
     current: arc_swap::ArcSwapOption<ClientTunnel>,
-    /// Delegated token plaintext (PSK; also the E2E key material)
+    /// Delegated token plaintext (PSK; auth-only — the E2E key is separate, see below)
     token: String,
+    /// E2E master key (from the share link's `ek`; present iff `en` is set). Random, delivered
+    /// out-of-band from the relay — the entry relay never sees it.
+    e2e_key: Option<[u8; 32]>,
     /// Entrust word (en_xxx opaque routing ID; None/empty = transparent tier)
     en: Option<String>,
     /// Cumulative traffic across failover tunnels (closed-session bytes are folded in)
@@ -182,10 +190,11 @@ struct DelegatedOpener {
 }
 
 impl DelegatedOpener {
-    fn new(token: String, en: Option<String>) -> Arc<Self> {
+    fn new(token: String, en: Option<String>, e2e_key: Option<[u8; 32]>) -> Arc<Self> {
         Arc::new(Self {
             current: arc_swap::ArcSwapOption::from_pointee(None),
             token,
+            e2e_key,
             en: en.filter(|h| !h.trim().is_empty()),
             total_up: AtomicU64::new(0),
             total_down: AtomicU64::new(0),
@@ -265,7 +274,11 @@ impl ChannelOpener for DelegatedOpener {
             match self.en.as_deref() {
                 Some(word) => {
                     use agile_net_core::relay::e2e;
-                    let key = e2e::derive_key(&self.token);
+                    let key = self.e2e_key.ok_or_else(|| {
+                        agile_net_core::error::Error::Protocol(
+                            "e2e key missing from delegated credential".into(),
+                        )
+                    })?;
                     let hash = agile_net_core::util::sha256_hex(self.token.as_bytes());
                     // §7.2.1: seal the per-target group identities (matched against the
                     // config-channel vocabulary), not always the token's full set
@@ -578,7 +591,11 @@ impl AgileNetClient {
         let tunnel = connect_delegated_entry(&params, &entries[0], first_fp, &account_id).await?;
 
         let node_id = format!("{label}@delegated:{}", entries[0]);
-        let opener = DelegatedOpener::new(params.token.clone(), params.en.clone());
+        let e2e_key = params
+            .ek
+            .as_deref()
+            .and_then(agile_net_core::relay::e2e::key_from_b64);
+        let opener = DelegatedOpener::new(params.token.clone(), params.en.clone(), e2e_key);
         opener.current.store(Some(tunnel.clone()));
         opener.current_entry.store(Arc::new(entries[0].clone()));
         self.inner
@@ -1536,7 +1553,7 @@ mod tests {
 
     #[test]
     fn delegated_opener_match_groups_per_target() {
-        let opener = DelegatedOpener::new("psk_x".into(), Some("en_abc".into()));
+        let opener = DelegatedOpener::new("psk_x".into(), Some("en_abc".into()), None);
         // no config answer yet -> inherit-all (empty)
         assert!(opener.match_groups("10.1.2.3").is_empty());
 

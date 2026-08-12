@@ -294,7 +294,7 @@ pub async fn issue_token(
             .map_err(|e| agile_net_core::error::Error::Other(e.to_string()))
         })
         .await;
-    let (mut rec, plaintext) = match issued {
+    let (mut rec, plaintext, ek_b64) = match issued {
         Ok(v) => v,
         Err(e) => {
             return err(
@@ -368,7 +368,7 @@ pub async fn issue_token(
         .await
         .unwrap_or_default();
     let states: HashMap<(String, String), String> = HashMap::new();
-    let share_url = build_share_url(&state, &rec, &connectors, &plaintext, req.my_name.trim()).await;
+    let share_url = build_share_url(&state, &rec, &connectors, &plaintext, &ek_b64, req.my_name.trim()).await;
     let groups_all = state
         .db_call(|db| db.list_groups(1, 10000, None, None).map(|(g, _)| g))
         .await
@@ -417,6 +417,7 @@ async fn build_share_url(
     rec: &DelegatedTokenRecord,
     connectors: &[crate::db::models::ConnectorView],
     plaintext: &str,
+    ek_b64: &str,
     my_name: &str,
 ) -> String {
     let entries: Vec<(String, String)> = if rec.entry_mode == "direct" {
@@ -459,12 +460,16 @@ async fn build_share_url(
         })
         .map(|h| h.hint.as_str());
     let emode = (rec.mode == "split").then_some("split");
+    // The E2E master key rides the link only when there's an entrust word (transparent tier has
+    // no envelope). The relay never sees it — it travels straight from issuer to consumer.
+    let ek = en.map(|_| ek_b64);
     let mut url = agile_net_core::link::build_delegate_url(
         &primary,
         &rec.label,
         plaintext,
         &entries,
         en,
+        ek,
         emode,
         !rec.admin_scope.is_empty(),
         // M3-T6: the issuer-suggested "my name" prefills the link's myname word

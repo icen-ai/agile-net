@@ -471,6 +471,7 @@ async fn federation_adopted_group_delegated_grant() {
             entries: Vec::new(),
             entry_fps: Vec::new(),
             en: None,
+            ek: None,
             emode: None,
             eadmin: false,
             myname: None,

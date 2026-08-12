@@ -185,6 +185,7 @@ async fn export_requires_confirm() {
                 entries: Vec::new(),
                 entry_fps: Vec::new(),
                 en: None,
+                ek: None,
                 emode: None,
                 eadmin: false,
             },

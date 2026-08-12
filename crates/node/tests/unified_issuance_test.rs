@@ -135,6 +135,7 @@ fn connect_params(relay_port: u16, label: &str, token: &str) -> ConnectParams {
         entries: Vec::new(),
         entry_fps: Vec::new(),
         en: None,
+        ek: None,
         emode: None,
         eadmin: false,
         myname: None,

@@ -76,6 +76,7 @@ pub(crate) async fn run(engine: &AgileNetClient, cfg: &ClientRoleConfig, slot: &
             entries: parsed.entries,
             entry_fps: parsed.entry_fps,
             en: parsed.en,
+            ek: parsed.ek,
             emode: parsed.emode,
             eadmin: parsed.eadmin,
             myname: parsed.myname,

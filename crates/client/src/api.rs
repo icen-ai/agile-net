@@ -503,6 +503,8 @@ struct ConnectInput {
     #[serde(default)]
     en: Option<String>,
     #[serde(default)]
+    ek: Option<String>,
+    #[serde(default)]
     emode: Option<String>,
     #[serde(default)]
     eadmin: bool,
@@ -524,6 +526,7 @@ async fn connect_node(State(state): State<ClientApiState>, Json(input): Json<Con
         entries: input.entries.clone(),
         entry_fps: input.entry_fps.clone(),
         en: input.en.clone(),
+        ek: input.ek.clone(),
         emode: input.emode.clone(),
         eadmin: input.eadmin,
         myname: input.myname.clone(),
@@ -548,6 +551,7 @@ async fn connect_node(State(state): State<ClientApiState>, Json(input): Json<Con
                     entries: input.entries,
                     entry_fps: input.entry_fps,
                     en: input.en,
+                    ek: input.ek,
                     emode: input.emode,
                     eadmin: input.eadmin,
                     myname: input.myname,
