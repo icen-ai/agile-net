@@ -151,7 +151,8 @@ const MIGRATIONS: &[(u32, &str, &str)] = &[(
     -- Node-level hourly traffic series (3 dims: fan-in peer / fan-out / relay transit)
     -- dim: fanin=fan-in peer (src=peer node_id) / fanout=fan-out (src=connector name)
     --      / transit=relay transit (src=origin, dst=terminus)
-    -- hour is a local-time bucket 'YYYY-MM-DD HH:00' (status traffic_24h contract format)
+    -- hour is a UTC-time bucket 'YYYY-MM-DD HH:00' (status traffic_24h contract format;
+    -- the browser converts to local time for display)
     CREATE TABLE node_traffic_log (
         id         TEXT PRIMARY KEY,
         dim        TEXT NOT NULL CHECK(dim IN ('fanin','fanout','transit')),

@@ -1560,7 +1560,7 @@ async function renderDashboard() {
           { name: T('dashboard.up'), values: dimSum('up') },
         ],
         fmtY: fmtBytes,
-        fmtX: h => String(h || '').slice(11, 16),
+        fmtX: hourLocalHM,
         empty: T('dashboard.chartEmpty'),
       });
     } catch(e) { toast(e.message, 'err'); }
@@ -1645,13 +1645,27 @@ function tfDetail(key, rows) {
     : '<div class="row"><span class="l" style="color:var(--dim2)">' + T('common.empty') + '</span></div>';
   if (el.dataset.sig !== html) { el.dataset.sig = html; el.innerHTML = html; }
 }
-/* Today's totals: hour is a "YYYY-MM-DD HH:00" local-time string, filtered by local date prefix */
+/* Parse a "YYYY-MM-DD HH:00" UTC bucket (traffic_24h hour contract) to a local Date */
+function hourDate(h) {
+  const m = String(h || '').match(/^(\d{4})-(\d{2})-(\d{2}) (\d{2}):/);
+  if (!m) return null;
+  return new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], 0));
+}
+/* UTC bucket -> local HH:MM for the trend chart axis */
+function hourLocalHM(h) {
+  const d = hourDate(h);
+  if (!d) return String(h || '').slice(11, 16);
+  return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+}
+/* Today's totals: hour is a UTC bucket, so "today" is judged in the viewer's local time */
 function tfTodaySum(points) {
-  const d = new Date();
-  const pfx = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  const now = new Date();
   let up = 0, down = 0;
   (points || []).forEach(p => {
-    if (String(p.hour || '').slice(0, 10) === pfx) { up += +p.up || 0; down += +p.down || 0; }
+    const d = hourDate(p.hour);
+    if (d && d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate()) {
+      up += +p.up || 0; down += +p.down || 0;
+    }
   });
   return { up, down };
 }

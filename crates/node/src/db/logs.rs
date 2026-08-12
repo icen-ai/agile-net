@@ -242,14 +242,16 @@ impl Database {
     }
 }
 
-/// Current local hour bucket 'YYYY-MM-DD HH:00' (node_traffic_log / traffic_24h contract format)
+/// Current UTC hour bucket 'YYYY-MM-DD HH:00' (node_traffic_log / traffic_24h contract format).
+/// UTC (not local) so a remotely-managed node's hourly labels don't depend on the server's wall
+/// clock timezone — the browser converts to its own local time for display.
 fn local_hour_bucket() -> String {
-    chrono::Local::now().format("%Y-%m-%d %H:00").to_string()
+    chrono::Utc::now().format("%Y-%m-%d %H:00").to_string()
 }
 
-/// Local hour bucket `hours` ago (for the 24h window filter)
+/// UTC hour bucket `hours` ago (for the 24h window filter)
 fn local_hours_ago(hours: i64) -> String {
-    let t = chrono::Local::now() - chrono::Duration::hours(hours);
+    let t = chrono::Utc::now() - chrono::Duration::hours(hours);
     t.format("%Y-%m-%d %H:00").to_string()
 }
 
@@ -278,7 +280,7 @@ mod tests {
         assert_eq!(agg.fanin.len(), 1);
         assert_eq!(agg.fanin[0].up, 151);
         assert_eq!(agg.fanin[0].down, 262);
-        // Hour bucket uses local-time format 'YYYY-MM-DD HH:00'
+        // Hour bucket uses UTC-time format 'YYYY-MM-DD HH:00'
         assert_eq!(agg.fanin[0].hour.len(), 16);
         assert!(agg.fanin[0].hour.ends_with(":00"));
         assert_eq!(&agg.fanin[0].hour[10..11], " ");
@@ -290,7 +292,7 @@ mod tests {
         assert_eq!(agg.transit[0].down, 10);
 
         // Retention cleanup: rows older than 40 days deleted, current rows kept
-        let old_hour = (chrono::Local::now() - chrono::Duration::days(40))
+        let old_hour = (chrono::Utc::now() - chrono::Duration::days(40))
             .format("%Y-%m-%d %H:00")
             .to_string();
         db.conn()

@@ -113,7 +113,8 @@ pub struct AuditLogRecord {
     pub created_at: String,
 }
 
-/// Node-level hourly traffic point (traffic_24h contract: hour is local time "YYYY-MM-DD HH:00")
+/// Node-level hourly traffic point (traffic_24h contract: hour is a UTC bucket "YYYY-MM-DD HH:00";
+/// the browser renders it in local time)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeTrafficPoint {
     pub hour: String,
