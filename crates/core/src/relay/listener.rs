@@ -932,18 +932,22 @@ impl RelayListener {
                 }
             }
         }
+        // Index fan-in session metas by session_key (== node_id) once; a per-peer scan of the
+        // whole meta table would be O(peers × sessions) on every admin sessions-list refresh.
+        let by_key: HashMap<String, SessionMeta> = self
+            .session_meta
+            .iter()
+            .map(|e| (e.session_key.clone(), e.clone()))
+            .collect();
         for p in self.peers.iter() {
             let (up, down) = p.mux.traffic();
-            for m in self.session_meta.iter() {
-                if m.session_key == *p.key() {
-                    out.push(SessionInfo {
-                        meta: m.clone(),
-                        bytes_up: up,
-                        bytes_down: down,
-                        channels: p.mux.channel_count(),
-                    });
-                    break;
-                }
+            if let Some(meta) = by_key.get(p.key()) {
+                out.push(SessionInfo {
+                    meta: meta.clone(),
+                    bytes_up: up,
+                    bytes_down: down,
+                    channels: p.mux.channel_count(),
+                });
             }
         }
         out

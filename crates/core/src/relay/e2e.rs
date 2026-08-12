@@ -240,18 +240,22 @@ impl ChannelCipher {
         if self.send_seq == u64::MAX {
             return Err(Error::Protocol("e2e send sequence exhausted".into()));
         }
-        let mut buf = plaintext.to_vec();
-        self.key
-            .seal_in_place_append_tag(
+        // One allocation total: `[u32 ct_len][ciphertext][tag]`. The length prefix stays OUTSIDE
+        // the AEAD record; the plaintext region is sealed in place and the tag appended separately
+        // (ring's `seal_in_place_separate_tag` keeps the prefix bytes unencrypted).
+        let mut out = Vec::with_capacity(LEN_PREFIX + plaintext.len() + TAG_LEN);
+        out.extend_from_slice(&((plaintext.len() + TAG_LEN) as u32).to_be_bytes());
+        out.extend_from_slice(plaintext);
+        let tag = self
+            .key
+            .seal_in_place_separate_tag(
                 nonce(self.send_dir, self.send_seq),
                 aead::Aad::empty(),
-                &mut buf,
+                &mut out[LEN_PREFIX..],
             )
             .expect("seal into owned vec");
+        out.extend_from_slice(tag.as_ref());
         self.send_seq += 1;
-        let mut out = Vec::with_capacity(LEN_PREFIX + buf.len());
-        out.extend_from_slice(&(buf.len() as u32).to_be_bytes());
-        out.extend_from_slice(&buf);
         Ok(out)
     }
 
@@ -263,12 +267,16 @@ impl ChannelCipher {
         }
         let recv_dir = 1 - self.send_dir;
         let mut buf = record.to_vec();
-        let plain = self
+        let plain_len = self
             .key
             .open_in_place(nonce(recv_dir, self.recv_seq), aead::Aad::empty(), &mut buf)
-            .map_err(|_| Error::Protocol("e2e record authentication failed (replay?)".into()))?;
+            .map_err(|_| Error::Protocol("e2e record authentication failed (replay?)".into()))?
+            .len();
         self.recv_seq += 1;
-        Ok(plain.to_vec())
+        // Decrypted in place; drop the trailing tag and hand the buffer back directly (avoids a
+        // second full copy of the plaintext on the read path).
+        buf.truncate(plain_len);
+        Ok(buf)
     }
 }
 
