@@ -461,15 +461,13 @@ impl NodeServer {
             }
         }
         // Device identity (node.md M2): this machine's ed25519 keypair (~/.anet/device.key,
-        // load-or-create), shared by the fan-out connectors (handshake proof) and the identity card
-        let device = opts.device.clone().unwrap_or_else(|| {
-            Arc::new(
-                agile_net_core::device::DeviceIdentity::machine().unwrap_or_else(|e| {
-                    tracing::warn!(error = %e, "machine device identity unavailable, using ephemeral");
-                    agile_net_core::device::DeviceIdentity::ephemeral()
-                }),
-            )
-        });
+        // load-or-create), shared by the fan-out connectors (handshake proof) and the identity card.
+        // Fail closed: a machine that can't load its stable identity must not silently mint a
+        // fresh ephemeral one (that would quietly change device_fp and break upstream certification
+        // / revocation). Tests inject opts.device; ephemeral stays test-only.
+        let device = opts.device.clone().map(Ok).unwrap_or_else(|| {
+            agile_net_core::device::DeviceIdentity::machine().map(Arc::new)
+        })?;
         let connector_manager = Arc::new(
             ConnectorManager::new(db.clone())
                 .with_node_id(config.name.clone())
