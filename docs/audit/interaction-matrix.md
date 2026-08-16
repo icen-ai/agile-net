@@ -109,7 +109,7 @@
 | D5 | 消费者→中继→签发者 / E2E / 中继剥离信封降级 | 2 | ✅ fail-close 测试 | 降级为 DoS 不为明文 ✓ |
 | D6 | 消费者多会话 single/multi 并发 | 2 | ✅ `single_tier_kicks_old_session`、`multi_tier_max_sessions_caps_auth` | listener 执法 ✓ |
 | D7 | 消费者容灾集切换 / 墓碑窗 | 2 | ✅ `issuer_disconnect_tombstone_yields_retryable_reason`、`p2_full_chain_and_failover` | ✓ |
-| D8 | 消费者→链式多跳（≥3 节点）/ E2E | 3-10 | 🟡 `client_to_node_to_downstream_chain`（透明 3 跳）；E2E ≥3 跳仅 `p2_full_chain` 部分 | MH 报告 §性能/环路 |
+| D8 | 消费者→链式多跳（≥3 节点）/ E2E | 3-10 | 🟡→✅ `client_to_node_to_downstream_chain`（透明 3 跳）+ 审计新增 `open_hop_budget_kills_routing_loop`（2 节点互指环）+ `multihop_bench_test`（1-5 跳链实测） | MH 报告 §性能/环路 |
 | D9 | 恶意消费者伪造 device_fp / kid / hint | 1-2 | ✅ `missing_or_forged_proof_is_rejected`、`engine_e2e_unwrap_three_roles` | fp 本地派生、kid 精确匹配 ✓ |
 | D10 | 恶意消费者 Open 洪泛 | 2 | ✅ `open_flood_capped`（listener）| connector 侧不对称→发现 F2 |
 | D11 | 恶意消费者透明 Open 打云元数据 | 2 | ✅ `sanitize_pushed_groups_caps` | ✓ |
@@ -123,9 +123,9 @@
 | N3 | 下行 advertise 路由 + 最长前缀 | 2 | ✅ `multi_node_routing_isolation`、`cidr_routing`、`longest_prefix_match` | ✓ |
 | N4 | 策略组上送→采纳（联邦 P1） | 2 | ✅ `federation_push_pool_adopt_grant`、`pushed_groups_pool_and_disconnect_clear` | 命名空间隔离 ✓ |
 | N5 | 传递认证 CertPush（M6）恶意起源 | 2+ | ✅ `m6_untrusted_origin_degrades_to_reference`、`m6_cert_propagation_and_revocation` | 起源签名+信任名单 ✓ |
-| N6 | 恶意下行虚假 advertise（路由劫持/环路） | 2-10 | 🟡 无环路专项测试 | **MH-1 环路无 TTL** |
-| N7 | 客户端隧道规则转售（0.0.0.0/0 再 advertise） | 2-3 | 🟡 `boot_fanout` 等 | 放大环路风险并入 MH-1 |
-| N8 | 上行 Open 洪泛打 connector | 1 | ❌ | **发现 F2（无界 spawn）** |
+| N6 | 恶意下行虚假 advertise（路由劫持/环路） | 2-10 | 🟡→✅ 环路：审计新增 `open_hop_budget_kills_routing_loop`（F3 已修）；劫持：见 MH-S3 决策项 | **MH-1→F3 已修** |
+| N7 | 客户端隧道规则转售（0.0.0.0/0 再 advertise） | 2-3 | 🟡 `boot_fanout` 等 | 放大环路风险并入 F3（已修） |
+| N8 | 上行 Open 洪泛打 connector | 1 | ❌→✅ 审计新增 `connector_open_flood_capped`（F2 已修） | **发现 F2（已修）** |
 | N9 | 带宽诊断保留地址（ACL 前拦截） | 1 | ✅ `bandwidth_*_serves_before_acl` | 设计文档化；1GiB/请求上限 |
 
 ### 3.3 控制面 / 管理面

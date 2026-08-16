@@ -10,10 +10,11 @@
 
 | ID | 严重度 | 一句话 | STRIDE | 状态 |
 |---|---|---|---|---|
-| F1 | **High** | E2E Open 信封可跨信道重放，攻破「重放不得产生应用层重复变更」纪律 | 重放/篡改 | **已修复+测试** |
-| F2 | **High** | connector 侧入站 Open 无并发上限（listener 有 256，不对称） | DoS | **已修复+测试** |
-| F3 | **Medium** | Open 转发无跳数上限：互指路由（0.0.0.0/0 转售合法存在）可成环放大 | DoS | **已修复+测试** |
-| F4 | **Medium** | listener `auth_attempts` 表无过期清理，IPv6 轮换源可缓慢膨胀内存 | DoS | **已修复** |
+| F1 | **High** | E2E Open 信封可跨信道重放，攻破「重放不得产生应用层重复变更」纪律 | 重放/篡改 | **已修复+测试**（chan_salt 一次性消费） |
+| F2 | **High** | connector 侧入站 Open 无并发上限（listener 有 256，不对称） | DoS | **已修复+测试**（对称信号量） |
+| F3 | **Medium** | Open 转发无跳数上限：互指路由（0.0.0.0/0 转售合法存在）可成环放大 | DoS | **已修复+测试**（hops+MAX_OPEN_HOPS=8） |
+| F4 | **Medium** | listener `auth_attempts` 表无过期清理，IPv6 轮换源可缓慢膨胀内存 | DoS | **已修复**（均摊清扫） |
+| F15 | **Medium** | direct 入口 × E2E 组签发不拒绝但数据路径断裂（信封终结于扇出会话） | 可用性/签发校验 | **已修复+测试**（issue_token 拒绝该组合） |
 | F5 | Low | mux WindowUpdate 无界加许可（仅自害） | — | 文档化 |
 | F6 | Low | 同会话恶意 peer 可伪造 Close/OpenFail 杀本地信道（等同 RST） | DoS | 接受 |
 | F7 | Low | 带宽诊断在 PeerAcl 前拦截（设计如此，无路由能力，1GiB/请求封顶） | 信息泄露面 | 接受+文档化 |
@@ -94,6 +95,24 @@ DoS，且随环上节点数放大。
 单调增长（每条目 ~100B，百万级 ≈ 100MB）。
 **修复**：`record_auth_failure` 内偶发（如每 1024 次插入）`retain` 清掉窗口外条目，均摊 O(1)。
 
+## F15 [Medium] direct 入口 × E2E 组：签发不拒绝、数据路径断裂（可用性/签发校验）
+
+**组合**：D1/D2 交叉格（direct 入口 × E2E/admin 档）
+**触发路径**：`api/handlers/delegation.rs` 校验 split/admin 要求 E2E 组，但**未拒绝** direct 入口
+引用 e2e_required 组；`service::delegation::issue_token` 生成 entrust 词（hint_map 非空）；
+客户端 `DelegatedOpener`（client.rs:274-299）见 `en` 词即**全部** Open 以 E2E 信封+en 词为目标——
+而 direct 入口的信封终结点（DelegationHooks）挂在**扇出会话 connector** 上，签发者自身 listener
+无解封能力：`route_open` 将 en_xxx 解析为本地终结（`resolve_delegated_route → Some(None)`）后落入
+对 `en_xxx:0` 的本地 TCP 拨号（DNS 必然失败 → OpenFail）。配置拉取通道（`DELEGATION_CONFIG_TARGET`）
+同样经 en 词信封，同样断裂——direct+E2E/admin 档令牌**全量流量不可用**。
+**安全影响**：fail-closed（无明文泄露），但签发面板允许构造出完全不可用的令牌（校验缺失）。
+**现状是否已缓解**：审计时无；**已修复**：`issue_token` 拒绝 `direct` 入口 × 含 e2e_required 组
+的组合（提示改用 relay 入口）。
+**回归测试**：`issue_rejects_direct_entry_with_e2e_group`（direct+e2e 组拒、direct+admin 拒、
+direct+透明组放行）。
+
+---
+
 ## F5-F14 概要（低危/文档化/决策项）
 
 - **F5**：mux.rs:413 `add_permits(n)` 无上限——恶意 peer 可把自己的发送信用膨胀到无限，
@@ -141,4 +160,14 @@ DoS，且随环上节点数放大。
 | 隧道数据面（明文/transit） | 精读 route_open/handle_open/bridge 三臂 + PeerAcl 组集并集语义（`peer_acl_test`） | 除 F3/F9 外无问题；组标在非签发跳被清除（listener.rs:2153），下游不产生越权放行（仅可能意外拒绝，见 MH 报告注） |
 | 中继盲转保证 | e2e_key 与认证令牌解耦验证（`issue_stores_hash_and_recoverable_e2e_key`：key 随机、非令牌派生）+ kid/hint 双重绑定 + blob 对中继不透明 | 无问题（这是 4e4724b 安全提交的主旨，复核成立） |
 | 管理面 | 引用对抗测试矩阵：`login_oracle_prevented`、`login_bruteforce_lockout`、`jwt_forgery_rejected`、`refresh_token_rotation_and_revocation`、`sql_injection_safe`、`xss_payload_stored_safely`、`oversized_body_rejected`、`mass_assignment_ignored`、`audit_log_no_credential_leak`、`scope_enforcement_three_tiers`、`admin_ui_security_headers`、`unauthenticated_and_role_enforcement` | 无新发现；可逆存储仅两处且 AES-256-GCM（db 层复核 `encrypt_secret` 调用点=connector token/e2e_key） |
-| 依赖供应链 | `cargo tree` 关键链人工核对（ring/rustls 0.23/axum/tokio/rusqlite 均为主流维护版本）；`cargo audit` 未安装于本机（REPORT 附录给出补跑方案） | 无已知高危；标注为「需 CI 常态化」 |
+| 依赖供应链 | `cargo tree` 关键链人工核对（见下方附录）；`cargo audit`/`cargo deny` 本机未安装（error: no such command），无法离线跑 RLSA 扫描 | 无已知高危；**建议 CI 常态化**（附录 A 给出补跑方案） |
+
+### 附录 A：关键依赖快照（审计时点）
+
+核心加密/传输链：`ring 0.17.14`、`rustls 0.23.43`、`tokio-rustls 0.26.4`、
+`rustls-pemfile 2.2.0`、`webpki-roots 0.26.11`、`rcgen 0.13.2`、`sha2 0.10.9`。
+运行时：`tokio 1.53.1`、`serde 1.0.229`/`serde_json 1.0.151`、`dashmap 6.2.1`、
+`arc-swap 1.9.2`、`bytes 1.12.1`、`chrono 0.4.45`、`rand 0.9.5`、`ip_network 0.4.1`、
+`ip_network_table 0.2.0`、`toml 0.8.23`、`tracing 0.1.44`、`anyhow 1.0.104`。
+供应链扫描补跑：`cargo install cargo-audit cargo-deny && cargo audit && cargo deny check`
+（或接入 GitHub Actions 的 `rustsec/audit-check`；建议随 CI 每周跑一次）。
