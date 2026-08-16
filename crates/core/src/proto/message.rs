@@ -171,6 +171,12 @@ pub const PROTOCOL_VERSION: u32 = 4;
 /// Minimum protocol version supporting per-channel window flow control.
 pub const PROTOCOL_VERSION_FLOW_CONTROL: u32 = 2;
 
+/// Max forwarding hops of one Open (audit F3 anti-loop): every relay forwarding point
+/// increments `OpenChannel::hops`; at the cap the open fails closed with OpenFail. A
+/// full A↔B routing cycle costs 2 hops, so 8 allows any legitimate chain while killing
+/// mutual-advertise loops (including the legitimate-looking 0.0.0.0/0 tunnel resale).
+pub const MAX_OPEN_HOPS: u8 = 8;
+
 /// Open frame payload: listener -> connector, asking to open a data channel to the target.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpenChannel {
@@ -190,6 +196,14 @@ pub struct OpenChannel {
     /// certification policy on it. Never accepted from a consumer's own hand.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub device_fp: String,
+    /// Forwarding hop counter (audit F3, see MAX_OPEN_HOPS): 0 at origin, +1 at every relay
+    /// forwarding point; the wire stays minimal while no forwarding happened.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub hops: u8,
+}
+
+fn is_zero(v: &u8) -> bool {
+    *v == 0
 }
 
 impl OpenChannel {
@@ -201,6 +215,7 @@ impl OpenChannel {
             groups: Vec::new(),
             e2e: None,
             device_fp: String::new(),
+            hops: 0,
         }
     }
 }

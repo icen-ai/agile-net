@@ -712,3 +712,105 @@ async fn open_flood_capped() -> Result<()> {
     assert!(valid.is_connected(), "Open 洪泛不得影响其他会话");
     Ok(())
 }
+
+/// Audit F2: the connector side of an Open flood (a malicious/compromised upstream pumping
+/// reverse Opens) must be capped exactly like the listener side — beyond
+/// MAX_INBOUND_OPENS_PER_SESSION the connector replies OpenFail instead of spawning
+/// unbounded dial tasks.
+#[tokio::test]
+async fn connector_open_flood_capped() -> Result<()> {
+    let addr = get_free_addr();
+    let listener = Arc::new(RelayListener::new(addr, "tok")?);
+    let l = listener.clone();
+    tokio::spawn(async move {
+        let _ = l.start().await;
+    });
+
+    // blackhole target: accepts connections but never responds, stalling the bridges on their permits
+    let blackhole = TcpListener::bind("127.0.0.1:0").await?;
+    let bh_port = blackhole.local_addr()?.port();
+    tokio::spawn(async move {
+        let mut held = Vec::new();
+        while let Ok((s, _)) = blackhole.accept().await {
+            held.push(s);
+        }
+    });
+    tokio::time::sleep(Duration::from_millis(60)).await;
+
+    // the downstream endpoint fans out into the listener (its connector receives reverse Opens)
+    let connector = RelayConnector::new(addr, "victim", "tok")?;
+    connector.connect().await?;
+    assert!(connector.is_connected());
+
+    // flood from the "upstream" side: cap + 64 Opens through the listener's open_channel API
+    const EXTRA: usize = 64;
+    let total = MAX_INBOUND_OPENS_PER_SESSION + EXTRA;
+    let mut oks = 0usize;
+    let mut fails = 0usize;
+    for _ in 0..total {
+        match listener.open_channel("victim", "127.0.0.1", bh_port).await {
+            Ok(_) => oks += 1,
+            Err(_) => fails += 1,
+        }
+    }
+    assert_eq!(
+        oks, MAX_INBOUND_OPENS_PER_SESSION,
+        "上限内的反向 Open 应全部建立（黑洞目标挂住 permit）"
+    );
+    assert_eq!(fails, EXTRA, "超限的反向 Open 必须被立即拒绝（connector 侧信号量）");
+
+    // the connector keeps serving new opens after slots free up is covered by the cap math;
+    // liveness: the session itself is unaffected by the flood
+    assert!(connector.is_connected(), "Open 洪泛不得杀死 connector 会话");
+    Ok(())
+}
+
+/// Audit F3: two nodes mutually advertising the same CIDR (including legitimate 0.0.0.0/0
+/// tunnel resale) form an Open forwarding loop. The hop budget must fail the open closed
+/// quickly instead of nesting until the 10s open timeout cascade.
+#[tokio::test]
+async fn open_hop_budget_kills_routing_loop() -> Result<()> {
+    let a_addr = get_free_addr();
+    let b_addr = get_free_addr();
+
+    // Node A: listener + connector into B (chained forwarding via peer_router)
+    let listener_a = Arc::new(RelayListener::new(a_addr, "tok")?);
+    let la = listener_a.clone();
+    tokio::spawn(async move {
+        let _ = la.start().await;
+    });
+    // Node B: listener + connector into A
+    let listener_b = Arc::new(RelayListener::new(b_addr, "tok")?);
+    let lb = listener_b.clone();
+    tokio::spawn(async move {
+        let _ = lb.start().await;
+    });
+    tokio::time::sleep(Duration::from_millis(60)).await;
+
+    let conn_a = RelayConnector::new(b_addr, "node-a", "tok")?
+        .with_advertise(vec!["10.99.0.0/16".to_string()])
+        .with_peer_router(listener_a.clone());
+    conn_a.connect().await?;
+    let conn_b = RelayConnector::new(a_addr, "node-b", "tok")?
+        .with_advertise(vec!["10.99.0.0/16".to_string()])
+        .with_peer_router(listener_b.clone());
+    conn_b.connect().await?;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // both route tables now map 10.99.0.0/16 at each other: an open for the CIDR loops
+    // A -> B -> A -> B ... until the hop budget rejects it
+    let t0 = Instant::now();
+    let res = listener_a
+        .open_channel("node-b", "10.99.0.1", 80)
+        .await;
+    let elapsed = t0.elapsed();
+    assert!(res.is_err(), "环路 Open 必须以 OpenFail 终结");
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "hop 预算应立即拒绝（实测 {elapsed:?}），而不是等 10s open 超时级联"
+    );
+
+    // both nodes stay healthy after the loop attempt
+    assert!(conn_a.is_connected() && conn_b.is_connected());
+    Ok(())
+}

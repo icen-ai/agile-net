@@ -41,6 +41,7 @@ fn open_channel_extension_roundtrip() {
             blob: "AAECAwQ=".into(),
         }),
         device_fp: String::new(),
+        hops: 0,
     };
     let json = serde_json::to_value(&open).unwrap();
     let back: OpenChannel = serde_json::from_value(json).unwrap();
@@ -48,6 +49,18 @@ fn open_channel_extension_roundtrip() {
     assert_eq!(back.target_port, 22);
     assert_eq!(back.groups, vec!["git".to_string(), "ops".to_string()]);
     assert_eq!(back.e2e.as_ref().unwrap().kid, "0123abcd5678");
+
+    // hop counter round-trips when non-zero (audit F3)
+    let hopped = serde_json::json!({ "target_addr": "x", "target_port": 1, "hops": 7 });
+    let back: OpenChannel = serde_json::from_value(hopped).unwrap();
+    assert_eq!(back.hops, 7);
+    assert!(
+        serde_json::to_value(&OpenChannel::new("x", 1))
+            .unwrap()
+            .get("hops")
+            .is_none(),
+        "zero hops stay off the wire (minimal payload contract)"
+    );
 }
 
 #[test]

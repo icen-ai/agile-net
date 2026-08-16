@@ -605,6 +605,12 @@ impl RelayConnector {
             let mut last_ping = std::time::Instant::now();
             let mut ping_timer = tokio::time::interval(Duration::from_secs(5));
             ping_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            // inbound Open concurrency cap, same guard as the listener side (audit F2):
+            // every peer Open spawns a task and dials out — without the semaphore a
+            // malicious/compromised upstream exhausts tasks/FDs/memory process-wide
+            let open_permits = Arc::new(tokio::sync::Semaphore::new(
+                crate::relay::listener::MAX_INBOUND_OPENS_PER_SESSION,
+            ));
 
             loop {
                 tokio::select! {
@@ -635,6 +641,15 @@ impl RelayConnector {
                         }
                     }
                     Some(req) = open_rx.recv() => {
+                        // concurrency cap (audit F2): beyond the cap reply OpenFail instead of
+                        // spawning unbounded dial tasks; permits are held until the bridge ends
+                        let Ok(permit) = open_permits.clone().try_acquire_owned() else {
+                            debug!(channel = req.channel_id, "inbound open limit reached, rejecting");
+                            let _ = mux_task
+                                .send_frame(Frame::empty(FrameType::OpenFail, req.channel_id))
+                                .await;
+                            continue;
+                        };
                         let mux_inner = mux_task.clone();
                         let peer_router = peer_router.clone();
                         let client_router = client_router.clone();
@@ -645,6 +660,7 @@ impl RelayConnector {
                         let peer_label = peer_label.clone();
                         let hooks = hooks.clone();
                         tokio::spawn(async move {
+                            let _permit = permit; // permit held by the task until the bridge ends
                             if let Err(e) = Self::handle_open(mux_inner, req, peer_router, client_router, openers, acl, events, transit, peer_label, hooks).await {
                                 debug!(error = %e, "open channel handling finished with error");
                             }
@@ -831,6 +847,16 @@ impl RelayConnector {
     ) -> Result<()> {
         let mut open_req: OpenChannel = serde_json::from_slice(&req.payload)
             .map_err(|e| Error::Protocol(format!("invalid open channel payload: {e}")))?;
+
+        // hop budget (audit F3): an Open already at the cap dies here without spawning any
+        // downstream work — no dial, no nested open, no bridge task
+        if open_req.hops >= crate::proto::message::MAX_OPEN_HOPS {
+            warn!(hops = open_req.hops, target = %open_req.target_addr, "open exceeded hop budget, rejecting");
+            mux.send_frame(Frame::empty(FrameType::OpenFail, req.channel_id))
+                .await?;
+            mux.close_channel(req.channel_id);
+            return Ok(());
+        }
 
         // bandwidth-diagnostic reserved address: intercept before any enforcement
         // (protocol-level diagnostic service, same tier as heartbeat; answered locally,
@@ -1029,6 +1055,8 @@ impl RelayConnector {
         if let Some(listener) = &peer_router
             && let Some(next_peer) = listener.resolve_peer(&open_req.target_addr)
         {
+            // hop budget (audit F3): chain forwarding costs one hop before the onward open
+            open_req.hops += 1;
             match listener.open_channel_full(&next_peer, &open_req).await {
                 Ok(peer_channel) => {
                     mux.send_frame(Frame::empty(FrameType::OpenOk, req.channel_id))

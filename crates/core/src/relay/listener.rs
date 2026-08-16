@@ -1090,6 +1090,16 @@ impl RelayListener {
             *window_start = Instant::now();
         }
         *count += 1;
+        drop(entry);
+        // amortized expiry sweep (audit F4): entries of source IPs that never came back would
+        // otherwise accumulate forever (IPv6 rotation can mint endless distinct keys); every
+        // 1024 insertions drop the ones outside the window — they are inert either way
+        static SWEEP_EVERY: u64 = 1024;
+        static INSERTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        if INSERTS.fetch_add(1, Ordering::Relaxed) % SWEEP_EVERY == 0 {
+            self.auth_attempts
+                .retain(|_, (_, t)| t.elapsed() <= Duration::from_secs(60));
+        }
     }
 
     /// Auth success: reset this IP's failure count.
@@ -2145,6 +2155,19 @@ impl RelayListener {
             Some(peer) => peer,
             None => self.resolve_peer(&open_req.target_addr),
         };
+        // hop budget (audit F3): forwarding further downstream costs one hop; at the cap the
+        // open fails closed instead of nesting into a mutual-advertise loop
+        if let Some(peer_id) = routed_peer.as_deref() {
+            if open_req.hops >= crate::proto::message::MAX_OPEN_HOPS {
+                warn!(peer = peer_id, hops = open_req.hops, target = %target, "open exceeded hop budget, rejecting");
+                let _ = mux
+                    .send_frame(Frame::empty(FrameType::OpenFail, req.channel_id))
+                    .await;
+                mux.close_channel(req.channel_id);
+                return;
+            }
+            open_req.hops += 1;
+        }
         // Unified issuance: a group stamp is issuer-local ACL metadata, kept only while the next
         // hop is the token's issuer session (rendezvous forwarding back to the issuer). Once the
         // trust boundary terminates here (direct issuer / any other hop), the onward Open is this

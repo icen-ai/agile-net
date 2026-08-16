@@ -107,6 +107,12 @@ pub fn issue_token(
     if !admin_scope.is_empty() && hint_map.is_empty() {
         bail!("授权管理要求引用组含端到端加密组（票据经 E2E 通道下发）");
     }
+    // audit F15: the E2E envelope terminates on the fan-out session (DelegationHooks live on
+    // the connector); a direct-entry consumer's sealed Open would dead-end at this issuer's
+    // own listener (no keys there) — reject at issuance instead of issuing a broken token
+    if entry_mode == "direct" && !hint_map.is_empty() {
+        bail!("直连入口不支持端到端组（E2E 信封终结于扇出会话；如需 E2E/管理档请选 relay 入口）");
+    }
 
     // The E2E master key is random and independent of the auth token: a relay authenticates the
     // consumer with the token plaintext, so deriving the E2E key from it would let the relay
@@ -278,7 +284,18 @@ struct KeyEntry {
     max_uses: Option<i64>,
     /// Opens served (seeded from the DB on refresh, incremented in memory on the hot path)
     used_count: std::sync::Arc<std::sync::atomic::AtomicI64>,
+    /// Anti cross-channel replay (audit F1): chan_salts already consumed by a successful
+    /// unwrap. A sealed Open is one-shot — the same envelope forwarded again by a malicious
+    /// relay would otherwise derive the same chan_key and accept a replayed record stream on
+    /// a fresh channel whose sequence numbers start over. 128-bit random salts make legit
+    /// collisions impossible; the cap bounds memory and fails closed.
+    seen_salts: std::sync::Mutex<std::collections::HashSet<[u8; agile_net_core::relay::e2e::CHAN_SALT_LEN]>>,
 }
+
+/// Per-token consumed-salt cap (audit F1): a token can never legitimately approach this many
+/// distinct channels (sessions ≤ max_sessions ≤ 1024 × channels ≤ 1024/session is the absolute
+/// theoretical ceiling; practical use is orders of magnitude below). Overflow fails closed.
+const MAX_E2E_CHANNEL_SALTS: usize = 65536;
 
 impl KeyEntry {
     /// Lifecycle gate: an expired or exhausted token is refused on every enforcement path
@@ -408,6 +425,7 @@ impl DelegationEngine {
                             expires_at: rec.expires_at.clone(),
                             max_uses: rec.max_uses,
                             used_count: std::sync::Arc::new(std::sync::atomic::AtomicI64::new(rec.used_count)),
+                            seen_salts: std::sync::Mutex::new(std::collections::HashSet::new()),
                         },
                     );
                 }
@@ -563,6 +581,27 @@ impl agile_net_core::relay::DelegationHooks for DelegationEngine {
             ));
         }
         let (mut payload, cipher) = agile_net_core::relay::e2e::open_open(&entry.key, e2e)?;
+        // one-shot envelope (audit F1): consume the chan_salt before anything else — a
+        // replayed Open (same sealed blob) or a salt-window overflow rejects hard, so a
+        // malicious relay can never re-derive a live chan_key from captured ciphertext
+        {
+            let Some(salt) = agile_net_core::util::base64_decode(&payload.chan_salt)
+                .and_then(|raw| <[u8; agile_net_core::relay::e2e::CHAN_SALT_LEN]>::try_from(raw.as_slice()).ok())
+            else {
+                return Err(agile_net_core::error::Error::Protocol("invalid chan_salt".into()));
+            };
+            let mut seen = entry.seen_salts.lock().unwrap_or_else(|e| e.into_inner());
+            if seen.len() >= MAX_E2E_CHANNEL_SALTS {
+                return Err(agile_net_core::error::Error::Other(
+                    "e2e channel-salt window exhausted".into(),
+                ));
+            }
+            if !seen.insert(salt) {
+                return Err(agile_net_core::error::Error::Auth(
+                    "e2e envelope replayed (chan_salt reuse)".into(),
+                ));
+            }
+        }
         entry
             .used_count
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -794,6 +833,64 @@ mod tests {
             "exactly the opaque entrust word, no legacy fallback hints"
         );
         assert_eq!(hints[0].groups, vec!["db-prod".to_string()]);
+    }
+
+    /// Audit F15: direct entry cannot serve E2E envelopes (termination lives on the fan-out
+    /// session) — issuance must reject the combination instead of minting a dead token.
+    #[test]
+    fn issue_rejects_direct_entry_with_e2e_group() {
+        let db = Database::in_memory().unwrap();
+        let e2e_gid = mk_e2e_group(&db, "db-prod");
+
+        // direct + an e2e_required group: rejected
+        assert!(
+            issue_token(&db, "bad", &[e2e_gid.clone()], &[], "dedicated", "", "direct", "single", 8).is_err(),
+            "direct entry + e2e_required group must be rejected at issuance"
+        );
+        // direct + admin scope (implies an e2e group via the earlier check): rejected too
+        assert!(
+            issue_token(&db, "bad", &[e2e_gid], &[], "dedicated", "full", "direct", "single", 8).is_err()
+        );
+        // direct + transparent-only group stays legal
+        let plain = mk_group(&db, "git");
+        assert!(
+            issue_token(&db, "ok", &[plain], &[], "dedicated", "", "direct", "single", 8).is_ok()
+        );
+    }
+
+    /// Audit F1: a sealed E2E Open is one-shot — replaying the same envelope (identical
+    /// chan_salt) must hard-fail at the issuer, while a freshly sealed open (new salt) passes.
+    #[test]
+    fn engine_e2e_envelope_is_one_shot() {
+        use agile_net_core::relay::DelegationHooks;
+        use agile_net_core::relay::e2e::{kid_of, seal_open};
+
+        let db = Database::in_memory().unwrap();
+        let gid = mk_group(&db, "db-prod");
+        let (rec, _, _) = issue_relay(&db, "alice", &[gid], "");
+        let key = e2e_key_of(&db, &rec).unwrap();
+        let kid = kid_of(&rec.token_hash).to_string();
+
+        let engine = DelegationEngine::new();
+        engine.refresh_keys(&db);
+
+        // first unwrap consumes the salt
+        let (env, _) = seal_open(&key, &kid, "h", "10.2.0.5", 5432, &[]);
+        assert!(engine.e2e_unwrap(&env).unwrap().is_some());
+
+        // replaying the SAME sealed envelope (what a malicious relay captured) must fail
+        let err = match engine.e2e_unwrap(&env) {
+            Err(e) => e,
+            Ok(_) => panic!("replayed envelope must be rejected"),
+        };
+        assert!(
+            err.to_string().contains("replay"),
+            "replayed envelope must be rejected as replay, got: {err}"
+        );
+
+        // a fresh open (client sealed a new channel with a new random salt) still passes
+        let (env2, _) = seal_open(&key, &kid, "h", "10.2.0.5", 5432, &[]);
+        assert!(engine.e2e_unwrap(&env2).unwrap().is_some());
     }
 
     #[test]
