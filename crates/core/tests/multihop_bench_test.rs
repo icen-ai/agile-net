@@ -6,8 +6,12 @@
 //! ```
 //!
 //! Measurements:
-//! 1. Transparent chain of 1..=5 TLS legs: RTT (1 KiB echo) and throughput (4 MiB echo) per
-//!    hop count — verifies latency growth ~linear in hops and quantifies per-hop cost.
+//! 1. Transparent chain of 1..=5 TLS legs: RTT (1 KiB echo) plus one-way up/down throughput
+//!    (4 MiB) per hop count — verifies latency growth ~linear in hops and quantifies the
+//!    per-hop cost. Up/down use dedicated sink/source targets (same semantics as the
+//!    protocol's bandwidth-diagnostic plane) so the benchmark never depends on draining a
+//!    bidirectional echo (a full-duplex echo backpressures the return path and would
+//!    deadlock any write-then-read measurement larger than the buffered window).
 //! 2. E2E endpoint overhead: E2eStream (AES-256-GCM record layer) vs raw copy over the same
 //!    duplex for the same payload — E2E cost must sit at the endpoints only (relays stay
 //!    byte-forwarders; verified by construction: the relay never sees plaintext keys).
@@ -37,15 +41,15 @@ fn get_free_addr() -> SocketAddr {
     addr
 }
 
-/// Plain TCP echo server (the guarded-segment stand-in at the end of the chain).
-async fn start_echo() -> SocketAddr {
+/// Small-payload TCP echo (RTT probing only; buffered window dwarfs the 1 KiB payload).
+async fn start_echo() -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
+    let port = listener.local_addr().unwrap().port();
     tokio::spawn(async move {
         loop {
             let Ok((mut s, _)) = listener.accept().await else { break };
             tokio::spawn(async move {
-                let mut buf = vec![0u8; 64 * 1024];
+                let mut buf = vec![0u8; 16 * 1024];
                 loop {
                     match s.read(&mut buf).await {
                         Ok(0) | Err(_) => break,
@@ -59,7 +63,55 @@ async fn start_echo() -> SocketAddr {
             });
         }
     });
-    addr
+    port
+}
+
+/// Upload target: reads and discards; on EOF replies an 8-byte BE total count (no other
+/// return traffic — the upload direction can never deadlock on backpressure).
+async fn start_sink() -> u16 {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut s, _)) = listener.accept().await else { break };
+            tokio::spawn(async move {
+                let mut total: u64 = 0;
+                let mut buf = vec![0u8; 64 * 1024];
+                loop {
+                    match s.read(&mut buf).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => total += n as u64,
+                    }
+                }
+                let _ = s.write_all(&total.to_be_bytes()).await;
+            });
+        }
+    });
+    port
+}
+
+/// Download target: reads an 8-byte BE requested count, then streams that many bytes.
+async fn start_source() -> u16 {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut s, _)) = listener.accept().await else { break };
+            tokio::spawn(async move {
+                let Ok(count) = s.read_u64().await else { return };
+                let chunk = vec![0u8; 64 * 1024];
+                let mut remaining = count;
+                while remaining > 0 {
+                    let n = chunk.len().min(remaining as usize);
+                    if s.write_all(&chunk[..n]).await.is_err() {
+                        return;
+                    }
+                    remaining -= n as u64;
+                }
+            });
+        }
+    });
+    port
 }
 
 /// A raw consumer endpoint: TLS + node auth + mux (client side, even channel ids).
@@ -91,10 +143,11 @@ async fn raw_consumer(entry: SocketAddr, node_id: &str, token: &str) -> Result<A
     Ok(mux)
 }
 
-/// Build a transparent forwarding chain of `legs` TLS legs ending at `target`:
+/// Build a transparent forwarding chain of `legs` TLS legs terminating at 127.0.0.1:
 /// consumer -> L1 -> L2 -> ... -> L(legs); the last connector dials the target locally.
-/// Returns the entry listener address.
-async fn build_chain(legs: usize, target: SocketAddr) -> SocketAddr {
+/// Returns the entry listener address. (All benchmark targets share 127.0.0.1; routing is
+/// IP-based so the single /32 route covers every target port.)
+async fn build_chain(legs: usize) -> SocketAddr {
     assert!(legs >= 1);
     let mut listeners = Vec::new();
     for _ in 0..legs {
@@ -107,15 +160,16 @@ async fn build_chain(legs: usize, target: SocketAddr) -> SocketAddr {
         listeners.push(l);
     }
     tokio::time::sleep(Duration::from_millis(50)).await;
-    // node i (2..=legs) fans out into listener i-1, advertising the echo /32
-    let route = format!("{}/32", target.ip());
+    // node i (1..=legs-1) fans out into L_i and forwards opens onward through its OWN
+    // listener L_{i+1} (chained forwarding via peer_router); the terminal node dials locally
+    let route = "127.0.0.1/32".to_string();
     for i in 1..legs {
         let c = RelayConnector::new(listeners[i - 1].listen_addr(), format!("node-{i}"), "bench")
             .unwrap()
-            .with_advertise(vec![route.clone()]);
+            .with_advertise(vec![route.clone()])
+            .with_peer_router(listeners[i].clone());
         c.connect().await.unwrap();
     }
-    // the terminal node dials the echo locally (no further routing)
     let term = RelayConnector::new(
         listeners[legs - 1].listen_addr(),
         format!("node-{legs}"),
@@ -137,25 +191,37 @@ fn stats(samples: &[Duration]) -> (Duration, Duration, Duration) {
     (min, avg, max)
 }
 
+fn open_payload(port: u16) -> Bytes {
+    Bytes::from(
+        serde_json::to_vec(&agile_net_core::proto::message::OpenChannel::new("127.0.0.1", port))
+            .unwrap(),
+    )
+}
+
 /// §2.5.2-1: transparent chain latency/throughput vs hop count.
 #[tokio::test]
 #[ignore = "benchmark — run with --ignored --nocapture"]
 async fn bench_chain_latency_and_throughput() -> Result<()> {
-    let echo = start_echo().await;
+    let echo_port = start_echo().await;
+    let sink_port = start_sink().await;
+    let source_port = start_source().await;
     const RTT_BYTES: usize = 1024;
-    const BULK: usize = 4 * 1024 * 1024;
+    const BULK: u64 = 4 * 1024 * 1024;
     let payload = vec![b'x'; 64 * 1024];
 
-    println!("{:<8} {:>14} {:>14} {:>14} {:>14}", "legs", "rtt_min", "rtt_avg", "rtt_max", "tput_Mbps");
+    println!(
+        "{:<6} {:>12} {:>12} {:>12} {:>14} {:>14}",
+        "legs", "rtt_min", "rtt_avg", "rtt_max", "up_Mbps", "down_Mbps"
+    );
     for legs in [1usize, 2, 3, 5] {
-        let entry = build_chain(legs, echo).await;
+        let entry = build_chain(legs).await;
         let mux = raw_consumer(entry, "consumer", "bench").await?;
 
-        // warm-up + RTT samples
-        let mut ch = mux.open_channel(open_payload(echo)).await?;
+        // RTT: 1 KiB echo round trips
+        let mut ch = mux.open_channel(open_payload(echo_port)).await?;
         let mut buf = vec![0u8; RTT_BYTES];
         ch.write_all(&vec![b'p'; RTT_BYTES]).await?;
-        let _ = ch.read_exact(&mut buf).await?;
+        let _ = ch.read_exact(&mut buf).await?; // warm-up
         let mut samples = Vec::new();
         for _ in 0..50 {
             let t = Instant::now();
@@ -165,42 +231,51 @@ async fn bench_chain_latency_and_throughput() -> Result<()> {
         }
         mux.close_channel(ch.channel_id);
 
-        // throughput: push BULK through the chain and read the echo back
-        let mut ch = mux.open_channel(open_payload(echo)).await?;
+        // upload: BULK bytes into the sink, until the EOF ack count arrives
+        let mut ch = mux.open_channel(open_payload(sink_port)).await?;
         let t = Instant::now();
-        let mut sent = 0usize;
+        let mut sent = 0u64;
         while sent < BULK {
-            let n = payload.len().min(BULK - sent);
+            let n = payload.len().min((BULK - sent) as usize);
             ch.write_all(&payload[..n]).await?;
-            sent += n;
+            sent += n as u64;
         }
-        let mut got = 0usize;
+        ch.shutdown().await?;
+        let ack = ch.read_u64().await?;
+        let up_secs = t.elapsed().as_secs_f64();
+        mux.close_channel(ch.channel_id);
+        assert_eq!(ack, BULK, "sink must ack the exact upload volume ({legs} legs)");
+
+        // download: BULK bytes out of the source
+        let mut ch = mux.open_channel(open_payload(source_port)).await?;
+        let t = Instant::now();
+        ch.write_u64(BULK).await?;
+        let mut got = 0u64;
         let mut rbuf = vec![0u8; 64 * 1024];
         while got < BULK {
             let n = ch.read(&mut rbuf).await?;
             if n == 0 {
                 break;
             }
-            got += n;
+            got += n as u64;
         }
-        let secs = t.elapsed().as_secs_f64();
+        let down_secs = t.elapsed().as_secs_f64();
         mux.close_channel(ch.channel_id);
-        assert_eq!(got, BULK, "echo must return the full bulk payload ({legs} legs)");
-        let mbps = (BULK as f64 * 2.0 * 8.0 / secs) / 1_000_000.0; // x2: there and back
+        assert_eq!(got, BULK, "source must stream the exact volume ({legs} legs)");
+
         let (mn, av, mx) = stats(&samples);
-        println!("{:<8} {:>14} {:>14} {:>14} {:>14.1}", legs, format!("{mn:?}"), format!("{av:?}"), format!("{mx:?}"), mbps);
+        let mbps = |s: f64| (BULK as f64 * 8.0 / s) / 1_000_000.0;
+        println!(
+            "{:<6} {:>12} {:>12} {:>12} {:>14.1} {:>14.1}",
+            legs,
+            format!("{mn:?}"),
+            format!("{av:?}"),
+            format!("{mx:?}"),
+            mbps(up_secs),
+            mbps(down_secs)
+        );
     }
     Ok(())
-}
-
-fn open_payload(target: SocketAddr) -> Bytes {
-    Bytes::from(
-        serde_json::to_vec(&agile_net_core::proto::message::OpenChannel::new(
-            target.ip().to_string(),
-            target.port(),
-        ))
-        .unwrap(),
-    )
 }
 
 /// §2.5.2-1 (E2E leg): endpoint-only record-layer cost vs raw copy — the relays in an E2E
@@ -216,7 +291,7 @@ async fn bench_e2e_endpoint_overhead() -> Result<()> {
     let (env, client_cipher) = seal_open(&key, agile_net_core::relay::e2e::kid_of(&hash), "h", "10.0.0.9", 7, &[]);
     let (_, issuer_cipher) = open_open(&key, &env)?;
 
-    // sealed transfer over duplex
+    // sealed one-way transfer over duplex
     let (s1, s2) = duplex(256 * 1024);
     let mut a = E2eStream::new(s1, client_cipher);
     let mut b = E2eStream::new(s2, issuer_cipher);
@@ -228,7 +303,7 @@ async fn bench_e2e_endpoint_overhead() -> Result<()> {
     });
     let mut got = Vec::new();
     b.read_to_end(&mut got).await?;
-    writer.await?;
+    writer.await.unwrap();
     let e2e_secs = t.elapsed().as_secs_f64();
     assert_eq!(got.len(), BULK);
 
@@ -244,28 +319,34 @@ async fn bench_e2e_endpoint_overhead() -> Result<()> {
     });
     let mut got = Vec::new();
     rb.read_to_end(&mut got).await?;
-    writer.await?;
+    writer.await.unwrap();
     let raw_secs = t.elapsed().as_secs_f64();
     assert_eq!(got.len(), BULK);
 
     let mbps = |s: f64| (BULK as f64 * 8.0 / s) / 1_000_000.0;
-    println!("e2e endpoint: {:.1} Mbps ({:.0} ms) | raw: {:.1} Mbps ({:.0} ms) | delta/byte = {:.1} ns",
-        mbps(e2e_secs), e2e_secs * 1000.0, mbps(raw_secs), raw_secs * 1000.0,
-        (e2e_secs - raw_secs) * 1e9 / BULK as f64);
+    println!(
+        "e2e endpoint: {:.1} Mbps ({:.0} ms) | raw: {:.1} Mbps ({:.0} ms) | delta/byte = {:.1} ns",
+        mbps(e2e_secs),
+        e2e_secs * 1000.0,
+        mbps(raw_secs),
+        raw_secs * 1000.0,
+        (e2e_secs - raw_secs) * 1e9 / BULK as f64
+    );
     Ok(())
 }
 
-/// §2.5.2-2: mux fairness — a small RTT probe on a second channel of one session while a bulk
-/// channel saturates the same session. Probe RTT inflation bounds head-of-line blocking.
+/// §2.5.2-2: mux fairness — a small RTT probe on a second channel of one session while a
+/// bulk upload saturates the same session. Probe RTT inflation bounds head-of-line blocking.
 #[tokio::test]
 #[ignore = "benchmark — run with --ignored --nocapture"]
 async fn bench_mux_fairness_under_bulk() -> Result<()> {
-    let echo = start_echo().await;
-    let entry = build_chain(2, echo).await;
+    let echo_port = start_echo().await;
+    let sink_port = start_sink().await;
+    let entry = build_chain(2).await;
     let mux = raw_consumer(entry, "consumer", "bench").await?;
 
     // idle baseline on the probe channel
-    let mut probe = mux.open_channel(open_payload(echo)).await?;
+    let mut probe = mux.open_channel(open_payload(echo_port)).await?;
     let mut buf = vec![0u8; 1024];
     let mut idle = Vec::new();
     for _ in 0..20 {
@@ -276,26 +357,19 @@ async fn bench_mux_fairness_under_bulk() -> Result<()> {
     }
     let idle_avg = stats(&idle).1;
 
-    // saturate with a bulk channel while probing
+    // saturate the session with a 16 MiB bulk upload while probing
+    const BULK: u64 = 16 * 1024 * 1024;
     let bulk_mux = mux.clone();
-    let bulk_echo = echo;
     let bulk = tokio::spawn(async move {
-        let mut ch = bulk_mux.open_channel(open_payload(bulk_echo)).await.unwrap();
+        let mut ch = bulk_mux.open_channel(open_payload(sink_port)).await.unwrap();
         let payload = vec![b'b'; 64 * 1024];
-        for _ in 0..256 {
-            // 16 MiB total upload; echo backpressure keeps the session genuinely busy
+        let mut sent = 0u64;
+        while sent < BULK {
             ch.write_all(&payload).await.unwrap();
+            sent += payload.len() as u64;
         }
         ch.shutdown().await.unwrap();
-        let mut sink = vec![0u8; 64 * 1024];
-        let mut got = 0usize;
-        while got < 16 * 1024 * 1024 {
-            let n = ch.read(&mut sink).await.unwrap_or(0);
-            if n == 0 {
-                break;
-            }
-            got += n;
-        }
+        assert_eq!(ch.read_u64().await.unwrap(), BULK);
     });
     tokio::time::sleep(Duration::from_millis(200)).await; // let the bulk channel spin up
     let mut busy = Vec::new();
@@ -305,10 +379,12 @@ async fn bench_mux_fairness_under_bulk() -> Result<()> {
         probe.read_exact(&mut buf).await?;
         busy.push(t.elapsed());
     }
-    bulk.await?;
+    bulk.await.unwrap();
     let busy_avg = stats(&busy).1;
-    println!("probe RTT idle: {idle_avg:?} | under bulk: {busy_avg:?} | inflation: {:.1}x",
-        busy_avg.as_secs_f64() / idle_avg.as_secs_f64());
+    println!(
+        "probe RTT idle: {idle_avg:?} | under bulk: {busy_avg:?} | inflation: {:.1}x",
+        busy_avg.as_secs_f64() / idle_avg.as_secs_f64()
+    );
     // fairness contract: the probe must complete at all and stay within a sane factor —
     // a starved channel would time out (read_exact pending) rather than inflate moderately
     assert!(
