@@ -125,6 +125,7 @@ CREATE TABLE relay_token (
     control_scope   TEXT NOT NULL DEFAULT 'full',-- 管理授权档位 ro / rules / full
     group_id        TEXT,                        -- 逗号分隔组集（多组 ACL 并集；无 FK）
     rate_limit_kbps INTEGER,                     -- 会话带宽配额（读写合并令牌桶）
+    guarded         INTEGER NOT NULL DEFAULT 0,  -- 深度防护（信任档 G3）：重叠拒绝/上送组不进有效集/设备强制审批
     expires_at      TEXT,                        -- 生命周期：NULL = 永不过期
     max_uses        INTEGER,                     -- 生命周期：NULL = 不限用量
     used_count      INTEGER NOT NULL DEFAULT 0,
@@ -151,6 +152,7 @@ CREATE TABLE delegated_token (
     concurrency  TEXT NOT NULL DEFAULT 'single' CHECK(concurrency IN ('single','multi')),
     max_sessions INTEGER NOT NULL DEFAULT 8,  -- 签发时 node_config.delegation_max_sessions 快照
     visibility   TEXT NOT NULL DEFAULT 'domain' CHECK(visibility IN ('domain','disclose','approve')), -- 拓扑可见性档（M6）
+    anti_correlate INTEGER NOT NULL DEFAULT 0,   -- 抗关联填充（信任档 G1②）：E2E 记录 2048 字节桶填充
     expires_at   TEXT,
     max_uses     INTEGER,
     used_count   INTEGER NOT NULL DEFAULT 0,
@@ -183,6 +185,7 @@ CREATE TABLE connector (
     insecure           INTEGER NOT NULL DEFAULT 0,
     advertise          TEXT NOT NULL DEFAULT '',
     group_id           TEXT,                   -- 逗号分隔组集（同 relay_token 语义；无 FK）
+    guarded            INTEGER NOT NULL DEFAULT 0, -- 深度防护（信任档 G2）：强制钉值/禁 insecure/变更全审计
     enabled            INTEGER NOT NULL DEFAULT 1,
     remark             TEXT NOT NULL DEFAULT '',
     ca_cert_path       TEXT NOT NULL DEFAULT '',

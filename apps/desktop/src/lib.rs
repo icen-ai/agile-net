@@ -497,7 +497,7 @@ mod watchdog_args_tests {
     fn watchdog_pid_parsing() {
         use super::watchdog_pid;
         let exe = "anet-gui.exe".to_string();
-        assert_eq!(watchdog_pid(&[exe.clone()]), None);
+        assert_eq!(watchdog_pid(std::slice::from_ref(&exe)), None);
         assert_eq!(watchdog_pid(&[exe.clone(), "--sysproxy-watchdog".into()]), None);
         assert_eq!(
             watchdog_pid(&[exe.clone(), "--sysproxy-watchdog".into(), "70308".into()]),

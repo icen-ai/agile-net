@@ -18,9 +18,10 @@ pub(crate) fn set_autostart(app: tauri::AppHandle, enabled: bool) -> Result<(), 
         use tauri_plugin_autostart::ManagerExt;
         let manager = app.autolaunch();
         if enabled {
-            return manager.enable().map_err(map_err);
+            manager.enable().map_err(map_err)
+        } else {
+            manager.disable().map_err(map_err)
         }
-        return manager.disable().map_err(map_err);
     }
     #[cfg(not(desktop))]
     {
@@ -35,7 +36,7 @@ pub(crate) fn get_autostart(app: tauri::AppHandle) -> Result<bool, String> {
     #[cfg(desktop)]
     {
         use tauri_plugin_autostart::ManagerExt;
-        return app.autolaunch().is_enabled().map_err(map_err);
+        app.autolaunch().is_enabled().map_err(map_err)
     }
     #[cfg(not(desktop))]
     {
@@ -445,6 +446,7 @@ pub(crate) async fn tun_side_effects(app: &tauri::AppHandle, state: &State<'_, A
 ///   riding the subscription group; nodes connecting after kernel start fall back to the
 ///   PROCESS-NAME direct path (no carriage) until the next kernel restart
 /// - sysproxy/tun domain pins: the 系统代理 / 虚拟网卡 custom-rule channels (custom_rules::tun_rule_domains)
+///
 /// All empty when TUN is off (non-TUN renders ignore the extras anyway).
 pub(crate) async fn tun_extras(state: &State<'_, AppState>) -> crate::kernel::config::TunExtras {
     if !state.roles.lock().await.tun_mode {

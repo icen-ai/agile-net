@@ -501,3 +501,12 @@ html[data-theme="dark"] .badge-beta { color: rgba(255,255,255,.95); }
 /* --- native radio theming (both ends): brand accent + normalized size. Row pickers keep radios;
    single-choice dimension groups use the agtabs segmented texture instead --- */
 input[type="radio"] { accent-color: var(--accent); width: 14px; height: 14px; margin: 0; vertical-align: -2px; }
+
+/* --- toggle switch (both ends): on/off state control per AGENTS.md §5 表单控件选型定式
+       (deep-guard rows, role toggles; checked = accent track + shifted knob) --- */
+.switch { position: relative; display: inline-block; width: 32px; height: 18px; }
+.switch input { display: none; }
+.switch .slider { position: absolute; inset: 0; background: var(--border2); border-radius: 999px; transition: background var(--dur) var(--ease); cursor: pointer; }
+.switch .slider::before { content: ''; position: absolute; width: 14px; height: 14px; left: 2px; top: 2px; background: var(--toggle-knob); border-radius: 50%; transition: transform var(--dur) var(--ease), background var(--dur) var(--ease); box-shadow: 0 1px 3px rgba(0,0,0,.25); }
+.switch input:checked + .slider { background: var(--toggle-checked); }
+.switch input:checked + .slider::before { transform: translateX(14px); background: var(--toggle-knob-checked); }

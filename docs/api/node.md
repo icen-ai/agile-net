@@ -221,7 +221,8 @@
   "remark": "分公司跳板机",
   "expose_control": false,
   "control_scope": "full",
-  "group_id": "uuid"
+  "group_id": "uuid",
+  "guarded": false
 }
 ```
 
@@ -232,6 +233,7 @@
 | `expose_control` | 可选，默认 false：允许持该令牌的下游中继管理本节点 |
 | `control_scope` | 可选，默认 `full`：管理授权档位 `ro` / `rules` / `full` |
 | `group_id` | 可选，收敛权限组（对端粒度 ACL）；缺省/null = 不收敛，ID 不存在返回 40400 |
+| `guarded` | 可选，默认 false（信任档 G3 深度防护）：该令牌下行 advertise 与他下行重叠即**拒绝**（非 guarded 只记 warning 审计）、上送组不进有效集（须 federation/adopt 人工采纳）、接入设备**强制审批**（覆盖全局 `device_pending_policy=allow`）；开启记 `relay_token.guarded` 审计，重叠事件记 `relay_token.advertise_conflict` 审计 |
 
 ### 响应 201
 
@@ -280,6 +282,7 @@
         "expose_control": false,
         "control_scope": "full",
         "group_id": "uuid",
+        "guarded": false,
         "last_used_at": "2025-07-30T14:00:00Z",
         "created_at": "2025-07-30T10:00:00Z"
       }
@@ -302,12 +305,15 @@ Token 全文仅创建时返回，列出时只显示前缀。
 {
   "expose_control": true,
   "control_scope": "rules",
-  "group_id": null
+  "group_id": null,
+  "guarded": true
 }
 ```
 
 `group_id` 为**三态**：缺省 = 不变，`null` = 不收敛，字符串 = 挂到该组（记 `relay_token.set_group` 审计）。
 `remark`（M3-T6 对端显示名）同样三态：缺省 = 不变，字符串 = 更新（记 `relay_token.set_remark` 审计）。
+`guarded`（信任档 G3）同样三态：缺省 = 不变，true/false = 设置（记 `relay_token.guarded` 审计）；
+变更即踢在线对端（同组变更契约）——重连后新档立即生效。
 
 ### 响应 200
 

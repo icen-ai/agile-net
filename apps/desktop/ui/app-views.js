@@ -1359,13 +1359,24 @@ let FO_EDIT_ID = null;
 let FO_ITEMS = [];
 
 function foBadge(c) {
-  if (!c.enabled) return '<span class="badge b-off">' + AgI18n.t('common.disabled') + '</span>';
+  const guard = c.guarded ? ' <span class="badge b-warn">' + AgI18n.t('guard.badge') + '</span>' : '';
+  if (!c.enabled) return '<span class="badge b-off">' + AgI18n.t('common.disabled') + '</span>' + guard;
   const st = c.state;
-  if (st === 'connected') return '<span class="badge b-ok">' + AgI18n.t('common.connected') + '</span>';
-  if (st === 'connecting') return '<span class="badge b-warn"><span class="pulse"></span>' + AgI18n.t('views.st-connecting') + '</span>';
-  if (st === 'reconnecting') return '<span class="badge b-warn"><span class="pulse"></span>' + AgI18n.t('views.st-reconnecting') + '</span>';
-  if (st === 'disconnected') return '<span class="badge b-off">' + AgI18n.t('views.st-down') + '</span>';
-  return '<span class="badge b-gray">' + AgI18n.t('views.not-started') + '</span>';
+  if (st === 'connected') return '<span class="badge b-ok">' + AgI18n.t('common.connected') + '</span>' + guard;
+  if (st === 'connecting') return '<span class="badge b-warn"><span class="pulse"></span>' + AgI18n.t('views.st-connecting') + '</span>' + guard;
+  if (st === 'reconnecting') return '<span class="badge b-warn"><span class="pulse"></span>' + AgI18n.t('views.st-reconnecting') + '</span>' + guard;
+  if (st === 'disconnected') return '<span class="badge b-off">' + AgI18n.t('views.st-down') + '</span>' + guard;
+  return '<span class="badge b-gray">' + AgI18n.t('views.not-started') + '</span>' + guard;
+}
+
+/* Deep Guard linkage (trust profile G2): pinning mandatory (save rejected without a
+   fingerprint), insecure checkbox disabled, pushed groups cleared by default and each
+   later opt-in needs an explicit confirm (DOM modal, never window.confirm). */
+function foSyncGuard() {
+  const on = $('fo-guard').checked;
+  const ins = $('fo-insecure');
+  ins.disabled = on;
+  if (on) ins.checked = false;
 }
 
 /** ACL group set + push-group checkboxes: fetch local embedded node group list (keep current selections; failure doesn't block the list) */
@@ -1446,6 +1457,8 @@ function foOpenModal(c) {
   $('fo-sni').value = c ? c.sni_hostname : 'cdn.cloudflare.com';
   $('fo-fp').value = c ? (c.pinned_fingerprint || '') : '';
   $('fo-insecure').checked = c ? !!c.insecure : false;
+  $('fo-guard').checked = c ? !!c.guarded : false;
+  foSyncGuard();
   $('fo-advertise').value = c ? (c.advertise || '').split(',').filter(Boolean).join('\n') : '';
   // Peer-ACL convergence + policy upload selections (applied by foLoadGroups' list renders)
   FO_ACL_PENDING = new Set(c ? (c.group_id || '').split(',').filter(Boolean) : []);
@@ -1479,6 +1492,19 @@ function initUpstreams() {
     $('fo-paste').value = '';
     toast(AgI18n.t('fanout.pasted'), 'ok');
   };
+  // G2: enabling the guard clears pushed-group selections (upload becomes an explicit opt-in);
+  // checking one while guarded asks for an explicit confirm
+  $('fo-guard').addEventListener('change', () => {
+    foSyncGuard();
+    if ($('fo-guard').checked) document.querySelectorAll('.fo-push:checked').forEach(cb => { cb.checked = false; });
+  });
+  $('fo-push-list').addEventListener('change', async (e) => {
+    const cb = e.target.closest('input.fo-push');
+    if (!cb || !cb.checked || !$('fo-guard').checked || cb.dataset.guardOk === '1') return;
+    cb.checked = false;
+    const ok = await askConfirm({ icon: 'shield-alert', title: AgI18n.t('guard.label'), desc: AgI18n.t('guard.g2PushConfirm') });
+    if (ok) cb.checked = true; // programmatic check fires no change event — no re-confirm loop
+  });
   $('fo-paste').addEventListener('paste', () => setTimeout(foFill, 0));
   $('fo-paste').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); foFill(); } });
   $('fo-ok').onclick = async () => {
@@ -1495,13 +1521,16 @@ function initUpstreams() {
     const myName = $('fo-myname').value.trim();
     if (!addr) { $('fo-err').textContent = AgI18n.t('views.fo-addr-required'); return; }
     if (!FO_EDIT_ID && !token) { $('fo-err').textContent = AgI18n.t('views.fo-token-required'); return; }
+    const guarded = $('fo-guard').checked;
+    if (guarded && !fp) { $('fo-err').textContent = AgI18n.t('guard.g2NeedPin'); return; }
+    if (guarded && insecure) { $('fo-err').textContent = AgI18n.t('guard.g2NoInsecure'); return; }
     $('fo-err').textContent = '';
     try {
       if (FO_EDIT_ID) {
-        await invoke('update_server_connector', { id: FO_EDIT_ID, name, upstreamAddr: addr, token, sniHostname: sni, insecure, pinnedFingerprint: fp, groupId, pushGroups, advertise, remark, myName });
+        await invoke('update_server_connector', { id: FO_EDIT_ID, name, upstreamAddr: addr, token, sniHostname: sni, insecure, pinnedFingerprint: fp, groupId, pushGroups, advertise, remark, myName, guarded });
         toast(AgI18n.t('views.fo-updated'), 'ok');
       } else {
-        await invoke('add_server_connector', { name, upstreamAddr: addr, token, sniHostname: sni, insecure, pinnedFingerprint: fp, groupId, pushGroups, advertise, remark, myName });
+        await invoke('add_server_connector', { name, upstreamAddr: addr, token, sniHostname: sni, insecure, pinnedFingerprint: fp, groupId, pushGroups, advertise, remark, myName, guarded });
         toast(AgI18n.t('views.fo-added'), 'ok');
       }
       foCloseModal();
@@ -1545,7 +1574,7 @@ function initUpstreams() {
    - route=dedicated auto-selects every eligible group and collapses the picker. */
 let DT_ITEMS = [];
 let DT_GROUPS = []; // embedded node groups (with e2e_required flags)
-let DT_STATE = { entry: 'direct', trust: 'plain', route: 'dedicated', conc: 'single' };
+let DT_STATE = { entry: 'direct', trust: 'plain', route: 'dedicated', conc: 'single', guard: false };
 let DT_GROUPS_OPEN = false; // dedicated-route member-list expansion state
 
 function dtBadges(t) {
@@ -1554,6 +1583,7 @@ function dtBadges(t) {
   b.push('<span class="badge b-gray">' + (t.concurrency === 'multi' ? AgI18n.t('dt.badgeMulti', { n: t.max_sessions || 8 }) : AgI18n.t('dt.badgeSingle')) + '</span>');
   b.push('<span class="badge ' + (t.mode === 'split' ? 'b-info' : 'b-off') + '">' + AgI18n.t(t.mode === 'split' ? 'views.tier-split' : 'views.tier-dedicated') + '</span>');
   if ((t.hint_map || []).some(h => (h.hint || '').startsWith('en_'))) b.push('<span class="badge b-warn">E2E</span>');
+  if (t.anti_correlate) b.push('<span class="badge b-warn">' + AgI18n.t('guard.badge') + '</span>');
   if (t.admin_scope) b.push('<span class="badge b-warn">' + AgI18n.t('dt.badgeAdmin', { scope: t.admin_scope }) + '</span>');
   if (t.lifecycle && t.lifecycle !== 'active') b.push('<span class="badge b-off">' + AgI18n.t('dt.life-' + t.lifecycle) + '</span>');
   return b.join(' ');
@@ -1604,9 +1634,24 @@ function dtSync() {
   const s = DT_STATE;
   const trustBtns = [...$('dt-trust').querySelectorAll('.group-tab')];
   const routeBtns = [...$('dt-route').querySelectorAll('.group-tab')];
-  // direct entry locks trust to plain
+  // direct entry locks trust to plain (direct TLS is already end-to-end; deep guard adds nothing)
   trustBtns.forEach(b => { b.disabled = (s.entry === 'direct' && b.dataset.v !== 'plain'); });
   if (s.entry === 'direct') s.trust = 'plain';
+  // Deep Guard (G1): forced E2E — the plain tier becomes unselectable and trust hops to e2e;
+  // direct entry disables the guard entirely (its trust is locked to plain)
+  const guardEl = $('dt-guard');
+  if (guardEl) {
+    guardEl.disabled = s.entry === 'direct';
+    if (s.entry === 'direct') guardEl.checked = false;
+    s.guard = guardEl.checked;
+    if (s.guard) trustBtns.forEach(b => { if (b.dataset.v === 'plain') b.disabled = true; });
+    if (s.guard && s.trust === 'plain') s.trust = 'e2e';
+    $('dt-anti-row').style.display = s.guard ? '' : 'none';
+    if (!s.guard) $('dt-anti').checked = false;
+  }
+  // ruling ①: the plaintext-tier warning shows whenever trust = plain (independent of the guard)
+  const warnEl = $('dt-plain-warn');
+  if (warnEl) warnEl.style.display = s.trust === 'plain' ? '' : 'none';
   // plain trust cannot do split (vocabulary delivery requires the E2E config channel)
   routeBtns.forEach(b => { b.disabled = (s.trust === 'plain' && b.dataset.v === 'split'); });
   if (s.trust === 'plain') s.route = 'dedicated';
@@ -1646,11 +1691,13 @@ function dtSync() {
 }
 
 async function dtOpenModal() {
-  DT_STATE = { entry: 'direct', trust: 'plain', route: 'dedicated', conc: 'single' };
+  DT_STATE = { entry: 'direct', trust: 'plain', route: 'dedicated', conc: 'single', guard: false };
   $('dt-label').value = '';
   const mn = $('dt-myname'); if (mn) mn.value = '';
   $('dt-err').textContent = '';
   $('dt-scope').value = 'ro';
+  $('dt-guard').checked = false;
+  $('dt-anti').checked = false;
   agSelectRefresh($('dt-scope'));
   try { DT_GROUPS = await invoke('list_embedded_groups'); } catch (e) { DT_GROUPS = []; }
   let conns = [];
@@ -1695,6 +1742,7 @@ async function dtSubmit() {
     entry_mode: s.entry,
     concurrency: s.conc,
     my_name: myName,
+    anti_correlate: s.guard && $('dt-anti').checked,
   };
   const btn = $('dt-ok');
   btn.disabled = true;
@@ -1738,6 +1786,7 @@ function initDelegation() {
   $('btn-dt-add').onclick = dtOpenModal;
   $('dt-cancel').onclick = dtCloseModal;
   $('dt-modal').onclick = (e) => { if (e.target === $('dt-modal')) dtCloseModal(); };
+  $('dt-guard').addEventListener('change', () => dtSync());
   // segmented selectors (entry / trust / route / concurrency) — dtSync re-applies the linkage
   [['dt-entry', 'entry'], ['dt-trust', 'trust'], ['dt-route', 'route'], ['dt-conc', 'conc']].forEach(([id, key]) => {
     $(id).querySelectorAll('.group-tab').forEach(b => {

@@ -38,7 +38,7 @@ AgileNetClient (Arc<ClientInner>)
 ```
 connect(ConnectParams)
 ├── 1. 解析 anet://connect 链接 → Credential{addr,label,token,name?,insecure,
-│      pinned_fingerprint?,entries,entry_fps,en?,emode?,eadmin}
+│      pinned_fingerprint?,entries,entry_fps,en?,emode?,eadmin,pad}
 ├── 2. ClientTunnel 直连主入口（TLS 信任策略：pinned_fingerprint > insecure）
 │      AuthFrame { kind: "client", token: psk_... }（委托令牌，无登录/无配置拉取）
 ├── 3. DelegatedOpener：en 存在时全 Open E2E 包装（entrust 路由词寻址）
@@ -53,7 +53,7 @@ connect(ConnectParams)
 ## 凭据存储
 
 `~/.anet/credentials.json`（Unix 0600）。`Credential` 字段：`addr / label / token /
-name? / insecure / pinned_fingerprint? / entries / entry_fps / en? / emode? / eadmin`。
+name? / insecure / pinned_fingerprint? / entries / entry_fps / en? / emode? / eadmin / padding`。
 桌面平台令牌优先存 OS keyring（Windows 凭据管理器 / macOS 钥匙串），文件只留元数据；
 keyring 不可用回退 0600 文件。
 

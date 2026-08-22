@@ -1246,6 +1246,11 @@
       <div id="fo-acl-list" style="max-height:110px;overflow-y:auto"></div>
       <label><span data-i18n="fanout.fpLabel">证书指纹钉值</span> <span class="hint inline" data-i18n="fanout.fpHint">可空；对端节点状态页复制，64 位 hex，优先于 insecure</span></label>
       <input id="fo-fp" class="mono" placeholder="sha256...">
+      <!-- Deep Guard (trust profile G2): pinning mandatory + insecure forbidden + audited edits -->
+      <div class="role-row" style="margin-top:10px">
+        <div class="role-info"><b><span data-i18n="guard.label">深度防护</span> <span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip" data-i18n="guard.g2Tip">必须钉值对端证书指纹、禁用 insecure 跳过校验；上送权限组需显式勾选</span></span></b></div>
+        <label class="switch"><input type="checkbox" id="fo-guard"><span class="slider"></span></label>
+      </div>
       <label class="chk" style="margin-top:12px"><input type="checkbox" id="fo-insecure"> <span data-i18n="fanout.insecure">跳过 TLS 证书校验（insecure，仅调试用）</span></label>
       <label><span data-i18n="fanout.pushLabel">上送权限组</span> <span class="hint inline" data-i18n="fanout.pushHint">随握手推送给上游，对端可一键采纳授权（可空）</span></label>
       <div id="fo-push-list" style="max-height:110px;overflow-y:auto"></div>
@@ -1300,6 +1305,18 @@
           <option value="full" data-i18n="dt.scopeFull">完整管理</option>
         </select>
       </div>
+      <!-- Ruling ①: plaintext-tier warning (always on for trust=plain, independent of Deep Guard) -->
+      <div class="net-banner" id="dt-plain-warn" style="display:none;margin:8px 0 0">
+        <i data-ic="triangle-alert" data-sz="15"></i>
+        <span data-i18n="guard.plainWarn">明文档下中继可审计全部内容——适用于自有内网可审计场景；流量将经过不受信中继时请改用端到端档</span>
+      </div>
+
+      <!-- Deep Guard (trust profile G1): forced E2E + optional anti-correlation padding -->
+      <div class="role-row" style="margin-top:10px">
+        <div class="role-info"><b><span data-i18n="guard.label">深度防护</span> <span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip" data-i18n="guard.g1Tip">强制端到端加密；可再勾选抗关联填充（流量轮廓抗关联，带宽约 +5~15%）</span></span></b></div>
+        <label class="switch"><input type="checkbox" id="dt-guard"><span class="slider"></span></label>
+      </div>
+      <label class="chk" id="dt-anti-row" style="display:none;margin-top:6px"><input type="checkbox" id="dt-anti"> <span data-i18n="guard.antiCorrelate">抗关联填充（2048 字节桶，带宽约 +5~15%）</span></label>
 
       <label data-i18n="dt.route">路由</label>
       <div class="group-tabs" id="dt-route" style="margin-bottom:4px">

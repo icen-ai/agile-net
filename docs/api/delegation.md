@@ -26,6 +26,10 @@
   `visibility` 词表达，消费端导入时弹条款卡确认（M4-T5）。
 - **令牌生命周期**：签发可选 `expires_at` / `max_uses`（默认不限）；过期/用尽后注册同步
   停止上送（状态 `expired`/`exhausted`），签发端数据面同步硬拒。
+- **抗关联填充 `anti_correlate`**（信任档 G1②）：E2E 记录按 2048 字节桶填充（随机 filler +
+  认证长度前缀），密文记录长度不再与明文长度相关（流量轮廓抗关联，带宽约 +5~15%）；随
+  链接 `pad=1` 词表达（仅与 `ek` 共存），消费端与签发端 unwrap 两侧同桶对齐校验、粒度
+  不匹配即断。
 
 ---
 
@@ -50,6 +54,7 @@
         "entry_mode": "relay",
         "concurrency": "single",
         "max_sessions": 8,
+        "anti_correlate": false,
         "hint_map": [{ "hint": "en_ab12cd34ef56", "groups": ["db-prod"] }],
         "regs": [
           {
@@ -95,7 +100,8 @@
   "mode": "dedicated",
   "admin_scope": "",
   "entry_mode": "relay",
-  "concurrency": "single"
+  "concurrency": "single",
+  "anti_correlate": false
 }
 ```
 
@@ -122,6 +128,8 @@
 - `my_name`：可空，≤64 字符（M3-T6）：建议的消费者自声明名称，预填进生成链接的
   `myname` 词（仅随链接传递，不落库）。
 - `max_uses`：可空，默认不限（正整数；按数据面打开次数计，签发端内存计数、缓存刷新时落库）。
+- `anti_correlate`：可空，默认 false（信任档 G1② 抗关联填充）：**要求引用组含
+  `e2e_required` 组**（填充经 E2E 通道生效）；开启后链接携带 `pad=1`。
 
 ### 响应 201
 
@@ -143,12 +151,13 @@
 `share_url` 形态（`anet://connect`）：`server/fp` = 主入口地址与证书指纹钉值；
 `entry/entryfp` = 入口集合全量地址与逐入口指纹（relay 模式 = 容灾集合主入口在前；
 direct 模式 = 本端点端点候选）；`en` = entrust 词（E2E 令牌必有，零泄露路由）；
-`emode=split` 仅分流档携带；`eadmin=1` 仅管理档携带。审计事件 `delegation.issue`。
+`emode=split` 仅分流档携带；`eadmin=1` 仅管理档携带；`pad=1` 仅抗关联填充档携带（与
+`ek` 共存）。审计事件 `delegation.issue`（填充档附 `pad=on`）。
 
 ### 错误
 
 - `40001`：参数校验失败（label 空/超长、组或 connector 不存在、无组、relay 模式容灾集合
-  为空或主入口非恰好一个、entry_mode/concurrency/mode/admin_scope 非法、分流/管理档无
+  为空或主入口非恰好一个、entry_mode/concurrency/mode/admin_scope 非法、分流/管理/填充档无
   E2E 组、过期时间早于当前、用量上限非正整数）。
 
 ---

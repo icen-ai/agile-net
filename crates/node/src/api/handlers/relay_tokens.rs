@@ -558,21 +558,36 @@ pub async fn update_token(
         rate_limit_resp = new_rate_limit;
     }
 
-    // Deep Guard change (G3): absent = unchanged (kick-free — applies at the next reconnect)
+    // Deep Guard change (G3): absent = unchanged. The flag rides the session at auth, so a
+    // change kicks the live peer (same contract as a group change) — it reconnects at once and
+    // the new profile takes effect immediately, not at the next natural flap.
     let mut guarded_resp = existing.guarded;
     if let Some(new_guarded) = req.guarded
         && new_guarded != existing.guarded
     {
         let (tid, on) = (id.clone(), new_guarded);
-        if let Err(e) = state
-            .db_call(move |db| db.set_relay_token_guarded(&tid, on))
+        let token_hash = match state
+            .db_call(move |db| {
+                db.set_relay_token_guarded(&tid, on)?;
+                Ok(db.get_relay_token_hash(&tid).unwrap_or(None))
+            })
             .await
         {
-            return err(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                codes::INTERNAL,
-                e.to_string(),
-            );
+            Ok(h) => h,
+            Err(e) => {
+                return err(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    codes::INTERNAL,
+                    e.to_string(),
+                );
+            }
+        };
+        if let (Some(listener), Some(hash)) = (&state.runtime.listener, token_hash)
+            && let Some(node_id) = listener
+                .disconnect_by_token_hash(&hash, agile_net_core::proto::message::reason::KICKED, "")
+                .await
+        {
+            tracing::info!(node = %node_id, "relay token guard profile changed, peer kicked");
         }
         audit(
             &state,

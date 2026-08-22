@@ -34,6 +34,7 @@ connector 为一等入库资源：TOML `[[connectors]]` 仅启动导入（name �
         "advertise": "10.12.0.0/16,git.internal",
         "group_id": "uuid",
         "group_name": "办公组",
+        "guarded": false,
         "enabled": true,
         "remark": "分公司出口",
         "state": "connected",
@@ -67,6 +68,7 @@ connector 为一等入库资源：TOML `[[connectors]]` 仅启动导入（name �
   "pinned_cert_path": "certs/up.pem",
   "advertise": ["10.12.0.0/16", "git.internal"],
   "group_id": "uuid",
+  "guarded": false,
   "push_groups": ["uuid-g1", "uuid-g2"],
   "remark": "分公司出口"
 }
@@ -83,6 +85,7 @@ connector 为一等入库资源：TOML `[[connectors]]` 仅启动导入（name �
 | `advertise` | 可选，**字符串数组**（≤64 条，单条 ≤256 字符）；入库序列化为逗号拼接 |
 | `group_id` | 可选；缺省/null = 不收敛；ID 不存在返回 40400 |
 | `push_groups` | 可选，策略上送（federation P1）：本地权限组 ID 数组（≤32 个，去重，ID 不存在 40400）；随扇出握手推送给上游，进入其可授权池供一键采纳；缺省/空数组 = 不上送 |
+| `guarded` | 可选，默认 false（信任档 G2 深度防护）：开启后保存校验强制 `pinned_fingerprint` 非空且 `insecure=false`（违反返回 40000 中文错误），guarded 连接的连接/上送/advertise 变更落审计并附变更字段摘要 |
 | `remark` | 可选，0-256 字符 |
 
 ### 响应 201

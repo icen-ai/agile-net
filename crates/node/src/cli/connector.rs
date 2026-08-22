@@ -57,6 +57,9 @@ pub struct ConnectorAddArgs {
     /// 收敛权限组（名称或 ID，逗号分隔可多组取并集；缺省 = 不收敛，放行一切）
     #[arg(long)]
     pub group: Option<String>,
+    /// 深度防护（要求 --fp 钉值、禁用 insecure）
+    #[arg(long)]
+    pub guarded: bool,
     #[arg(long)]
     pub remark: Option<String>,
 }
@@ -86,6 +89,9 @@ pub struct ConnectorUpdateArgs {
     /// 收敛权限组（名称或 ID，逗号分隔可多组取并集；缺省 = 保持原组）
     #[arg(long)]
     pub group: Option<String>,
+    /// 深度防护开关（要求指纹钉值、禁用 insecure；缺省 = 保留原值）
+    #[arg(long)]
+    pub guarded: Option<bool>,
     #[arg(long)]
     pub remark: Option<String>,
 }
@@ -113,6 +119,12 @@ pub(super) async fn cmd_connector(
                             c["upstream_addr"].as_str().unwrap_or("-").to_string(),
                             group_set_display(c, "不收敛"),
                             c["state"].as_str().unwrap_or("-").to_string(),
+                            if c["guarded"].as_bool().unwrap_or(false) {
+                                "深度防护"
+                            } else {
+                                "-"
+                            }
+                            .to_string(),
                             if c["enabled"].as_bool().unwrap_or(false) {
                                 "启用"
                             } else {
@@ -124,7 +136,7 @@ pub(super) async fn cmd_connector(
                     })
                     .collect();
                 print_table(
-                    &["ID", "名称", "上游地址", "权限组", "状态", "启用", "备注"],
+                    &["ID", "名称", "上游地址", "权限组", "状态", "防护", "启用", "备注"],
                     rows,
                 );
             }
@@ -145,7 +157,7 @@ pub(super) async fn cmd_connector(
                         "sni_hostname": a.sni.unwrap_or_default(), "insecure": a.insecure,
                         "pinned_fingerprint": a.fp.unwrap_or_default(),
                         "advertise": split_csv(a.advertise.as_deref().unwrap_or_default()),
-                        "group_id": group_id, "remark": a.remark.unwrap_or_default(),
+                        "group_id": group_id, "guarded": a.guarded, "remark": a.remark.unwrap_or_default(),
                     })),
                 )
                 .await?;
@@ -179,6 +191,7 @@ pub(super) async fn cmd_connector(
                 "pinned_fingerprint": u.fp.unwrap_or_else(|| cur["pinned_fingerprint"].as_str().unwrap_or_default().to_string()),
                 "advertise": advertise,
                 "group_id": cur["group_id"],
+                "guarded": u.guarded.unwrap_or_else(|| cur["guarded"].as_bool().unwrap_or(false)),
                 "remark": u.remark.unwrap_or_else(|| cur["remark"].as_str().unwrap_or_default().to_string()),
             });
             // Empty token = keep the old value (the server treats empty string/null as not provided, never echoed back)

@@ -64,7 +64,7 @@ function truthy(v) { return v === '1' || String(v).toLowerCase() === 'true'; }
 
 /* Parse a unified link. Returns:
    { role:'connect', server, addr, account, password, fp, insecure, delegated, label,
-     entries[], entryFps[], en, emode, eadmin } |
+     entries[], entryFps[], en, ek, emode, eadmin, pad } |
    { role:'fanout',  server, addr, token, sni, fp, insecure } |
    { error }
    Connect links carry delegated credentials: the disaster set (entry/entryfp, comma-joined
@@ -82,6 +82,8 @@ function parse(url) {
     const entryFps = String(p.entryfp || '').split(',').map(s => s.trim());
     while (entryFps.length < entries.length) entryFps.push('');
     const delegated = p.account.startsWith('d:');
+    // anti-correlation padding (G1②): only valid alongside the E2E key (ek)
+    if (truthy(p.pad) && !p.ek) return { error: 'bad_pad' };
     return {
       role: 'connect', server: sv.server, addr: sv.addr,
       account: p.account, password: p.password,
@@ -102,6 +104,8 @@ function parse(url) {
       myname: p.myname || '',
       // topology-visibility clause (M6): shown as a clause card at import (M4-T5)
       visibility: p.visibility || '',
+      // anti-correlation padding tier (G1②): E2E records sealed at 2048-byte buckets
+      pad: truthy(p.pad),
     };
   }
   const sv = resolveServer(p, 54430);
@@ -144,6 +148,8 @@ function buildConnect(f) {
   }
   if (f.en) params.push(['en', f.en]);
   if (f.ek) params.push(['ek', f.ek]);
+  // anti-correlation padding rides the E2E channel cipher — emitted only alongside ek
+  if (f.ek && f.pad) params.push(['pad', '1']);
   if (f.emode === 'split') params.push(['emode', 'split']);
   if (f.eadmin) params.push(['eadmin', '1']);
   if (f.myname) params.push(['myname', f.myname]);

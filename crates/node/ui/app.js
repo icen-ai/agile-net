@@ -366,6 +366,16 @@ function confirmAction(text, onYes) {
 function aglinkErrText(code) {
   return T('aglink.' + (code || 'missing'));
 }
+/* Deep Guard row (trust profile): the same switch texture on every boundary —
+   G1 issue dialog / G2 connector form / G3 relay-token dialogs. */
+function guardRowHtml(idp, tipKey, checked) {
+  return '<div style="display:flex;align-items:center;gap:8px;margin-top:12px">' +
+    '<label class="switch"><input type="checkbox" id="' + idp + '-guard"' + (checked ? ' checked' : '') + '><span class="slider"></span></label>' +
+    '<b>' + ic('shield-alert', 14) + ' ' + T('guard.label') + '</b> ' + ahelp(T(tipKey)) + '</div>';
+}
+function guardBadge(on) {
+  return on ? ' <span class="badge b-warn">' + ic('shield-alert', 11) + ' ' + T('guard.badge') + '</span>' : '';
+}
 function shareCardHtml(endpoints) {
   const eps = endpoints || [];
   const epRow = eps.length > 1
@@ -810,7 +820,7 @@ const ACT_CLICK = {
   'grp-del': b => delGroup(b.dataset.id, b.dataset.name),
   'rule-edit': b => openEditRule(b.dataset.id, b.dataset.type, b.dataset.value, b.dataset.resolve === 'true', b.dataset.remark || ''),
   'rule-del': b => delRule(b.dataset.id, b.dataset.value, Number(b.dataset.count || 0)),
-  'tok-edit': b => openEditToken(b.dataset.id, b.dataset.group || '', b.dataset.expose === 'true', b.dataset.scope, b.dataset.expires || '', b.dataset.maxuses || '', b.dataset.rate || '', b.dataset.remark || ''),
+  'tok-edit': b => openEditToken(b.dataset.id, b.dataset.group || '', b.dataset.expose === 'true', b.dataset.scope, b.dataset.expires || '', b.dataset.maxuses || '', b.dataset.rate || '', b.dataset.remark || '', b.dataset.guarded === 'true'),
   'tok-del': b => delToken(b.dataset.id),
   'conn-edit': b => openEditConnector(b.dataset.id),
   'conn-toggle': b => toggleConnector(b.dataset.id, b.dataset.enabled === 'true'),
@@ -2162,7 +2172,7 @@ function renderFaninTokens() {
     const sessions = SESS.filter(s => s.kind === 'fanin' && s.token_hash === t.token_hash);
     const sessTr = '<tr ' + sessWrapAttrs(key) + '><td colspan="8" style="background:var(--bg2);padding:0">' +
       sessPanelInner({ name: t.remark || t.token_prefix, sessions, cols: ['who', 'ip', 'chans', 'ago', 'tr', 'key', 'op'], kickallFanin: t.token_hash }) + '</td></tr>';
-    return '<tr><td class="mono">' + esc(t.token_prefix) + lifecycleBadge(t) + '</td>' +
+    return '<tr><td class="mono">' + esc(t.token_prefix) + lifecycleBadge(t) + guardBadge(t.guarded) + '</td>' +
     '<td>' + ((t.groups || []).length ? t.groups.map(g => grpChip({ name: g.name, adopted: g.adopted_node })).join(' ') : '<span style="color:var(--dim2)">' + T('adm.noRestrict') + '</span>') + '</td>' +
     '<td class="mono">' + (t.rate_limit_kbps ? esc(t.rate_limit_kbps) + ' KB/s' : '<span style="color:var(--dim2)">' + T('adm.unlimited') + '</span>') + '</td>' +
     '<td>' + esc(t.remark || '-') + '</td>' +
@@ -2173,7 +2183,7 @@ function renderFaninTokens() {
     '<td style="color:var(--dim)">' + esc(t.last_used_at || T('fanin.unused')) + '</td>' +
     '<td style="color:var(--dim)">' + esc(t.created_at) + '</td>' +
     '<td style="white-space:nowrap"><button class="ghost small" data-act="tok-sess" data-id="' + esc(t.id) + '" data-sessopen="' + esc(key) + '" title="' + T('sess.title') + '">' + ic('chevron-right', 13) + '</button> ' +
-    '<button class="ghost small" data-act="tok-edit" data-id="' + esc(t.id) + '" data-group="' + esc(t.group_id||'') + '" data-expose="' + t.expose_control + '" data-scope="' + esc(t.control_scope) + '" data-expires="' + esc(t.expires_at||'') + '" data-maxuses="' + esc(t.max_uses||'') + '" data-rate="' + esc(t.rate_limit_kbps||'') + '" data-remark="' + esc(t.remark||'') + '">' + T('common.edit') + '</button> ' +
+    '<button class="ghost small" data-act="tok-edit" data-id="' + esc(t.id) + '" data-group="' + esc(t.group_id||'') + '" data-expose="' + t.expose_control + '" data-scope="' + esc(t.control_scope) + '" data-expires="' + esc(t.expires_at||'') + '" data-maxuses="' + esc(t.max_uses||'') + '" data-rate="' + esc(t.rate_limit_kbps||'') + '" data-remark="' + esc(t.remark||'') + '" data-guarded="' + !!t.guarded + '">' + T('common.edit') + '</button> ' +
     '<button class="danger small" data-act="tok-del" data-id="' + esc(t.id) + '">' + T('adm.revoke') + '</button></td></tr>' + sessTr;
   }).join('') || '<tr><td colspan="8" class="empty">' + (q ? T('fanin.noMatchTokens') : T('fanin.emptyTokens')) + '</td></tr>';
   agSelectEnhance(body);
@@ -2210,6 +2220,7 @@ function openCreateToken() {
     '<label>' + T('fanin.rateLabel') + '</label><input id="nt-rate" type="number" min="1" placeholder="' + T('fanin.ratePh') + '" style="width:100%">' +
     '<div class="hint">' + T('fanin.rateHint') + '</div>' +
     lifecycleFieldsHtml('nt', '', '') +
+    guardRowHtml('nt', 'guard.g3Tip', false) +
     '<label class="chk" style="display:flex;align-items:center;gap:6px;margin-top:8px"><input type="checkbox" id="nt-expose"> ' + T('fanin.exposeLabel') + '</label>' +
     '<div id="nt-expose-opts" style="display:none;margin:6px 0">' +
       '<label>' + T('fanin.scopeLabel') + '</label><select id="nt-scope" style="width:100%">' +
@@ -2231,6 +2242,7 @@ function openCreateToken() {
             my_name: names.myname,
             expose_control: $('nt-expose').checked,
             control_scope: $('nt-scope').value,
+            guarded: $('nt-guard').checked,
             group_id: [...document.querySelectorAll('.nt-acl:checked')].map(c => c.value).join(',') || null,
             rate_limit_kbps: rateVal > 0 ? rateVal : null,
             expires_at: life.expires_at,
@@ -2255,7 +2267,7 @@ async function delToken(id) {
 }
 /* Edit bound group: PUT tri-state semantics (absent = unchanged / null = unbound / string = bind to group);
    editing is an explicit user choice so it is always sent; control-plane exposure is changed directly in the list (group_id not sent = unchanged) */
-function openEditToken(id, groupId, exposeControl, controlScope, expiresAt, maxUses, rateKbps, remark) {
+function openEditToken(id, groupId, exposeControl, controlScope, expiresAt, maxUses, rateKbps, remark, guarded) {
   openModal(T('fanin.editTitle'),
     // M3-T6: the target name is the issuer-assigned peer display name (relay_token.remark column)
     nameTriplet('et', { target: remark || '' }, { myname: false, remark: false }) +
@@ -2267,6 +2279,7 @@ function openEditToken(id, groupId, exposeControl, controlScope, expiresAt, maxU
       ).join('') : '<div class="empty">' + T('groups.empty') + '</div>') + '</div>' +
     '<label>' + T('fanin.editRateLabel') + '</label><input id="et-rate" type="number" min="1" value="' + (rateKbps > 0 ? rateKbps : '') + '" placeholder="' + T('adm.unlimited') + '" style="width:100%">' +
     lifecycleFieldsHtml('et', expiresAt, maxUses) +
+    guardRowHtml('et', 'guard.g3Tip', guarded) +
     '<div class="hint">' + T('fanin.editHint') + '</div>',
     [
       {label: T('common.cancel'), kind:'ghost', fn: closeModal},
@@ -2276,6 +2289,7 @@ function openEditToken(id, groupId, exposeControl, controlScope, expiresAt, maxU
           const life = lifecycleFieldsVal('et');
           await api('PUT', '/api/v1/admin/node/relay-tokens/' + id, {
             expose_control: exposeControl, control_scope: controlScope,
+            guarded: $('et-guard').checked,
             remark: nameTripletVal('et').target,
             group_id: [...document.querySelectorAll('.et-acl:checked')].map(c => c.value).join(',') || null,
             rate_limit_kbps: rateVal > 0 ? rateVal : null,
@@ -2378,7 +2392,7 @@ async function loadConnectors() {
         (c.peer_node ? nodeBadge(c.peer_node, connAuthTier(c)) : '') + '</td>' +
         '<td class="mono">' + esc(c.upstream_addr) + (adv ? '<div style="color:var(--dim2);font-size:12px">' + esc(adv) + '</div>' : '') + '</td>' +
         '<td>' + ((c.groups || []).length ? c.groups.map(g => grpChip({ name: g.name, adopted: g.adopted_node })).join(' ') : '<span style="color:var(--dim2)">' + T('adm.noRestrict') + '</span>') + '</td>' +
-        '<td>' + connStatusBadge(c.state) + '</td>' +
+        '<td>' + connStatusBadge(c.state) + guardBadge(c.guarded) + '</td>' +
         '<td>' + (c.enabled ? '<span class="badge b-ok">' + T('adm.stOn') + '</span>' : '<span class="badge b-off">' + T('adm.stOff') + '</span>') + '</td>' +
         '<td style="color:var(--dim)">' + esc(c.remark || '-') + '</td>' +
         '<td style="white-space:nowrap">' +
@@ -2459,6 +2473,7 @@ function delegTierBadges(t) {
   const anyE2e = (t.groups || []).some(g => g.e2e_required);
   return '<span class="badge ' + (t.mode === 'split' ? 'b-warn' : 'b-info') + '">' + (t.mode === 'split' ? T('deleg.modeSplit') : T('deleg.modeDedicated')) + '</span>' +
     (anyE2e ? ' <span class="badge b-warn">E2E</span>' : '') +
+    (t.anti_correlate ? guardBadge(true) : '') +
     (t.admin_scope ? ' <span class="badge b-warn">' + T('deleg.badgeAdmin') + '·' + esc(t.admin_scope) + '</span>' : '');
 }
 /* Disaster-set entry lines: one row per registered connector (primary badge + live registration state).
@@ -2620,6 +2635,10 @@ async function openIssueDelegation() {
       { v: 'admin', label: T('deleg.trustAdmin') },
     ], 'plain') +
     '<div class="hint" id="di-trust-lock" style="display:none;color:var(--warn)">' + ic('info', 13) + ' ' + T('deleg.directPlainHint') + '</div>' +
+    // ruling ①: plaintext-tier warning (whenever trust = plain, independent of Deep Guard)
+    '<div id="di-plain-warn" style="display:none;align-items:flex-start;gap:8px;color:var(--warn-text);background:var(--warn-bg);border:1px solid var(--warn);border-radius:10px;padding:8px 12px;margin-top:8px;font-size:12px">' + ic('triangle-alert', 13) + ' ' + T('guard.plainWarn') + '</div>' +
+    guardRowHtml('di', 'guard.g1Tip', false) +
+    '<label class="chk" id="di-anti-row" style="display:flex;align-items:center;gap:6px;margin-top:6px"><input type="checkbox" id="di-anti"> ' + T('guard.antiCorrelate') + '</label>' +
     '<div id="di-scope-wrap" style="display:none">' +
       segHtml('di-scope', [
         { v: 'ro', label: T('deleg.scopeRo') },
@@ -2685,6 +2704,7 @@ async function openIssueDelegation() {
             admin_scope: adminScope,
             entry_mode: entry,
             concurrency,
+            anti_correlate: $('di-guard').checked && $('di-anti').checked,
             expires_at: life.expires_at,
             max_uses: life.max_uses,
           });
@@ -2717,6 +2737,21 @@ async function openIssueDelegation() {
   });
   syncPrimary();
 
+  // Deep Guard (G1) linkage: forced E2E — the plain tier becomes unselectable (trust hops to
+  // e2e), the anti-correlation sub-option appears; direct entry disables the guard entirely.
+  // The plaintext warning (ruling ①) tracks trust alone — independent of the guard.
+  function syncGuard() {
+    const guard = $('di-guard');
+    const entry = segVal('di-entry') || 'direct';
+    if (entry === 'direct') guard.checked = false;
+    guard.disabled = entry === 'direct';
+    const on = guard.checked;
+    if (on && (segVal('di-trust') || 'plain') === 'plain') segSet('di-trust', 'e2e');
+    segSet('di-trust', segVal('di-trust') || 'plain', { plain: on });
+    $('di-anti-row').style.display = on ? 'flex' : 'none';
+    if (!on) $('di-anti').checked = false;
+  }
+  $('di-guard').onchange = () => { syncGuard(); syncGroupEligibility(); };
   // trust linkage: the E2E tiers keep only e2e_required groups selectable (ineligible boxes uncheck+disable)
   function syncGroupEligibility() {
     const trust = segVal('di-trust') || 'plain';
@@ -2726,6 +2761,7 @@ async function openIssueDelegation() {
       if (c.disabled) c.checked = false;
     });
     $('di-scope-wrap').style.display = trust === 'admin' ? '' : 'none';
+    $('di-plain-warn').style.display = trust === 'plain' ? 'flex' : 'none';
   }
   SEG_EVT['di-trust'] = syncGroupEligibility;
 
@@ -2738,10 +2774,12 @@ async function openIssueDelegation() {
     if (lock) segSet('di-trust', 'plain', { e2e: true, admin: true });
     else segSet('di-trust', segVal('di-trust') || 'plain', { e2e: false, admin: false });
     $('di-trust-lock').style.display = lock ? '' : 'none';
+    syncGuard();
     syncGroupEligibility();
   }
   SEG_EVT['di-entry'] = syncEntry;
   syncEntry();
+  syncGuard();
 
   // mode linkage: dedicated re-checks every eligible group and folds the picker; split expands it
   SEG_EVT['di-mode'] = () => {
@@ -2764,6 +2802,7 @@ function connectorFormHtml(c) {
     '<label>' + T('fanout.tokenLabel') + '</label><input id="cf-token" type="password" class="mono" style="width:100%" autocomplete="off" placeholder="' + (c.id ? T('fanout.tokenKeep') : T('fanout.tokenPh')) + '">' +
     '<label>' + T('fanout.sniHostLabel') + '</label><input id="cf-sni" class="mono" style="width:100%" value="' + esc(c.sni_hostname||'') + '">' +
     '<label>' + T('fanout.fpLabel') + ' <span class="hint">' + T('fanout.fpHint') + '</span></label><input id="cf-fp" class="mono" style="width:100%" value="' + esc(c.pinned_fingerprint||'') + '" placeholder="sha256...">' +
+    guardRowHtml('cf', 'guard.g2Tip', !!c.guarded) +
     '<label class="chk" style="display:flex;align-items:center;gap:6px;margin-top:8px"><input type="checkbox" id="cf-insecure" ' + (c.insecure?'checked':'') + '> ' + T('fanout.insecure') + '</label>' +
     '<label>' + T('fanout.advertiseLabel') + ' <span class="hint">' + T('fanout.advertiseHint') + '</span></label><textarea id="cf-advertise" class="mono" style="width:100%;height:90px" placeholder="10.12.0.0/16&#10;git.internal">' + esc((c.advertise||'').split(',').filter(Boolean).join('\n')) + '</textarea>' +
     '<label>' + T('adm.groupLabel') + '</label>' +
@@ -2787,6 +2826,34 @@ function fillConnectorFields(p) {
   $('cf-sni').value = p.sni || '';
   $('cf-fp').value = p.fp || '';
   $('cf-insecure').checked = !!p.insecure;
+}
+/* Deep Guard (G2) linkage: insecure disabled under the guard; pushed groups cleared by
+   default and each opt-in needs an explicit confirm (upload = routing-trust declaration). */
+function guardConnectorSubmit(body) {
+  if (body.guarded && !body.pinned_fingerprint) { toast(T('guard.g2NeedPin'), 'err'); return false; }
+  if (body.guarded && body.insecure) { toast(T('guard.g2NoInsecure'), 'err'); return false; }
+  return true;
+}
+function bindConnectorGuard() {
+  const sw = $('cf-guard');
+  if (!sw) return;
+  const sync = () => {
+    const ins = $('cf-insecure');
+    ins.disabled = sw.checked;
+    if (sw.checked) ins.checked = false;
+  };
+  sw.onchange = () => {
+    sync();
+    if (sw.checked) document.querySelectorAll('.cf-push:checked').forEach(cb => { cb.checked = false; });
+  };
+  document.querySelectorAll('.cf-push').forEach(cb => {
+    cb.addEventListener('change', () => {
+      if (!cb.checked || !sw.checked) return;
+      cb.checked = false;
+      confirmAction(T('guard.g2PushConfirm'), () => { cb.checked = true; });
+    });
+  });
+  sync();
 }
 function bindConnectorPaste() {
   const box = $('cf-paste');
@@ -2818,6 +2885,7 @@ function connectorFormBody() {
     sni_hostname: $('cf-sni').value.trim(),
     insecure: $('cf-insecure').checked,
     pinned_fingerprint: $('cf-fp').value.trim(),
+    guarded: $('cf-guard').checked,
     advertise: $('cf-advertise').value.split('\n').map(s => s.trim()).filter(Boolean),
     group_id: [...document.querySelectorAll('.cf-acl:checked')].map(c => c.value).join(',') || null,
     push_groups: [...document.querySelectorAll('.cf-push:checked')].map(c => c.value),
@@ -2831,6 +2899,7 @@ function openCreateConnector(pref) {
       const body = connectorFormBody();
       const token = $('cf-token').value.trim();
       if (!body.name || !body.upstream_addr || !token) { toast(T('fanout.needAll'), 'err'); return; }
+      if (!guardConnectorSubmit(body)) return;
       try {
         await api('POST', '/api/v1/admin/connectors', { ...body, token });
         closeModal(); toast(T('fanout.createdToast'), 'ok'); loadConnectors();
@@ -2838,6 +2907,7 @@ function openCreateConnector(pref) {
     }},
   ]);
   bindConnectorPaste();
+  bindConnectorGuard();
   // .anet import prefill (technical fields from the envelope payload; business fields stay manual)
   if (pref && typeof pref === 'object') fillConnectorFields(pref);
 }
@@ -2852,6 +2922,7 @@ async function openEditConnector(id) {
       const body = connectorFormBody();
       const token = $('cf-token').value.trim();
       if (!body.name || !body.upstream_addr) { toast(T('fanout.needNameAddr'), 'err'); return; }
+      if (!guardConnectorSubmit(body)) return;
       try {
         // PUT is a full replacement: empty token = keep original; cert paths are not exposed in the form, pass originals through so they are not wiped
         await api('PUT', '/api/v1/admin/connectors/' + id, {
@@ -2863,6 +2934,7 @@ async function openEditConnector(id) {
     }},
   ]);
   bindConnectorPaste();
+  bindConnectorGuard();
 }
 async function toggleConnector(id, enabled) {
   try {
@@ -2886,8 +2958,8 @@ async function renderAudit() {
         '<option value="">' + T('audit.allActions') + '</option>' +
         ['admin.login','admin.init','rule.create','rule.update','rule.delete','rule.batch_import',
          'group.create','group.update','group.delete','group.update_rules',
-         'relay_token.create','relay_token.delete','relay_token.expose_control','relay_token.set_group','relay_token.set_remark',
-         'connector.create','connector.update','connector.delete','connector.enable','connector.disable',
+         'relay_token.create','relay_token.delete','relay_token.expose_control','relay_token.set_group','relay_token.set_remark','relay_token.guarded','relay_token.advertise_conflict',
+         'connector.create','connector.update','connector.delete','connector.enable','connector.disable','connector.guarded',
          'federation.adopt','delegation.issue','delegation.revoke',
          'session.kick','session.kick_token',
          'device.certify','device.revoke','device.rebind','device.policy',

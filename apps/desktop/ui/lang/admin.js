@@ -372,6 +372,18 @@ AgI18n.register({
   'aglink.bad_role': { zh: '链接类型与当前表单不符', en: 'The link type does not match this form' },
   'aglink.missing_params': { zh: '链接缺少必要参数', en: 'The link is missing required parameters' },
   'aglink.bad_port': { zh: '链接端口无效', en: 'Invalid port in the link' },
+  'aglink.bad_pad': { zh: '抗关联填充词 pad 仅与端到端密钥共存', en: 'The pad word only pairs with an E2E key' },
+  // ---- deep guard (trust profile: 深度防护 across the three boundaries; values mirror lang/desktop-views.js) ----
+  'guard.label': { zh: '深度防护', en: 'Deep Guard' },
+  'guard.badge': { zh: '深度防护', en: 'Deep Guard' },
+  'guard.plainWarn': { zh: '明文档下中继可审计全部内容——适用于自有内网可审计场景；流量将经过不受信中继时请改用端到端档', en: 'Under the plaintext tier the relay can audit everything — fit for auditable private networks; switch to an end-to-end tier when traffic crosses untrusted relays' },
+  'guard.antiCorrelate': { zh: '抗关联填充（2048 字节桶，带宽约 +5~15%）', en: 'Anti-correlation padding (2048-byte buckets, ~5-15% bandwidth)' },
+  'guard.g1Tip': { zh: '强制端到端加密；可再勾选抗关联填充（流量轮廓抗关联，带宽约 +5~15%）', en: 'Forces end-to-end encryption; optionally enable anti-correlation padding (~5-15% bandwidth)' },
+  'guard.g2Tip': { zh: '必须钉值对端证书指纹、禁用 insecure 跳过校验；上送权限组需显式勾选', en: 'Requires pinning the peer certificate fingerprint, disables insecure, and makes policy upload an explicit opt-in' },
+  'guard.g3Tip': { zh: '下行路由声明与他人重叠将被拒绝；上送组须人工采纳方生效；接入设备强制审批', en: 'Overlapping route claims are rejected; pushed groups need manual adoption; devices are forced through approval' },
+  'guard.g2NeedPin': { zh: '深度防护要求钉值对端证书指纹（64 位 SHA-256，对端状态页可复制）', en: 'Deep Guard requires pinning the peer certificate fingerprint (64-hex SHA-256, copyable from the peer status page)' },
+  'guard.g2NoInsecure': { zh: '深度防护与 insecure 跳过校验互斥——请钉值指纹后移除 insecure', en: 'Deep Guard and insecure are mutually exclusive — pin the fingerprint and remove insecure' },
+  'guard.g2PushConfirm': { zh: '深度防护下上送权限组即声明路由信任。确认上送所选组？', en: 'Under Deep Guard, pushing a group declares routing trust. Push the selected groups?' },
   // ---- audit ----
   'audit.title': { zh: '审计日志', en: 'Audit Logs' },
   'audit.desc': { zh: '全部敏感操作留痕：登录、增删改、启停、重置、吊销', en: 'All sensitive operations are recorded: sign-ins, CRUD, toggles, resets, revocations' },

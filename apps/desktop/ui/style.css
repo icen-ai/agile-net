@@ -321,13 +321,7 @@ input[type="checkbox"]:disabled { opacity: .5; cursor: not-allowed; }
 /* ag-select client-specific override: full width inside grid2 form cell (aligns with input in same cell) */
 .grid2 .agsel { width: 100%; }
 
-/* Rule on/off switch (paused = grayed desaturated row) */
-.switch { position: relative; display: inline-block; width: 32px; height: 18px; }
-.switch input { display: none; }
-.switch .slider { position: absolute; inset: 0; background: var(--border2); border-radius: 999px; transition: background var(--dur) var(--ease); cursor: pointer; }
-.switch .slider::before { content: ''; position: absolute; width: 14px; height: 14px; left: 2px; top: 2px; background: var(--toggle-knob); border-radius: 50%; transition: transform var(--dur) var(--ease), background var(--dur) var(--ease); box-shadow: 0 1px 3px rgba(0,0,0,.25); }
-.switch input:checked + .slider { background: var(--toggle-checked); }
-.switch input:checked + .slider::before { transform: translateX(14px); background: var(--toggle-knob-checked); }
+/* Rule on/off switch lives in shared components.css (.switch); paused rows gray out */
 tr.rule-paused td { opacity: .45; }
 
 /* Status pulse animation (connecting/reconnecting); --warn-ring derives from the warn token */

@@ -130,7 +130,7 @@ anet://connect?
   entryfp=aa11%2Cbb22
 ```
 
-E2E 令牌另携带 `en=<entrust 词>`；分流档 `emode=split`；管理档 `eadmin=1`。
+E2E 令牌另携带 `en=<entrust 词>`；分流档 `emode=split`；管理档 `eadmin=1`；抗关联填充档 `pad=1`（仅与 `ek` 共存——E2E 记录按 2048 字节桶填充，密文长度不与明文长度相关）。
 扇入令牌分享为 `anet://fanout?...`。生成一律 `anet://`，为唯一 scheme。
 
 ## 安全加固

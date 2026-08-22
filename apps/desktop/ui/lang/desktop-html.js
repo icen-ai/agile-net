@@ -146,6 +146,7 @@ AgI18n.register({
   'aglink.bad_role': { zh: '链接类型与当前表单不符', en: 'The link type does not match this form' },
   'aglink.missing_params': { zh: '链接缺少必要参数', en: 'The link is missing required parameters' },
   'aglink.bad_port': { zh: '链接端口无效', en: 'Invalid port in the link' },
+  'aglink.bad_pad': { zh: '抗关联填充词 pad 仅与端到端密钥共存', en: 'The pad word only pairs with an E2E key' },
   // ---- fan-in (view-nodes) ----
   'fanin.desc': { zh: '下游连接的消费管理：以已保存扇入为主体，叠加实时状态', en: 'Consumption management for downstream connections: saved fan-in endpoints with a live status overlay' },
   'fanin.connectPh': { zh: '粘贴接入链接添加扇入 anet://connect?...', en: 'Paste access link to add fan-in anet://connect?...' },
