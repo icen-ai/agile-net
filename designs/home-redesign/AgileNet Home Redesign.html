@@ -1,0 +1,728 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AgileNet 首页重设计 · 三方向探索</title>
+<style>
+/* ===== 设计 token： verbatim 摘自 apps/desktop/ui/tokens.css（浅色默认 + 深色） ===== */
+:root {
+  --bg: #EDEDED; --bg2: #F4F4F4; --panel: #F8F8F8; --panel2: #FFFFFF;
+  --border: #DCDFE3; --border2: #C9CDD3;
+  --text: #3C3F43; --text-strong: #2E3237; --dim: #686B72; --dim2: #8C8E94;
+  --accent: #3C3F43; --accent2: #2E3237; --accent-fg: #FCFCFC;
+  --accent-bg: rgba(60,63,67,.05); --ring-bg: rgba(60,63,67,.14);
+  --link: #2E3237; --ring: #2E3237;
+  --ok: #61C555; --warn: #F6BE50; --danger: #ED6A5F;
+  --ok-text: #3E8E2E; --warn-text: #9A7414; --danger-text: #CE3F34;
+  --ok-bg: rgba(97,197,85,.14); --warn-bg: rgba(246,190,80,.20); --danger-bg: rgba(237,106,95,.12);
+  --chip: #F1F1F1; --hover: #E2E2E2; --row-border: #E7E8EA;
+  --radius: 10px;
+  --shadow-1: 0 1px 2px rgba(16,24,40,.07), 0 2px 6px rgba(16,24,40,.06);
+  --shadow-2: 0 4px 12px rgba(16,24,40,.10), 0 12px 32px rgba(16,24,40,.14);
+  --shadow-3: 0 2px 8px rgba(16,24,40,.08), 0 12px 40px rgba(16,24,40,.16);
+  --glass-bg: rgba(252,252,252,.78); --glass-border: rgba(0,0,0,.08);
+  --card-hi: rgba(255,255,255,.65);
+  --input-bg: #ECEDEF; --input-border: #C9CDD3;
+  --btn-hi: rgba(255,255,255,.14);
+  --well-inset: inset 0 1px 3px rgba(16,24,40,.07);
+  --mast-bg: linear-gradient(180deg, #303236, #232528); --mast-border: #141517; --mast-hi: rgba(255,255,255,.08);
+  --mast-text: #E8E9EA; --mast-dim: #9A9DA3; --mast-dim2: #8A8D93; --mast-faint: #7A7D84; --mast-div: rgba(255,255,255,.12);
+  --mast-btn-bg: linear-gradient(180deg, #3B3D41, #2A2C2F); --mast-btn-border: rgba(255,255,255,.18); --mast-btn-text: #C9CBCE;
+  --mast-on-bg: linear-gradient(180deg, #FAFAFA, #E2E2E2); --mast-on-text: #232528; --mast-on-ring: rgba(255,255,255,.08); --mast-on-glow: rgba(255,255,255,.20);
+  --info: #5484BC; --info-text: #3E6A9E; --info-bg: rgba(84,132,188,.14);
+  --accent-grad: linear-gradient(180deg, #45484D, #2E3237);
+  --toggle-knob: #FFFFFF; --toggle-checked: #2E3237; --toggle-knob-checked: #FFFFFF;
+  --dur-fast: 120ms; --dur-slow: 320ms;
+  --chart-grid: rgba(0,0,0,.09); --chart-up: #61C555; --chart-down: #5484BC;
+  --lat-good: #3E8E2E; --lat-mid: #9A7414; --lat-bad: #CE3F34;
+  --lat-good-bg: rgba(97,197,85,.14); --lat-mid-bg: rgba(246,190,80,.20); --lat-bad-bg: rgba(237,106,95,.12);
+  --power-ring: rgba(60,63,67,.35); --power-glow: rgba(60,63,67,.28);
+  --glass-hi: rgba(255,255,255,.5);
+  --beta-grad: linear-gradient(135deg, #6E7FF3, #A55CF5);
+}
+html[data-theme="dark"] {
+  --bg: #2A2828; --bg2: #2F2D2D; --panel: #312F2F; --panel2: #3A3838;
+  --border: #434343; --border2: #504F4F;
+  --text: #D4D4D4; --text-strong: #EEEEEE; --dim: #9A9DA3; --dim2: #6F6F6F;
+  --accent: #EEEEEE; --accent2: #E2E2E2; --accent-fg: #252222;
+  --accent-bg: rgba(238,238,238,.08); --ring-bg: rgba(238,238,238,.16);
+  --link: #EEEEEE; --ring: #EEEEEE;
+  --ok: #5FCF65; --warn: #F8CE52; --danger: #F96057;
+  --ok-text: #5FCF65; --warn-text: #F8CE52; --danger-text: #F96057;
+  --ok-bg: rgba(95,207,101,.14); --warn-bg: rgba(248,206,82,.16); --danger-bg: rgba(249,96,87,.14);
+  --chip: #2F2D2D; --hover: #3A3838; --row-border: #3B3939;
+  --shadow-1: 0 1px 2px rgba(0,0,0,.32), 0 2px 6px rgba(0,0,0,.28);
+  --shadow-2: 0 4px 14px rgba(0,0,0,.40), 0 12px 36px rgba(0,0,0,.44);
+  --shadow-3: 0 2px 10px rgba(0,0,0,.44), 0 16px 48px rgba(0,0,0,.52);
+  --glass-bg: rgba(56,54,54,.78); --glass-border: rgba(255,255,255,.10);
+  --card-hi: rgba(255,255,255,.05);
+  --input-bg: rgba(255,255,255,.07); --input-border: #504F4F;
+  --btn-hi: rgba(255,255,255,.10);
+  --well-inset: inset 0 1px 3px rgba(0,0,0,.30);
+  --info: #7EA6D8; --info-text: #7EA6D8; --info-bg: rgba(126,166,216,.14);
+  --accent-grad: linear-gradient(180deg, #F5F5F5, #DFDFDF);
+  --toggle-knob: #FFFFFF; --toggle-checked: #EEEEEE; --toggle-knob-checked: #2A2828;
+  --chart-grid: rgba(255,255,255,.10); --chart-up: #74CE8A; --chart-down: #8FB6DE;
+  --lat-good: #5FCF65; --lat-mid: #F8CE52; --lat-bad: #F96057;
+  --lat-good-bg: rgba(95,207,101,.14); --lat-mid-bg: rgba(248,206,82,.16); --lat-bad-bg: rgba(249,96,87,.14);
+  --power-ring: rgba(238,238,238,.40); --power-glow: rgba(238,238,238,.22);
+  --glass-hi: rgba(255,255,255,.06);
+  --beta-grad: linear-gradient(135deg, #8490FF, #B66FFF);
+}
+
+/* ===== 基底 ===== */
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; }
+body {
+  font-family: -apple-system, "SF Pro Text", "PingFang SC", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+  background: var(--bg); color: var(--text); font-size: 13px; line-height: 1.6;
+  -webkit-font-smoothing: antialiased; overflow: hidden;
+}
+button { font: inherit; color: inherit; background: none; border: none; cursor: pointer; }
+.mono { font-family: ui-monospace, "SF Mono", "Cascadia Mono", Consolas, monospace; }
+.hint { font-size: 11px; color: var(--dim2); margin-top: 6px; }
+.ic { display: inline-flex; vertical-align: -2px; }
+.ic svg { display: block; }
+
+/* ===== 外壳：标题栏 + 灵动岛 + 侧栏 ===== */
+.app { display: flex; flex-direction: column; height: 100%; }
+.titlebar {
+  height: 46px; flex-shrink: 0; display: flex; align-items: center; gap: 8px; padding: 0 12px;
+  background: var(--bg2); border-bottom: 1px solid var(--border); position: relative;
+}
+.tb-btn { width: 30px; height: 30px; border-radius: 6px; display: flex; align-items: center; justify-content: center; color: var(--dim); }
+.tb-btn:hover { background: var(--hover); color: var(--text); }
+.tb-logo { display: flex; align-items: center; gap: 6px; font-weight: 600; font-size: 13px; color: var(--text-strong); margin-right: 4px; }
+.tb-tools { display: flex; align-items: center; gap: 2px; }
+.island {
+  position: absolute; left: 50%; transform: translateX(-50%); top: 7px;
+  background: var(--panel2); border: 1px solid var(--border); border-radius: 999px;
+  box-shadow: var(--shadow-1); padding: 4px 14px; display: flex; align-items: center; gap: 8px;
+  font-size: 12px; color: var(--dim); white-space: nowrap;
+}
+.island .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 0 3px var(--ok-bg); }
+.island.off .dot { background: var(--dim2); box-shadow: none; }
+.tb-controls { margin-left: auto; display: flex; gap: 2px; }
+.tb-controls .tb-btn.close:hover { background: var(--danger); color: #fff; }
+
+.shell { flex: 1; display: flex; min-height: 0; }
+.sidebar {
+  width: 176px; flex-shrink: 0; background: var(--bg2); border-right: 1px solid var(--border);
+  padding: 10px 8px; display: flex; flex-direction: column; gap: 2px; transition: width var(--dur-fast) ease;
+}
+body.collapsed .sidebar { width: 46px; }
+body.collapsed .nav-label, body.collapsed .side-foot, body.collapsed .nav-sep { display: none; }
+.nav-item {
+  display: flex; align-items: center; gap: 9px; padding: 7px 10px; border-radius: 8px;
+  font-size: 13px; color: var(--text); cursor: pointer; white-space: nowrap;
+}
+.nav-item:hover { background: var(--hover); }
+.nav-item.active {
+  background: var(--accent-grad); color: var(--accent-fg); box-shadow: var(--shadow-1), inset 0 1px 0 var(--glass-hi);
+}
+.nav-sep { height: 1px; background: var(--border); margin: 6px 8px; }
+.side-foot { margin-top: auto; border-top: 1px solid var(--border); padding: 8px 10px 2px; font-size: 11px; color: var(--dim2); font-variant-numeric: tabular-nums; }
+.side-foot .up::before { content: "↑ "; color: var(--ok-text); }
+.side-foot .down::before { content: "↓ "; color: var(--info-text); }
+.side-foot .down { margin-left: 10px; }
+
+.content { flex: 1; overflow-y: auto; padding: 18px 22px 90px; }
+.page-title { display: flex; align-items: center; gap: 8px; font-size: 17px; font-weight: 600; color: var(--text-strong); }
+.page-desc { font-size: 12px; color: var(--dim2); margin: 3px 0 14px 27px; }
+
+/* ===== 共享组件 ===== */
+.card, .dcard {
+  background: var(--panel2); border: 1px solid var(--border2); border-radius: var(--radius);
+  box-shadow: var(--shadow-1), inset 0 1px 0 var(--card-hi);
+}
+/* 深色仪器主卡（mast） */
+.mast {
+  background: var(--mast-bg); border: 1px solid var(--mast-border); color: var(--mast-text);
+  box-shadow: var(--shadow-2), inset 0 1px 0 var(--mast-hi); border-radius: var(--radius);
+}
+/* 铭牌头带 */
+.dc-head {
+  display: flex; align-items: center; gap: 7px; padding: 8px 12px; margin: 0;
+  background: var(--bg2); border-bottom: 1px solid var(--border); border-radius: 9px 9px 0 0;
+  font-size: 12px; font-weight: 600; letter-spacing: .4px; color: var(--dim);
+}
+.dc-head .dc-switch { margin-left: auto; }
+.dc-body { padding: 12px 14px; display: flex; flex-direction: column; gap: 4px; }
+.dc-val { font-size: 18px; font-weight: 600; color: var(--text-strong); font-variant-numeric: tabular-nums; }
+.dc-sub { font-size: 11px; color: var(--dim2); }
+/* 未开启降饱和 */
+.dcard { transition: filter var(--dur-fast) ease, opacity var(--dur-fast) ease; }
+.dcard.off .dc-body { opacity: .45; filter: saturate(.2); }
+.dcard.off { box-shadow: none; }
+/* 开关 */
+.switch { position: relative; display: inline-block; width: 34px; height: 20px; flex-shrink: 0; }
+.switch input { position: absolute; opacity: 0; inset: 0; cursor: pointer; z-index: 1; margin: 0; }
+.switch .slider {
+  position: absolute; inset: 0; border-radius: 999px; background: var(--border2); transition: background var(--dur-fast) ease;
+}
+.switch .slider::after {
+  content: ""; position: absolute; left: 2px; top: 2px; width: 16px; height: 16px; border-radius: 50%;
+  background: var(--toggle-knob); box-shadow: 0 1px 2px rgba(0,0,0,.25); transition: transform var(--dur-fast) ease, background var(--dur-fast) ease;
+}
+.switch input:checked + .slider { background: var(--toggle-checked); }
+.switch input:checked + .slider::after { transform: translateX(14px); background: var(--toggle-knob-checked); }
+/* 大电闸 */
+.pwr {
+  width: 88px; height: 88px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+  background: var(--mast-btn-bg); border: 2px solid var(--mast-btn-border); color: var(--mast-btn-text);
+  box-shadow: inset 0 1px 0 var(--mast-hi), 0 2px 6px rgba(0,0,0,.35); transition: transform var(--dur-fast) ease;
+}
+.pwr:hover { transform: scale(1.03); filter: brightness(1.1); }
+.pwr:active { transform: scale(.97); }
+.pwr.on {
+  background: var(--mast-on-bg); border-color: rgba(255,255,255,.5); color: var(--mast-on-text);
+  box-shadow: 0 0 0 6px var(--mast-on-ring), 0 0 26px var(--mast-on-glow), inset 0 1px 0 rgba(255,255,255,.8);
+  animation: breathe 2s ease-out infinite;
+}
+@keyframes breathe { 0% { box-shadow: 0 0 0 0 rgba(255,255,255,.22), 0 0 26px var(--mast-on-glow), inset 0 1px 0 rgba(255,255,255,.8); } 100% { box-shadow: 0 0 0 14px rgba(255,255,255,0), 0 0 26px var(--mast-on-glow), inset 0 1px 0 rgba(255,255,255,.8); } }
+/* 徽章 / 胶囊 */
+.badge-beta {
+  font-size: 10px; font-weight: 700; padding: 1px 7px; border-radius: 999px; color: #fff;
+  background: var(--beta-grad); letter-spacing: .3px;
+}
+.pill { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; padding: 1px 9px; border-radius: 999px; }
+.pill-ok { background: var(--ok-bg); color: var(--ok-text); }
+.pill-dim { background: var(--accent-bg); color: var(--dim); }
+.lat { font-family: ui-monospace, monospace; font-size: 11px; padding: 1px 8px; border-radius: 999px; min-width: 54px; text-align: center; display: inline-block; font-variant-numeric: tabular-nums; }
+.lat-mid { background: var(--lat-mid-bg); color: var(--lat-mid); }
+/* 角色胶囊条 */
+.role-pill {
+  display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--dim);
+  background: var(--panel2); border: 1px solid var(--border); border-radius: 999px; padding: 3px 12px;
+}
+.role-pill .rdot { width: 7px; height: 7px; border-radius: 50%; background: var(--border2); }
+.role-pill.on .rdot { background: var(--ok); box-shadow: 0 0 0 3px var(--ok-bg); }
+/* 段控 */
+.seg { display: inline-flex; background: var(--input-bg); border: 1px solid var(--input-border); border-radius: 8px; padding: 2px; gap: 2px; box-shadow: var(--well-inset); }
+.seg button { padding: 3px 12px; border-radius: 6px; font-size: 12px; color: var(--dim); }
+.seg button.active { background: var(--accent-grad); color: var(--accent-fg); box-shadow: inset 0 1px 0 var(--glass-hi); }
+/* well 数据凹槽 */
+.well {
+  display: flex; align-items: center; gap: 8px; background: var(--input-bg); border: 1px solid var(--border);
+  border-radius: 6px; box-shadow: var(--well-inset); padding: 5px 10px; font-size: 12px;
+}
+.well .k { font-size: 10px; letter-spacing: .5px; color: var(--dim2); font-weight: 600; }
+.well .grow { flex: 1; font-family: ui-monospace, monospace; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* KPI */
+.agkpi { padding: 10px 14px; display: flex; flex-direction: column; gap: 2px; }
+.agkpi-v { font-size: 18px; font-weight: 600; color: var(--text-strong); font-variant-numeric: tabular-nums; }
+.agkpi-k { font-size: 11px; color: var(--dim2); }
+.num { font-variant-numeric: tabular-nums; }
+
+/* ===== 变体 A：演进 · 仪器台 ===== */
+.heroA { display: flex; align-items: center; gap: 22px; padding: 16px 20px; flex-wrap: wrap; }
+.heroA .h-left { flex: 1; min-width: 260px; display: flex; flex-direction: column; gap: 8px; }
+.heroA .rates { display: flex; align-items: baseline; gap: 16px; }
+.heroA .r-down { font-size: 24px; font-weight: 600; color: var(--chart-down); white-space: nowrap; }
+.heroA .r-up { font-size: 15px; color: var(--chart-up); white-space: nowrap; }
+.heroA .h-stats { display: flex; align-items: stretch; }
+.heroA .hstat { display: flex; flex-direction: column; gap: 1px; padding: 2px 16px; text-align: right; }
+.heroA .hstat + .hstat { border-left: 1px solid var(--mast-div); }
+.heroA .hstat-l { font-size: 11px; color: var(--mast-dim); display: flex; align-items: center; gap: 4px; justify-content: flex-end; }
+.heroA .hstat-v { font-size: 18px; font-weight: 600; color: var(--mast-text); font-variant-numeric: tabular-nums; }
+.heroA .hstat-s { font-size: 10px; color: var(--mast-faint); font-variant-numeric: tabular-nums; }
+.heroA .h-power { display: flex; flex-direction: column; align-items: center; gap: 6px; flex-shrink: 0; }
+.heroA .h-power-state { font-size: 12px; font-weight: 600; color: var(--mast-text); text-align: center; }
+.heroA .h-power-hint { font-size: 10px; color: var(--mast-faint); text-align: center; max-width: 130px; }
+.rolebar { display: flex; gap: 8px; margin: 12px 0 14px; flex-wrap: wrap; }
+.dashA { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+@media (max-width: 1100px) { .dashA { grid-template-columns: repeat(2, 1fr); } }
+.dashA .dc-spark { margin-top: 6px; height: 34px; }
+
+/* ===== 变体 B：左电闸 · 中控台 ===== */
+.dashB { display: grid; grid-template-columns: 272px 1fr; gap: 14px; align-items: start; }
+.mastB { padding: 20px 18px; display: flex; flex-direction: column; align-items: center; gap: 14px; position: sticky; top: 0; }
+.mastB .pwr { width: 96px; height: 96px; }
+.mastB .mb-state { text-align: center; }
+.mastB .mb-state b { display: block; font-size: 14px; color: var(--mast-text); }
+.mastB .mb-state span { font-size: 11px; color: var(--mast-faint); font-family: ui-monospace, monospace; }
+.mastB .mb-mode { font-size: 11px; color: var(--mast-dim); border: 1px solid var(--mast-div); border-radius: 999px; padding: 2px 12px; }
+.mastB .mb-stats { width: 100%; border-top: 1px solid var(--mast-div); padding-top: 12px; display: flex; flex-direction: column; gap: 9px; }
+.mastB .mb-row { display: flex; justify-content: space-between; align-items: baseline; font-size: 11px; color: var(--mast-dim); }
+.mastB .mb-row b { font-size: 15px; color: var(--mast-text); font-variant-numeric: tabular-nums; font-weight: 600; }
+.mastB .mb-row b.up { color: var(--chart-up); } .mastB .mb-row b.down { color: var(--chart-down); }
+.mastB .mb-spark { width: 100%; height: 44px; border-top: 1px solid var(--mast-div); padding-top: 10px; }
+.b-right { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.b-kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
+.b-chart-card .dc-body { padding: 10px 14px 14px; }
+.b-chart { height: 150px; }
+.b-cards { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; }
+@media (max-width: 1100px) { .dashB { grid-template-columns: 1fr; } .mastB { position: static; } }
+
+/* ===== 变体 C：数据优先 · 极简 ===== */
+.heroC { padding: 18px 20px 12px; display: flex; flex-direction: column; gap: 4px; }
+.heroC .hc-top { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; }
+.heroC .hc-rates { display: flex; align-items: baseline; gap: 18px; flex: 1; }
+.heroC .r-down { font-size: 30px; font-weight: 650; color: var(--chart-down); }
+.heroC .r-up { font-size: 17px; color: var(--chart-up); }
+.heroC .hc-meta { display: flex; gap: 16px; font-size: 11px; color: var(--dim2); font-variant-numeric: tabular-nums; }
+.heroC .hc-meta b { color: var(--text-strong); font-weight: 600; }
+.heroC .hc-power { display: flex; align-items: center; gap: 10px; }
+.heroC .hc-chart { height: 132px; margin: 4px -6px 0; }
+.c-rolestrip { display: flex; gap: 0; margin: 14px 0; border: 1px solid var(--border2); border-radius: var(--radius); overflow: hidden; box-shadow: var(--shadow-1), inset 0 1px 0 var(--card-hi); background: var(--panel2); }
+.c-role {
+  flex: 1; display: flex; align-items: center; gap: 9px; padding: 10px 14px; cursor: pointer;
+  border-right: 1px solid var(--row-border); min-width: 0;
+}
+.c-role:last-child { border-right: none; }
+.c-role:hover { background: var(--hover); }
+.c-role .rdot { width: 8px; height: 8px; border-radius: 50%; background: var(--border2); flex-shrink: 0; }
+.c-role.on .rdot { background: var(--ok); box-shadow: 0 0 0 3px var(--ok-bg); }
+.c-role .cr-name { font-size: 13px; font-weight: 600; color: var(--text-strong); white-space: nowrap; }
+.c-role .cr-sub { font-size: 11px; color: var(--dim2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.c-role .switch { margin-left: auto; }
+.c-tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+.c-tiles .span2 { grid-column: span 2; }
+@media (max-width: 1000px) { .c-tiles { grid-template-columns: 1fr 1fr; } .c-tiles .span2 { grid-column: span 2; } }
+
+/* ===== 设计探索控制条（不属于产品 UI） ===== */
+.designbar {
+  position: fixed; left: 14px; bottom: 14px; z-index: 900;
+  display: flex; align-items: center; gap: 8px; padding: 7px 10px;
+  background: var(--glass-bg); -webkit-backdrop-filter: blur(18px); backdrop-filter: blur(18px);
+  border: 1px solid var(--glass-border); border-radius: 12px; box-shadow: var(--shadow-2);
+  font-size: 12px; color: var(--dim);
+}
+.designbar .db-label { font-weight: 600; color: var(--text-strong); }
+.designbar .seg button.on { background: var(--accent-grad); color: var(--accent-fg); }
+.designbar .db-sep { width: 1px; height: 18px; background: var(--border2); }
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- 标题栏 -->
+  <header class="titlebar">
+    <button class="tb-btn" id="btn-collapse" title="收起侧栏"><i class="ic" data-ic="panel-left" data-sz="16"></i></button>
+    <div class="tb-logo"><i class="ic" data-ic="zap" data-sz="15"></i>AgileNet</div>
+    <div class="tb-tools">
+      <button class="tb-btn"><i class="ic" data-ic="link" data-sz="15"></i></button>
+      <button class="tb-btn"><i class="ic" data-ic="scan-line" data-sz="15"></i></button>
+      <button class="tb-btn"><i class="ic" data-ic="fingerprint" data-sz="15"></i></button>
+      <button class="tb-btn"><i class="ic" data-ic="sparkles" data-sz="15"></i></button>
+      <button class="tb-btn"><i class="ic" data-ic="bell" data-sz="15"></i></button>
+      <button class="tb-btn" id="btn-theme" title="切换主题"><i class="ic" data-ic="moon" data-sz="15"></i></button>
+    </div>
+    <div class="island" id="island"><span class="dot"></span><span id="island-text">代理运行中 127.0.0.1:57890</span><i class="ic" data-ic="chevron-down" data-sz="12"></i></div>
+    <div class="tb-controls">
+      <button class="tb-btn"><i class="ic" data-ic="minus" data-sz="15"></i></button>
+      <button class="tb-btn"><i class="ic" data-ic="square" data-sz="12"></i></button>
+      <button class="tb-btn close"><i class="ic" data-ic="x" data-sz="16"></i></button>
+    </div>
+  </header>
+
+  <div class="shell">
+    <!-- 侧栏 -->
+    <aside class="sidebar">
+      <div class="nav-item active"><i class="ic" data-ic="home" data-sz="16"></i><span class="nav-label">首页</span></div>
+      <div class="nav-item"><i class="ic" data-ic="orbit" data-sz="16"></i><span class="nav-label">扇入</span></div>
+      <div class="nav-item"><i class="ic" data-ic="git-fork" data-sz="16"></i><span class="nav-label">扇出</span></div>
+      <div class="nav-item"><i class="ic" data-ic="route" data-sz="16"></i><span class="nav-label">规则</span></div>
+      <div class="nav-sep"></div>
+      <div class="nav-item"><i class="ic" data-ic="satellite" data-sz="16"></i><span class="nav-label">订阅</span></div>
+      <div class="nav-item"><i class="ic" data-ic="earth" data-sz="16"></i><span class="nav-label">代理节点</span></div>
+      <div class="nav-sep"></div>
+      <div class="nav-item"><i class="ic" data-ic="scroll-text" data-sz="16"></i><span class="nav-label">日志</span></div>
+      <div class="nav-item"><i class="ic" data-ic="bell" data-sz="16"></i><span class="nav-label">通知</span></div>
+      <div class="nav-item"><i class="ic" data-ic="settings" data-sz="16"></i><span class="nav-label">设置</span></div>
+      <div class="side-foot"><span class="up">5.3KB/s</span><span class="down">304B/s</span></div>
+    </aside>
+
+    <main class="content">
+      <div class="page-title"><i class="ic" data-ic="home" data-sz="19"></i>首页</div>
+      <div class="page-desc">运行概览：代理 / 扇入 / 扇出 / 订阅 / 远程与网络检测；开关在卡片右侧，点卡片进入对应页面</div>
+
+      <!-- ============ 变体 A：演进 · 仪器台 ============ -->
+      <section class="page" id="v-a" data-screen-label="A 演进仪器台">
+        <div class="mast heroA">
+          <div class="h-left">
+            <div class="rates">
+              <span class="r-down num">↓&nbsp;304B/s</span>
+              <span class="r-up num">↑&nbsp;5.3KB/s</span>
+            </div>
+            <div class="spark" id="spark-a" style="height:76px"></div>
+          </div>
+          <div class="h-stats">
+            <div class="hstat"><span class="hstat-l"><i class="ic" data-ic="gauge" data-sz="11"></i>今日已用</span><span class="hstat-v">782MB</span><span class="hstat-s">↑ 18.2MB · ↓ 764MB</span></div>
+            <div class="hstat"><span class="hstat-l"><i class="ic" data-ic="activity" data-sz="11"></i>活跃连接</span><span class="hstat-v">69</span></div>
+            <div class="hstat"><span class="hstat-l"><i class="ic" data-ic="route" data-sz="11"></i>当前模式</span><span class="hstat-v" style="font-size:14px">TUN · 规则</span></div>
+          </div>
+          <div class="h-power">
+            <button class="pwr on" data-power><i class="ic" data-ic="power" data-sz="32"></i></button>
+            <div class="h-power-state" data-power-state>运行中 127.0.0.1:57890</div>
+            <div class="h-power-hint">TUN 模式运行中，总开关不可用</div>
+          </div>
+        </div>
+
+        <div class="rolebar">
+          <button class="role-pill on"><span class="rdot"></span>扇入</button>
+          <button class="role-pill"><span class="rdot"></span>扇出</button>
+          <button class="role-pill on"><span class="rdot"></span>订阅</button>
+          <button class="role-pill"><span class="rdot"></span>远程面</button>
+        </div>
+
+        <div class="dashA">
+          <div class="dcard">
+            <div class="dc-head"><i class="ic" data-ic="power" data-sz="14"></i>代理 <span class="pill pill-ok">运行中</span>
+              <label class="switch dc-switch"><input type="checkbox" checked><span class="slider"></span></label></div>
+            <div class="dc-body">
+              <div class="seg"><button class="active">系统代理</button><button>本地代理</button></div>
+              <div class="well"><span class="k">监听</span><span class="grow">127.0.0.1:57890</span></div>
+              <div class="hint" style="margin-top:0">已接管系统代理 127.0.0.1:57890，浏览器即开即用</div>
+            </div>
+          </div>
+          <div class="dcard">
+            <div class="dc-head"><i class="ic" data-ic="orbit" data-sz="14"></i>扇入
+              <label class="switch dc-switch"><input type="checkbox" checked><span class="slider"></span></label></div>
+            <div class="dc-body">
+              <div class="dc-val">0 <span style="font-size:12px;color:var(--dim);font-weight:400">已连接</span></div>
+              <div class="dc-sub">1 个已保存 · 点卡片去连接</div>
+            </div>
+          </div>
+          <div class="dcard off">
+            <div class="dc-head"><i class="ic" data-ic="git-fork" data-sz="14"></i>扇出 <span class="badge-beta">Beta</span> <span class="pill pill-dim">未开启</span>
+              <label class="switch dc-switch"><input type="checkbox"><span class="slider"></span></label></div>
+            <div class="dc-body">
+              <div class="dc-val" style="color:var(--dim2)">未扇出</div>
+              <div class="dc-sub">扇出监听未开启</div>
+            </div>
+          </div>
+          <div class="dcard">
+            <div class="dc-head"><i class="ic" data-ic="satellite" data-sz="14"></i>订阅 <span class="pill pill-ok">运行中</span>
+              <label class="switch dc-switch"><input type="checkbox" checked><span class="slider"></span></label></div>
+            <div class="dc-body">
+              <div class="dc-val">一枝红杏</div>
+              <div class="dc-sub">35 节点 · 共 1 个订阅 · 当前 荷兰-NL-4 <span class="lat lat-mid">579ms</span></div>
+              <div class="dc-sub num">↑ 18.2MB · ↓ 764MB</div>
+              <div class="dc-spark spark" id="spark-a-sub"></div>
+            </div>
+          </div>
+          <div class="dcard off">
+            <div class="dc-head"><i class="ic" data-ic="monitor" data-sz="14"></i>远程 <i class="ic" data-ic="badge-question-mark" data-sz="13" style="color:var(--dim2)"></i>
+              <label class="switch dc-switch"><input type="checkbox"><span class="slider"></span></label></div>
+            <div class="dc-body">
+              <div class="dc-sub">Web 远程面未开启；开启后本机管理界面经 HTTP 暴露</div>
+            </div>
+          </div>
+          <div class="dcard">
+            <div class="dc-head"><i class="ic" data-ic="activity" data-sz="14"></i>网络检测
+              <span style="margin-left:auto" class="tb-btn"><i class="ic" data-ic="refresh-cw" data-sz="13"></i></span></div>
+            <div class="dc-body">
+              <div class="dc-val mono">36.106.195.80</div>
+              <div class="dc-sub">CN · China · 经 mihomo 出口</div>
+              <div class="well"><span class="k">内网</span><span class="grow">10.31.0.13</span></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ 变体 B：左电闸 · 中控台 ============ -->
+      <section class="page" id="v-b" data-screen-label="B 左电闸中控台" hidden>
+        <div class="dashB">
+          <div class="mast mastB">
+            <button class="pwr on" data-power><i class="ic" data-ic="power" data-sz="36"></i></button>
+            <div class="mb-state"><b data-power-state>运行中</b><span>127.0.0.1:57890</span></div>
+            <span class="mb-mode">TUN · 规则</span>
+            <div class="mb-stats">
+              <div class="mb-row"><span>下行速率</span><b class="down">304B/s</b></div>
+              <div class="mb-row"><span>上行速率</span><b class="up">5.3KB/s</b></div>
+              <div class="mb-row"><span>今日已用</span><b>782MB</b></div>
+              <div class="mb-row"><span>活跃连接</span><b>69</b></div>
+            </div>
+            <div class="mb-spark spark" id="spark-b"></div>
+          </div>
+
+          <div class="b-right">
+            <div class="b-kpis">
+              <div class="card agkpi"><span class="agkpi-v">782MB</span><span class="agkpi-k">今日已用 · ↑18.2MB ↓764MB</span></div>
+              <div class="card agkpi"><span class="agkpi-v">69</span><span class="agkpi-k">活跃连接</span></div>
+              <div class="card agkpi"><span class="agkpi-v">36.106.195.80</span><span class="agkpi-k">出口 IP · CN · 经 mihomo</span></div>
+              <div class="card agkpi"><span class="agkpi-v"><span class="lat lat-mid">579ms</span></span><span class="agkpi-k">当前节点 · 荷兰-NL-4</span></div>
+            </div>
+            <div class="card b-chart-card">
+              <div class="dc-head"><i class="ic" data-ic="activity" data-sz="14"></i>实时速率
+                <span style="margin-left:auto;display:flex;gap:12px;font-size:11px;letter-spacing:0">
+                  <span><i style="display:inline-block;width:8px;height:8px;border-radius:2px;background:var(--chart-down);margin-right:4px"></i>下行</span>
+                  <span><i style="display:inline-block;width:8px;height:8px;border-radius:2px;background:var(--chart-up);margin-right:4px"></i>上行</span>
+                </span></div>
+              <div class="dc-body"><div class="b-chart line" id="line-b"></div></div>
+            </div>
+            <div class="b-cards">
+              <div class="dcard">
+                <div class="dc-head"><i class="ic" data-ic="power" data-sz="14"></i>代理 <span class="pill pill-ok">系统代理</span>
+                  <label class="switch dc-switch"><input type="checkbox" checked><span class="slider"></span></label></div>
+                <div class="dc-body"><div class="well"><span class="k">监听</span><span class="grow">127.0.0.1:57890</span></div>
+                  <div class="hint" style="margin-top:0">已接管系统代理，浏览器即开即用</div></div>
+              </div>
+              <div class="dcard">
+                <div class="dc-head"><i class="ic" data-ic="satellite" data-sz="14"></i>订阅 <span class="pill pill-ok">运行中</span>
+                  <label class="switch dc-switch"><input type="checkbox" checked><span class="slider"></span></label></div>
+                <div class="dc-body"><div class="dc-val" style="font-size:15px">一枝红杏</div>
+                  <div class="dc-sub">35 节点 · 荷兰-NL-4 <span class="lat lat-mid">579ms</span></div></div>
+              </div>
+              <div class="dcard">
+                <div class="dc-head"><i class="ic" data-ic="orbit" data-sz="14"></i>扇入
+                  <label class="switch dc-switch"><input type="checkbox" checked><span class="slider"></span></label></div>
+                <div class="dc-body"><div class="dc-val" style="font-size:15px">0 已连接</div>
+                  <div class="dc-sub">1 个已保存</div></div>
+              </div>
+              <div class="dcard off">
+                <div class="dc-head"><i class="ic" data-ic="git-fork" data-sz="14"></i>扇出 <span class="badge-beta">Beta</span>
+                  <label class="switch dc-switch"><input type="checkbox"><span class="slider"></span></label></div>
+                <div class="dc-body"><div class="dc-sub">扇出监听未开启</div></div>
+              </div>
+              <div class="dcard off">
+                <div class="dc-head"><i class="ic" data-ic="monitor" data-sz="14"></i>远程
+                  <label class="switch dc-switch"><input type="checkbox"><span class="slider"></span></label></div>
+                <div class="dc-body"><div class="dc-sub">Web 远程面未开启</div></div>
+              </div>
+              <div class="dcard">
+                <div class="dc-head"><i class="ic" data-ic="activity" data-sz="14"></i>网络检测</div>
+                <div class="dc-body"><div class="dc-val mono" style="font-size:15px">36.106.195.80</div>
+                  <div class="dc-sub">CN · China · 内网 10.31.0.13</div></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ 变体 C：数据优先 · 极简 ============ -->
+      <section class="page" id="v-c" data-screen-label="C 数据优先极简" hidden>
+        <div class="card heroC">
+          <div class="hc-top">
+            <div class="hc-rates">
+              <span class="r-down num">↓ 304B/s</span>
+              <span class="r-up num">↑ 5.3KB/s</span>
+            </div>
+            <div class="hc-meta">
+              <span>今日 <b>782MB</b></span><span>连接 <b>69</b></span><span>模式 <b>TUN · 规则</b></span>
+            </div>
+            <div class="hc-power">
+              <span style="font-size:12px;font-weight:600" data-power-state>运行中</span>
+              <label class="switch" style="width:44px;height:24px"><input type="checkbox" checked data-power-switch><span class="slider"></span></label>
+            </div>
+          </div>
+          <div class="hc-chart line" id="line-c"></div>
+        </div>
+
+        <div class="c-rolestrip">
+          <div class="c-role on"><span class="rdot"></span><div><div class="cr-name">代理</div><div class="cr-sub">系统代理 · 57890</div></div>
+            <label class="switch"><input type="checkbox" checked><span class="slider"></span></label></div>
+          <div class="c-role on"><span class="rdot"></span><div><div class="cr-name">扇入</div><div class="cr-sub">0 已连接</div></div>
+            <label class="switch"><input type="checkbox" checked><span class="slider"></span></label></div>
+          <div class="c-role"><span class="rdot"></span><div><div class="cr-name">扇出</div><div class="cr-sub">未开启 · Beta</div></div>
+            <label class="switch"><input type="checkbox"><span class="slider"></span></label></div>
+          <div class="c-role on"><span class="rdot"></span><div><div class="cr-name">订阅</div><div class="cr-sub">一枝红杏 · 579ms</div></div>
+            <label class="switch"><input type="checkbox" checked><span class="slider"></span></label></div>
+          <div class="c-role"><span class="rdot"></span><div><div class="cr-name">远程</div><div class="cr-sub">未开启</div></div>
+            <label class="switch"><input type="checkbox"><span class="slider"></span></label></div>
+        </div>
+
+        <div class="c-tiles">
+          <div class="dcard span2">
+            <div class="dc-head"><i class="ic" data-ic="satellite" data-sz="14"></i>订阅 · 一枝红杏
+              <span style="margin-left:auto" class="lat lat-mid">579ms</span></div>
+            <div class="dc-body">
+              <div class="dc-sub">35 节点 · 共 1 个订阅 · 当前 荷兰-NL-4（流量倍率 0.1）· ↑ 18.2MB · ↓ 764MB</div>
+              <div class="spark" id="spark-c" style="height:40px"></div>
+            </div>
+          </div>
+          <div class="dcard">
+            <div class="dc-head"><i class="ic" data-ic="activity" data-sz="14"></i>网络检测</div>
+            <div class="dc-body">
+              <div class="dc-val mono" style="font-size:16px">36.106.195.80</div>
+              <div class="dc-sub">CN · China · 经 mihomo 出口</div>
+              <div class="well"><span class="k">内网</span><span class="grow">10.31.0.13</span></div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+</div>
+
+<!-- 设计探索控制条 -->
+<div class="designbar">
+  <span class="db-label">首页重设计</span>
+  <div class="seg" id="db-variants">
+    <button class="on" data-v="v-a">A 演进</button>
+    <button data-v="v-b">B 电闸</button>
+    <button data-v="v-c">C 极简</button>
+  </div>
+  <div class="db-sep"></div>
+  <span>A＝现状精修 · B＝电闸左置中控 · C＝图表主导极简</span>
+</div>
+
+<script>
+'use strict';
+/* ---- Lucide 内联图标（与 apps/desktop/ui/icons.js 同构的最小表） ---- */
+const ICONS = {
+  'home': '<path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/>',
+  'zap': '<path d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z"/>',
+  'power': '<path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.77.04"/>',
+  'orbit': '<path d="M20.341 6.484A10 10 0 0 1 10.266 21.85"/><path d="M3.659 17.516A10 10 0 0 1 13.74 2.152"/><circle cx="12" cy="12" r="3"/><circle cx="19" cy="5" r="2"/><circle cx="5" cy="19" r="2"/>',
+  'git-fork': '<circle cx="12" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><circle cx="18" cy="6" r="3"/><path d="M18 9v1a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V9"/><path d="M12 12v3"/>',
+  'route': '<circle cx="6" cy="19" r="3"/><path d="M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15"/><circle cx="18" cy="5" r="3"/>',
+  'satellite': '<path d="m13.5 6.5-3.148-3.148a1.205 1.205 0 0 0-1.704 0L6.352 5.648a1.205 1.205 0 0 0 0 1.704L9.5 10.5"/><path d="M16.5 7.5 19 5"/><path d="m17.5 10.5 3.148 3.148a1.205 1.205 0 0 1 0 1.704l-2.296 2.296a1.205 1.205 0 0 1-1.704 0L13.5 14.5"/><path d="M9 21a6 6 0 0 0-6-6"/><path d="M9.352 10.648a1.205 1.205 0 0 0 0 1.704l2.296-2.296a1.205 1.205 0 0 0 0 1.704l4.296-4.296a1.205 1.205 0 0 0 1.704 0l-2.296-2.296a1.205 1.205 0 0 1-1.704 0L13.5 14.5"/>',
+  'earth': '<path d="M21.54 15H17a2 2 0 0 0-2 2v4.54"/><path d="M7 3.34V5a3 3 0 0 0 3 3a2 2 0 0 1 2 2c0 1.1.9 2 2 2a2 2 0 0 0 2-2h3.17"/><path d="M11 21.95V18a2 2 0 0 0-2-2a2 2 0 0 1-2-2v-1a2 2 0 0 0-2-2H2.05"/><circle cx="12" cy="12" r="10"/>',
+  'scroll-text': '<path d="M15 12h-5"/><path d="M15 8h-5"/><path d="M19 17V5a2 2 0 0 0-2-2H4"/><path d="M8 21h12a2 2 0 0 0 2-2v-1a1 1 0 0 0-1-1H11a1 1 0 0 0-1 1v1a2 2 0 1 1-4 0V5a2 2 0 1 0-4 0v2a1 1 0 0 0 1 1h3"/>',
+  'settings': '<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 0 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 1 1.74v.5a2 2 0 0 1 1.74 1.74l.15.09a2 2 0 0 0 .73 2.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 0-1.74-1.74v-.5a2 2 0 0 1-1.74-1.74l-.15-.08a2 2 0 0 0-2.73-.73l-.22-.38a2 2 0 0 0-.73-2.73l.15-.1a2 2 0 0 0-1-1.72v-.51a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 2.73-.73l.22-.38a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 0-2.73-.73l-.43-.25a2 2 0 0 1-1-1.73V2z"/><circle cx="12" cy="12" r="3"/>',
+  'bell': '<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/>',
+  'monitor': '<rect width="20" height="14" x="2" y="3" rx="2"/><line x1="8" x2="16" y1="21" y2="21"/><line x1="12" x2="12" y1="17" y2="21"/>',
+  'activity': '<polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>',
+  'gauge': '<path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/>',
+  'refresh-cw': '<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74 2.74L3 16"/><path d="M8 16H3v5"/>',
+  'minus': '<path d="M5 12h14"/>',
+  'square': '<rect width="18" height="18" x="3" y="3" rx="2"/>',
+  'x': '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
+  'chevron-down': '<path d="m6 9 6 6 6-6"/>',
+  'panel-left': '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/>',
+  'link': '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>',
+  'scan-line': '<path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/><path d="M7 12h10"/>',
+  'fingerprint': '<path d="M12 10a2 2 0 0 0-2 2c0 1.02-.1 2.51-.26 4"/><path d="M14 13.12c0 2.38 0 6.38-1 8.88"/><path d="M17.29 21.02c.12-.6.43-2.3.5-3.02"/><path d="M2 12a10 10 0 0 1 18-6"/><path d="M2 16h.01"/><path d="M21.8 16c.2-2 .131-5.354 0-6"/><path d="M5 19.5C5.5 18 6 15 6 12a6 6 0 0 1 .34-2"/><path d="M8.65 22c.21-.66.45-1.32.57-2"/><path d="M9 6.8a6 6 0 0 1 9 5.2v2"/>',
+  'sparkles': '<path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"/><path d="M5 3v4"/><path d="M19 17v4"/><path d="M3 5h4"/><path d="M17 19h4"/>',
+  'moon': '<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>',
+  'sun': '<circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/>',
+  'badge-question-mark': '<path d="M3.85 8.62a4 4 0 0 1 4.78-4.77 4 4 0 0 1 6.74 0 4 4 0 0 1 4.78 4.78 4 4 0 0 1 0 6.74 4 4 0 0 1-4.77 4.78 4 4 0 0 1-6.75 0 4 4 0 0 1-4.78-4.77 4 4 0 0 1 0-6.76Z"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" x2="12.01" y1="17" y2="17"/>',
+};
+function iconSvg(name, sz) {
+  return '<svg width="' + sz + '" height="' + sz + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + (ICONS[name] || '') + '</svg>';
+}
+document.querySelectorAll('[data-ic]').forEach(el => {
+  el.innerHTML = iconSvg(el.dataset.ic, el.dataset.sz || 16);
+});
+
+/* ---- 假数据（镜像截图时刻） ---- */
+const DOWN = [2,3,2,4,3,5,4,3,4,6,5,4,3,5,4,6,8,7,5,4,5,7,6,5,4,3,5,6,4,5,3,4,6,5,7,4,3,4,5,6,4,5,7,6,4,3,5,4,6,5,4,5,6,4,3,4,5,4,3,2];
+const UP   = [8,9,8,10,9,11,10,9,10,14,12,10,9,12,11,15,22,18,12,10,11,16,14,12,10,9,12,14,10,11,9,10,14,12,17,10,9,10,12,14,10,12,17,14,10,9,12,10,14,12,10,11,13,10,9,10,12,10,9,8];
+const SUB  = [4,4,5,4,5,6,5,4,5,5,6,7,6,5,4,5,6,5,4,5,6,8,9,7,6,8,10,9,7,6,7,6,5,6,7,6,5,4,5,6];
+
+/* ---- 平滑 sparkline（零依赖 SVG，对齐 AgChart.sparkline 观感） ---- */
+function smoothPath(vals, w, h, pad) {
+  const min = Math.min(...vals), max = Math.max(...vals), span = (max - min) || 1;
+  const pts = vals.map((v, i) => [pad + i * (w - pad * 2) / (vals.length - 1), h - pad - (v - min) / span * (h - pad * 2)]);
+  let d = 'M' + pts[0][0].toFixed(1) + ',' + pts[0][1].toFixed(1);
+  for (let i = 1; i < pts.length; i++) {
+    const [x0, y0] = pts[i - 1], [x1, y1] = pts[i], mx = (x0 + x1) / 2;
+    d += ' C' + mx.toFixed(1) + ',' + y0.toFixed(1) + ' ' + mx.toFixed(1) + ',' + y1.toFixed(1) + ' ' + x1.toFixed(1) + ',' + y1.toFixed(1);
+  }
+  return { d, pts };
+}
+function cssVar(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+let gid = 0;
+function drawSpark(el, series) {
+  if (!el) return;
+  const w = el.clientWidth || 300, h = el.clientHeight || 40;
+  const all = series.flatMap(s => s.values);
+  const max = Math.max(...all, 1);
+  const norm = series.map(s => s.values.map(v => v / max * 20));
+  let inner = '';
+  norm.forEach((vals, si) => {
+    const color = series[si].color, id = 'g' + (++gid);
+    const { d } = smoothPath(vals, w, h, 3);
+    inner += '<defs><linearGradient id="' + id + '" x1="0" y1="0" x2="0" y2="1">' +
+      '<stop offset="0" stop-color="' + color + '" stop-opacity=".22"/><stop offset="1" stop-color="' + color + '" stop-opacity="0"/></linearGradient></defs>';
+    inner += '<path d="' + d + ' L' + (w - 3) + ',' + h + ' L3,' + h + ' Z" fill="url(#' + id + ')"/>';
+    inner += '<path d="' + d + '" fill="none" stroke="' + color + '" stroke-width="1.6" stroke-linecap="round"/>';
+  });
+  el.innerHTML = '<svg width="100%" height="100%" viewBox="0 0 ' + w + ' ' + h + '" preserveAspectRatio="none">' + inner + '</svg>';
+}
+/* 带网格线的双序列折线（对齐 AgChart.line 观感） */
+function drawLine(el, series) {
+  if (!el) return;
+  const w = el.clientWidth || 600, h = el.clientHeight || 140, padB = 6, padT = 8;
+  const all = series.flatMap(s => s.values);
+  const max = Math.max(...all, 1);
+  const ch = h - padB - padT;
+  let inner = '';
+  for (let i = 1; i <= 3; i++) {
+    const y = padT + ch * i / 4;
+    inner += '<line x1="0" y1="' + y + '" x2="' + w + '" y2="' + y + '" stroke="' + cssVar('--chart-grid') + '" stroke-width="1"/>';
+  }
+  series.forEach(s => {
+    const vals = s.values.map(v => v / max * 20);
+    const { d } = smoothPath(vals, w, ch, 3);
+    const off = ' translate(0,' + padT + ')';
+    const id = 'g' + (++gid);
+    inner += '<defs><linearGradient id="' + id + '" x1="0" y1="0" x2="0" y2="1">' +
+      '<stop offset="0" stop-color="' + s.color + '" stop-opacity=".16"/><stop offset="1" stop-color="' + s.color + '" stop-opacity="0"/></linearGradient></defs>';
+    inner += '<g transform="' + off + '"><path d="' + d + ' L' + (w - 3) + ',' + ch + ' L3,' + ch + ' Z" fill="url(#' + id + ')"/>' +
+      '<path d="' + d + '" fill="none" stroke="' + s.color + '" stroke-width="1.8" stroke-linecap="round"/></g>';
+  });
+  el.innerHTML = '<svg width="100%" height="100%" viewBox="0 0 ' + w + ' ' + h + '" preserveAspectRatio="none">' + inner + '</svg>';
+}
+function drawAll() {
+  const dn = cssVar('--chart-down'), up = cssVar('--chart-up');
+  drawSpark(document.getElementById('spark-a'), [{ values: DOWN, color: dn }, { values: UP, color: up }]);
+  drawSpark(document.getElementById('spark-a-sub'), [{ values: SUB, color: cssVar('--dim2') }]);
+  drawSpark(document.getElementById('spark-b'), [{ values: DOWN, color: dn }, { values: UP, color: up }]);
+  drawLine(document.getElementById('line-b'), [{ values: DOWN, color: dn }, { values: UP, color: up }]);
+  drawLine(document.getElementById('line-c'), [{ values: DOWN, color: dn }, { values: UP, color: up }]);
+  drawSpark(document.getElementById('spark-c'), [{ values: SUB, color: cssVar('--dim2') }]);
+}
+drawAll();
+let rsz; window.addEventListener('resize', () => { clearTimeout(rsz); rsz = setTimeout(drawAll, 150); });
+
+/* ---- 交互 ---- */
+/* 电闸：三变体共用，同步灵动岛 */
+function syncPower(on, addr) {
+  const island = document.getElementById('island');
+  island.classList.toggle('off', !on);
+  document.getElementById('island-text').textContent = on ? ('代理运行中 ' + (addr || '127.0.0.1:57890')) : '代理未启动';
+}
+document.querySelectorAll('[data-power]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const on = btn.classList.toggle('on');
+    const st = btn.closest('section').querySelector('[data-power-state]');
+    if (st) st.textContent = on ? (st.dataset.onText || '运行中') : '已停止';
+    syncPower(on);
+  });
+});
+document.querySelectorAll('[data-power-switch]').forEach(sw => {
+  sw.addEventListener('change', () => {
+    const st = sw.closest('section').querySelector('[data-power-state]');
+    if (st) st.textContent = sw.checked ? '运行中' : '已停止';
+    syncPower(sw.checked);
+  });
+});
+/* 卡片开关 → 整卡降饱和 */
+document.querySelectorAll('.dc-switch input').forEach(sw => {
+  sw.addEventListener('change', () => sw.closest('.dcard').classList.toggle('off', !sw.checked));
+});
+/* C 变体角色条开关 */
+document.querySelectorAll('.c-role .switch input').forEach(sw => {
+  sw.addEventListener('change', () => sw.closest('.c-role').classList.toggle('on', sw.checked));
+});
+/* 段控 */
+document.querySelectorAll('.seg').forEach(seg => {
+  if (seg.id === 'db-variants') return;
+  seg.addEventListener('click', e => {
+    const b = e.target.closest('button'); if (!b) return;
+    seg.querySelectorAll('button').forEach(x => x.classList.toggle('active', x === b));
+  });
+});
+/* 侧栏折叠 */
+document.getElementById('btn-collapse').addEventListener('click', () => document.body.classList.toggle('collapsed'));
+/* 主题 */
+document.getElementById('btn-theme').addEventListener('click', () => {
+  const html = document.documentElement;
+  const dark = html.dataset.theme !== 'dark';
+  html.dataset.theme = dark ? 'dark' : 'light';
+  document.querySelector('#btn-theme [data-ic]').innerHTML = iconSvg(dark ? 'sun' : 'moon', 15);
+  drawAll();
+});
+/* 变体切换 */
+document.getElementById('db-variants').addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b) return;
+  document.querySelectorAll('#db-variants button').forEach(x => x.classList.toggle('on', x === b));
+  document.querySelectorAll('.page').forEach(p => { p.hidden = p.id !== b.dataset.v; });
+  drawAll();
+});
+</script>
+</body>
+</html>

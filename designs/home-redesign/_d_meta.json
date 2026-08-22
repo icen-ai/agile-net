@@ -1,0 +1,23 @@
+{
+  "type": "design",
+  "designSystems": [],
+  "primaryDesignSystem": null,
+  "assets": {
+    "AgileNet 首页重设计": {
+      "versions": [
+        {
+          "path": "AgileNet Home Redesign.html",
+          "createdAt": "2026-08-11T16:38:06.620Z",
+          "status": "needs-review"
+        },
+        {
+          "path": "AgileNet Home Redesign v2.html",
+          "createdAt": "2026-08-11T16:51:27.547Z",
+          "status": "needs-review"
+        }
+      ]
+    }
+  },
+  "createdAt": "2026-08-11T16:38:06.621Z",
+  "updatedAt": "2026-08-11T16:51:27.548Z"
+}
