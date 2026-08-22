@@ -237,7 +237,6 @@ pub fn run() {
             set_machine_myname,
             set_credential_myname,
             open_url,
-            tray_show_main,
             tray_quit,
             set_float_ball,
             float_ball_notify,

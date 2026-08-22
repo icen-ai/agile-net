@@ -256,16 +256,6 @@ pub(crate) fn toggle_tray_popup_inner(app: &tauri::AppHandle, anchor: tauri::Phy
     let _ = window.set_focus();
 }
 
-/// Tray panel: show main window
-#[tauri::command]
-pub(crate) fn tray_show_main(app: tauri::AppHandle) -> Result<(), String> {
-    if let Some(w) = app.get_webview_window("tray-popup") {
-        let _ = w.hide();
-    }
-    show_main_window(&app);
-    Ok(())
-}
-
 /// Tray panel: quit the app
 #[tauri::command]
 pub(crate) fn tray_quit(app: tauri::AppHandle) {

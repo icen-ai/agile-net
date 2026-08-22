@@ -22,6 +22,7 @@ const S = {
   pmode: 'system',                  // proxy mode: system | local | tun
   kernel: false,                    // subscription kernel running
   sigStatus: '', sigMode: '', sigPMode: '', sigGroups: '', sigConns: '',
+  sigPill: '', sigExit: '',
   openGroup: null, lastGroups: null,  // expanded proxy group (name; only one open at a time) and last group data
   openConns: false,                   // connection summary expanded state (collapsed by default, click header to expand)
   downSig: '', upSig: '',
@@ -93,12 +94,46 @@ function renderStatus(running, port) {
   if (sig === S.sigStatus) return;
   S.sigStatus = sig;
   S.running = running; S.port = port;
-  const pill = $('tp-pill');
-  pill.textContent = AgI18n.t(running ? 'common.running' : 'common.stopped');
-  pill.classList.toggle('on', running);
-  $('tp-addr').textContent = running ? AgI18n.t('tray.proxyAddr', { addr: '127.0.0.1:' + port }) : AgI18n.t('tray.proxyOff');
   $('tp-toggle-label').textContent = AgI18n.t(running ? 'tray.stopProxy' : 'tray.startProxy');
   $('tp-toggle').classList.toggle('warn', running);
+  renderPill(); renderExit();
+}
+
+/* Status pill follows the effective takeover state (stopped / system proxy / TUN / local listen),
+   merging what used to be three separate signals (pill + hero address + button label) into one */
+function renderPill() {
+  const key = !S.running ? 'common.stopped'
+    : S.pmode === 'system' ? 'tray.pillSystem'
+    : S.pmode === 'tun' ? 'tray.pillTun'
+    : 'tray.pillLocal';
+  const text = AgI18n.t(key);
+  if (text === S.sigPill) return;
+  S.sigPill = text;
+  const pill = $('tp-pill');
+  pill.textContent = text;
+  pill.classList.toggle('on', S.running);
+}
+
+/* Hero sub-line: current egress at a glance — direct / GLOBAL node (global mode) / first Selector group node (rule mode);
+   falls back to proxy-off / kernel-off hints when not applicable */
+function renderExit() {
+  let text;
+  if (!S.running) text = AgI18n.t('tray.proxyOff');
+  else if (!S.kernel) text = AgI18n.t('tray.kernelOff');
+  else if (S.mode === 'direct') text = AgI18n.t('tray.exitNode', { name: AgI18n.t('tray.outDirect') });
+  else {
+    const px = (S.lastGroups && S.lastGroups.proxies) || {};
+    const entry = S.mode === 'global'
+      ? ['GLOBAL', px.GLOBAL]
+      : Object.entries(px).find(([n, p]) => n !== 'GLOBAL' && p && p.type === 'Selector' && Array.isArray(p.all));
+    const now = entry && entry[1] && entry[1].now ? entry[1].now : '';
+    text = now ? AgI18n.t('tray.exitNode', { name: now }) : AgI18n.t('tray.noGroups');
+  }
+  if (text === S.sigExit) return;
+  S.sigExit = text;
+  const el = $('tp-addr');
+  el.textContent = text;
+  el.title = text;
 }
 
 function renderMode(mode, tun) {
@@ -110,6 +145,7 @@ function renderMode(mode, tun) {
   seg.classList.toggle('off', tun); // outbound pinned to rule under TUN (backend rejects switching too)
   seg.title = tun ? AgI18n.t('tray.tunLockTip') : '';
   seg.querySelectorAll('button').forEach(b => b.classList.toggle('cur', b.dataset.mode === mode));
+  renderExit();
 }
 
 /* Proxy mode (system/local/tun) segmented control — aligns tray with float-menu */
@@ -119,12 +155,16 @@ function renderPMode(pm) {
   S.sigPMode = sig;
   S.pmode = pm;
   $('tp-pmode').querySelectorAll('button').forEach(b => b.classList.toggle('cur', b.dataset.pmode === pm));
+  renderPill();
 }
 
-/* Subscription kernel toggle label */
+/* Subscription kernel icon button: live status dot + hover title */
 function renderSub() {
-  const label = $('tp-sub-label');
-  if (label) label.textContent = AgI18n.t(S.kernel ? 'float.subStop' : 'float.subStart');
+  const btn = $('tp-sub');
+  if (!btn) return;
+  btn.classList.toggle('on', S.kernel);
+  btn.title = AgI18n.t(S.kernel ? 'float.subStop' : 'float.subStart');
+  renderExit();
 }
 
 /* Proxy groups: Selector groups only; collapsed by default rendering just the group-name row, click .grp-name to expand
@@ -147,6 +187,7 @@ function renderGroups(d) {
   const sig = S.kernel + '|' + (S.openGroup || '') + '|' + JSON.stringify(groups);
   if (sig === S.sigGroups) return;
   S.sigGroups = sig;
+  renderExit(); // egress node may have changed with the group data
   const box = $('tp-groups');
   if (!S.kernel) { box.innerHTML = '<div class="tp-empty">' + AgI18n.t('tray.kernelOff') + '</div>'; return; }
   if (!groups.length) { box.innerHTML = '<div class="tp-empty">' + AgI18n.t('tray.noGroups') + '</div>'; return; }
@@ -261,8 +302,7 @@ window.addEventListener('DOMContentLoaded', () => {
     renderConns(S.lastConns);
   });
 
-  // bottom action row
-  $('tp-show').addEventListener('click', () => { invoke('tray_show_main').catch(() => {}); });
+  // bottom action row (tray left-click already opens the main panel, no duplicate button here)
   $('tp-quit').addEventListener('click', () => { invoke('tray_quit').catch(() => {}); });
   $('tp-toggle').addEventListener('click', async () => {
     const btn = $('tp-toggle');

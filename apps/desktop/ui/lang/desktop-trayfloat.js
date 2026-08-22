@@ -7,12 +7,18 @@ AgI18n.register({
   'tray.down': { zh: '下行', en: 'Down' },
   'tray.up': { zh: '上行', en: 'Up' },
   'tray.proxyOff': { zh: '本地代理未启动', en: 'Local proxy not running' },
-  'tray.proxyAddr': { zh: '本地代理 {addr}', en: 'Local proxy {addr}' },
   'tray.startProxy': { zh: '启动代理', en: 'Start Proxy' },
   'tray.stopProxy': { zh: '停止代理', en: 'Stop Proxy' },
   'tray.tunLockTip': { zh: 'TUN 模式下出站固定为规则', en: 'Outbound is fixed to Rule under TUN' },
-  'tray.outMode': { zh: '出站模式', en: 'Outbound' },
-  'tray.proxyMode': { zh: '代理模式', en: 'Proxy Mode' },
+  // section titles renamed to separate traffic interception from mihomo outbound policy
+  'tray.takeover': { zh: '接管方式', en: 'Takeover' },
+  'tray.outbound': { zh: '出站策略', en: 'Outbound' },
+  // status pill: effective takeover state (replaces the old running/stopped only)
+  'tray.pillSystem': { zh: '系统代理中', en: 'System Proxy' },
+  'tray.pillTun': { zh: 'TUN 中', en: 'TUN' },
+  'tray.pillLocal': { zh: '本地监听中', en: 'Local' },
+  // hero sub-line: current egress at a glance
+  'tray.exitNode': { zh: '当前出口 · {name}', en: 'Exit · {name}' },
   // outbound three-segment: rule reuses term.rule; global/direct shared by tray and float-ball menu
   'tray.outGlobal': { zh: '全局', en: 'Global' },
   'tray.outDirect': { zh: '直连', en: 'Direct' },
@@ -22,7 +28,6 @@ AgI18n.register({
   'tray.conns': { zh: '连接', en: 'Connections' },
   'tray.activeCount': { zh: '活跃 {n}', en: '{n} active' },
   'tray.noConns': { zh: '暂无活跃连接', en: 'No active connections' },
-  'tray.showMain': { zh: '主面板', en: 'Main Panel' },
   'tray.quit': { zh: '退出', en: 'Quit' },
   'tray.noenv': { zh: '此页面需在 AgileNet 桌面端窗口中打开', en: 'Open this page in the AgileNet desktop app' },
 

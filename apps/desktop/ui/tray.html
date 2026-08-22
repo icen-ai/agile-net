@@ -81,14 +81,22 @@ body { display: block; padding: 0; font-size: 13px; }
 .tp-conn .host { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tp-conn .via { margin-left: auto; font-size: 11px; color: var(--dim2); max-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex-shrink: 0; }
 
-/* ---- Footer action row ---- */
+/* ---- Footer action row: one labeled primary toggle + icon-only actions (tray left-click already opens the main panel) ---- */
 .tp-foot { display: flex; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--row-border); flex-shrink: 0; }
-.tp-btn { flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 5px; padding: 7px 2px; border-radius: 8px; border: 1px solid var(--border); background: var(--panel2); font-size: 12px; color: var(--text); cursor: pointer; transition: transform .12s, background .15s, border-color .15s; }
-.tp-btn:hover { background: var(--hover); }
+.tp-btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 7px 2px; border-radius: 8px; border: 1px solid var(--border); background: var(--panel2); font-size: 12px; color: var(--text); cursor: pointer; transition: transform .12s, background .15s, border-color .15s; }
 .tp-btn:active { transform: scale(.95); }
-.tp-btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
+/* Primary toggle owns the row width; running state flips it to a bordered stop button */
+.tp-btn.primary { flex: 1; background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
 .tp-btn.primary:hover { background: var(--accent2); border-color: var(--accent2); }
-.tp-btn.warn { color: var(--danger-text); }
+.tp-btn.primary.warn { background: var(--panel2); border-color: var(--danger-text); color: var(--danger-text); }
+.tp-btn.primary.warn:hover { background: var(--danger-bg); }
+/* Square icon buttons: fixed width, no label; subscription carries a live status dot */
+.tp-btn.tp-ico { width: 36px; padding: 7px 0; flex-shrink: 0; color: var(--dim); }
+.tp-btn.tp-ico:hover { background: var(--hover); color: var(--text); }
+.tp-btn.tp-ico.warn { color: var(--danger-text); }
+.tp-btn.tp-ico.warn:hover { background: var(--danger-bg); }
+.tp-btn.tp-ico.on { color: var(--text); position: relative; }
+.tp-btn.tp-ico.on::after { content: ""; position: absolute; top: 4px; right: 4px; width: 6px; height: 6px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 0 2px var(--panel2); }
 .tp-btn[disabled] { opacity: .5; pointer-events: none; }
 
 /* v2 button top-highlight exemption: tray's own flat/ghost buttons stay flat;
@@ -118,14 +126,14 @@ body { display: block; padding: 0; font-size: 13px; }
   </div>
 
   <div class="tp-body">
-    <div class="tp-sec" data-i18n="tray.proxyMode">代理模式</div>
+    <div class="tp-sec" data-i18n="tray.takeover">接管方式</div>
     <div class="seg" id="tp-pmode">
       <button type="button" data-pmode="system" data-i18n="float.modeSystem">系统</button>
       <button type="button" data-pmode="local" data-i18n="float.modeLocal">本地</button>
       <button type="button" data-pmode="tun" data-i18n="float.modeTun">虚拟</button>
     </div>
 
-    <div class="tp-sec" data-i18n="tray.outMode">出站模式</div>
+    <div class="tp-sec" data-i18n="tray.outbound">出站策略</div>
     <div class="seg" id="tp-mode">
       <button type="button" data-mode="rule" data-i18n="term.rule">规则</button>
       <button type="button" data-mode="global" data-i18n="tray.outGlobal">全局</button>
@@ -140,10 +148,9 @@ body { display: block; padding: 0; font-size: 13px; }
   </div>
 
   <div class="tp-foot">
-    <button type="button" class="tp-btn primary" id="tp-show"><i data-ic="monitor" data-sz="13"></i><span data-i18n="tray.showMain">主面板</span></button>
-    <button type="button" class="tp-btn" id="tp-toggle"><i data-ic="power" data-sz="13"></i><span id="tp-toggle-label" data-i18n="tray.startProxy">启动代理</span></button>
-    <button type="button" class="tp-btn" id="tp-sub"><i data-ic="satellite" data-sz="13"></i><span id="tp-sub-label" data-i18n="float.subStart">启动订阅</span></button>
-    <button type="button" class="tp-btn warn" id="tp-quit"><i data-ic="x" data-sz="13"></i><span data-i18n="tray.quit">退出</span></button>
+    <button type="button" class="tp-btn primary" id="tp-toggle"><i data-ic="power" data-sz="14"></i><span id="tp-toggle-label" data-i18n="tray.startProxy">启动代理</span></button>
+    <button type="button" class="tp-btn tp-ico" id="tp-sub" data-i18n-title="float.subStart"><i data-ic="satellite" data-sz="15"></i></button>
+    <button type="button" class="tp-btn tp-ico warn" id="tp-quit" data-i18n-title="tray.quit"><i data-ic="x" data-sz="15"></i></button>
   </div>
 </div>
 <div id="tp-noenv" hidden data-i18n="tray.noenv">此页面需在 AgileNet 桌面端窗口中打开</div>
