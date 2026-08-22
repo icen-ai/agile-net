@@ -181,7 +181,7 @@ function open(cfg) {
 
     body.querySelector('[data-paste]').onclick = async () => {
       let text = '';
-      try { text = await navigator.clipboard.readText(); } catch (e) { toast(T('import.badLink'), 'err'); return; }
+      try { text = await pasteText(); } catch (e) { toast(T('import.badLink'), 'err'); return; }
       input.value = String(text || '').trim();
       acceptText(input.value);
       input.focus();

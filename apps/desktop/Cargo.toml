@@ -30,6 +30,8 @@ tauri-plugin-dialog = "2"
 # anet:// 协议注册与深链（federation P1 §2.7）；单实例转发深链/文件关联参数
 tauri-plugin-deep-link = "2"
 tauri-plugin-single-instance = "2"
+# 系统剪贴板直写（WebView2 的 navigator.clipboard 间歇性 Document is not focused）
+arboard = "3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }

@@ -27,6 +27,42 @@ pub(crate) fn open_url(url: String) -> Result<(), String> {
     Ok(())
 }
 
+// ==================== System clipboard ====================
+// WebView2's navigator.clipboard fails intermittently with "NotAllowedError: Document is not
+// focused" (window-focus races in embedded WebViews). The Rust side talks to the OS clipboard
+// directly via arboard and is immune to WebView focus/permission state.
+
+/// Write text to the system clipboard. Android has no arboard backend — returns Err so the
+/// frontend helper falls back to navigator.clipboard there.
+#[tauri::command]
+pub(crate) fn copy_text(text: String) -> Result<(), String> {
+    #[cfg(not(target_os = "android"))]
+    {
+        let mut cb = arboard::Clipboard::new().map_err(map_err)?;
+        cb.set_text(text).map_err(map_err)?;
+        Ok(())
+    }
+    #[cfg(target_os = "android")]
+    {
+        let _ = text;
+        Err("clipboard: fall back to navigator.clipboard".into())
+    }
+}
+
+/// Read text from the system clipboard (paste button / import-from-clipboard paths).
+#[tauri::command]
+pub(crate) fn read_text() -> Result<String, String> {
+    #[cfg(not(target_os = "android"))]
+    {
+        let mut cb = arboard::Clipboard::new().map_err(map_err)?;
+        cb.get_text().map_err(map_err)
+    }
+    #[cfg(target_os = "android")]
+    {
+        Err("clipboard: fall back to navigator.clipboard".into())
+    }
+}
+
 /// Desktop admin SPA static assets (embedded via include_str!, no Node build chain).
 /// Every asset index.html references must appear here — a missing entry 404s the web remote panel
 /// (the `spa_assets_cover_index_references` test guards this list against index.html drift).

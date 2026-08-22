@@ -569,7 +569,7 @@ function initSubscription() {
   $('btn-add-sub').onclick = openSubModal;
   $('sub-cancel').onclick = () => { $('sub-modal').style.display = 'none'; };
   $('sub-paste').onclick = async () => {
-    try { $('sub-url').value = await navigator.clipboard.readText(); } catch (e) { toast(AgI18n.t('sub.clipboardErr'), 'err'); }
+    try { $('sub-url').value = await pasteText(); } catch (e) { toast(AgI18n.t('sub.clipboardErr'), 'err'); }
   };
   $('sub-url').addEventListener('keydown', e => { if (e.key === 'Enter') $('sub-ok').click(); });
   $('sub-ok').onclick = async () => {

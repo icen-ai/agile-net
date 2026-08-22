@@ -72,6 +72,27 @@ function reasonText(rc) {
   return rc ? String(rc) : AgI18n.t('reason.unknown');
 }
 
+/* Clipboard helpers: WebView2's navigator.clipboard fails intermittently with
+   "NotAllowedError: Document is not focused" (window-focus races in embedded WebViews, e.g.
+   copying from a just-opened share modal). Inside the desktop the Rust OS-clipboard command is
+   the primary path; Android (no arboard backend) and command failures fall back to the web API. */
+async function copyText(text) {
+  const inv = (window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke) || null;
+  if (inv) {
+    try { await inv('copy_text', { text }); return; } catch (e) { /* fall through to the web API */ }
+  }
+  await navigator.clipboard.writeText(text);
+}
+async function pasteText() {
+  const inv = (window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke) || null;
+  if (inv) {
+    try { return await inv('read_text'); } catch (e) { /* fall through */ }
+  }
+  return await navigator.clipboard.readText();
+}
+window.copyText = copyText;
+window.pasteText = pasteText;
+
 /* ---- Naming triplet (node.md M3-T6; i18n keys triplet.* in aglang.js) ----
    Uniform three-field group for server/client forms: target name (local) / my name (shown to
    the peer) / remark (local private). nameTriplet(prefix, values, opts) renders the inputs

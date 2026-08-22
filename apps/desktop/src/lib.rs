@@ -237,6 +237,8 @@ pub fn run() {
             get_machine_identity,
             set_machine_myname,
             set_credential_myname,
+            copy_text,
+            read_text,
             open_url,
             tray_show_main,
             tray_quit,

@@ -842,7 +842,7 @@ async function importUrl(url, btn) {
 
 async function pasteFromClipboard() {
   try {
-    const text = await navigator.clipboard.readText();
+    const text = await pasteText();
     const p = text && AgLink.parse(text.trim());
     if (p && !p.error && p.role === 'connect') {
       $('connect-url-hero') && ($('connect-url-hero').value = text.trim());
@@ -1117,7 +1117,7 @@ async function exportCred(key) {
   if (HTTP_MODE && !(await askConfirm({ title: AgI18n.t('views.export-title'), desc: AgI18n.t('views.export-confirm'), icon: 'share-2', danger: true }))) return;
   try {
     const url = await invoke('export_credential', { key });
-    await navigator.clipboard.writeText(url);
+    await copyText(url);
     toast(AgI18n.t('views.export-done'), 'ok');
   } catch (e) { toast(friendlyError(e), 'err'); }
 }
@@ -1776,8 +1776,12 @@ function dtShowIssued(t) {
   });
   $('dt-share').value = t.share_url || '';
   $('dt-token').value = t.token || '';
-  $('dt-share-copy').onclick = async () => { await navigator.clipboard.writeText($('dt-share').value); toast(AgI18n.t('common.copied'), 'ok'); };
-  $('dt-token-copy').onclick = async () => { await navigator.clipboard.writeText($('dt-token').value); toast(AgI18n.t('common.copied'), 'ok'); };
+  // share-card copy: copyText goes through the OS clipboard (WebView focus races made the
+  // web API fail silently here); a failure must toast, not vanish
+  const copyOrToast = (get) => copyText(get())
+    .then(() => toast(AgI18n.t('common.copied'), 'ok'), () => toast(AgI18n.t('core.copy-fail'), 'err'));
+  $('dt-share-copy').onclick = () => copyOrToast(() => $('dt-share').value);
+  $('dt-token-copy').onclick = () => copyOrToast(() => $('dt-token').value);
   $('dt-share').onclick = (e) => e.target.select();
   $('dt-token').onclick = (e) => e.target.select();
 }

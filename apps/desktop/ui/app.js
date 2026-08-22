@@ -316,7 +316,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   $('btn-net-copy').onclick = () => {
     const t = ($('d-net-ip').textContent || '').trim();
     if (!t || t === AgI18n.t('hero.probeLoading') || t === AgI18n.t('hero.probeFailed')) return;
-    navigator.clipboard.writeText(t).then(() => toast(AgI18n.t('common.copied'), 'ok'), () => {});
+    copyText(t).then(() => toast(AgI18n.t('common.copied'), 'ok'), () => {});
   };
   // Dashboard cards: clicking a non-switch/button area jumps to the matching view (switches handle themselves via change events)
   $('dash-grid').addEventListener('click', (e) => {

@@ -24,6 +24,7 @@ AgI18n.register({
   'core.clip-ok': { zh: '已识别剪贴板中的接入链接', en: 'Connect URL detected in clipboard' },
   'core.clip-none': { zh: '剪贴板中没有接入链接', en: 'No connect URL in clipboard' },
   'core.clip-fail': { zh: '无法读取剪贴板', en: 'Cannot read clipboard' },
+  'core.copy-fail': { zh: '复制失败，请手动选择复制', en: 'Copy failed; select and copy manually' },
   'core.disconnected': { zh: '已断开', en: 'Disconnected' },
   'core.no-rules': { zh: '无生效规则', en: 'No active rules' },
   'core.no-creds': { zh: '尚未添加扇入', en: 'No fan-in saved' },

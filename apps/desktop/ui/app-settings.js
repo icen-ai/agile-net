@@ -271,7 +271,7 @@ async function initRoles() {
     const fp = (window._serverStatus && window._serverStatus.cert_fingerprint) || '';
     if (!fp) { toast(AgI18n.t('views.fp-unavailable'), 'err'); return; }
     try {
-      await navigator.clipboard.writeText(fp);
+      await copyText(fp);
       toast(AgI18n.t('views.fp-copied'), 'ok');
     } catch (e) { /* clipboard unavailable: stay silent */ }
   };
@@ -554,11 +554,11 @@ async function loadSettings() {
   // Machine identity card: copy buttons + 我的名称 save (M4-T4)
   $('btn-machine-fp-copy').onclick = () => {
     const fp = (window._machineId && window._machineId.device_fp) || '';
-    if (fp) navigator.clipboard.writeText(fp).then(() => toast(AgI18n.t('common.copied'), 'ok'), () => {});
+    if (fp) copyText(fp).then(() => toast(AgI18n.t('common.copied'), 'ok'), () => {});
   };
   $('btn-machine-pub-copy').onclick = () => {
     const pub = (window._machineId && window._machineId.openssh_pubkey) || '';
-    if (pub) navigator.clipboard.writeText(pub).then(() => toast(AgI18n.t('common.copied'), 'ok'), () => {});
+    if (pub) copyText(pub).then(() => toast(AgI18n.t('common.copied'), 'ok'), () => {});
   };
   $('btn-machine-myname-save').onclick = async () => {
     const name = $('machine-myname').value.trim();
