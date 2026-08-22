@@ -97,6 +97,11 @@ pub struct IssueRequest {
     /// Topology-visibility tier (node.md M6): '' = domain (default) | disclose | approve
     #[serde(default)]
     pub visibility: String,
+    /// Anti-correlation padding (trust profile G1②, deep-guard sub-option): E2E records sealed
+    /// at 2048-byte buckets so ciphertext lengths stop correlating with plaintext lengths.
+    /// Requires at least one e2e_required group (padding rides the E2E channel cipher).
+    #[serde(default)]
+    pub anti_correlate: bool,
 }
 
 fn default_entry_mode() -> String {
@@ -253,6 +258,14 @@ pub async fn issue_token(
             "授权管理要求引用组含端到端加密组（票据经 E2E 通道下发）",
         );
     }
+    // anti-correlation padding rides the E2E channel cipher — transparent tokens cannot pad
+    if req.anti_correlate && !has_e2e {
+        return err(
+            StatusCode::BAD_REQUEST,
+            codes::VALIDATION_FAILED,
+            "抗关联填充要求引用组含端到端加密组（填充经 E2E 通道生效）",
+        );
+    }
 
     // relay mode rides the disaster set; direct mode self-registers on this issuer's listener
     let regs: Vec<(String, bool)> = if req.entry_mode == "relay" {
@@ -340,6 +353,23 @@ pub async fn issue_token(
         rec.visibility = visibility.to_string();
     }
 
+    // anti-correlation padding (G1②): apply right after issuance so the enforcement engine's
+    // key cache picks the bucket up on the refresh below (and the share link carries pad=1)
+    if req.anti_correlate {
+        let rec_id = rec.id.clone();
+        let applied = state
+            .db_call(move |db| db.set_delegated_token_anti_correlate(&rec_id, true))
+            .await;
+        if let Err(e) = applied {
+            return err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                codes::INTERNAL,
+                e.to_string(),
+            );
+        }
+        rec.anti_correlate = true;
+    }
+
     // warm the enforcement caches immediately (the group may have been created seconds ago,
     // ahead of the config_version watcher tick); session registration rides the connector sync task
     state.runtime.connector_manager.refresh_delegation_keys();
@@ -352,11 +382,12 @@ pub async fn issue_token(
         "delegation.issue",
         Some(&rec.id),
         &format!(
-            "label={} groups={} regs={} entry_mode={}",
+            "label={} groups={} regs={} entry_mode={}{}",
             rec.label,
             req.group_ids.len(),
             rec.regs.len(),
-            rec.entry_mode
+            rec.entry_mode,
+            if rec.anti_correlate { " pad=on" } else { "" },
         ),
     )
     .await;
@@ -474,6 +505,8 @@ async fn build_share_url(
         !rec.admin_scope.is_empty(),
         // M3-T6: the issuer-suggested "my name" prefills the link's myname word
         Some(my_name).filter(|s| !s.is_empty()),
+        // G1②: the padding tier rides the link next to the E2E key (pad=1)
+        rec.anti_correlate,
     );
     // M6: a non-domain visibility tier rides the link as an import-time clause (M4-T5 条款卡)
     if !rec.visibility.is_empty() && rec.visibility != "domain" {
@@ -535,6 +568,7 @@ fn token_json(
         "concurrency": rec.concurrency,
         "max_sessions": rec.max_sessions,
         "visibility": rec.visibility,
+        "anti_correlate": rec.anti_correlate,
         "hint_map": serde_json::from_str::<Vec<HintEntry>>(&rec.hint_map).unwrap_or_default(),
         "regs": regs,
         "created_at": rec.created_at,

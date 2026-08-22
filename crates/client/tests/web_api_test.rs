@@ -180,6 +180,7 @@ async fn export_requires_confirm() {
                 name: None,
                 myname: None,
                 visibility: None,
+                padding: false,
                 insecure: false,
                 pinned_fingerprint: None,
                 entries: Vec::new(),

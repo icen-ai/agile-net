@@ -69,6 +69,7 @@ pub async fn run(config_path: &str) -> Result<()> {
             emode: parsed.emode,
             eadmin: parsed.eadmin,
             myname: parsed.myname,
+            padding: parsed.padding,
         };
         match client.connect(params).await {
             Ok(state) => {

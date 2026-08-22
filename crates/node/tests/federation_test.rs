@@ -475,6 +475,7 @@ async fn federation_adopted_group_delegated_grant() {
             emode: None,
             eadmin: false,
             myname: None,
+            padding: false,
         })
         .await
         .expect("delegated connect");

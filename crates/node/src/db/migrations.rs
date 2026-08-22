@@ -62,7 +62,8 @@ const MIGRATIONS: &[(u32, &str, &str)] = &[(
 
     -- Fan-in relay token. group_id holds a comma-separated group set (multi-group ACL; no FK —
     -- dangling ids converge to deny-all in the ACL registry). Lifecycle: expires_at / max_uses /
-    -- used_count (NULL = never expires / unlimited).
+    -- used_count (NULL = never expires / unlimited). guarded = Deep Guard (trust profile G3):
+    -- advertise overlap rejection + pushed groups stay offers + forced device approval.
     CREATE TABLE relay_token (
         id              TEXT PRIMARY KEY,
         token_hash      TEXT NOT NULL UNIQUE,
@@ -73,6 +74,7 @@ const MIGRATIONS: &[(u32, &str, &str)] = &[(
         control_scope   TEXT NOT NULL DEFAULT 'full',
         group_id        TEXT,
         rate_limit_kbps INTEGER,
+        guarded         INTEGER NOT NULL DEFAULT 0,
         expires_at      TEXT,
         max_uses        INTEGER,
         used_count      INTEGER NOT NULL DEFAULT 0,
@@ -126,6 +128,8 @@ const MIGRATIONS: &[(u32, &str, &str)] = &[(
 
     -- Fan-out connectors (first-class resource; token_enc stored encrypted). group_id holds a
     -- comma-separated group set (same multi-group ACL semantics as relay_token; no FK).
+    -- guarded = Deep Guard (trust profile G2): pinning mandatory, insecure forbidden, guarded
+    -- edits audited with a change summary.
     CREATE TABLE connector (
         id                 TEXT PRIMARY KEY,
         name               TEXT NOT NULL UNIQUE,
@@ -136,6 +140,7 @@ const MIGRATIONS: &[(u32, &str, &str)] = &[(
         insecure           INTEGER NOT NULL DEFAULT 0,
         advertise          TEXT NOT NULL DEFAULT '',
         group_id           TEXT,
+        guarded            INTEGER NOT NULL DEFAULT 0,
         enabled            INTEGER NOT NULL DEFAULT 1,
         remark             TEXT NOT NULL DEFAULT '',
         ca_cert_path       TEXT NOT NULL DEFAULT '',
@@ -175,24 +180,27 @@ const MIGRATIONS: &[(u32, &str, &str)] = &[(
     -- key, AES-256-GCM encrypted like connector tokens.
     -- visibility (node.md M6): topology disclosure tier of this grant — 'domain' (default:
     -- only the domain principal is visible upstream) | 'disclose' | 'approve'.
+    -- anti_correlate = Deep Guard sub-option (trust profile G1②): E2E records padded to
+    -- 2048-byte buckets so record lengths stop correlating with plaintext lengths.
     CREATE TABLE delegated_token (
-        id           TEXT PRIMARY KEY,
-        token_hash   TEXT NOT NULL UNIQUE,
-        token_prefix TEXT NOT NULL,
-        label        TEXT NOT NULL DEFAULT '',
-        groups       TEXT NOT NULL DEFAULT '[]',
-        hint_map     TEXT NOT NULL DEFAULT '[]',
-        e2e_key_enc  TEXT NOT NULL DEFAULT '',
-        mode         TEXT NOT NULL DEFAULT 'dedicated',
-        admin_scope  TEXT NOT NULL DEFAULT '',
-        entry_mode   TEXT NOT NULL DEFAULT 'relay' CHECK(entry_mode IN ('direct','relay')),
-        concurrency  TEXT NOT NULL DEFAULT 'single' CHECK(concurrency IN ('single','multi')),
-        max_sessions INTEGER NOT NULL DEFAULT 8,
-        visibility   TEXT NOT NULL DEFAULT 'domain' CHECK(visibility IN ('domain','disclose','approve')),
-        expires_at   TEXT,
-        max_uses     INTEGER,
-        used_count   INTEGER NOT NULL DEFAULT 0,
-        created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+        id             TEXT PRIMARY KEY,
+        token_hash     TEXT NOT NULL UNIQUE,
+        token_prefix   TEXT NOT NULL,
+        label          TEXT NOT NULL DEFAULT '',
+        groups         TEXT NOT NULL DEFAULT '[]',
+        hint_map       TEXT NOT NULL DEFAULT '[]',
+        e2e_key_enc    TEXT NOT NULL DEFAULT '',
+        mode           TEXT NOT NULL DEFAULT 'dedicated',
+        admin_scope    TEXT NOT NULL DEFAULT '',
+        entry_mode     TEXT NOT NULL DEFAULT 'relay' CHECK(entry_mode IN ('direct','relay')),
+        concurrency    TEXT NOT NULL DEFAULT 'single' CHECK(concurrency IN ('single','multi')),
+        max_sessions   INTEGER NOT NULL DEFAULT 8,
+        visibility     TEXT NOT NULL DEFAULT 'domain' CHECK(visibility IN ('domain','disclose','approve')),
+        anti_correlate INTEGER NOT NULL DEFAULT 0,
+        expires_at     TEXT,
+        max_uses       INTEGER,
+        used_count     INTEGER NOT NULL DEFAULT 0,
+        created_at     TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
     -- Disaster-set registration of relay-entry tokens: one row per upstream connector
@@ -393,6 +401,7 @@ mod tests {
             "control_scope",
             "group_id",
             "rate_limit_kbps",
+            "guarded",
             "expires_at",
             "max_uses",
             "used_count",
@@ -408,6 +417,7 @@ mod tests {
             "pinned_fingerprint",
             "push_groups",
             "my_name",
+            "guarded",
         ] {
             assert!(
                 column_names(&db, "connector").contains(&col.to_string()),
@@ -424,6 +434,7 @@ mod tests {
             "concurrency",
             "max_sessions",
             "visibility",
+            "anti_correlate",
             "expires_at",
             "max_uses",
             "used_count",

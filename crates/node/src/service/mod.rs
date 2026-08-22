@@ -423,7 +423,19 @@ impl NodeServer {
                                     "data": { "kind": "device_certify", "device_fp": m.device_fp, "approval_id": id },
                                 }));
                             } else if !is_consumer {
-                                let _ = db_dev.touch_device(&m.device_fp, &m.pubkey, &m.token_hash, &m.my_name);
+                                let first = db_dev
+                                    .touch_device(&m.device_fp, &m.pubkey, &m.token_hash, &m.my_name)
+                                    .unwrap_or(false);
+                                // 深度防护 (G3): guarded 令牌的下行设备强制走审批中心——首次
+                                // 发现即立案认证审批 (无视全局 device_pending_policy=allow)
+                                if m.guarded && first {
+                                    let id = crate::service::approvals::ensure_device_certify_approval(&db_dev, &m.device_fp);
+                                    let _ = admin_tx.send(serde_json::json!({
+                                        "type": "approval.new",
+                                        "time": chrono::Utc::now().to_rfc3339(),
+                                        "data": { "kind": "device_certify", "device_fp": m.device_fp, "approval_id": id },
+                                    }));
+                                }
                             }
                         }
                     }

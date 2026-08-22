@@ -18,6 +18,7 @@ async fn credentials_persist() {
                 name: None,
                 myname: None,
                 visibility: None,
+                padding: false,
                 insecure: false,
                 pinned_fingerprint: Some("ab12".into()),
                 entries: vec!["1.2.3.4:54430".into()],

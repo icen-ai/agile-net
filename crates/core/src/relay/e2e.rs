@@ -40,6 +40,14 @@ pub const CHAN_INFO: &[u8] = b"chan";
 pub const CHAN_SALT_LEN: usize = 16;
 /// Max plaintext per AEAD record (keeps sealed blocks well under the mux 256KB data cap).
 pub const MAX_BLOCK: usize = 16 * 1024;
+/// Anti-correlation padding bucket (guard profile G1②): a padded channel seals every record at
+/// a multiple of this grain (random filler), so ciphertext record lengths stop correlating with
+/// plaintext lengths. 0 = no padding (the default tier). The original length rides INSIDE the
+/// sealed record as a 2-byte BE prefix (authenticated with the payload — the filler needs no
+/// separate authentication, the AEAD tag already covers it).
+pub const PAD_BUCKET: usize = 2048;
+/// Length prefix of the original plaintext inside a padded record (u16 BE; MAX_BLOCK fits u16).
+const PAD_LEN_PREFIX: usize = 2;
 
 /// Split-tier config fetch (federation P3): a delegated consumer opens this reserved target
 /// (E2E-sealed, port 0) to pull its token's effective rule vocabulary; the issuer answers
@@ -138,11 +146,13 @@ pub struct E2eOpenPayload {
 }
 
 /// Client side: seal an Open envelope for `target` and return it with the channel cipher
-/// already initialized (send direction 0 = client -> issuer).
+/// already initialized (send direction 0 = client -> issuer). `bucket` = padding grain
+/// (0 = unpadded; see [`PAD_BUCKET`]).
 ///
 /// CSPRNG note: `rand::random()` backs onto OsRng on every supported target. A future WASM
 /// client build must re-verify entropy availability (getrandom's wasm backend) before sealing —
 /// tracked in docs/todo/e2e.md §7.3.3.
+#[allow(clippy::too_many_arguments)]
 pub fn seal_open(
     e2e_key: &[u8; 32],
     kid: &str,
@@ -150,6 +160,7 @@ pub fn seal_open(
     target_addr: &str,
     target_port: u16,
     groups: &[String],
+    bucket: usize,
 ) -> (E2eOpen, ChannelCipher) {
     let chan_salt: [u8; CHAN_SALT_LEN] = rand::random();    let payload = E2eOpenPayload {
         target_addr: target_addr.to_string(),
@@ -182,15 +193,20 @@ pub fn seal_open(
             hint: hint.to_string(),
             blob: crate::util::base64_encode(&wire),
         },
-        ChannelCipher::new(chan_key, 0),
+        ChannelCipher::with_bucket(chan_key, 0, bucket),
     )
 }
 
 /// Issuer side: unwrap an E2E envelope (kid already resolved to the token's e2e_key by the
 /// caller). Decrypting successfully authenticates the channel origin — only a token holder
 /// could seal the blob. Returns the plaintext payload and the channel cipher (send direction
-/// 1 = issuer -> client).
-pub fn open_open(e2e_key: &[u8; 32], e2e: &E2eOpen) -> Result<(E2eOpenPayload, ChannelCipher)> {
+/// 1 = issuer -> client). `bucket` mirrors the consumer's padding grain (from the token's
+/// anti_correlate flag) so the unwrap side validates bucket alignment and strips the filler.
+pub fn open_open(
+    e2e_key: &[u8; 32],
+    e2e: &E2eOpen,
+    bucket: usize,
+) -> Result<(E2eOpenPayload, ChannelCipher)> {
     let wire = crate::util::base64_decode(&e2e.blob)
         .ok_or_else(|| Error::Protocol("e2e blob is not valid base64".into()))?;
     if wire.len() < NONCE_LEN + TAG_LEN {
@@ -218,26 +234,84 @@ pub fn open_open(e2e_key: &[u8; 32], e2e: &E2eOpen) -> Result<(E2eOpenPayload, C
         return Err(Error::Protocol("chan_salt length invalid".into()));
     }
     let chan_key = derive_chan_key(e2e_key, &chan_salt);
-    Ok((payload, ChannelCipher::new(chan_key, 1)))
+    Ok((payload, ChannelCipher::with_bucket(chan_key, 1, bucket)))
 }
 
 /// Per-channel AEAD record cipher with strict sequence enforcement (discipline 2).
+///
+/// `bucket` (guard profile G1②): when non-zero, every sealed record is padded with random
+/// filler to a multiple of the bucket and the original length rides inside the sealed plaintext
+/// as a u16 BE prefix — ciphertext record lengths stop correlating with plaintext lengths
+/// (traffic-profile anti-correlation). Both ends derive the grain from the same token flag
+/// (issuer: delegated_token.anti_correlate; consumer: the link's pad word), so no wire
+/// negotiation exists — a mismatched pair fails closed on the receiver's alignment check.
 pub struct ChannelCipher {
     key: aead::LessSafeKey,
     send_dir: u8,
     send_seq: u64,
     recv_seq: u64,
+    bucket: usize,
 }
 
 impl ChannelCipher {
-    /// `send_dir`: 0 on the client (client -> issuer), 1 on the issuer.
+    /// `send_dir`: 0 on the client (client -> issuer), 1 on the issuer. Unpadded channel.
     pub fn new(chan_key: [u8; 32], send_dir: u8) -> Self {
+        Self::with_bucket(chan_key, send_dir, 0)
+    }
+
+    /// Padded channel constructor (`bucket` = padding grain; 0 collapses to unpadded).
+    pub fn with_bucket(chan_key: [u8; 32], send_dir: u8, bucket: usize) -> Self {
         Self {
             key: less_safe(&chan_key),
             send_dir,
             send_seq: 0,
             recv_seq: 0,
+            bucket,
         }
+    }
+
+    /// Padding grain of this channel (0 = unpadded; framing layers enlarge their record-size
+    /// cap accordingly).
+    pub fn bucket(&self) -> usize {
+        self.bucket
+    }
+
+    /// Build the padded plaintext frame: `[u16 BE orig_len][data][random filler]` sized to a
+    /// whole multiple of the bucket. The AEAD tag covers the filler, so it needs no separate
+    /// authentication; the original length must fit u16 (MAX_BLOCK keeps it well under).
+    fn pad_frame(&self, plaintext: &[u8]) -> Result<Vec<u8>> {
+        let orig = plaintext.len();
+        if orig > u16::MAX as usize - PAD_LEN_PREFIX {
+            return Err(Error::Protocol("e2e padded record too large".into()));
+        }
+        let total = (PAD_LEN_PREFIX + orig).div_ceil(self.bucket) * self.bucket;
+        let mut frame = Vec::with_capacity(total);
+        frame.extend_from_slice(&(orig as u16).to_be_bytes());
+        frame.extend_from_slice(plaintext);
+        let mut filled = frame.len();
+        frame.resize(total, 0);
+        while filled < total {
+            let chunk: [u8; 32] = rand::random();
+            let n = chunk.len().min(total - filled);
+            frame[filled..filled + n].copy_from_slice(&chunk[..n]);
+            filled += n;
+        }
+        Ok(frame)
+    }
+
+    /// Strip a padded frame back to the original plaintext (bucket alignment is verified —
+    /// a malformed or mismatched-grain record fails closed).
+    fn unpad_frame(&self, mut buf: Vec<u8>) -> Result<Vec<u8>> {
+        if buf.len() < PAD_LEN_PREFIX || !buf.len().is_multiple_of(self.bucket) {
+            return Err(Error::Protocol("e2e record not bucket-aligned".into()));
+        }
+        let orig = u16::from_be_bytes([buf[0], buf[1]]) as usize;
+        if PAD_LEN_PREFIX + orig > buf.len() {
+            return Err(Error::Protocol("e2e padded length out of range".into()));
+        }
+        buf.drain(..PAD_LEN_PREFIX);
+        buf.truncate(orig);
+        Ok(buf)
     }
 
     /// Seal one plaintext block into a framed record `[u32 ct_len][ct+tag]`.
@@ -250,12 +324,17 @@ impl ChannelCipher {
         if self.send_seq == u64::MAX {
             return Err(Error::Protocol("e2e send sequence exhausted".into()));
         }
+        let payload: Vec<u8> = if self.bucket > 0 {
+            self.pad_frame(plaintext)?
+        } else {
+            plaintext.to_vec()
+        };
         // One allocation total: `[u32 ct_len][ciphertext][tag]`. The length prefix stays OUTSIDE
         // the AEAD record; the plaintext region is sealed in place and the tag appended separately
         // (ring's `seal_in_place_separate_tag` keeps the prefix bytes unencrypted).
-        let mut out = Vec::with_capacity(LEN_PREFIX + plaintext.len() + TAG_LEN);
-        out.extend_from_slice(&((plaintext.len() + TAG_LEN) as u32).to_be_bytes());
-        out.extend_from_slice(plaintext);
+        let mut out = Vec::with_capacity(LEN_PREFIX + payload.len() + TAG_LEN);
+        out.extend_from_slice(&((payload.len() + TAG_LEN) as u32).to_be_bytes());
+        out.extend_from_slice(&payload);
         let tag = self
             .key
             .seal_in_place_separate_tag(
@@ -286,6 +365,9 @@ impl ChannelCipher {
         // Decrypted in place; drop the trailing tag and hand the buffer back directly (avoids a
         // second full copy of the plaintext on the read path).
         buf.truncate(plain_len);
+        if self.bucket > 0 {
+            return self.unpad_frame(buf);
+        }
         Ok(buf)
     }
 }
@@ -350,7 +432,13 @@ impl<S: AsyncRead + Unpin> AsyncRead for E2eStream<S> {
                     self.read_enc[2],
                     self.read_enc[3],
                 ]) as usize;
-                if ct_len > MAX_BLOCK + TAG_LEN {
+                // padded channels grow each record by the length prefix + at most one bucket of filler
+                let filler = if self.cipher.bucket() > 0 {
+                    PAD_LEN_PREFIX + self.cipher.bucket() - 1
+                } else {
+                    0
+                };
+                if ct_len > MAX_BLOCK + TAG_LEN + filler {
                     return Poll::Ready(Err(io::Error::new(
                         io::ErrorKind::InvalidData,
                         "e2e record too large",
@@ -490,11 +578,12 @@ mod tests {
             "10.0.0.5",
             5432,
             &["db".to_string()],
+            0,
         );
         assert_eq!(env.kid, hash[..12]);
         assert_eq!(env.hint, "git.internal");
 
-        let (payload, mut issuer_cipher) = open_open(&key, &env).expect("unwrap");
+        let (payload, mut issuer_cipher) = open_open(&key, &env, 0).expect("unwrap");
         assert_eq!(payload.target_addr, "10.0.0.5");
         assert_eq!(payload.target_port, 5432);
         assert_eq!(payload.groups, vec!["db".to_string()]);
@@ -522,16 +611,16 @@ mod tests {
 
     #[test]
     fn wrong_key_cannot_unwrap() {
-        let (env, _) = seal_open(&test_key(), "kid", "h", "a", 1, &[]);
+        let (env, _) = seal_open(&test_key(), "kid", "h", "a", 1, &[], 0);
         let wrong = random_key();
-        assert!(open_open(&wrong, &env).is_err());
+        assert!(open_open(&wrong, &env, 0).is_err());
     }
 
     #[test]
     fn replayed_record_rejected() {
         let key = test_key();
-        let (env, mut a) = seal_open(&key, "kid", "h", "a", 1, &[]);
-        let (_, mut b) = open_open(&key, &env).unwrap();
+        let (env, mut a) = seal_open(&key, "kid", "h", "a", 1, &[], 0);
+        let (_, mut b) = open_open(&key, &env, 0).unwrap();
         let rec1 = a.seal(b"first").unwrap();
         let rec2 = a.seal(b"second").unwrap();
         // out-of-order delivery: the later record fails against the expected sequence 0
@@ -548,8 +637,8 @@ mod tests {
     async fn e2e_stream_roundtrip_over_duplex() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let key = test_key();
-        let (env, client_cipher) = seal_open(&key, "kid", "h", "a", 1, &[]);
-        let (_, issuer_cipher) = open_open(&key, &env).unwrap();
+        let (env, client_cipher) = seal_open(&key, "kid", "h", "a", 1, &[], 0);
+        let (_, issuer_cipher) = open_open(&key, &env, 0).unwrap();
 
         let (s1, s2) = tokio::io::duplex(64 * 1024);
         let mut client = E2eStream::new(s1, client_cipher);
@@ -564,5 +653,81 @@ mod tests {
         issuer.read_to_end(&mut got).await.unwrap();
         writer.await.unwrap();
         assert_eq!(got, vec![b'x'; 100_000]);
+    }
+
+    /// Guard profile G1②: bucket padding hides plaintext lengths — every sealed record is a
+    /// whole multiple of the bucket, the unwrap side restores the exact original, and a grain
+    /// mismatch (or a tampered frame) fails closed.
+    #[test]
+    fn e2e_padding_bucket_roundtrip() {
+        let key = test_key();
+        let (env, mut sender) = seal_open(&key, "kid", "h", "a", 1, &[], PAD_BUCKET);
+        let (_, mut receiver) = open_open(&key, &env, PAD_BUCKET).unwrap();
+
+        for plain_len in [1usize, 100, PAD_BUCKET - 2, PAD_BUCKET - 1, PAD_BUCKET, 5 * PAD_BUCKET / 2] {
+            let plain: Vec<u8> = (0..plain_len).map(|i| (i % 251) as u8).collect();
+            let rec = sender.seal(&plain).unwrap();
+            // sealed body (ct incl. tag) is bucket-aligned + tag; the filler hides the length
+            let body_len = rec.len() - LEN_PREFIX;
+            assert_eq!(
+                (body_len - TAG_LEN) % PAD_BUCKET,
+                0,
+                "padded plaintext must be a bucket multiple (len {plain_len})"
+            );
+            // two same-bucket plaintexts of different lengths produce equal record sizes
+            let got = receiver.open(&rec[LEN_PREFIX..]).unwrap();
+            assert_eq!(got, plain, "unwrap restores the exact original (len {plain_len})");
+        }
+
+        // small and large plaintexts of the same bucket produce identical record lengths
+        let r1 = sender.seal(b"a").unwrap();
+        let r2 = sender.seal(&vec![b'b'; PAD_BUCKET - 10]).unwrap();
+        assert_eq!(r1.len(), r2.len(), "length correlation removed within a bucket");
+
+        // grain mismatch: a receiver without the bucket sees the raw framed body (not the
+        // plain) — both ends must derive the grain from the same token flag. Fresh channel so
+        // the strict receive sequence starts at 0 for both receivers.
+        let key_m = test_key();
+        let (env_m, mut sender_m) = seal_open(&key_m, "kid-m", "h", "a", 1, &[], PAD_BUCKET);
+        let (_, mut padded_m) = open_open(&key_m, &env_m, PAD_BUCKET).unwrap();
+        let (_, mut unpadded_m) = open_open(&key_m, &env_m, 0).unwrap();
+        let rec_m = sender_m.seal(b"payload-x").unwrap();
+        let raw = unpadded_m.open(&rec_m[LEN_PREFIX..]).unwrap();
+        assert_ne!(raw, b"payload-x", "unpadded receiver sees the framed body, not the plain");
+        assert_eq!(&raw[2..2 + 9], b"payload-x", "frame = [u16 len][data][filler]");
+        assert!(padded_m.open(&rec_m[LEN_PREFIX..]).is_ok());
+
+        // a tampered record (alignment broken) fails closed on the padded receiver
+        let (env2, mut sender2) = seal_open(&key, "kid2", "h", "a", 1, &[], PAD_BUCKET);
+        let (_, mut receiver2) = open_open(&key, &env2, PAD_BUCKET).unwrap();
+        let rec = sender2.seal(b"tamper-me").unwrap();
+        let orig_ct = rec.len() - LEN_PREFIX - TAG_LEN;
+        // shrink the record by one byte — no longer bucket-aligned
+        let truncated: Vec<u8> = rec[..LEN_PREFIX + orig_ct - 1 + TAG_LEN].to_vec();
+        assert!(receiver2.open(&truncated[LEN_PREFIX..]).is_err());
+    }
+
+    /// Padded E2eStream end to end: the stream layer seals/opens bucket frames transparently
+    /// and its record-size cap admits the padded growth.
+    #[tokio::test]
+    async fn e2e_stream_padded_roundtrip() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let key = test_key();
+        let (env, client_cipher) = seal_open(&key, "kid", "h", "a", 1, &[], PAD_BUCKET);
+        let (_, issuer_cipher) = open_open(&key, &env, PAD_BUCKET).unwrap();
+
+        let (s1, s2) = tokio::io::duplex(64 * 1024);
+        let mut client = E2eStream::new(s1, client_cipher);
+        let mut issuer = E2eStream::new(s2, issuer_cipher);
+
+        let payload = vec![b'y'; 37_000]; // spans buckets of uneven sizes
+        let writer = tokio::spawn(async move {
+            client.write_all(&payload).await.unwrap();
+            client.shutdown().await.unwrap();
+        });
+        let mut got = Vec::new();
+        issuer.read_to_end(&mut got).await.unwrap();
+        writer.await.unwrap();
+        assert_eq!(got, vec![b'y'; 37_000]);
     }
 }

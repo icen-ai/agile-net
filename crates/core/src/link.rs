@@ -68,6 +68,11 @@ pub struct ConnectLink {
     /// at import (M4-T5); enforcement lands with M6
     #[serde(default)]
     pub visibility: Option<String>,
+    /// Anti-correlation padding tier (guard profile G1②): pad every E2E record up to a 2048-byte
+    /// bucket so record lengths stop correlating with plaintext lengths. Only meaningful with
+    /// `ek` (padding rides the E2E channel cipher); a `pad` without `ek` is a parse error.
+    #[serde(default)]
+    pub padding: bool,
 }
 
 impl ConnectLink {
@@ -151,6 +156,7 @@ pub fn parse_connect_url(url: &str) -> std::result::Result<ConnectLink, String> 
     let mut eadmin = false;
     let mut myname: Option<String> = None;
     let mut visibility: Option<String> = None;
+    let mut padding = false;
     for pair in rest.split('&') {
         let mut kv = pair.splitn(2, '=');
         let (k, v) = (kv.next().unwrap_or(""), kv.next().unwrap_or(""));
@@ -178,11 +184,16 @@ pub fn parse_connect_url(url: &str) -> std::result::Result<ConnectLink, String> 
             "myname" => myname = Some(v),
             // topology-visibility clause (domain|disclose|approve)
             "visibility" => visibility = Some(v),
+            // anti-correlation padding (E2E only — reject a pad without its key material)
+            "pad" => padding = truthy(&v),
             _ => {}
         }
     }
     if server.is_empty() || account.is_empty() || password.is_empty() {
         return Err("接入链接缺少必要参数 (server/account/password)".into());
+    }
+    if padding && ek.as_deref().unwrap_or("").is_empty() {
+        return Err("抗关联填充词 pad 仅与端到端密钥 ek 共存".into());
     }
     // normalize the parallel fingerprint list to the entry count (missing = TOFU)
     entry_fps.resize(entries.len(), String::new());
@@ -200,6 +211,7 @@ pub fn parse_connect_url(url: &str) -> std::result::Result<ConnectLink, String> 
         eadmin,
         myname,
         visibility,
+        padding,
     })
 }
 
@@ -317,7 +329,8 @@ pub fn build_fanout_url(
 /// order (per-entry relay fingerprints; an empty item falls back to TOFU). The token lives in
 /// `password` — a delegated credential is a pure data-plane key: the client dials the relay
 /// directly (no API roundtrip), so the server param always carries an explicit relay port.
-/// E2E links also carry the base64 master key in `ek` (never sent through the relay).
+/// E2E links also carry the base64 master key in `ek` (never sent through the relay);
+/// `pad` spells the anti-correlation padding tier (only emitted alongside `ek`).
 #[allow(clippy::too_many_arguments)]
 pub fn build_delegate_url(
     primary_addr: &str,
@@ -329,6 +342,7 @@ pub fn build_delegate_url(
     emode: Option<&str>,
     eadmin: bool,
     myname: Option<&str>,
+    pad: bool,
 ) -> String {
     debug_assert!(
         entries.iter().any(|(a, _)| a == primary_addr),
@@ -353,6 +367,10 @@ pub fn build_delegate_url(
     }
     if let Some(key) = ek.filter(|s| !s.is_empty()) {
         url.push_str(&format!("&ek={}", url_encode(key)));
+        // padding rides the E2E channel cipher — meaningless without the key
+        if pad {
+            url.push_str("&pad=1");
+        }
     }
     // dedicated is the default tier — only the split tier is spelled out
     if let Some(mode) = emode.filter(|m| *m == "split") {
@@ -456,7 +474,7 @@ mod tests {
     #[test]
     fn password_special_chars_encoded() {
         let entries = vec![("h:54430".to_string(), String::new())];
-        let url = build_delegate_url("h:54430", "u", "p&=x%", &entries, None, None, None, false, None);
+        let url = build_delegate_url("h:54430", "u", "p&=x%", &entries, None, None, None, false, None, false);
         let p = parse_connect_url(&url).unwrap();
         assert_eq!(p.password, "p&=x%");
     }
@@ -468,7 +486,7 @@ mod tests {
             ("b2.example.com:54430".to_string(), "".to_string()),
             ("10.0.0.3:54430".to_string(), "cc33".to_string()),
         ];
-        let url = build_delegate_url("b1.example.com:54430", "alice-laptop", "psk_secret", &entries, Some("en_a1b2c3d4e5f6"), Some("QUJDREVG"), Some("split"), true, Some("小明"));
+        let url = build_delegate_url("b1.example.com:54430", "alice-laptop", "psk_secret", &entries, Some("en_a1b2c3d4e5f6"), Some("QUJDREVG"), Some("split"), true, Some("小明"), true);
         let p = parse_connect_url(&url).expect("parse delegate link");
         assert!(p.is_delegated());
         assert_eq!(p.delegated_label(), Some("alice-laptop"));
@@ -480,6 +498,7 @@ mod tests {
         assert_eq!(p.emode.as_deref(), Some("split"));
         assert!(p.eadmin);
         assert_eq!(p.myname.as_deref(), Some("小明"));
+        assert!(p.padding, "pad rides the E2E link");
         assert_eq!(
             p.entries(),
             vec![
@@ -494,7 +513,7 @@ mod tests {
     #[test]
     fn delegate_url_single_entry_omits_entry_params() {
         let entries = vec![("b1.example.com:54430".to_string(), "aa11".to_string())];
-        let url = build_delegate_url("b1.example.com:54430", "bob", "psk_x", &entries, None, None, None, false, None);
+        let url = build_delegate_url("b1.example.com:54430", "bob", "psk_x", &entries, None, None, None, false, None, false);
         assert!(!url.contains("entry="));
         assert!(!url.contains("&en="));
         assert!(!url.contains("&ek="));
@@ -516,5 +535,26 @@ mod tests {
         assert!(p.entry_fps.is_empty());
         assert_eq!(p.en, None);
         assert_eq!(p.ek, None);
+    }
+
+    #[test]
+    fn pad_word_roundtrip_and_ek_coupling() {
+        // pad without ek is a parse error (padding rides the E2E channel cipher)
+        assert!(
+            parse_connect_url("anet://connect?server=h:1&account=d:u&password=p&pad=1").is_err(),
+            "pad without ek must be rejected"
+        );
+        // builder: pad is emitted only alongside ek, never on its own
+        let entries = vec![("h:54430".to_string(), String::new())];
+        let no_pad = build_delegate_url("h:54430", "u", "psk_x", &entries, Some("en_ab"), None, None, false, None, true);
+        assert!(!no_pad.contains("pad="), "no ek -> no pad word");
+        let padded = build_delegate_url("h:54430", "u", "psk_x", &entries, Some("en_ab"), Some("QUJD"), None, false, None, true);
+        assert!(padded.contains("&pad=1"));
+        // roundtrip preserves the tier
+        let p = parse_connect_url(&padded).unwrap();
+        assert!(p.padding);
+        // transparent link without pad stays unpadded
+        let plain = build_delegate_url("h:54430", "u", "psk_x", &entries, None, None, None, false, None, false);
+        assert!(!parse_connect_url(&plain).unwrap().padding);
     }
 }

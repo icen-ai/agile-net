@@ -297,6 +297,7 @@ async fn p3_e2e_blind_relay_and_fail_close() {
             emode: parsed.emode,
             eadmin: parsed.eadmin,
             myname: parsed.myname,
+            padding: parsed.padding,
         })
         .await
         .expect("delegated connect");
@@ -366,6 +367,7 @@ async fn p3_e2e_blind_relay_and_fail_close() {
         emode: parsed2.emode,
         eadmin: parsed2.eadmin,
         myname: parsed2.myname,
+        padding: parsed2.padding,
     })
     .await
     .expect("transparent delegated connect");
@@ -554,6 +556,7 @@ async fn p3_split_tier_rule_delivery() {
         emode: parsed.emode,
         eadmin: parsed.eadmin,
         myname: parsed.myname,
+        padding: parsed.padding,
     })
     .await
     .expect("split delegated connect");
@@ -789,6 +792,7 @@ async fn p3_delegated_admin_and_transit_management() {
             emode: parsed.emode,
             eadmin: parsed.eadmin,
             myname: parsed.myname,
+            padding: parsed.padding,
         })
         .await
         .expect("delegated admin connect");
@@ -1048,6 +1052,7 @@ async fn p3_entrust_zero_disclosure() {
             emode: parsed.emode,
             eadmin: parsed.eadmin,
             myname: parsed.myname,
+            padding: parsed.padding,
         })
         .await
         .expect("entrust delegated connect");

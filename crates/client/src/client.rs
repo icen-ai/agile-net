@@ -77,6 +77,10 @@ pub struct ConnectParams {
     /// certification remark is the authoritative identity)
     #[serde(default)]
     pub myname: Option<String>,
+    /// Anti-correlation padding tier (trust profile G1②, link `pad` word): E2E records sealed
+    /// at 2048-byte buckets so ciphertext lengths stop correlating with plaintext lengths
+    #[serde(default)]
+    pub padding: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -176,6 +180,10 @@ struct DelegatedOpener {
     e2e_key: Option<[u8; 32]>,
     /// Entrust word (en_xxx opaque routing ID; None/empty = transparent tier)
     en: Option<String>,
+    /// Anti-correlation padding grain (trust profile G1②, link `pad` word): 0 = unpadded,
+    /// PAD_BUCKET = every sealed record padded to the bucket (both ends derive the grain from
+    /// the token's anti_correlate flag, so no wire negotiation exists)
+    bucket: usize,
     /// Cumulative traffic across failover tunnels (closed-session bytes are folded in)
     total_up: AtomicU64,
     total_down: AtomicU64,
@@ -190,12 +198,17 @@ struct DelegatedOpener {
 }
 
 impl DelegatedOpener {
-    fn new(token: String, en: Option<String>, e2e_key: Option<[u8; 32]>) -> Arc<Self> {
+    fn new(token: String, en: Option<String>, e2e_key: Option<[u8; 32]>, padding: bool) -> Arc<Self> {
         Arc::new(Self {
             current: arc_swap::ArcSwapOption::from_pointee(None),
             token,
             e2e_key,
             en: en.filter(|h| !h.trim().is_empty()),
+            bucket: if padding {
+                agile_net_core::relay::e2e::PAD_BUCKET
+            } else {
+                0
+            },
             total_up: AtomicU64::new(0),
             total_down: AtomicU64::new(0),
             current_entry: arc_swap::ArcSwap::from_pointee(String::new()),
@@ -284,7 +297,7 @@ impl ChannelOpener for DelegatedOpener {
                     // config-channel vocabulary), not always the token's full set
                     let groups = self.match_groups(target_host);
                     let (env, cipher) =
-                        e2e::seal_open(&key, e2e::kid_of(&hash), word, target_host, target_port, &groups);
+                        e2e::seal_open(&key, e2e::kid_of(&hash), word, target_host, target_port, &groups, self.bucket);
                     let open = agile_net_core::proto::message::OpenChannel {
                         target_addr: word.to_string(),
                         target_port: 0,
@@ -596,7 +609,7 @@ impl AgileNetClient {
             .ek
             .as_deref()
             .and_then(agile_net_core::relay::e2e::key_from_b64);
-        let opener = DelegatedOpener::new(params.token.clone(), params.en.clone(), e2e_key);
+        let opener = DelegatedOpener::new(params.token.clone(), params.en.clone(), e2e_key, params.padding);
         opener.current.store(Some(tunnel.clone()));
         opener.current_entry.store(Arc::new(entries[0].clone()));
         self.inner
@@ -1554,7 +1567,7 @@ mod tests {
 
     #[test]
     fn delegated_opener_match_groups_per_target() {
-        let opener = DelegatedOpener::new("psk_x".into(), Some("en_abc".into()), None);
+        let opener = DelegatedOpener::new("psk_x".into(), Some("en_abc".into()), None, false);
         // no config answer yet -> inherit-all (empty)
         assert!(opener.match_groups("10.1.2.3").is_empty());
 

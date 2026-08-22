@@ -40,11 +40,37 @@ impl Database {
             group_id: group_id.map(|g| g.to_string()),
             groups: Vec::new(),
             rate_limit_kbps,
+            guarded: false,
             expires_at: None,
             max_uses: None,
             used_count: 0,
             last_used_at: None,
             created_at: now,
+        })
+    }
+
+    /// Set the Deep Guard flag (trust profile G3; overlap rejection + forced approval).
+    pub fn set_relay_token_guarded(&self, id: &str, guarded: bool) -> Result<()> {
+        let conn = self.conn();
+        conn.execute(
+            "UPDATE relay_token SET guarded = ?1 WHERE id = ?2",
+            params![guarded as i32, id],
+        )
+        .map_err(db_err)?;
+        Ok(())
+    }
+
+    /// Look up the Deep Guard flag by hash (fan-in auth path: the flag rides the session).
+    /// None = token missing.
+    pub fn get_relay_token_guarded(&self, token_hash: &str) -> Result<Option<bool>> {
+        let conn = self.conn();
+        let mut stmt = conn
+            .prepare("SELECT guarded FROM relay_token WHERE token_hash = ?1")
+            .map_err(db_err)?;
+        let mut rows = stmt.query(params![token_hash]).map_err(db_err)?;
+        Ok(match rows.next().map_err(db_err)? {
+            Some(r) => Some(r.get::<_, i32>(0).map_err(db_err)? != 0),
+            None => None,
         })
     }
 
@@ -139,7 +165,7 @@ impl Database {
         let mut items = {
             let conn = self.conn();
             let mut stmt = conn
-                .prepare("SELECT t.id, t.token_prefix, t.remark, t.expose_control, t.control_scope, t.last_used_at, t.created_at, t.group_id, t.rate_limit_kbps, t.expires_at, t.max_uses, t.used_count
+                .prepare("SELECT t.id, t.token_prefix, t.remark, t.expose_control, t.control_scope, t.last_used_at, t.created_at, t.group_id, t.rate_limit_kbps, t.guarded, t.expires_at, t.max_uses, t.used_count
                           FROM relay_token t ORDER BY t.created_at DESC")
                 .map_err(db_err)?;
             let rows = stmt.query_map([], map_relay_token_row).map_err(db_err)?;
@@ -162,7 +188,7 @@ impl Database {
         let mut rec = {
             let conn = self.conn();
             let mut stmt = conn
-                .prepare("SELECT t.id, t.token_prefix, t.remark, t.expose_control, t.control_scope, t.last_used_at, t.created_at, t.group_id, t.rate_limit_kbps, t.expires_at, t.max_uses, t.used_count
+                .prepare("SELECT t.id, t.token_prefix, t.remark, t.expose_control, t.control_scope, t.last_used_at, t.created_at, t.group_id, t.rate_limit_kbps, t.guarded, t.expires_at, t.max_uses, t.used_count
                           FROM relay_token t WHERE t.id = ?1")
                 .map_err(db_err)?;
             let mut rows = stmt.query(params![id]).map_err(db_err)?;
@@ -289,6 +315,7 @@ fn map_relay_token_row(r: &rusqlite::Row) -> rusqlite::Result<RelayTokenRecord> 
         // resolved after the row fetch (needs a second conn on memory pools)
         groups: Vec::new(),
         rate_limit_kbps: r.get(8)?,
+        guarded: r.get::<_, i32>(9)? != 0,
         expires_at: r.get("expires_at")?,
         max_uses: r.get("max_uses")?,
         used_count: r.get("used_count")?,
@@ -400,5 +427,28 @@ mod tests {
         assert_eq!(rec3.rate_limit_kbps, None);
         // Missing hash: None
         assert_eq!(db.get_relay_token_rate_limit("no-such").unwrap(), None);
+    }
+
+    /// Trust profile G3: the guarded flag persists through the DB round-trip and the by-hash
+    /// lookup the fan-in auth path consumes.
+    #[test]
+    fn relay_token_guarded_roundtrip() {
+        let db = Database::in_memory().unwrap();
+        let hash = sha256_hex(b"tok-guarded");
+        let rec = db
+            .create_relay_token_with_quota(&hash, "psk_g", "下行 A", false, "full", None, None)
+            .unwrap();
+        assert!(!rec.guarded, "default off (zero behavior change)");
+        assert!(!db.list_relay_tokens().unwrap()[0].guarded);
+        assert_eq!(db.get_relay_token_guarded(&hash).unwrap(), Some(false));
+
+        db.set_relay_token_guarded(&rec.id, true).unwrap();
+        assert!(db.get_relay_token(&rec.id).unwrap().unwrap().guarded);
+        assert_eq!(db.get_relay_token_guarded(&hash).unwrap(), Some(true));
+
+        db.set_relay_token_guarded(&rec.id, false).unwrap();
+        assert_eq!(db.get_relay_token_guarded(&hash).unwrap(), Some(false));
+        // missing hash: None (validator falls back to false — auth still succeeds)
+        assert_eq!(db.get_relay_token_guarded("no-such-hash").unwrap(), None);
     }
 }

@@ -514,6 +514,9 @@ struct ConnectInput {
     myname: Option<String>,
     #[serde(default)]
     visibility: Option<String>,
+    /// Anti-correlation padding tier (trust profile G1②, link `pad` word)
+    #[serde(default)]
+    padding: bool,
 }
 
 async fn connect_node(State(state): State<ClientApiState>, Json(input): Json<ConnectInput>) -> Response {
@@ -531,6 +534,7 @@ async fn connect_node(State(state): State<ClientApiState>, Json(input): Json<Con
         emode: input.emode.clone(),
         eadmin: input.eadmin,
         myname: input.myname.clone(),
+        padding: input.padding,
     };
     let node_state = match state.client.connect(params).await {
         Ok(s) => s,
@@ -557,6 +561,7 @@ async fn connect_node(State(state): State<ClientApiState>, Json(input): Json<Con
                     eadmin: input.eadmin,
                     myname: input.myname,
                     visibility: input.visibility,
+                    padding: input.padding,
                 },
             )
             .await;

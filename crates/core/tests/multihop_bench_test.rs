@@ -288,8 +288,8 @@ async fn bench_e2e_endpoint_overhead() -> Result<()> {
     const BULK: usize = 8 * 1024 * 1024;
     let key = agile_net_core::relay::e2e::random_key();
     let hash = agile_net_core::util::sha256_hex(b"bench-e2e-token");
-    let (env, client_cipher) = seal_open(&key, agile_net_core::relay::e2e::kid_of(&hash), "h", "10.0.0.9", 7, &[]);
-    let (_, issuer_cipher) = open_open(&key, &env)?;
+    let (env, client_cipher) = seal_open(&key, agile_net_core::relay::e2e::kid_of(&hash), "h", "10.0.0.9", 7, &[], 0);
+    let (_, issuer_cipher) = open_open(&key, &env, 0)?;
 
     // sealed one-way transfer over duplex
     let (s1, s2) = duplex(256 * 1024);

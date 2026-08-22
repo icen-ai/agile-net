@@ -494,6 +494,8 @@ struct ConnectorForm {
     group_id: Option<String>,
     /// Policy upload (federation P1): local group IDs pushed upstream at auth; add: None = no upload; update: None = keep
     push_groups: Option<Vec<String>>,
+    /// Deep Guard (trust profile G2): pinning mandatory, insecure forbidden
+    guarded: bool,
     name: Option<String>,
     /// Self-declared name uploaded to the peer in AuthRequest.my_name (M4-T6; empty = node_id)
     my_name: Option<String>,
@@ -540,6 +542,7 @@ pub(crate) async fn add_server_connector(
     pinned_fingerprint: Option<String>,
     group_id: Option<String>,
     push_groups: Option<Vec<String>>,
+    guarded: Option<bool>,
     name: Option<String>,
     my_name: Option<String>,
     advertise: Option<String>,
@@ -553,6 +556,7 @@ pub(crate) async fn add_server_connector(
         pinned_fingerprint: pinned_fingerprint.unwrap_or_default(),
         group_id,
         push_groups,
+        guarded: guarded.unwrap_or(false),
         name,
         my_name,
         advertise,
@@ -569,6 +573,9 @@ async fn add_server_connector_inner(
     if addr.is_empty() || form.token.trim().is_empty() {
         return Err("扇出目标地址与 Relay Token 不能为空".into());
     }
+    // Deep Guard (G2): guarded requires a pinned fingerprint and forbids insecure
+    let pinned_fingerprint = normalize_fingerprint(&form.pinned_fingerprint)?;
+    agile_net_node::service::connectors::validate_guarded_connector(form.guarded, &pinned_fingerprint, form.insecure)?;
     // Name is optional: blank = use the target address (TOML import convention; connector.name has a unique constraint)
     let name = form
         .name
@@ -602,12 +609,16 @@ async fn add_server_connector_inner(
             form.insecure,
             "",
             "",
-            &normalize_fingerprint(&form.pinned_fingerprint)?,
+            &pinned_fingerprint,
             &advertise,
             group_id.as_deref(),
             &remark,
         )
         .map_err(map_err)?;
+    // Deep Guard (G2): set before the hot assembly
+    if form.guarded {
+        db.set_connector_guarded(&rec.id, true).map_err(map_err)?;
+    }
     // Policy upload (federation P1): set before the hot assembly so the groups ride the first handshake
     if let Some(ids) = &form.push_groups {
         let pg = normalize_push_groups(&db, ids)?;
@@ -615,7 +626,7 @@ async fn add_server_connector_inner(
             db.set_connector_push_groups(&rec.id, &pg).map_err(map_err)?;
         }
     }
-    roles::audit("gui.fanout_change", serde_json::json!({"action": "add", "name": name}));
+    roles::audit("gui.fanout_change", serde_json::json!({"action": "add", "name": name, "guarded": form.guarded}));
     hot_upsert_connector(state, &rec.id, &name).await;
     Ok(())
 }
@@ -632,6 +643,7 @@ pub(crate) async fn update_server_connector(
     pinned_fingerprint: Option<String>,
     group_id: Option<String>,
     push_groups: Option<Vec<String>>,
+    guarded: Option<bool>,
     name: Option<String>,
     my_name: Option<String>,
     advertise: Option<String>,
@@ -645,6 +657,7 @@ pub(crate) async fn update_server_connector(
         pinned_fingerprint: pinned_fingerprint.unwrap_or_default(),
         group_id,
         push_groups,
+        guarded: guarded.unwrap_or(false),
         name,
         my_name,
         advertise,
@@ -705,6 +718,10 @@ async fn update_server_connector_inner(
     if my_name.chars().count() > 64 {
         return Err("我的名称最长 64 字".into());
     }
+    // Deep Guard (G2): guarded requires a pinned fingerprint and forbids insecure (validated on
+    // the post-edit state, same contract as the admin API)
+    let pinned_fingerprint = normalize_fingerprint(&form.pinned_fingerprint)?;
+    agile_net_node::service::connectors::validate_guarded_connector(form.guarded, &pinned_fingerprint, form.insecure)?;
     db.update_connector(
         id,
         &name,
@@ -715,18 +732,40 @@ async fn update_server_connector_inner(
         form.insecure,
         &old.ca_cert_path,
         &old.pinned_cert_path,
-        &normalize_fingerprint(&form.pinned_fingerprint)?,
+        &pinned_fingerprint,
         &advertise,
         group_id.as_deref(),
         &remark,
     )
     .map_err(map_err)?;
+    // Deep Guard (G2): apply the change before the hot rebuild
+    if old.guarded != form.guarded {
+        db.set_connector_guarded(id, form.guarded).map_err(map_err)?;
+    }
     // Policy upload (federation P1): None = keep current; Some (incl. empty) = replace
+    let mut new_push_groups: Option<String> = None;
     if let Some(ids) = &form.push_groups {
         let pg = normalize_push_groups(&db, ids)?;
         db.set_connector_push_groups(id, &pg).map_err(map_err)?;
+        new_push_groups = Some(pg);
     }
-    roles::audit("gui.fanout_change", serde_json::json!({"action": "update", "name": name}));
+    // G2: a guarded connector (either side of the edit) audits the changed fields explicitly
+    let changes: Vec<&str> = [
+        ("upstream", old.upstream_addr != addr),
+        ("advertise", old.advertise != advertise),
+        ("push_groups", match &new_push_groups { Some(pg) => old.push_groups != *pg, None => false }),
+        ("insecure", old.insecure != form.insecure),
+        ("fingerprint", old.pinned_fingerprint != pinned_fingerprint),
+        ("guarded", old.guarded != form.guarded),
+    ]
+    .into_iter()
+    .filter(|(_, c)| *c)
+    .map(|(n, _)| n)
+    .collect();
+    roles::audit("gui.fanout_change", serde_json::json!({
+        "action": "update", "name": name, "guarded": form.guarded,
+        "changed": if (old.guarded || form.guarded) && !changes.is_empty() { changes.join(",") } else { String::new() },
+    }));
     hot_upsert_connector(state, id, &name).await;
     Ok(())
 }

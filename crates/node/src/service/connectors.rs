@@ -850,6 +850,29 @@ pub(crate) fn spawn_acl_audit_task(
                         None,
                     );
                 }
+                // Trust profile G3: advertised-route overlap between two downstream peers —
+                // guarded = the later entry was rejected; else warn-only union (per episode)
+                Ok(PeerEvent::AdvertiseConflict {
+                    node_id,
+                    entry,
+                    existing_node,
+                    guarded,
+                }) => {
+                    if !pass(format!("adv-conflict|{entry}|{existing_node}|{node_id}|{guarded}")) {
+                        continue;
+                    }
+                    let _ = db.record_audit_log(
+                        None,
+                        "system",
+                        "relay_token.advertise_conflict",
+                        Some(&node_id),
+                        Some(&format!(
+                            "{source} entry={entry} nodes={existing_node},{node_id} {}",
+                            if guarded { "rejected(deep-guard)" } else { "warn(union)" }
+                        )),
+                        None,
+                    );
+                }
                 Ok(_) => {}
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                     tracing::warn!(skipped = n, source = %source, "acl audit events lagged");
@@ -858,6 +881,19 @@ pub(crate) fn spawn_acl_audit_task(
             }
         }
     })
+}
+
+/// Deep Guard validation (trust profile G2, the single source shared by the admin API and the
+/// desktop commands): a guarded connector must pin the peer's cert fingerprint and must not
+/// skip TLS verification. Chinese error messages surface inline on both ends.
+pub fn validate_guarded_connector(guarded: bool, pinned_fingerprint: &str, insecure: bool) -> Result<(), String> {
+    if guarded && pinned_fingerprint.trim().is_empty() {
+        return Err("深度防护要求钉值对端证书指纹（64 位 SHA-256，对端状态页可复制）".into());
+    }
+    if guarded && insecure {
+        return Err("深度防护与 insecure 跳过校验互斥——请钉值指纹后移除 insecure".into());
+    }
+    Ok(())
 }
 
 /// Restore the DB-serialized advertise list (comma-joined) into entries.
@@ -968,6 +1004,7 @@ mod tests {
             pinned_fingerprint: String::new(),
             advertise: advertise.into(),
             group_id: None,
+            guarded: false,
             push_groups: push_groups.into(),
             enabled: true,
             remark: String::new(),
@@ -1005,5 +1042,48 @@ mod tests {
         // no push groups: manual advertise only
         let v = effective_advertise_of(&db, &rec("10.0.0.0/8", ""));
         assert_eq!(v, vec!["10.0.0.0/8".to_string()]);
+    }
+
+    /// Trust profile G2: the guarded save validation (shared by the admin API and the desktop
+    /// commands) — pinning mandatory, insecure forbidden, non-guarded untouched.
+    #[test]
+    fn guarded_connector_save_validation() {
+        const FP: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+        // default tier: everything stays allowed (zero behavior change without the flag)
+        assert!(validate_guarded_connector(false, "", true).is_ok());
+        assert!(validate_guarded_connector(false, "", false).is_ok());
+
+        // guarded without a pin: rejected with an actionable Chinese message
+        let err = validate_guarded_connector(true, "", false).unwrap_err();
+        assert!(err.contains("深度防护要求钉值"), "message guides to the fix: {err}");
+        // whitespace-only pin counts as absent
+        assert!(validate_guarded_connector(true, "   ", false).is_err());
+
+        // guarded with a pin is fine — insecure off
+        assert!(validate_guarded_connector(true, FP, false).is_ok());
+        // guarded + insecure: contradictory, rejected
+        let err = validate_guarded_connector(true, FP, true).unwrap_err();
+        assert!(err.contains("互斥"), "message names the conflict: {err}");
+    }
+
+    /// Trust profile G2: the guarded flag persists through the DB round-trip (setter style,
+    /// same shape as cert_relay).
+    #[test]
+    fn connector_guarded_flag_roundtrip() {
+        let db = Database::in_memory().unwrap();
+        let id = db
+            .create_connector("g-1", "", "1.2.3.4:54430", "psk_x", "", false, "", "", "", "", None, "")
+            .unwrap()
+            .id;
+        assert!(!db.get_connector(&id).unwrap().unwrap().guarded, "default off");
+        assert!(!db.list_connectors().unwrap()[0].guarded, "view carries the flag");
+
+        db.set_connector_guarded(&id, true).unwrap();
+        assert!(db.get_connector(&id).unwrap().unwrap().guarded);
+        assert!(db.list_connectors().unwrap()[0].guarded);
+
+        db.set_connector_guarded(&id, false).unwrap();
+        assert!(!db.get_connector(&id).unwrap().unwrap().guarded);
     }
 }

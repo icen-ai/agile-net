@@ -58,6 +58,7 @@ impl TokenValidator for AclValidator {
                 control: None,
                 acl: self.acl.clone(),
                 display: None,
+                guarded: false,
             })
         } else {
             None

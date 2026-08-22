@@ -70,6 +70,7 @@ pub(crate) async fn connect_node(state: State<'_, AppState>, input: ConnectInput
         emode: input.emode.clone(),
         eadmin: input.eadmin,
         myname: input.myname.clone(),
+        padding: input.padding,
     };
     let node_state = state.client.connect(params).await.map_err(map_err)?;
 
@@ -94,6 +95,8 @@ pub(crate) async fn connect_node(state: State<'_, AppState>, input: ConnectInput
                         myname: input.myname,
                         // Topology-visibility clause accepted at import (M4-T5); kept for display
                         visibility: input.visibility,
+                        // Anti-correlation padding tier (G1②, link `pad` word)
+                        padding: input.padding,
                     },
                 )
                 .await;

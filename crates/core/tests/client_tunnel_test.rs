@@ -45,6 +45,7 @@ impl TokenValidator for TestValidator {
                 control: None,
                 acl: None,
                 display: None,
+                guarded: false,
             })
         } else {
             None

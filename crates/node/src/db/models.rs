@@ -83,6 +83,10 @@ pub struct RelayTokenRecord {
     /// Bandwidth quota (KB/s; None = unlimited)
     #[serde(default)]
     pub rate_limit_kbps: Option<i64>,
+    /// Deep Guard (trust profile G3): advertise overlap rejection + pushed groups stay offers +
+    /// forced device approval for this token's downstream
+    #[serde(default)]
+    pub guarded: bool,
     /// Validity window (None = never expires)
     #[serde(default)]
     pub expires_at: Option<String>,
@@ -165,6 +169,10 @@ pub struct ConnectorRecord {
     pub pinned_fingerprint: String,
     /// Serialized former ConnectorConfig.advertise
     pub advertise: String,
+    /// Deep Guard (trust profile G2): pinned fingerprint mandatory, insecure forbidden, guarded
+    /// edits audited with a change summary
+    #[serde(default)]
+    pub guarded: bool,
     /// ACL mount point: group ID (None = no restriction, allow all)
     #[serde(default)]
     pub group_id: Option<String>,
@@ -200,6 +208,9 @@ pub struct ConnectorView {
     #[serde(default)]
     pub pinned_fingerprint: String,
     pub advertise: String,
+    /// Deep Guard (trust profile G2)
+    #[serde(default)]
+    pub guarded: bool,
     #[serde(default)]
     pub group_id: Option<String>,
     /// Resolved ACL group set (empty = unrestricted)
@@ -253,6 +264,11 @@ pub struct DelegatedTokenRecord {
     /// Topology-visibility tier (node.md M6): domain (default) / disclose / approve
     #[serde(default = "default_visibility")]
     pub visibility: String,
+    /// Anti-correlation padding (trust profile G1②): E2E records sealed at 2048-byte buckets so
+    /// ciphertext lengths stop correlating with plaintext lengths (issuer + consumer sides both
+    /// derive the grain from this flag — the consumer via the link's pad word)
+    #[serde(default)]
+    pub anti_correlate: bool,
     /// Validity window (None = never expires)
     #[serde(default)]
     pub expires_at: Option<String>,

@@ -129,6 +129,9 @@ impl TokenValidator for DbTokenValidator {
                     // issuer-assigned display name for admin peer lists (the peer's self-reported
                     // node name is decorative — often a default like "AgileNet 内嵌端点")
                     display: self.db.get_relay_token_remark(&token_hash).ok().flatten(),
+                    // Deep Guard (trust profile G3): rides the session for advertise overlap
+                    // rejection, pushed-group route stripping and forced device approval
+                    guarded: self.db.get_relay_token_guarded(&token_hash).ok().flatten().unwrap_or(false),
                 })
             }
             // Delegated consumers: resolved by the listener itself (persistent local registry

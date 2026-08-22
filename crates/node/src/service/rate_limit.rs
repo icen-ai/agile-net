@@ -77,6 +77,7 @@ mod tests {
             control: None,
             acl: None,
             display: None,
+            guarded: false,
         };
         let hash = sha256_hex(b"tok-map");
         db.create_relay_token_with_quota(&hash, "psk_m", "", false, "full", None, Some(2048))

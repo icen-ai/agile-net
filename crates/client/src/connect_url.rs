@@ -53,6 +53,10 @@ pub struct ParsedConnect {
     /// Topology-visibility clause from the link (domain|disclose|approve; clause card at import)
     #[serde(default)]
     pub visibility: Option<String>,
+    /// Anti-correlation padding tier (trust profile G1②, link `pad` word): E2E records sealed
+    /// at 2048-byte buckets (traffic-profile anti-correlation)
+    #[serde(default)]
+    pub padding: bool,
 }
 
 /// Parse an `anet://connect?...` URL (delegated credentials only).
@@ -77,6 +81,7 @@ pub fn parse_connect_url(url: &str) -> std::result::Result<ParsedConnect, String
         eadmin: link.eadmin,
         myname: link.myname,
         visibility: link.visibility,
+        padding: link.padding,
     })
 }
 
@@ -107,6 +112,8 @@ pub fn connect_url_of(c: &Credential) -> String {
         // myname is the importer-side "我的名称" suggestion; re-export keeps whatever the
         // original link carried (Credential.myname, wired by the client form in M4-T6)
         c.myname.as_deref(),
+        // G1②: the padding tier re-exports with the E2E key (pad=1)
+        c.padding,
     );
     // M6: a stored non-domain visibility tier re-exports as the link clause (M4-T5 条款卡)
     if let Some(v) = c.visibility.as_deref().filter(|v| !v.is_empty() && *v != "domain") {
@@ -159,6 +166,7 @@ mod tests {
             eadmin: true,
             myname: Some("小明".into()),
             visibility: None,
+            padding: true,
         };
         let url = connect_url_of(&c);
         assert!(url.starts_with("anet://connect?"));
@@ -172,5 +180,6 @@ mod tests {
         assert_eq!(p.emode.as_deref(), Some("split"));
         assert!(p.eadmin);
         assert_eq!(p.myname.as_deref(), Some("小明"));
+        assert!(p.padding, "padding tier survives the re-export roundtrip");
     }
 }

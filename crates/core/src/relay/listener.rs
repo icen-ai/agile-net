@@ -87,6 +87,11 @@ pub enum AuthIdentity {
         /// The peer's self-reported node name is decorative and often a default like "AgileNet 内嵌端点";
         /// the issuer-side token remark is the authoritative identity for admin displays.
         display: Option<String>,
+        /// Deep Guard (guard profile G3): the relay token carries `guarded` — this downstream's
+        /// advertised routes run overlap rejection (instead of warn-only), its pushed groups stop
+        /// auto-declaring routes, and its pending devices are gated until certification even under
+        /// the global allow policy.
+        guarded: bool,
     },
     /// Delegated consumer session (unified issuance): authenticated by the listener itself
     /// against the delegated token registries (persistent local first, then session-scoped).
@@ -220,6 +225,7 @@ impl TokenValidator for StaticTokenValidator {
                 control: None,
                 acl: None,
                 display: None,
+                guarded: false,
             })
         } else {
             None
@@ -260,6 +266,16 @@ pub enum PeerEvent {
         node_id: String,
         device_fp: String,
         reason_code: String,
+    },
+    /// Advertised-route overlap between two downstream peers (guard profile G3): the same
+    /// CIDR/host/suffix claimed by two node_ids. `guarded = true` means the later peer's entry
+    /// was REJECTED (deep guard); false means the union kept both and this is a warn-only
+    /// episode. Emitted once per conflict episode (re-emits after the conflict clears).
+    AdvertiseConflict {
+        node_id: String,
+        entry: String,
+        existing_node: String,
+        guarded: bool,
     },
 }
 
@@ -329,6 +345,9 @@ pub struct PeerSession {
     pub device_fp: String,
     /// Peer's self-declared display name ("我的名称"; decorative, shown next to OUR remark)
     pub my_name: String,
+    /// Deep Guard snapshot at auth (relay_token.guarded): per-open device gating + advertise
+    /// overlap rejection ride on this bit for the session's lifetime.
+    pub guarded: bool,
 }
 
 /// Device identity proven during the handshake (device_fp derived locally from the presented
@@ -363,6 +382,9 @@ pub struct SessionMeta {
     pub my_name: String,
     /// Remote IP of the TLS connection
     pub peer_ip: String,
+    /// Deep Guard snapshot at auth (fan-in relay_token.guarded; consumers are always false —
+    /// the issuer's own token table governs them)
+    pub guarded: bool,
     /// Session start (uptime/duration display)
     pub connected_at: std::time::Instant,
 }
@@ -373,6 +395,36 @@ struct AdvertisedRoutes {
     cidrs: IpNetworkTable<String>,
     hosts: HashMap<String, String>,
     suffixes: Vec<(String, String)>,
+}
+
+impl AdvertisedRoutes {
+    fn insert(&mut self, entry: &RouteEntry, node_id: &str) {
+        match entry {
+            RouteEntry::Cidr(cidr) => {
+                self.cidrs.insert(*cidr, node_id.to_string());
+            }
+            RouteEntry::Suffix(suffix) => self.suffixes.push((suffix.clone(), node_id.to_string())),
+            RouteEntry::Host(host) => {
+                self.hosts.insert(host.clone(), node_id.to_string());
+            }
+        }
+    }
+}
+
+/// One normalized advertise entry (claim key + table insertion form).
+enum RouteEntry {
+    Cidr(IpNetwork),
+    Suffix(String),
+    Host(String),
+}
+
+/// Deduped pair key component (order-independent so A|B and B|A collapse to one episode).
+fn min_pair(a: &str, b: &str) -> String {
+    if a < b {
+        format!("{a}|{b}")
+    } else {
+        format!("{b}|{a}")
+    }
 }
 
 /// Session bandwidth limit provider: returns the bytes/sec cap per authenticated identity (None = unlimited).
@@ -386,8 +438,16 @@ pub struct RelayListener {
     validator: Arc<dyn TokenValidator>,
     tls_acceptor: TlsAcceptor,
     peers: Arc<DashMap<String, PeerSession>>,
-    /// Raw route entries advertised by each downstream node
-    peer_advertise: Arc<DashMap<String, Vec<String>>>,
+    /// Raw route entries advertised by each downstream node, with the registration sequence
+    /// (overlap detection resolves "who came first" deterministically instead of map order)
+    peer_advertise: Arc<DashMap<String, (u64, Vec<String>)>>,
+    /// Monotonic advertise registration counter (insertion order for rebuild_routes)
+    advertise_seq: std::sync::atomic::AtomicU64,
+    /// Deep Guard flag of each downstream's session token (relay_token.guarded; G3)
+    peer_guarded: Arc<DashMap<String, bool>>,
+    /// Conflict episodes already reported for an (entry, node pair) — warn once per episode,
+    /// re-arm when the conflict clears (anti audit flooding on every unrelated reconnect)
+    overlap_reported: Arc<DashMap<String, ()>>,
     /// Policy groups pushed by each downstream node (federation P1 authorizable pool)
     peer_groups: Arc<DashMap<String, Vec<crate::proto::message::PushedGroupMsg>>>,
     /// Federation P2: delegated tokens registered by online fan-out endpoints (session-scoped)
@@ -476,6 +536,9 @@ impl RelayListener {
             tls_acceptor,
             peers: Arc::new(DashMap::new()),
             peer_advertise: Arc::new(DashMap::new()),
+            advertise_seq: std::sync::atomic::AtomicU64::new(0),
+            peer_guarded: Arc::new(DashMap::new()),
+            overlap_reported: Arc::new(DashMap::new()),
             peer_groups: Arc::new(DashMap::new()),
             delegated: Arc::new(DashMap::new()),
             local_delegated: Arc::new(DashMap::new()),
@@ -617,7 +680,7 @@ impl RelayListener {
     pub async fn disconnect_peer(&self, node_id: &str, reason_code: &str, message: &str) -> bool {
         if let Some((_, peer)) = self.peers.remove(node_id) {
             Self::notify_and_shutdown(&peer.mux, reason_code, message).await;
-            self.set_peer_routes(node_id, Vec::new());
+            self.set_peer_routes(node_id, Vec::new(), peer.guarded);
             self.peer_groups.remove(node_id);
             let _ = self.events.send(PeerEvent::NodeDisconnected {
                 node_id: node_id.to_string(),
@@ -638,7 +701,7 @@ impl RelayListener {
                     advertise: self
                         .peer_advertise
                         .get(&node_id)
-                        .map(|v| v.clone())
+                        .map(|v| v.1.clone())
                         .unwrap_or_default(),
                     groups: self
                         .peer_groups
@@ -1096,7 +1159,7 @@ impl RelayListener {
         // 1024 insertions drop the ones outside the window — they are inert either way
         static SWEEP_EVERY: u64 = 1024;
         static INSERTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        if INSERTS.fetch_add(1, Ordering::Relaxed) % SWEEP_EVERY == 0 {
+        if INSERTS.fetch_add(1, Ordering::Relaxed).is_multiple_of(SWEEP_EVERY) {
             self.auth_attempts
                 .retain(|_, (_, t)| t.elapsed() <= Duration::from_secs(60));
         }
@@ -1143,6 +1206,7 @@ impl RelayListener {
                 groups,
                 acl,
                 display,
+                guarded,
                 ..
             } => {
                 self.serve_node_session(
@@ -1156,6 +1220,7 @@ impl RelayListener {
                     acl,
                     limiter,
                     display,
+                    guarded,
                     device_meta,
                 )
                 .await
@@ -1310,10 +1375,18 @@ impl RelayListener {
                 // device_state (M3-T2): "pending" is only meaningful where certification lives
                 // — the issuer. Relay-transit consumer sessions get "active" here; their issuer
                 // communicates pending state over the E2E config channel instead.
+                // Deep Guard (G3): a guarded fan-in token forces device certification even under
+                // the global allow policy — its pending devices surface as "pending" and are
+                // gated per Open until the approval center clears them.
                 let device_state = match (&self.device_gate, &identity) {
                     (Some(g), AuthIdentity::Delegated(_))
                         if self.local_delegated.contains_key(&token_hash)
                             && g(&device_meta.device_fp).0 == DeviceGate::Pending =>
+                    {
+                        "pending"
+                    }
+                    (Some(g), AuthIdentity::Node { guarded: true, .. })
+                        if g(&device_meta.device_fp).0 != DeviceGate::Allow =>
                     {
                         "pending"
                     }
@@ -1370,6 +1443,7 @@ impl RelayListener {
         acl: Option<Arc<PeerAcl>>,
         limiter: Option<Arc<TokenBucket>>,
         display: Option<String>,
+        guarded: bool,
         device_meta: DeviceMeta,
     ) -> Result<()> {
         info!(peer = %peer_addr, node_id = %node_id, device = %device_meta.device_fp, "node authenticated successfully");
@@ -1413,6 +1487,7 @@ impl RelayListener {
                 my_name: device_meta.my_name.clone(),
                 peer_ip: peer_addr.ip().to_string(),
                 connected_at: Instant::now(),
+                guarded,
             },
         );
         self.peers.insert(
@@ -1424,9 +1499,32 @@ impl RelayListener {
                 display: display.filter(|d| !d.trim().is_empty()).unwrap_or_else(|| node_id.clone()),
                 device_fp: device_meta.device_fp,
                 my_name: device_meta.my_name,
+                guarded,
             },
         );
-        self.set_peer_routes(&node_id, advertise);
+        // Federation P1: pool the pushed policy groups (sanitized; cleared on disconnect)
+        let groups = sanitize_pushed_groups(groups);
+        // Deep Guard (G3): a pushed group is an OFFER, not a route declaration — strip every
+        // advertise entry the peer derived from its pushed groups (the connector unions them
+        // into effective_advertise before sending); the relay admin routes them explicitly via
+        // federation/adopt + local group use instead. Manual advertise entries stay.
+        let advertise = if guarded && !groups.is_empty() {
+            let pushed: std::collections::HashSet<String> = groups
+                .iter()
+                .flat_map(|g| g.rules.iter().map(|r| r.trim().to_string()))
+                .collect();
+            let before = advertise.len();
+            let kept: Vec<String> = advertise
+                .into_iter()
+                .filter(|a| !pushed.contains(a.trim()))
+                .collect();
+            info!(node_id = %node_id, before = before, kept = kept.len(),
+                "deep guard: pushed-group rules stripped from advertise (adopt manually)");
+            kept
+        } else {
+            advertise
+        };
+        self.set_peer_routes(&node_id, advertise, guarded);
         // Federation P1: pool the pushed policy groups (sanitized; cleared on disconnect)
         let groups = sanitize_pushed_groups(groups);
         if groups.is_empty() {
@@ -1500,7 +1598,7 @@ impl RelayListener {
             .remove_if(&node_id, |_, p| Arc::ptr_eq(&p.mux, &mux))
             .is_some()
         {
-            self.set_peer_routes(&node_id, Vec::new());
+            self.set_peer_routes(&node_id, Vec::new(), guarded);
             self.peer_groups.remove(&node_id);
             // federation P2: delegated tokens die with their issuer session (revoke-by-disconnect);
             // kick every delegated client session they had authenticated
@@ -1850,6 +1948,7 @@ impl RelayListener {
                 entry: entry_class.to_string(),
                 my_name: device_meta.my_name.clone(),
                 peer_ip: peer_ip.clone(),
+                guarded: false, // consumer sessions follow the issuer's own token table (G3 is fan-in only)
                 connected_at: Instant::now(),
             },
         );
@@ -2084,7 +2183,25 @@ impl RelayListener {
             .await;
     }
 
-    /// Handle a fan-in peer Open: PeerAcl restriction -> downstream routing -> direct connect, then bridge.
+    /// Deep Guard device gate (G3): for a guarded peer session, the proven device must be
+    /// certified before ANY data flows — overrides the global allow-pending policy. Returns
+    /// Some((reason_code, notice)) when the open must fail closed.
+    fn node_device_gate_block(&self, node_id: &str) -> Option<(String, String)> {
+        let peer = self.peers.get(node_id)?;
+        if !peer.guarded {
+            return None;
+        }
+        let gate = self.device_gate.as_ref()?;
+        let (decision, notice) = gate(&peer.device_fp);
+        match decision {
+            DeviceGate::Allow => None,
+            DeviceGate::Pending => Some((reason::PENDING_APPROVAL.into(), notice.unwrap_or_default())),
+            DeviceGate::Deny => Some((reason::DEVICE_REVOKED.into(), notice.unwrap_or_default())),
+        }
+    }
+
+    /// Handle a fan-in peer Open: device gate (guarded) -> PeerAcl restriction -> downstream
+    /// routing -> direct connect, then bridge.
     async fn handle_node_open(
         self: &Arc<Self>,
         mux: Arc<MuxSession>,
@@ -2109,6 +2226,18 @@ impl RelayListener {
         // (protocol-level diagnostic service, same tier as heartbeat; answered locally,
         // no routing capability, restricted nodes equally testable, not an ACL bypass)
         if crate::relay::bandwidth::intercept(&mux, &req, &open_req.target_addr).await {
+            return;
+        }
+
+        // Deep Guard (G3): a guarded token's device stays gated until certification — even
+        // under the global allow policy (forced approval through the existing approval center)
+        if let Some((rc, notice)) = self.node_device_gate_block(&node_id) {
+            warn!(node = %node_id, reason = %rc, "peer open gated (deep guard device certification)");
+            let payload =
+                serde_json::to_vec(&OpenFailed { reason: rc, message: notice }).unwrap_or_default();
+            let _ = mux
+                .send_frame(Frame::new(FrameType::OpenFail, req.channel_id, Bytes::from(payload)))
+                .await;
             return;
         }
 
@@ -2235,39 +2364,106 @@ impl RelayListener {
     }
 
     /// Update a downstream node's advertised routes and rebuild the aggregate table.
-    fn set_peer_routes(&self, node_id: &str, entries: Vec<String>) {
+    fn set_peer_routes(&self, node_id: &str, entries: Vec<String>, guarded: bool) {
         if entries.is_empty() {
             self.peer_advertise.remove(node_id);
+            self.peer_guarded.remove(node_id);
         } else {
-            self.peer_advertise.insert(node_id.to_string(), entries);
+            let seq = self.advertise_seq.fetch_add(1, Ordering::Relaxed);
+            self.peer_advertise.insert(node_id.to_string(), (seq, entries));
+            self.peer_guarded.insert(node_id.to_string(), guarded);
         }
         self.rebuild_routes();
     }
 
+    /// Rebuild the aggregate route table from every peer's advertise set (guard profile G3).
+    ///
+    /// Default (non-guarded) behavior is unchanged: overlapping entries are unioned — the
+    /// later-registered peer's claim replaces the earlier one (deterministic since entries carry
+    /// a registration sequence). With Deep Guard on the LATER peer's token, a conflicting entry
+    /// (same CIDR/host/suffix already claimed by another node) is REJECTED instead — the rest of
+    /// that peer's entries still routes. Every conflict episode is reported once through
+    /// [`PeerEvent::AdvertiseConflict`] (guarded = rejection, else warn-only) and re-armed when
+    /// the conflict clears.
     fn rebuild_routes(&self) {
         let mut table = AdvertisedRoutes::default();
-        for item in self.peer_advertise.iter() {
-            let (node_id, entries) = (item.key(), item.value());
+        // deterministic insertion order: peers sorted by registration sequence
+        let mut peers: Vec<(u64, String, Vec<String>)> = self
+            .peer_advertise
+            .iter()
+            .map(|item| {
+                let (node_id, (seq, entries)) = (item.key(), item.value());
+                (*seq, node_id.clone(), entries.clone())
+            })
+            .collect();
+        peers.sort_by(|a, b| a.0.cmp(&b.0));
+        // claimed entry -> the node whose routes carry it (first-wins bookkeeping for detection)
+        let mut claimed: HashMap<String, String> = HashMap::new();
+        let mut live_conflicts: HashMap<String, (String, String, String, bool)> = HashMap::new();
+        for (_, node_id, entries) in &peers {
+            let guarded = self
+                .peer_guarded
+                .get(node_id)
+                .map(|g| *g)
+                .unwrap_or(false);
             for entry in entries {
                 let entry = entry.trim();
                 if entry.is_empty() || entry.len() > 256 {
                     continue;
                 }
-                if let Ok(cidr) = entry.parse::<IpNetwork>() {
-                    table.cidrs.insert(cidr, node_id.clone());
+                // normalized claim key: exact CIDR / lowercased host / suffix form
+                let (claim, route) = if let Ok(cidr) = entry.parse::<IpNetwork>() {
+                    (cidr.to_string(), RouteEntry::Cidr(cidr))
                 } else if entry.contains('*') {
                     let suffix = entry.trim_start_matches('*').to_lowercase();
-                    if !suffix.is_empty() {
-                        table.suffixes.push((suffix, node_id.clone()));
+                    if suffix.is_empty() {
+                        continue;
                     }
+                    (format!("*{suffix}"), RouteEntry::Suffix(suffix))
                 } else {
-                    table.hosts.insert(entry.to_lowercase(), node_id.clone());
+                    let host = entry.to_lowercase();
+                    (host.clone(), RouteEntry::Host(host))
+                };
+                match claimed.get(&claim) {
+                    Some(existing) if existing != node_id => {
+                        // overlap episode: guarded later-arrival rejects, else union as before
+                        let key = format!("{claim}|{}", min_pair(existing, node_id));
+                        if guarded {
+                            live_conflicts
+                                .entry(key)
+                                .or_insert_with(|| (claim.clone(), existing.clone(), node_id.clone(), true));
+                            continue; // rejected: not routed, not claimed
+                        }
+                        live_conflicts
+                            .entry(key)
+                            .or_insert_with(|| (claim.clone(), existing.clone(), node_id.clone(), false));
+                        table.insert(&route, node_id); // last-wins union (unchanged default)
+                    }
+                    _ => {
+                        claimed.insert(claim, node_id.clone());
+                        table.insert(&route, node_id);
+                    }
                 }
             }
         }
         // longest suffix first
         table.suffixes.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
         self.routes.store(Arc::new(table));
+        // report each conflict episode once; re-arm keys whose conflict has cleared
+        for (key, (entry, existing, later, guarded)) in &live_conflicts {
+            if self.overlap_reported.insert(key.clone(), ()).is_none() {
+                warn!(entry = %entry, later = %later, existing = %existing, guarded = *guarded,
+                    "advertised-route overlap (deep guard: rejected)" );
+                let _ = self.events.send(PeerEvent::AdvertiseConflict {
+                    node_id: later.clone(),
+                    entry: entry.clone(),
+                    existing_node: existing.clone(),
+                    guarded: *guarded,
+                });
+            }
+        }
+        self.overlap_reported
+            .retain(|key, _| live_conflicts.contains_key(key));
     }
 
     /// Initiate a new connection request to the given node (plain Open; wrapper of `open_channel_full`).
@@ -2288,6 +2484,14 @@ impl RelayListener {
             .peers
             .get(node_id)
             .ok_or_else(|| Error::NotFound(format!("peer node {node_id} not connected")))?;
+
+        // Deep Guard (G3): relay-initiated opens toward a guarded peer are held to the same
+        // device certification gate as peer-initiated ones (no direction escapes the profile)
+        if let Some((rc, _notice)) = self.node_device_gate_block(node_id) {
+            drop(peer);
+            warn!(node = %node_id, reason = %rc, "relay-initiated open gated (deep guard device certification)");
+            return Err(Error::Auth(rc));
+        }
 
         let payload = serde_json::to_vec(open).map_err(|e| Error::Protocol(e.to_string()))?;
 

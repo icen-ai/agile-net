@@ -44,6 +44,9 @@ pub struct CreateConnectorRequest {
     /// ACL group (absent/null = unrestricted, allow all)
     #[serde(default)]
     pub group_id: Option<String>,
+    /// Deep Guard (trust profile G2): pinning mandatory, insecure forbidden, audited change summary
+    #[serde(default)]
+    pub guarded: bool,
     /// Policy upload (federation P1): local group IDs pushed upstream at auth (empty = no upload)
     #[serde(default)]
     pub push_groups: Vec<String>,
@@ -264,6 +267,11 @@ pub async fn create_connector(
         Ok(fp) => fp,
         Err(msg) => return err(StatusCode::BAD_REQUEST, codes::VALIDATION_FAILED, msg),
     };
+    // Deep Guard (G2): guarded requires a pinned fingerprint and forbids insecure
+    if let Err(msg) = crate::service::connectors::validate_guarded_connector(req.guarded, &pinned_fingerprint, req.insecure) {
+        return err(StatusCode::BAD_REQUEST, codes::VALIDATION_FAILED, msg);
+    }
+    let guarded = req.guarded;
     let params = (
         name.to_string(),
         my_name.to_string(),
@@ -311,6 +319,16 @@ pub async fn create_connector(
         .await;
     match created {
         Ok(rec) => {
+            // Deep Guard (G2): apply before the first hot assembly
+            if guarded {
+                let (cid, on) = (rec.id.clone(), guarded);
+                if let Err(e) = state
+                    .db_call(move |db| db.set_connector_guarded(&cid, on))
+                    .await
+                {
+                    tracing::error!(connector = %name, error = %e, "set guarded failed");
+                }
+            }
             // Policy upload (federation P1): set before the first hot assembly so the groups ride the first handshake
             if !push_groups.is_empty() {
                 let (cid, pg) = (rec.id.clone(), push_groups.clone());
@@ -381,11 +399,54 @@ pub struct UpdateConnectorRequest {
     /// ACL group (PUT is full-replace semantics: absent/null = unrestricted)
     #[serde(default)]
     pub group_id: Option<String>,
+    /// Deep Guard (trust profile G2): pinning mandatory, insecure forbidden, audited change summary
+    #[serde(default)]
+    pub guarded: bool,
     /// Policy upload (federation P1): absent = keep current; provided (incl. empty) = replace
     #[serde(default)]
     pub push_groups: Option<Vec<String>>,
     #[serde(default)]
     pub remark: String,
+}
+
+/// Changed-field summary between the stored record and the incoming full-replace body
+/// (G2: guarded edits audit connection/push/advertise changes explicitly).
+#[derive(Default)]
+struct ConnectorChanges {
+    upstream: bool,
+    advertise: bool,
+    push_groups: bool,
+    insecure: bool,
+    fingerprint: bool,
+    guarded: bool,
+}
+
+impl ConnectorChanges {
+    fn any(&self) -> bool {
+        self.upstream || self.advertise || self.push_groups || self.insecure || self.fingerprint || self.guarded
+    }
+    fn summary(&self) -> String {
+        let mut parts: Vec<&str> = Vec::new();
+        if self.upstream {
+            parts.push("upstream");
+        }
+        if self.advertise {
+            parts.push("advertise");
+        }
+        if self.push_groups {
+            parts.push("push_groups");
+        }
+        if self.insecure {
+            parts.push("insecure");
+        }
+        if self.fingerprint {
+            parts.push("fingerprint");
+        }
+        if self.guarded {
+            parts.push("guarded");
+        }
+        parts.join(",")
+    }
 }
 
 pub async fn update_connector(
@@ -396,18 +457,17 @@ pub async fn update_connector(
     Json(req): Json<UpdateConnectorRequest>,
 ) -> Response {
     let cid = id.clone();
-    let exists = state
+    let old = state
         .db_call(move |db| db.get_connector(&cid))
         .await
-        .unwrap_or(None)
-        .is_some();
-    if !exists {
+        .unwrap_or(None);
+    let Some(old) = old else {
         return err(
             StatusCode::NOT_FOUND,
             codes::NOT_FOUND,
             "connector not found",
         );
-    }
+    };
     let name = req.name.trim();
     let my_name = req.my_name.trim();
     if let Err(msg) =
@@ -461,6 +521,23 @@ pub async fn update_connector(
         Ok(fp) => fp,
         Err(msg) => return err(StatusCode::BAD_REQUEST, codes::VALIDATION_FAILED, msg),
     };
+    // Deep Guard (G2): guarded requires a pinned fingerprint and forbids insecure
+    if let Err(msg) = crate::service::connectors::validate_guarded_connector(req.guarded, &pinned_fingerprint, req.insecure) {
+        return err(StatusCode::BAD_REQUEST, codes::VALIDATION_FAILED, msg);
+    }
+    // G2 change summary (audited verbatim when either side of the edit is guarded)
+    let changes = ConnectorChanges {
+        upstream: old.upstream_addr != req.upstream_addr,
+        advertise: old.advertise != advertise,
+        push_groups: match &push_groups {
+            Some(pg) => old.push_groups != *pg,
+            None => false,
+        },
+        insecure: old.insecure != req.insecure,
+        fingerprint: old.pinned_fingerprint != pinned_fingerprint,
+        guarded: old.guarded != req.guarded,
+    };
+    let guarded = req.guarded;
     let params = (
         id.clone(),
         name.to_string(),
@@ -516,6 +593,29 @@ pub async fn update_connector(
             e.to_string(),
         );
     }
+    // Deep Guard (G2): apply before the hot rebuild
+    if old.guarded != guarded {
+        let (cid, on) = (id.clone(), guarded);
+        if let Err(e) = state
+            .db_call(move |db| db.set_connector_guarded(&cid, on))
+            .await
+        {
+            return err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                codes::INTERNAL,
+                e.to_string(),
+            );
+        }
+        audit(
+            &state,
+            &claims,
+            &ip,
+            "connector.guarded",
+            Some(&id),
+            if guarded { "on" } else { "off" },
+        )
+        .await;
+    }
     // Policy upload replacement (federation P1; before the hot rebuild so the new set rides the next handshake)
     if let Some(pg) = &push_groups {
         let (cid, pg) = (id.clone(), pg.clone());
@@ -541,7 +641,7 @@ pub async fn update_connector(
         "connector.update",
         Some(&id),
         &format!(
-            "{name} -> {} (token {}{})",
+            "{name} -> {} (token {}{}){}{}",
             req.upstream_addr,
             if token_reset.is_some() {
                 "rotated"
@@ -558,7 +658,14 @@ pub async fn update_connector(
                     }
                 ),
                 None => String::new(),
-            }
+            },
+            // G2: a guarded connector (either side of the edit) audits the change summary
+            if (old.guarded || guarded) && changes.any() {
+                format!(" [deep guard changed: {}]", changes.summary())
+            } else {
+                String::new()
+            },
+            if guarded { " [deep guard]" } else { "" },
         ),
     )
     .await;

@@ -49,6 +49,7 @@ impl Database {
             pinned_fingerprint: pinned_fingerprint.to_string(),
             advertise: advertise.to_string(),
             group_id: group_id.map(|g| g.to_string()),
+            guarded: false,
             push_groups: String::new(),
             enabled: true,
             cert_relay: false,
@@ -67,7 +68,7 @@ impl Database {
             let mut stmt = conn
                 .prepare(
                     "SELECT c.id, c.name, c.my_name, c.upstream_addr, c.token_enc, c.sni_hostname, c.insecure, c.ca_cert_path, c.pinned_cert_path, c.pinned_fingerprint, c.advertise,
-                            c.group_id, c.enabled, c.remark, c.created_at, c.updated_at, c.push_groups, c.cert_relay
+                            c.group_id, c.guarded, c.enabled, c.remark, c.created_at, c.updated_at, c.push_groups, c.cert_relay
                      FROM connector c ORDER BY c.created_at DESC",
                 )
                 .map_err(db_err)?;
@@ -87,12 +88,13 @@ impl Database {
                     pinned_fingerprint: r.get(9).map_err(db_err)?,
                     advertise: r.get(10).map_err(db_err)?,
                     group_id: r.get(11).map_err(db_err)?,
-                    enabled: r.get::<_, i32>(12).map_err(db_err)? != 0,
-                    remark: r.get(13).map_err(db_err)?,
-                    created_at: r.get(14).map_err(db_err)?,
-                    updated_at: r.get(15).map_err(db_err)?,
-                    push_groups: r.get(16).map_err(db_err)?,
-                    cert_relay: r.get::<_, i64>(17).map_err(db_err)? != 0,
+                    guarded: r.get::<_, i32>(12).map_err(db_err)? != 0,
+                    enabled: r.get::<_, i32>(13).map_err(db_err)? != 0,
+                    remark: r.get(14).map_err(db_err)?,
+                    created_at: r.get(15).map_err(db_err)?,
+                    updated_at: r.get(16).map_err(db_err)?,
+                    push_groups: r.get(17).map_err(db_err)?,
+                    cert_relay: r.get::<_, i64>(18).map_err(db_err)? != 0,
                 });
             }
             recs
@@ -121,6 +123,7 @@ impl Database {
                 pinned_fingerprint: rec.pinned_fingerprint,
                 advertise: rec.advertise,
                 group_id: rec.group_id,
+                guarded: rec.guarded,
                 groups,
                 push_groups: rec.push_groups,
                 enabled: rec.enabled,
@@ -137,7 +140,7 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn
             .prepare(
-                "SELECT id, name, my_name, upstream_addr, token_enc, sni_hostname, insecure, ca_cert_path, pinned_cert_path, pinned_fingerprint, advertise, group_id, enabled, remark, created_at, updated_at, push_groups, cert_relay
+                "SELECT id, name, my_name, upstream_addr, token_enc, sni_hostname, insecure, ca_cert_path, pinned_cert_path, pinned_fingerprint, advertise, group_id, guarded, enabled, remark, created_at, updated_at, push_groups, cert_relay
                  FROM connector WHERE id = ?1",
             )
             .map_err(db_err)?;
@@ -156,12 +159,13 @@ impl Database {
                 pinned_fingerprint: r.get(9).map_err(db_err)?,
                 advertise: r.get(10).map_err(db_err)?,
                 group_id: r.get(11).map_err(db_err)?,
-                enabled: r.get::<_, i32>(12).map_err(db_err)? != 0,
-                remark: r.get(13).map_err(db_err)?,
-                created_at: r.get(14).map_err(db_err)?,
-                updated_at: r.get(15).map_err(db_err)?,
-                push_groups: r.get(16).map_err(db_err)?,
-                cert_relay: r.get::<_, i64>(17).map_err(db_err)? != 0,
+                guarded: r.get::<_, i32>(12).map_err(db_err)? != 0,
+                enabled: r.get::<_, i32>(13).map_err(db_err)? != 0,
+                remark: r.get(14).map_err(db_err)?,
+                created_at: r.get(15).map_err(db_err)?,
+                updated_at: r.get(16).map_err(db_err)?,
+                push_groups: r.get(17).map_err(db_err)?,
+                cert_relay: r.get::<_, i64>(18).map_err(db_err)? != 0,
             }),
             None => None,
         })
@@ -173,6 +177,18 @@ impl Database {
         conn.execute(
             "UPDATE connector SET cert_relay = ?1, updated_at = ?2 WHERE id = ?3",
             params![on as i64, now_rfc3339(), id],
+        )
+        .map_err(db_err)?;
+        Ok(())
+    }
+
+    /// Set the Deep Guard flag (trust profile G2): pinning becomes mandatory, insecure is
+    /// forbidden, and guarded edits are audited with a change summary (API layer).
+    pub fn set_connector_guarded(&self, id: &str, guarded: bool) -> Result<()> {
+        let conn = self.conn();
+        conn.execute(
+            "UPDATE connector SET guarded = ?1, updated_at = ?2 WHERE id = ?3",
+            params![guarded as i64, now_rfc3339(), id],
         )
         .map_err(db_err)?;
         Ok(())

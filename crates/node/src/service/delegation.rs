@@ -290,6 +290,9 @@ struct KeyEntry {
     /// a fresh channel whose sequence numbers start over. 128-bit random salts make legit
     /// collisions impossible; the cap bounds memory and fails closed.
     seen_salts: std::sync::Mutex<std::collections::HashSet<[u8; agile_net_core::relay::e2e::CHAN_SALT_LEN]>>,
+    /// Anti-correlation padding grain (trust profile G1②): delegated_token.anti_correlate →
+    /// PAD_BUCKET on the unwrap cipher (both ends derive the grain from the same flag).
+    bucket: usize,
 }
 
 /// Per-token consumed-salt cap (audit F1): a token can never legitimately approach this many
@@ -426,6 +429,11 @@ impl DelegationEngine {
                             max_uses: rec.max_uses,
                             used_count: std::sync::Arc::new(std::sync::atomic::AtomicI64::new(rec.used_count)),
                             seen_salts: std::sync::Mutex::new(std::collections::HashSet::new()),
+                            bucket: if rec.anti_correlate {
+                                agile_net_core::relay::e2e::PAD_BUCKET
+                            } else {
+                                0
+                            },
                         },
                     );
                 }
@@ -580,7 +588,8 @@ impl agile_net_core::relay::DelegationHooks for DelegationEngine {
                 "delegated token expired or exhausted".into(),
             ));
         }
-        let (mut payload, cipher) = agile_net_core::relay::e2e::open_open(&entry.key, e2e)?;
+        let (mut payload, cipher) =
+            agile_net_core::relay::e2e::open_open(&entry.key, e2e, entry.bucket)?;
         // one-shot envelope (audit F1): consume the chan_salt before anything else — a
         // replayed Open (same sealed blob) or a salt-window overflow rejects hard, so a
         // malicious relay can never re-derive a live chan_key from captured ciphertext
@@ -875,7 +884,7 @@ mod tests {
         engine.refresh_keys(&db);
 
         // first unwrap consumes the salt
-        let (env, _) = seal_open(&key, &kid, "h", "10.2.0.5", 5432, &[]);
+        let (env, _) = seal_open(&key, &kid, "h", "10.2.0.5", 5432, &[], 0);
         assert!(engine.e2e_unwrap(&env).unwrap().is_some());
 
         // replaying the SAME sealed envelope (what a malicious relay captured) must fail
@@ -889,7 +898,7 @@ mod tests {
         );
 
         // a fresh open (client sealed a new channel with a new random salt) still passes
-        let (env2, _) = seal_open(&key, &kid, "h", "10.2.0.5", 5432, &[]);
+        let (env2, _) = seal_open(&key, &kid, "h", "10.2.0.5", 5432, &[], 0);
         assert!(engine.e2e_unwrap(&env2).unwrap().is_some());
     }
 
@@ -983,6 +992,44 @@ mod tests {
         assert_eq!(admin.port, 59999);
         assert!(admin.ticket.starts_with("adt_"));
         assert_eq!(engine.delegation_admin_port(&kid), Some(59999));
+    }
+
+    /// Trust profile G1②: anti_correlate makes the issuer unwrap with the padding bucket — a
+    /// consumer sealing with PAD_BUCKET round-trips, a mismatched plain seal fails closed.
+    #[test]
+    fn engine_unwrap_pads_when_anti_correlate() {
+        use agile_net_core::relay::DelegationHooks;
+        use agile_net_core::relay::e2e::{PAD_BUCKET, kid_of, seal_open};
+
+        let db = Database::in_memory().unwrap();
+        let gid = mk_e2e_group(&db, "db-pad");
+        let (rec, _, _) = issue_relay(&db, "padded-laptop", &[gid], "");
+        // the API layer applies the tier right after issuance (same write path)
+        db.set_delegated_token_anti_correlate(&rec.id, true).unwrap();
+
+        let engine = DelegationEngine::new();
+        engine.refresh_keys(&db);
+
+        let key = e2e_key_of(&db, &rec).unwrap();
+        // consumer seals with the bucket grain (Credential.padding -> PAD_BUCKET)
+        let (env, mut sender) =
+            seal_open(&key, kid_of(&rec.token_hash), "relay.internal", "10.2.0.5", 5432, &[], PAD_BUCKET);
+        let (_, mut receiver) = engine.e2e_unwrap(&env).unwrap().expect("endpoint role");
+        let rec_data = sender.seal(b"SELECT 1 FROM pad").unwrap();
+        assert_eq!(
+            (rec_data.len() - 4 - 16) % PAD_BUCKET,
+            0,
+            "issuer-side bucket mirrors the token flag (sealed body is bucket-aligned)"
+        );
+        assert_eq!(receiver.open(&rec_data[4..]).unwrap(), b"SELECT 1 FROM pad");
+
+        // a plain (unpadded) consumer against the padded issuer fails closed on alignment
+        let (plain_env, mut plain_sender) =
+            seal_open(&key, kid_of(&rec.token_hash), "relay.internal", "10.2.0.5", 5432, &[], 0);
+        let (_, mut padded_receiver) = engine.e2e_unwrap(&plain_env).unwrap().expect("unwrap");
+        let plain_rec = plain_sender.seal(b"mismatch").unwrap();
+        assert!(padded_receiver.open(&plain_rec[4..]).is_err(),
+            "grain mismatch fails closed — both ends derive the grain from the same token flag");
     }
 
     #[test]
@@ -1090,6 +1137,7 @@ mod tests {
             "10.2.0.5",
             5432,
             &["db-prod".to_string()],
+            0,
         );
 
         // endpoint role: our kid unwraps
@@ -1106,7 +1154,7 @@ mod tests {
 
         // forged envelope (right kid, wrong key material) -> hard error
         let other_key = random_key();
-        let (forged, _) = seal_open(&other_key, kid_of(&rec.token_hash), "h", "a", 1, &[]);
+        let (forged, _) = seal_open(&other_key, kid_of(&rec.token_hash), "h", "a", 1, &[], 0);
         assert!(engine.e2e_unwrap(&forged).is_err());
 
         // after revoke + refresh, the endpoint role is gone (transit/None)
@@ -1125,7 +1173,7 @@ mod tests {
         let (rec, _, _) = issue_relay(&db, "alice", &[gid], "");
         let key = e2e_key_of(&db, &rec).unwrap();
         let seal = || {
-            seal_open(&key, kid_of(&rec.token_hash), "h", "10.2.0.5", 5432, &[]).0
+            seal_open(&key, kid_of(&rec.token_hash), "h", "10.2.0.5", 5432, &[], 0).0
         };
 
         // expired token: unwrap hard-rejects (OpenFail), config channel closed

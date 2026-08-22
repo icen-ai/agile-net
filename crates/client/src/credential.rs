@@ -52,6 +52,11 @@ pub struct Credential {
     /// Topology-visibility clause accepted at import (domain|disclose|approve)
     #[serde(default)]
     pub visibility: Option<String>,
+    /// Anti-correlation padding tier (trust profile G1②, link `pad` word): every E2E record is
+    /// sealed at a 2048-byte bucket so ciphertext lengths stop correlating with plaintext
+    /// lengths. Present iff the credential is E2E (en/ek set).
+    #[serde(default)]
+    pub padding: bool,
 }
 
 pub struct CredentialStore {
@@ -153,6 +158,7 @@ mod tests {
             eadmin: false,
             myname: None,
             visibility: None,
+            padding: false,
         }
     }
 

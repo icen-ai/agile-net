@@ -36,6 +36,10 @@ pub struct CreateTokenRequest {
     /// Bandwidth quota (KB/s; absent/null = unlimited; >0 takes effect, <=0 invalid)
     #[serde(default)]
     pub rate_limit_kbps: Option<i64>,
+    /// Deep Guard (trust profile G3): advertise overlap rejection + pushed groups stay offers +
+    /// forced device approval for this token's downstream
+    #[serde(default)]
+    pub guarded: bool,
     /// Token lifecycle (optional): validity window (RFC3339 or YYYY-MM-DDTHH:MM; empty = never)
     #[serde(default)]
     pub expires_at: String,
@@ -166,6 +170,29 @@ pub async fn create_token(
         .await;
     match created {
         Ok(record) => {
+            // Deep Guard (G3): apply right after creation (audited separately when on)
+            if req.guarded {
+                let (rid, on) = (record.id.clone(), req.guarded);
+                if let Err(e) = state
+                    .db_call(move |db| db.set_relay_token_guarded(&rid, on))
+                    .await
+                {
+                    return err(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        codes::INTERNAL,
+                        e.to_string(),
+                    );
+                }
+                audit(
+                    &state,
+                    &claims,
+                    &ip,
+                    "relay_token.guarded",
+                    Some(&record.id),
+                    "on",
+                )
+                .await;
+            }
             audit(
                 &state,
                 &claims,
@@ -259,6 +286,7 @@ pub async fn create_token(
                 "control_scope": record.control_scope,
                 "group_id": record.group_id,
                 "rate_limit_kbps": record.rate_limit_kbps,
+                "guarded": req.guarded,
                 "expires_at": expires_at,
                 "max_uses": req.max_uses,
                 "created_at": record.created_at,
@@ -290,6 +318,10 @@ pub struct UpdateTokenRequest {
     /// Quota change tri-state: absent = unchanged, null = unlimited, positive integer = set to that value (KB/s).
     #[serde(default, deserialize_with = "deserialize_some")]
     pub rate_limit_kbps: Option<serde_json::Value>,
+    /// Deep Guard change (G3): absent = unchanged, true/false = set. Takes effect on the peer's
+    /// next reconnect (the flag rides the session at auth).
+    #[serde(default, deserialize_with = "deserialize_some")]
+    pub guarded: Option<bool>,
     /// Lifecycle window tri-state: absent = unchanged, null = never expires, string = new expiry.
     #[serde(default, deserialize_with = "deserialize_some")]
     pub expires_at: Option<serde_json::Value>,
@@ -526,6 +558,34 @@ pub async fn update_token(
         rate_limit_resp = new_rate_limit;
     }
 
+    // Deep Guard change (G3): absent = unchanged (kick-free — applies at the next reconnect)
+    let mut guarded_resp = existing.guarded;
+    if let Some(new_guarded) = req.guarded
+        && new_guarded != existing.guarded
+    {
+        let (tid, on) = (id.clone(), new_guarded);
+        if let Err(e) = state
+            .db_call(move |db| db.set_relay_token_guarded(&tid, on))
+            .await
+        {
+            return err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                codes::INTERNAL,
+                e.to_string(),
+            );
+        }
+        audit(
+            &state,
+            &claims,
+            &ip,
+            "relay_token.guarded",
+            Some(&id),
+            if new_guarded { "on" } else { "off" },
+        )
+        .await;
+        guarded_resp = new_guarded;
+    }
+
     // Lifecycle window change (tri-state per field; merged with the current values into one write).
     // New sessions authenticate only while the window is alive (the data-plane check treats an
     // expired/exhausted token as unknown); existing sessions are not kicked mid-flight.
@@ -615,6 +675,7 @@ pub async fn update_token(
         "control_scope": req.control_scope,
         "group_id": group_id_resp,
         "rate_limit_kbps": rate_limit_resp,
+        "guarded": guarded_resp,
         "expires_at": expires_resp,
         "max_uses": max_uses_resp,
     }))

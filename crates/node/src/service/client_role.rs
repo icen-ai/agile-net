@@ -80,6 +80,7 @@ pub(crate) async fn run(engine: &AgileNetClient, cfg: &ClientRoleConfig, slot: &
             emode: parsed.emode,
             eadmin: parsed.eadmin,
             myname: parsed.myname,
+            padding: parsed.padding,
         };
         match engine.connect(params).await {
             Ok(state) => tracing::info!(node = %state.node_id, "[client] node connected"),

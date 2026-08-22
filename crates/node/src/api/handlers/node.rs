@@ -554,6 +554,9 @@ async fn handle_ws(mut socket: WebSocket, state: ApiState) {
                         "time": chrono::Utc::now().to_rfc3339(),
                         "data": { "ip": ip, "node_id": node_id, "device_fp": device_fp, "reason_code": reason_code },
                     }),
+                    // G3 overlap episodes are audit-log material (relay_token.advertise_conflict),
+                    // not a live admin event — the WS bus stays reserved for state changes
+                    Some(PeerEvent::AdvertiseConflict { .. }) => continue,
                     None => break,
                 }
             }
