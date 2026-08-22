@@ -235,6 +235,13 @@ pub(crate) async fn notifications_read_all(state: State<'_, AppState>) -> Result
     Ok(())
 }
 
+/// Mark one inbox entry read (tapping a notification row)
+#[tauri::command]
+pub(crate) async fn notification_read(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    state.client.notifications().mark_read(&id);
+    Ok(())
+}
+
 /// Clear the whole inbox (UI confirms first)
 #[tauri::command]
 pub(crate) async fn clear_notifications(state: State<'_, AppState>) -> Result<(), String> {

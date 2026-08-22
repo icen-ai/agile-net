@@ -189,6 +189,9 @@ body.collapsed .nav-sep { margin: 7px 4px; }
 .row .grow { flex: 1; min-width: 220px; }
 .hint { color: var(--dim2); font-size: 12px; margin-top: 6px; }
 .hint.inline { display: inline; margin-left: 4px; font-weight: 400; }
+/* Actionable hint (e.g. the TUN-lock escape hatch under the master power switch) */
+.hint.link { color: var(--accent); font-weight: 600; }
+.hint.link:hover { text-decoration: underline; }
 .empty { color: var(--dim2); text-align: center; padding: 16px 0; }
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 16px; }
 .chk { display: flex; gap: 6px; align-items: center; color: var(--text); font-size: 13px; cursor: pointer; }

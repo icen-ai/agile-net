@@ -130,6 +130,16 @@ impl NotificationCenter {
         self.persist();
     }
 
+    /// Mark a single entry read (UI taps one notification row).
+    pub fn mark_read(&self, id: &str) {
+        let mut items = self.items.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(n) = items.iter_mut().find(|n| n.id == id) {
+            n.read = true;
+        }
+        drop(items);
+        self.persist();
+    }
+
     pub fn clear(&self) {
         self.items.lock().unwrap_or_else(|e| e.into_inner()).clear();
         self.persist();

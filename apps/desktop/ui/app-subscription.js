@@ -801,6 +801,14 @@ function applyTunStatus(st) {
   if (window._rolesCache) window._rolesCache.tun_mode = TUN_ON; // Hero current-mode summary sync (one place covers onchange/retry/10s poll)
   TUN_SUPPORTED = !!st.supported;
   if (st.upstream) TUN_UPSTREAM = st.upstream;
+  // Dashboard proxy card: while TUN runs, its live state replaces the two-way system/local tabs —
+  // the card then tells the truth the tray's three-way control already knows (single writer for
+  // TUN stays on this page; the badge row links back here)
+  const tunLive = $('proxy-tun-live'), pmTabs = $('proxy-mode');
+  if (tunLive && pmTabs) {
+    tunLive.style.display = TUN_ON ? 'flex' : 'none';
+    pmTabs.style.display = TUN_ON ? 'none' : '';
+  }
   // one-shot give-up notice (insufficient privilege/start failure fell back to normal mode; backend clears on read, toast once only)
   if (st.notice) toast(st.notice, 'err');
   const toggle = $('tun-mode');
@@ -840,6 +848,9 @@ function openTunElevateModal() {
 }
 
 function initTun() {
+  // Dashboard proxy-card TUN badge row: jump back to this page's TUN card (single writer)
+  const tunGoto = $('btn-tun-goto');
+  if (tunGoto) tunGoto.onclick = () => switchView('subscription');
   /* TUN toggle: non-admin → backend returns NEED_ELEVATION, show elevation dialog (not a plain toast) */
   $('tun-mode').onchange = async (e) => {
     const on = e.target.checked;

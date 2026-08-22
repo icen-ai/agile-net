@@ -63,8 +63,13 @@ const Hero = {
     btn.style.opacity = (tunLocked || clientOff) ? '.45' : '';
     setText('hero-power-state', on ? AgI18n.t('common.running') + ' ' + p.detail : (p ? p.detail : AgI18n.t('common.stopped')));
     const hint = tunLocked ? AgI18n.t('hero.powerTunLocked') : (clientOff ? AgI18n.t('hero.powerNeedFanin') : '');
-    $('hero-power-hint').style.display = hint ? '' : 'none';
+    const hintEl = $('hero-power-hint');
+    hintEl.style.display = hint ? '' : 'none';
     setText('hero-power-hint', hint);
+    // TUN lock hint doubles as the escape hatch: click jumps to the TUN card (its single writer)
+    hintEl.classList.toggle('link', tunLocked);
+    hintEl.style.cursor = tunLocked ? 'pointer' : '';
+    hintEl.onclick = tunLocked ? () => switchView('subscription') : null;
     btn.title = hint || AgI18n.t('hero.powerTitle');
   },
   async toggle() {
@@ -109,23 +114,27 @@ const Hero = {
     ]);
   },
   /* Active connections: hooked once into 10s main polling (sub_connections 1s high-freq polling belongs to logs view; not duplicated) */
-  /* Active connections: kernel's table while it runs; the anet inbound's counter otherwise (10s main polling) */
+  /* Active connections: kernel's table while it runs; the anet inbound's counter otherwise (10s main polling).
+     The sub-line names the source — the two counters have different scopes (mihomo conns vs anet inbound conns). */
   async pollConns() {
     if (HTTP_MODE) return;
     if (window._subRunning) {
       let n = 0;
       try { n = ((await invoke('sub_connections')).active || []).length; } catch (e) { return; }
       odoSet($('hero-conns'), String(n));
+      setText('hero-conns-src', AgI18n.t('hero.connsSrcSub'));
       return;
     }
     if (window._anetProxyOn) {
       try {
         const t = await invoke('proxy_traffic');
         odoSet($('hero-conns'), String(t.active));
+        setText('hero-conns-src', AgI18n.t('hero.connsSrcLocal'));
       } catch (e) { /* keep last reading */ }
       return;
     }
     odoSet($('hero-conns'), '-');
+    setText('hero-conns-src', '');
   },
   /* Current mode: proxy_power.on + _rolesCache (frontend cache of get_role_settings, synced at change points, no re-fetch).
      Mapping: off -> 已停止; tun_mode -> TUN · outbound (§2.5 mutual exclusion pins rule); else system proxy/local proxy · outbound mode */
@@ -212,13 +221,16 @@ const Onboarding = {
     card.style.display = '';
     if (sig !== this._sig) {
       this._sig = sig;
-      // Horizontal step band (v2): done steps get a filled check + grayed title; undone steps keep the 「去完成」 jump
+      // Horizontal step band (v2): done steps get a filled check + grayed title; undone steps keep the 「去完成」 jump.
+      // Step ② lands on the subscription view only once the feature is activated; before that the
+      // destination is the settings page (activation lives there) — jumping into an inactive view
+      // leaves the sidebar without a highlight and the page in a dead state.
       $('ob-list').innerHTML = OB_STEPS.map((s, i) =>
         '<div class="ob-step' + (done[i] ? ' done' : '') + '">' +
         '<span class="ob-check">' + AgIcon('check', 11) + '</span>' +
         '<div class="ob-text"><span class="ob-t">' + esc(AgI18n.t(s.label)) + '</span>' +
         '<span class="ob-d">' + esc(AgI18n.t(s.desc)) + '</span>' +
-        (!done[i] && s.goto ? '<button class="ghost small" data-ob-goto="' + s.goto + '">' + AgI18n.t('hero.obGo') + '</button>' : '') +
+        (!done[i] && s.goto ? '<button class="ghost small" data-ob-goto="' + (i === 1 && !done[0] ? 'settings' : s.goto) + '">' + AgI18n.t('hero.obGo') + '</button>' : '') +
         '</div></div>').join('');
     }
     if (all && !this._doneTimer) {

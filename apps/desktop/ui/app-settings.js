@@ -114,6 +114,19 @@ function initInlineEdits() {
     get: () => '127.0.0.1:' + proxyPort(),
     editValue: () => String(proxyPort()),
     validate: validPort,
+    // changing the port while running restarts the listener: confirm the connection drop first
+    confirm: async (v) => {
+      const port = parseInt(v, 10);
+      if (PROXY_ST.running && PROXY_ST.port !== port) {
+        return await askConfirm({
+          title: AgI18n.t('settings.portWarnTitle'),
+          desc: AgI18n.t('settings.portWarnDesc', { port }),
+          icon: 'triangle-alert',
+          okText: AgI18n.t('common.ok'),
+        });
+      }
+      return true;
+    },
     set: async (v) => {
       const port = parseInt(v, 10);
       localStorage.setItem('ag_proxy_port', String(port));
@@ -184,6 +197,24 @@ async function initRoles() {
   $('s-float-ball').checked = !!settings.float_ball;
   $('s-notify-float').checked = !!settings.notify_float_ball;
   syncNotifyFloatRow();
+  // Close-button behavior (tray vs quit); title-bar X tooltip follows the live setting
+  const syncCloseBehavior = (toTray) => {
+    $('s-close-tray').checked = toTray;
+    $('tb-close').title = AgI18n.t(toTray ? 'menu.closeWin' : 'menu.closeQuit');
+  };
+  syncCloseBehavior(settings.close_to_tray !== false);
+  $('s-close-tray').onchange = async (e) => {
+    const on = e.target.checked;
+    try {
+      await invoke('set_close_to_tray', { on });
+      if (window._rolesCache) window._rolesCache.close_to_tray = on;
+      syncCloseBehavior(on);
+      toast(AgI18n.t(on ? 'settings.closeTrayOn' : 'settings.closeTrayOff'), 'ok');
+    } catch (err) {
+      e.target.checked = !on;
+      toast(friendlyError(err), 'err');
+    }
+  };
   // Performance mode: get_role_settings().reduce_effects corrects the value pre-applied from localStorage at startup
   const reduceFx = !!settings.reduce_effects;
   $('s-reduce-effects').checked = reduceFx;

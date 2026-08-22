@@ -230,6 +230,7 @@ pub fn run() {
             proxy_power_toggle,
             parse_connect_url,
             list_notifications,
+            notification_read,
             notifications_read_all,
             clear_notifications,
             send_pending_note,
@@ -245,6 +246,7 @@ pub fn run() {
             float_bubble_take,
             set_notify_float_ball,
             set_reduce_effects,
+            set_close_to_tray,
             run_doctor,
             recent_events,
             set_autostart,
@@ -439,14 +441,22 @@ pub fn run() {
                 let _ = window.set_focus();
             }
 
-            // Minimize to tray instead of exiting on window close; refresh tray icon black/white on system theme change
+            // Close-button behavior follows the close_to_tray role setting (default: minimize to tray);
+            // refresh tray icon black/white on system theme change
             if let Some(window) = app.get_webview_window("main") {
                 let w = window.clone();
                 let handle = app.handle().clone();
                 window.on_window_event(move |event| match event {
                     tauri::WindowEvent::CloseRequested { api, .. } => {
-                        api.prevent_close();
-                        let _ = w.hide();
+                        let to_tray = tauri::async_runtime::block_on(async {
+                            handle.state::<AppState>().roles.lock().await.close_to_tray
+                        });
+                        if to_tray {
+                            api.prevent_close();
+                            let _ = w.hide();
+                        }
+                        // close_to_tray=false: let the close proceed — ExitRequested runs the
+                        // unified cleanup (TUN teardown + system-proxy restore) then the app exits
                     }
                     tauri::WindowEvent::ThemeChanged(_) => refresh_tray_icon(&handle),
                     _ => {}

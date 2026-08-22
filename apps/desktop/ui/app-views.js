@@ -976,7 +976,11 @@ function updateDashFanin() {
         const btn = on || st === 'Blocked' ? '' : '<button class="ghost small" data-mini-conn="' + esc(key) + '">' + AgI18n.t('views.connect') + '</button>';
         return '<div class="mini-row"><span class="mr-dot' + (on ? ' on' : (busy ? ' warn' : '')) + '"></span>' +
           '<span class="mr-name">' + esc(name) + '</span><span class="mr-addr">' + esc(c.addr) + '</span>' + btn + '</div>';
-      }).join('');
+      }).join('') +
+      // overflow tail: more than 3 saved fan-ins get a "{n} total" row that jumps to the fan-in page
+      ((window._credsRaw || []).length > 3
+        ? '<div class="mini-row" data-goto="nodes" style="cursor:pointer"><span class="mr-dot"></span><span class="mr-name dim">' + AgI18n.t('views.faninMore', { n: (window._credsRaw || []).length }) + '</span></div>'
+        : '');
     }
   }
 }
@@ -1075,12 +1079,11 @@ function renderCredList(creds, statusMap) {
       (n && n.admin_console && st === 'Connected' && !HTTP_MODE
         ? '<button class="ghost small" data-act="console" data-id="' + esc(key) + '">' + AgIcon('monitor', 13) + ' ' + AgI18n.t('views.manage') + '</button>' : '') +
       mainBtn +
-      '<button class="ghost small icon-btn" title="' + AgI18n.t('views.export-title') + '" data-act="export" data-key="' + esc(key) + '">' + AgIcon('share-2', 13) + '</button>' +
-      '<button class="ghost small icon-btn" title="' + AgI18n.t('anet.exportTitle') + '" data-act="anet" data-key="' + esc(key) + '">' + AgIcon('file-key', 13) + '</button>' +
+      '<button class="ghost small" data-act="share" data-key="' + esc(key) + '" title="' + AgI18n.t('views.share-title') + '">' + AgIcon('share-2', 13) + '</button>' +
       '<button class="danger small icon-btn" title="' + AgI18n.t('views.del-fanin-title') + '" data-act="delcred" data-key="' + esc(key) + '">' + AgIcon('trash-2', 13) + '</button>' +
       '</div></div>';
   }).join('') + shownUnsaved.map(n =>
-    '<div class="node-card' + (live(n.status) ? '' : ' down') + '"><div class="info">' +
+    '<div class="node-card' + (live(n.status) ? '' : ' down') + '" data-node-id="' + esc(n.node_id) + '"><div class="info">' +
     '<div class="name">' + esc(n.node_name) + ' ' + statusBadgeHtml(n.status) + (n.issuer_node_name ? ' <span class="badge b-gray" title="' + AgI18n.t('views.srcHint', { name: n.issuer_node_name }) + '">' + esc(n.issuer_node_name) + '</span>' : '') + ' <span class="badge b-gray">' + AgI18n.t('views.unsaved') + '</span></div>' +
     '<div class="addr mono">' + esc(n.addr) + '</div>' +
     (n.issuer_node_name ? '<div class="addr dim">' + AgI18n.t('views.srcLabel') + '：' + esc(n.issuer_node_name) + '</div>' : '') +
@@ -1216,7 +1219,7 @@ function renderNotifyList(items) {
     const rc = n.reason_code
       ? '<span class="badge ' + (n.kind === 'session' ? 'b-off' : 'b-warn') + '">' + esc(reasonText(n.reason_code)) + '</span>'
       : '';
-    return '<div class="ntf' + (n.read ? '' : ' unread') + '"' + (n.node_id ? ' data-nid="' + esc(n.node_id) + '"' : '') + '>' +
+    return '<div class="ntf' + (n.read ? '' : ' unread') + '"' + (n.node_id ? ' data-nid="' + esc(n.node_id) + '"' : '') + ' data-id="' + esc(n.id) + '">' +
       '<span class="ntf-ic">' + AgIcon(ic, 15) + '</span>' +
       '<div class="ntf-main">' +
       '<div class="ntf-title">' + esc(n.title) + ' ' + rc + '</div>' +
@@ -1255,10 +1258,25 @@ function initNotify() {
     try { await invoke('clear_notifications'); } catch (e) { toast(friendlyError(e), 'err'); }
     refreshNotify(true);
   };
-  // Clicking a node-bound entry jumps to its fan-in card
-  $('notify-list').addEventListener('click', (e) => {
+  // Clicking a node-bound entry: mark that one notification read, jump to the fan-in page and
+  // highlight the matching card (saved cards key = node_id; unsaved carry data-node-id)
+  $('notify-list').addEventListener('click', async (e) => {
     const row = e.target.closest('.ntf[data-nid]');
-    if (row) switchView('nodes');
+    if (!row) return;
+    if (!row.classList.contains('read')) {
+      try { await invoke('notification_read', { id: row.dataset.id }); } catch (err) {}
+      refreshNotify(true);
+    }
+    switchView('nodes');
+    setTimeout(() => {
+      const card = document.querySelector('#creds-list .node-card[data-node-id="' + CSS.escape(row.dataset.nid) + '"]')
+        || (document.querySelector('.cred-name[data-rename="' + CSS.escape(row.dataset.nid) + '"]') || {}).closest?.('.node-card');
+      if (!card) return;
+      card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      card.style.outline = '2px solid var(--accent)';
+      card.style.outlineOffset = '2px';
+      setTimeout(() => { card.style.outline = ''; card.style.outlineOffset = ''; }, 2000);
+    }, 80);
   });
 }
 
@@ -1499,12 +1517,20 @@ function initUpstreams() {
       return;
     }
     if (delBtn) {
-      try {
-        await invoke('remove_server_connector', { id: delBtn.dataset.foDel });
-        toast(AgI18n.t('views.fo-deleted'), 'ok');
-        if (FO_EDIT_ID === delBtn.dataset.foDel) foCloseModal();
-        refreshUpstreams();
-      } catch (err) { toast(friendlyError(err), 'err'); }
+      // two-step confirm (same pattern as fan-in delete / token revoke): connectors are DB-backed
+      if (delBtn.dataset.confirm === '1') {
+        try {
+          await invoke('remove_server_connector', { id: delBtn.dataset.foDel });
+          toast(AgI18n.t('views.fo-deleted'), 'ok');
+          if (FO_EDIT_ID === delBtn.dataset.foDel) foCloseModal();
+          refreshUpstreams();
+        } catch (err) { toast(friendlyError(err), 'err'); }
+        return;
+      }
+      delBtn.dataset.confirm = '1';
+      const old = delBtn.innerHTML;
+      delBtn.innerHTML = '<span style="font-size:11px">' + AgI18n.t('common.confirm') + '</span>';
+      setTimeout(() => { if (delBtn.isConnected) { delBtn.dataset.confirm = ''; delBtn.innerHTML = old; } }, 2500);
     }
   });
   initDelegation();
@@ -1520,6 +1546,7 @@ function initUpstreams() {
 let DT_ITEMS = [];
 let DT_GROUPS = []; // embedded node groups (with e2e_required flags)
 let DT_STATE = { entry: 'direct', trust: 'plain', route: 'dedicated', conc: 'single' };
+let DT_GROUPS_OPEN = false; // dedicated-route member-list expansion state
 
 function dtBadges(t) {
   const b = [];
@@ -1540,9 +1567,11 @@ async function refreshDelegation() {
   try {
     items = await invoke('list_delegated_tokens');
   } catch (e) {
-    // typically "server role not running" — an actionable empty state, not an error toast
+    // typically "server role not running" — an actionable empty state with a path to the listener switch
     const msg = friendlyError(e);
-    if (list.dataset.sig !== msg) { list.dataset.sig = msg; list.innerHTML = '<div class="empty">' + esc(msg) + '</div>'; }
+    const html = '<div class="empty">' + esc(msg) +
+      '<div style="margin-top:8px"><button class="ghost small" data-dt-goto-server><i data-sz="13" data-ic="git-fork"></i> ' + AgI18n.t('dt.gotoServer') + '</button></div></div>';
+    if (list.dataset.sig !== msg) { list.dataset.sig = msg; list.innerHTML = html; AgIconHydrate(list); }
     return false;
   }
   DT_ITEMS = items;
@@ -1589,15 +1618,25 @@ function dtSync() {
   $('dt-scope-row').style.display = s.trust === 'admin' ? '' : 'none';
   const entryHint = s.entry === 'direct' ? AgI18n.t('dt.entryDirectHint') : AgI18n.t('dt.entryRelayHint');
   if ($('dt-entry-hint').textContent !== entryHint) $('dt-entry-hint').textContent = entryHint;
-  // groups: dedicated collapses the picker with an all-selected summary; split shows the picker
+  // groups: dedicated collapses the picker into an expandable summary (click lists the exact members);
+  // split shows the picker
   const eligible = dtEligibleGroups();
   const list = $('dt-groups-list'), summary = $('dt-groups-summary');
   if (s.route === 'dedicated') {
     list.style.display = 'none';
     summary.style.display = '';
-    summary.textContent = AgI18n.t('dt.groupsAll', { n: eligible.length });
+    summary.style.cursor = 'pointer';
+    summary.innerHTML = AgI18n.t('dt.groupsAll', { n: eligible.length }) +
+      (DT_GROUPS_OPEN ? ' <i data-ic="chevron-up" data-sz="11"></i>' : ' <i data-ic="chevron-down" data-sz="11"></i>') +
+      (DT_GROUPS_OPEN && eligible.length
+        ? '<div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:4px">' +
+          eligible.map(g => '<span class="badge b-gray">' + esc(g.name) + (g.e2e_required ? ' · E2E' : '') + '</span>').join('') + '</div>'
+        : '');
+    AgIconHydrate(summary);
+    summary.onclick = () => { DT_GROUPS_OPEN = !DT_GROUPS_OPEN; dtSync(); };
   } else {
     summary.style.display = 'none';
+    summary.onclick = null;
     list.style.display = '';
     list.innerHTML = eligible.length
       ? eligible.map(g => '<label class="chk"><input type="checkbox" class="dt-grp" value="' + esc(g.id) + '"> <span>' + esc(g.name) + '</span>' + (g.adopted_node ? ' ' + srcBadge(g.adopted_node) : '') + (g.e2e_required ? ' <span class="badge b-warn">E2E</span>' : '') + '</label>').join('')
@@ -1714,6 +1753,13 @@ function initDelegation() {
     }
   });
   $('dt-ok').onclick = dtSubmit;
+  // empty-state escape hatch: jump to the fan-out listen tab (the server role lives there)
+  $('dt-list').addEventListener('click', (e) => {
+    if (!e.target.closest('[data-dt-goto-server]')) return;
+    switchView('upstreams');
+    const listen = $('fo-tabs').querySelector('[data-agtab="listen"]');
+    if (listen) listen.click();
+  });
   // revoke with two-step confirm (same pattern as fan-in delete)
   $('dt-list').addEventListener('click', async (e) => {
     const btn = e.target.closest('[data-dt-revoke]');

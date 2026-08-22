@@ -64,6 +64,11 @@ AgI18n.register({
   'views.fanin-saved': { zh: '{n} 个已保存', en: '{n} saved' },
   'views.fanin-trying': { zh: ' · {n} 个连接中/重连中', en: ' · {n} connecting/reconnecting' },
   'views.fanin-idle-hint': { zh: '点卡片去连接', en: 'click the card to connect' },
+  'views.faninMore': { zh: '共 {n} 个 · 查看', en: '{n} total · view all' },
+  // ---- credential share menu (one entry for both export carriers) ----
+  'views.share-title': { zh: '分享', en: 'Share' },
+  'views.share-copy-link': { zh: '复制接入链接', en: 'Copy access link' },
+  'views.share-anet-file': { zh: '导出 .anet 凭据文件', en: 'Export .anet file' },
   // ---- fan-in list (saved credentials + unsaved live connections) ----
   'views.disconnect': { zh: '断开', en: 'Disconnect' },
   'views.reconnect': { zh: '重连', en: 'Reconnect' },
@@ -156,6 +161,7 @@ AgI18n.register({
   'dt.revoked': { zh: '令牌已吊销', en: 'Token revoked' },
   'dt.revokeTitle': { zh: '吊销该令牌（消费者立即失效）', en: 'Revoke this token (consumers fail immediately)' },
   'dt.empty': { zh: '尚未签发委托令牌', en: 'No delegated tokens issued yet' },
+  'dt.gotoServer': { zh: '去开启扇出监听', en: 'Enable fan-out listener' },
   'dt.badgeDirect': { zh: '直连', en: 'Direct' },
   'dt.badgeRelay': { zh: '委托', en: 'Relay' },
   'dt.badgeSingle': { zh: '单端', en: 'Single' },

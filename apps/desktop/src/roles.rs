@@ -82,6 +82,10 @@ pub struct RoleSettings {
     /// process-level rule keeps those raw dials loop-free)
     #[serde(default)]
     pub sub_miss_direct: bool,
+    /// Close-button behavior: true (default) = minimize to tray, false = quit the app.
+    /// Read by the main window's CloseRequested handler.
+    #[serde(default = "default_true")]
+    pub close_to_tray: bool,
 }
 
 fn default_true() -> bool {
@@ -149,6 +153,7 @@ impl Default for RoleSettings {
             reduce_effects: false,
             conn_log_enabled: false,
             sub_miss_direct: false,
+            close_to_tray: true,
         }
     }
 }

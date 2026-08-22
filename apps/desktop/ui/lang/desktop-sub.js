@@ -124,7 +124,7 @@ AgI18n.register({
   'tun.upstreamSaved': { zh: '外部上游已保存', en: 'External upstream saved' },
 
   // ---- dashboard hero card (app-hero.js) ----
-  'hero.powerTunLocked': { zh: 'TUN 模式运行中，总开关不可用', en: 'TUN mode is running; the power switch is unavailable' },
+  'hero.powerTunLocked': { zh: 'TUN 运行中 · 点击前往关闭', en: 'TUN is active — click to close it' },
   'hero.powerNeedFanin': { zh: '请先在首页开启扇入', en: 'Enable fan-in on Home first' },
   'hero.powerTitle': { zh: '代理总开关', en: 'Proxy Power' },
   'hero.down': { zh: '下行', en: 'Down' },

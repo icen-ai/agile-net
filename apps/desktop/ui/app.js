@@ -159,7 +159,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     if (logsNav) logsNav.style.display = 'none';
     // Narrow-screen bottom nav holds desktop entries like logs; hide it entirely on the Web remote panel (inline none overrides the ≤720px breakpoint's flex)
     $('bnav').style.display = 'none';
-    ['row-sysproxy-lock', 'row-doctor', 'row-float-ball', 'row-notify-float', 'row-reduce-effects', 'sync-card', 'agent-card'].forEach(id => {
+    ['row-sysproxy-lock', 'row-close-tray', 'row-doctor', 'row-float-ball', 'row-notify-float', 'row-reduce-effects', 'sync-card', 'agent-card'].forEach(id => {
       const r = $(id); if (r) r.style.display = 'none';
     });
     // Admin console is a local-only capability (ticket/forwarder loopback only); hide its entry on the Web remote panel
@@ -179,6 +179,8 @@ window.addEventListener('DOMContentLoaded', async () => {
     // Desktop float ball is a desktop window capability; hide on Android too (the bubble-notification row hides along with it)
     const fb = $('row-float-ball'); if (fb) fb.style.display = 'none';
     const nf = $('row-notify-float'); if (nf) nf.style.display = 'none';
+    // Close-to-tray has no system tray on Android — the row is meaningless there
+    const ct = $('row-close-tray'); if (ct) ct.style.display = 'none';
   } else {
     $('btn-uninstall').onclick = () => { $('uninstall-modal').style.display = 'flex'; };
     $('un-cancel').onclick = () => { $('uninstall-modal').style.display = 'none'; };
@@ -333,10 +335,16 @@ window.addEventListener('DOMContentLoaded', async () => {
     const btn = e.target.closest('button[data-act]');
     if (!btn) return;
     const key = btn.dataset.key;
+    // Share menu: one entry for both export carriers (copy link / .anet file)
+    if (btn.dataset.act === 'share') {
+      ctxShow(e.clientX, e.clientY, [
+        { label: AgI18n.t('views.share-copy-link'), fn: () => exportCred(key) },
+        { label: AgI18n.t('views.share-anet-file'), fn: () => exportCredAnet(key) },
+      ]);
+      return;
+    }
     if (btn.dataset.act === 'reconnect') reconnectSaved(key, btn);
     if (btn.dataset.act === 'disconnect') disconnectNode(key);
-    if (btn.dataset.act === 'export') exportCred(key);
-    if (btn.dataset.act === 'anet') exportCredAnet(key);
     if (btn.dataset.act === 'delcred') deleteCred(key, btn);
     if (btn.dataset.act === 'console') openNodeConsole(btn.dataset.id);
     if (btn.dataset.act === 'edit') openCredEdit(key);

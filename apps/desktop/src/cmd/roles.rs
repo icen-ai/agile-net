@@ -701,3 +701,15 @@ pub(crate) async fn set_reduce_effects(state: State<'_, AppState>, on: bool) -> 
     roles::audit("gui.reduce_effects", serde_json::json!({"on": on}));
     Ok(())
 }
+
+/// Close-button behavior: true = minimize to tray (default), false = quit on window close.
+#[tauri::command]
+pub(crate) async fn set_close_to_tray(state: State<'_, AppState>, on: bool) -> Result<(), String> {
+    {
+        let mut roles = state.roles.lock().await;
+        roles.close_to_tray = on;
+        roles.save()?;
+    }
+    roles::audit("gui.close_to_tray", serde_json::json!({"on": on}));
+    Ok(())
+}

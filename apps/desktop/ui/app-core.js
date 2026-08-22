@@ -19,6 +19,7 @@ const CMD_MAP = {
   rename_credential: ['POST', '/api/v1/credentials/rename', a => ({ key: a.key, name: a.name })],
   set_credential_myname: ['POST', '/api/v1/credentials/myname', a => ({ key: a.key, myname: a.myname })],
   list_notifications: ['GET', '/api/v1/notifications'],
+  notification_read: ['POST', '/api/v1/notifications/read', a => ({ id: a.id })],
   notifications_read_all: ['POST', '/api/v1/notifications/read-all'],
   clear_notifications:  ['DELETE', '/api/v1/notifications'],
   get_machine_identity: ['GET', '/api/v1/identity'],
@@ -168,9 +169,24 @@ function odoSet(el, text) {
 function setText(id, s) { const el = $(id); if (el && el.textContent !== s) el.textContent = s; }
 function setHtml(id, h) { const el = $(id); if (el && el.innerHTML !== h) el.innerHTML = h; }
 
+/* ---- Global Esc-to-close for modals: the topmost visible .modal-mask closes through its own
+   cancel button, so Promise-based modals (askConfirm/askPassword) resolve correctly; masks
+   without a cancel button (login) are exempt. Inline editors / dropdowns / ctx menus handle Esc
+   themselves and never open a modal-mask, so no conflicts. ---- */
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  const open = [...document.querySelectorAll('.modal-mask')].filter(m => m.style.display === 'flex');
+  const mask = open[open.length - 1];
+  if (!mask) return;
+  const cancel = mask.querySelector('button[id$="-cancel"], button[id$="-close"]');
+  if (cancel) { e.preventDefault(); cancel.click(); }
+});
+
 /* ================= Inline edit (.agedit, shared styles in components.css) =================
    Generic mini pattern: shows "value [Edit]" → click turns into input + [Save]; Enter saves / Esc cancels.
-   opts: { get(): display value, editValue?(): input initial value (defaults to get), validate?(v): error text|null, set(v): Promise }
+   opts: { get(): display value, editValue?(): input initial value (defaults to get), validate?(v): error text|null,
+           confirm?(v): Promise<boolean> gate before set (e.g. disruptive-change warning; false = abort edit, no write),
+           set(v): Promise }
    validate error → toast without writing (stays in edit mode); polling side syncs the display value via returned handle refresh() (never disturbs while editing). */
 function bindInlineEdit(el, opts) {
   let editing = false, lastVal = null;
@@ -197,6 +213,7 @@ function bindInlineEdit(el, opts) {
         if (err) { toast(err, 'err'); input.focus(); return; }
         btn.disabled = true;
         try {
+          if (opts.confirm && !(await opts.confirm(val))) { editing = false; lastVal = null; render(); return; }
           await opts.set(val);
           editing = false; lastVal = null;
           render();

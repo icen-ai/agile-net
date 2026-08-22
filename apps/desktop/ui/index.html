@@ -162,6 +162,7 @@
           <div class="hstat">
             <span class="hstat-l"><i data-ic="activity" data-sz="11"></i><span data-i18n="home.activeConns">活跃连接</span></span>
             <span class="hstat-v odo" id="hero-conns">-</span>
+            <span class="hstat-s" id="hero-conns-src"></span>
           </div>
           <div class="hstat">
             <span class="hstat-l"><i data-ic="route" data-sz="11"></i><span data-i18n="home.curMode">当前模式</span></span>
@@ -218,6 +219,12 @@
           <div class="group-tabs" id="proxy-mode" style="margin-bottom:0">
             <button class="group-tab" data-proxy-mode="system" data-i18n="home.modeSystem">系统代理</button>
             <button class="group-tab" data-proxy-mode="local" data-i18n="home.modeLocal">本地代理</button>
+          </div>
+          <!-- TUN live state (replaces the tabs above while active; managed on the subscription page) -->
+          <div id="proxy-tun-live" style="display:none;align-items:center;gap:6px;padding:4px 0 2px">
+            <span class="badge b-ok">TUN</span>
+            <span class="hint inline" style="margin:0" data-i18n="tun.liveOn">虚拟网卡接管中</span>
+            <button class="ghost small" id="btn-tun-goto" data-i18n="tun.manage">管理</button>
           </div>
           <div class="dc-kv"><span class="k" data-i18n="common.listen">监听</span><span id="d-proxy-addr" class="v2"></span></div>
           <div class="hint" id="proxy-hint" style="margin-top:0"></div>
@@ -815,6 +822,10 @@
         <h3><i data-ic="power"></i><span data-i18n="settings.system">系统</span></h3>
         <label class="chk"><input type="checkbox" id="s-autostart"> <span data-i18n="settings.autostart">开机自动启动 AgileNet</span></label>
         <div class="role-list">
+          <div class="role-row" id="row-close-tray">
+            <div class="role-info"><b><span data-i18n="settings.closeTray">关闭按钮最小化到托盘</span> <span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip" data-i18n="settings.closeTrayTip">开启：点关闭按钮隐藏到托盘、后台继续运行；关闭：点关闭按钮直接退出应用（托盘右键退出始终可用）</span></span></b></div>
+            <label class="switch"><input type="checkbox" id="s-close-tray" checked><span class="slider"></span></label>
+          </div>
           <div class="role-row" id="row-sysproxy-lock">
             <div class="role-info"><b><span data-i18n="sysproxy.lock">锁定系统代理</span> <span class="ahelp"><i data-ic="badge-question-mark" data-sz="13"></i><span class="ahelp-tip" data-i18n="sysproxy.lockTip">其他软件抢占系统代理时自动收回（30s 巡检）</span></span></b></div>
             <label class="switch"><input type="checkbox" id="s-sysproxy-lock"><span class="slider"></span></label>

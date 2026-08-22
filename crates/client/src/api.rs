@@ -133,6 +133,7 @@ where
         // ---- Notifications (node.md M4: session notices / rejections / approvals) ----
         .route("/notifications", get(list_notifications).delete(clear_notifications))
         .route("/notifications/read-all", post(notifications_read_all))
+        .route("/notifications/read", post(notification_read))
         // ---- Util ----
         .route("/parse-connect-url", post(parse_connect_url))
         .with_state(state)
@@ -586,6 +587,16 @@ async fn list_notifications(State(state): State<ClientApiState>) -> Response {
 async fn notifications_read_all(State(state): State<ClientApiState>) -> Response {
     state.client.notifications().mark_all_read();
     ok(serde_json::json!({ "unread": 0 }))
+}
+
+#[derive(Deserialize)]
+struct NotificationReadReq {
+    id: String,
+}
+
+async fn notification_read(State(state): State<ClientApiState>, Json(req): Json<NotificationReadReq>) -> Response {
+    state.client.notifications().mark_read(&req.id);
+    ok(serde_json::json!({ "read": req.id }))
 }
 
 async fn clear_notifications(State(state): State<ClientApiState>) -> Response {
