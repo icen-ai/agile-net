@@ -138,11 +138,11 @@ tr:hover td { background: var(--row-hover); }
 .kv { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px dashed var(--row-border); font-size: 13px; }
 .kv .k { color: var(--dim); }
 
-/* All checkboxes unified as green switches (the theme has no blue; native accent-color disabled) */
+/* All checkboxes unified as monochrome switches (track = charcoal on, knob inverts) */
 input[type="checkbox"] { appearance: none; -webkit-appearance: none; width: 32px; height: 18px; border-radius: 999px; background: var(--border2); position: relative; cursor: pointer; transition: background .2s; flex-shrink: 0; margin: 0; padding: 0; border: none; }
-input[type="checkbox"]::before { content: ''; position: absolute; width: 14px; height: 14px; left: 2px; top: 2px; background: #fff; border-radius: 50%; transition: transform .2s; box-shadow: 0 1px 3px rgba(0,0,0,.25); }
-input[type="checkbox"]:checked { background: var(--ok); }
-input[type="checkbox"]:checked::before { transform: translateX(14px); }
+input[type="checkbox"]::before { content: ''; position: absolute; width: 14px; height: 14px; left: 2px; top: 2px; background: var(--toggle-knob); border-radius: 50%; transition: transform .2s, background .2s; box-shadow: 0 1px 3px rgba(0,0,0,.25); }
+input[type="checkbox"]:checked { background: var(--toggle-checked); }
+input[type="checkbox"]:checked::before { transform: translateX(14px); background: var(--toggle-knob-checked); }
 input[type="checkbox"]:disabled { opacity: .5; cursor: not-allowed; }
 
 /* Tauri console window title bar (shown only inside the desktop window; hidden in browser mode) */

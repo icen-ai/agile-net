@@ -44,8 +44,10 @@
   --accent-grad: linear-gradient(180deg, #45484D, #2E3237);
   /* Modal mask (pairs with backdrop-filter blur(8px)) */
   --mask: rgba(0,0,0,.46);
-  /* Toggle knob (always white in both themes) */
+  /* Toggle: monochrome switch (checked track = near-black charcoal light / off-white dark; knob inverts on the checked track for contrast) */
   --toggle-knob: #FFFFFF;
+  --toggle-checked: #2E3237;
+  --toggle-knob-checked: #FFFFFF;
   /* Motion duration scale (--dur 180ms stays in style.css; reduced-motion disables globally) */
   --dur-fast: 120ms; --dur-slow: 320ms;
   /* Charts (agchart): grid line / rate pair (up green · down steel blue; dark theme uses desaturated brightened variants) */
@@ -91,6 +93,8 @@ html[data-theme="dark"] {
   --accent-grad: linear-gradient(180deg, #F5F5F5, #DFDFDF);
   --mask: rgba(0,0,0,.58);
   --toggle-knob: #FFFFFF;
+  --toggle-checked: #EEEEEE;
+  --toggle-knob-checked: #2A2828;
   /* Dark variant: 10% white grid; rate pair desaturated and brightened (readability on dark bg) */
   --chart-grid: rgba(255,255,255,.10); --chart-up: #74CE8A; --chart-down: #8FB6DE;
   --lat-good: #5FCF65; --lat-mid: #F8CE52; --lat-bad: #F96057;

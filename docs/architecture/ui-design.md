@@ -27,7 +27,7 @@ AgileNet 的用户界面：节点 Web 管理后台（`/`，含 `/client` 客户�
 | `--log-debug` / `--log-info` / `--log-warn` / `--log-error` | `#686B72` / `#3E6A9E` / `#9A7414` / `#CE3F34` | `#9A9DA3` / `#7EA6D8` / `#F8CE52` / `#F96057` | 日志级别文本色（logv 行字 + 左侧色条，深浅两套均保对比度） |
 | `--accent-grad` | `linear-gradient(180deg,#45484D,#2E3237)` | `linear-gradient(180deg,#F5F5F5,#DFDFDF)` | 主操作渐变（克制：仅侧栏激活胶囊等大激活面，小件仍用纯色 `--accent`） |
 | `--mask` | `rgba(0,0,0,.46)` | `rgba(0,0,0,.58)` | 模态遮罩（配 backdrop-filter blur(8px)） |
-| `--toggle-knob` | `#FFFFFF` | 同 | 开关/勾选框旋钮（深浅恒白） |
+| `--toggle-knob` / `--toggle-checked` / `--toggle-knob-checked` | `#FFFFFF` / `#2E3237` / `#FFFFFF` | `#FFFFFF` / `#EEEEEE` / `#2A2828` | 开关/勾选框旋钮 + 开启轨道（单色开关：浅主题炭黑轨道白钮，深主题亮白轨道炭黑钮，避免纯黑纯白） |
 | `--dur-fast` / `--dur-slow` | `120ms` / `320ms` | 同 | 动效时长梯度（中档 `--dur` 180ms 保留于 style.css；reduced-motion 全局关闭） |
 | `--chart-grid` / `--chart-up` / `--chart-down` | `rgba(0,0,0,.09)` / `#61C555` / `#5484BC` | `rgba(255,255,255,.10)` / `#74CE8A` / `#8FB6DE` | 图表：网格线 / 速率双色（上行绿·下行钢蓝；深色降饱和提亮变体，agchart 序列可传 `var(--chart-up)` 等） |
 | `--lat-good` / `--lat-mid` / `--lat-bad`（+ `--lat-*-bg`） | `#3E8E2E` / `#9A7414` / `#CE3F34` | `#5FCF65` / `#F8CE52` / `#F96057` | 延迟三档语义文字色（与 ok/warn/danger 文字色同值，独立命名保语义；`-bg` 变体为 `.lat` 胶囊底，同 `--ok/warn/danger-bg` 值） |

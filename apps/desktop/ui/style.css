@@ -193,11 +193,11 @@ body.collapsed .nav-sep { margin: 7px 4px; }
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 16px; }
 .chk { display: flex; gap: 6px; align-items: center; color: var(--text); font-size: 13px; cursor: pointer; }
 .chk input { width: auto; }
-/* All checkboxes unified as green toggles (same as role switches; no blue in theme, native accent-color banned) */
+/* All checkboxes unified as monochrome toggles (same as role switches; track = charcoal on, knob inverts) */
 input[type="checkbox"] { appearance: none; -webkit-appearance: none; width: 32px; height: 18px; border-radius: 999px; background: var(--border2); position: relative; cursor: pointer; transition: background var(--dur) var(--ease); flex-shrink: 0; margin: 0; padding: 0; border: none; }
-input[type="checkbox"]::before { content: ''; position: absolute; width: 14px; height: 14px; left: 2px; top: 2px; background: var(--toggle-knob); border-radius: 50%; transition: transform var(--dur) var(--ease); box-shadow: 0 1px 3px rgba(0,0,0,.25); }
-input[type="checkbox"]:checked { background: var(--ok); }
-input[type="checkbox"]:checked::before { transform: translateX(14px); }
+input[type="checkbox"]::before { content: ''; position: absolute; width: 14px; height: 14px; left: 2px; top: 2px; background: var(--toggle-knob); border-radius: 50%; transition: transform var(--dur) var(--ease), background var(--dur) var(--ease); box-shadow: 0 1px 3px rgba(0,0,0,.25); }
+input[type="checkbox"]:checked { background: var(--toggle-checked); }
+input[type="checkbox"]:checked::before { transform: translateX(14px); background: var(--toggle-knob-checked); }
 input[type="checkbox"]:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
 input[type="checkbox"]:disabled { opacity: .5; cursor: not-allowed; }
 .kv { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px dashed var(--row-border); font-size: 13px; }
@@ -322,9 +322,9 @@ input[type="checkbox"]:disabled { opacity: .5; cursor: not-allowed; }
 .switch { position: relative; display: inline-block; width: 32px; height: 18px; }
 .switch input { display: none; }
 .switch .slider { position: absolute; inset: 0; background: var(--border2); border-radius: 999px; transition: background var(--dur) var(--ease); cursor: pointer; }
-.switch .slider::before { content: ''; position: absolute; width: 14px; height: 14px; left: 2px; top: 2px; background: var(--toggle-knob); border-radius: 50%; transition: transform var(--dur) var(--ease); box-shadow: 0 1px 3px rgba(0,0,0,.25); }
-.switch input:checked + .slider { background: var(--ok); }
-.switch input:checked + .slider::before { transform: translateX(14px); }
+.switch .slider::before { content: ''; position: absolute; width: 14px; height: 14px; left: 2px; top: 2px; background: var(--toggle-knob); border-radius: 50%; transition: transform var(--dur) var(--ease), background var(--dur) var(--ease); box-shadow: 0 1px 3px rgba(0,0,0,.25); }
+.switch input:checked + .slider { background: var(--toggle-checked); }
+.switch input:checked + .slider::before { transform: translateX(14px); background: var(--toggle-knob-checked); }
 tr.rule-paused td { opacity: .45; }
 
 /* Status pulse animation (connecting/reconnecting); --warn-ring derives from the warn token */
